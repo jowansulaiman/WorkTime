@@ -1,0 +1,68 @@
+name: worktime_app
+description: Arbeitszeiterfassung App – Monatsbericht & PDF-Export
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  
+  # State Management
+  provider: ^6.1.1
+  
+  # Lokale Persistenz
+  shared_preferences: ^2.5.3
+  
+  # PDF Export
+  pdf: ^3.10.8
+  printing: ^5.12.0
+  
+  # Datums-Picker
+  table_calendar: ^3.0.9
+  
+  # UI
+  cupertino_icons: ^1.0.6
+  intl: ^0.20.2
+  fl_chart: ^0.67.0
+  
+  # File Saver
+  path_provider: ^2.1.2
+  share_plus: ^9.0.0
+  firebase_core: ^3.4.0
+  firebase_auth: ^5.2.0
+  cloud_firestore: ^5.4.0
+  cloud_functions: ^5.1.0
+  google_sign_in: ^7.2.0
+  uuid: ^4.5.3
+  collection: ^1.19.1
+  web: ^0.5.1
+  flutter_svg: ^2.2.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  fake_cloud_firestore: ^3.1.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/fonts/NotoSans-Regular.ttf
+    - assets/fonts/NotoSans-Bold.ttf
+    - assets/fonts/NotoSans-Italic.ttf
+  fonts:
+    - family: NotoSans
+      fonts:
+        - asset: assets/fonts/NotoSans-Regular.ttf
+        - asset: assets/fonts/NotoSans-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/NotoSans-Italic.ttf
+          style: italic

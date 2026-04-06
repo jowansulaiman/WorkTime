@@ -1,0 +1,339 @@
+================================================================================
+PROJEKT-ANALYSE: worktime_app (Update)
+Datum: 02.04.2026
+================================================================================
+
+Hinweis: Diese Analyse ersetzt die vorherige vom 31.03.2026.
+Viele der damaligen Befunde wurden inzwischen behoben (z.B. zentrale Parser,
+Night-Window-Deduplizierung, negative workedHours, dart:html-Migration, etc.).
+Diese Analyse konzentriert sich auf verbleibende und neu entdeckte Probleme.
+
+================================================================================
+1. KRITISCHE PROBLEME (Datenverlust / Sicherheitsrisiko)
+================================================================================
+
+1.1  Race Condition in Clock-In/Out (work_provider.dart)
+     -------------------------------------------------------
+     clockIn() und clockOut() haben keine gegenseitige Sperre.
+     Bei schnellem Doppeltippen koennen beide clockIn()-Aufrufe die
+     Ueberlappungspruefung bestehen. Bei clockOut() wird der Clock-State
+     (_clockInTime, _clockInSiteId, _clockInSiteName) geloescht BEVOR
+     der Save-Aufruf abgeschlossen ist. Schlaegt saveEntryWithOvertimeHandling()
+     fehl, ist der Clock-State bereits weg und nicht wiederherstellbar.
+     -> Loesung: Mutex/Flag (_isClockBusy) um gleichzeitige Aufrufe zu blockieren.
+
+1.2  Race Condition bei Subscription-Updates (work_provider.dart, schedule_provider.dart)
+     -------------------------------------------------------------------------------------
+     In _restartSubscriptions() wird:
+       await _entriesSubscription?.cancel();
+       _entries = [];
+     Zwischen Cancel und neuem Listen koennen Daten verloren gehen.
+     notifyListeners() wird aufgerufen waehrend _entries leer ist.
+     -> Loesung: Neue Subscription aufbauen, erst dann alte canceln und Daten tauschen.
+
+1.3  Nicht-atomare Batch-Operationen (firestore_service.dart)
+     ---------------------------------------------------------
+     Batch-Commits koennen teilweise fehlschlagen (z.B. 3 von 5 Dokumenten
+     gespeichert). Der Provider weiss nicht, welche erfolgreich waren.
+     -> Loesung: Firestore-Transactions statt Batches fuer kritische Operationen,
+        oder Retry-Logik mit Idempotenz-Keys.
+
+1.4  Race Condition bei saveSiteAssignments (firestore_service.dart)
+     ----------------------------------------------------------------
+     1. Bestehende Assignments abfragen
+     2. Alle loeschen
+     3. Neue erstellen
+     Zwischen Schritt 1 und 2 kann ein anderer Admin Assignments hinzufuegen,
+     die dann unbeabsichtigt geloescht werden.
+     -> Loesung: Alles in einer Firestore-Transaction ausfuehren.
+
+1.5  Fehlerunterdrueckung bei Provider-Updates (main.dart)
+     -------------------------------------------------------
+     _dispatchProviderUpdate() nutzt unawaited() mit .catchError() das nur
+     loggt. Kritische Fehler (z.B. Shift-Completion) werden nie an die UI
+     weitergegeben. Der User merkt nicht, dass eine Operation fehlgeschlagen ist.
+     -> Loesung: Fehler-State im Provider setzen und in der UI anzeigen.
+
+================================================================================
+2. HOHE PRIORITAET (Dateninkonsistenz)
+================================================================================
+
+2.1  Clock-State-Wiederherstellung ohne Validierung (work_provider.dart)
+     --------------------------------------------------------------------
+     Gespeicherter Clock-State wird blind wiederhergestellt:
+       _clockInTime = DateTime.parse(saved);
+     Kein Check ob der Zeitpunkt in der Zukunft liegt, ob der gespeicherte
+     Standort noch existiert, oder ob das Datum ueberhaupt gueltig ist.
+     -> Loesung: Validierung nach dem Parsen, ungueltige States verwerfen.
+
+2.2  Stale Validation (work_provider.dart)
+     ---------------------------------------
+     validateEntry() nutzt _effectiveRuleSets (computed property).
+     Zwischen Validierung und Speichern koennen sich RuleSets aendern.
+     Kein Versionierungs- oder Transaktionsmechanismus verhindert dies.
+     -> Loesung: RuleSet-Version/Hash beim Validieren und Speichern vergleichen.
+
+2.3  Shift-Completion ohne Fehlerbehandlung (schedule_provider.dart)
+     -----------------------------------------------------------------
+     completeShiftForEntry(): Wenn das Firestore-Update fehlschlaegt,
+     wird der Fehler nicht propagiert. WorkEntry ist gespeichert, aber der
+     Shift-Status bleibt auf "planned" statt "completed".
+     -> Loesung: Fehler-Callback oder Retry-Mechanismus.
+
+2.4  Fehler-Anzeige mit veralteten Daten (schedule_provider.dart)
+     ---------------------------------------------------------------
+     Bei Firestore-Fehlern wird _errorMessage gesetzt, aber _shifts und
+     _absenceRequests werden nicht geleert. Die UI zeigt einen Fehler
+     UND gleichzeitig veraltete Daten.
+     -> Loesung: Entweder Daten beibehalten ohne Fehlermeldung, oder Daten
+        als "stale" markieren.
+
+2.5  createdAt fehlt in Firestore-Maps (work_entry.dart, absence_request.dart, employment_contract.dart)
+     ----------------------------------------------------------------------------------------------------
+     toFirestoreMap() speichert updatedAt, aber nicht createdAt.
+     Dadurch ist kein Audit-Trail moeglich, wann ein Dokument erstellt wurde.
+     -> Loesung: createdAt bei Erstellung mitschreiben (mit FieldValue.serverTimestamp()).
+
+================================================================================
+3. MITTLERE PRIORITAET (Zuverlaessigkeit / Logik)
+================================================================================
+
+3.1  Timer nicht bei Fehlern gestoppt (work_provider.dart)
+     -------------------------------------------------------
+     _startClockTick() und _ensureClockAvailabilityWatcher() erstellen Timer.
+     Bei Exceptions im Callback laeuft der Timer weiter und verursacht
+     wiederholte Fehler.
+     -> Loesung: try-catch im Timer-Callback, Timer bei Fehler stoppen.
+
+3.2  Disposed-Check unzureichend (work_provider.dart)
+     --------------------------------------------------
+     _safeNotify() prueft _disposed, aber waehrend dispose() werden
+     Subscriptions synchron gecancelt. Parallele Listener-Callbacks
+     koennten noch NACH dispose feuern.
+     -> Loesung: _disposed als erstes setzen, dann Subscriptions canceln.
+
+3.3  Stream-Subscription-Leak bei schnellen Auth-Changes (auth_provider.dart)
+     -------------------------------------------------------------------------
+     _profileSubscription wird bei _onAuthChanged gecancelt und neu gesetzt.
+     Wenn waehrend ensureProfileForSignedInUser ein weiterer Auth-Change
+     eintritt, kann die alte Subscription in einem inkonsistenten Zustand sein.
+     -> Loesung: Debouncing oder Queue fuer Auth-State-Changes.
+
+3.4  Inkonsistente Datumsparsierung (firestore_date_parser.dart)
+     -------------------------------------------------------------
+     readDate() prueft: Timestamp -> DateTime -> String
+     readLocalDate() prueft: DateTime -> Timestamp -> String
+     Unterschiedliche Reihenfolge ohne praktischen Unterschied, aber
+     verwirrend. Einige Models nutzen readLocalDate() in fromMap() aber
+     readDate() in fromFirestore() - koennte zu Timezone-Unterschieden fuehren.
+     -> Loesung: Einheitliche Methode oder klare Dokumentation wann welche.
+
+3.5  Stille Datenverfaelschung bei Date-Parse-Fehler (work_entry.dart)
+     -------------------------------------------------------------------
+     _parseStoredDate() faellt bei Fehler auf normalizeDate(DateTime.now()) zurueck.
+     Ein fehlerhaftes Datum wird still durch das aktuelle Datum ersetzt - Datenverlust.
+     -> Loesung: Exception werfen oder Fehler-State setzen statt still ersetzen.
+
+3.6  Absence-Datumsinkonsistenz (absence_request.dart)
+     ----------------------------------------------------
+     _normalizeCalendarDate() (Normalisierung auf Mittag) wird nur in
+     toFirestoreMap() genutzt. Im Konstruktor via readDate() wird nicht
+     normalisiert. Daten im Speicher haben ggf. Zeitkomponente, in Firestore nicht.
+     -> Loesung: Auch im Konstruktor normalisieren.
+
+3.7  Floating-Point-Rundungsfehler (compliance_service.dart)
+     ---------------------------------------------------------
+     projectedCents = ((monthlyMinutes / 60) * contract.hourlyRate * 100).round()
+     Division -> Multiplikation -> Rundung kann Cent-Fehler akkumulieren.
+     -> Loesung: Erst alle Multiplikationen, dann eine Division, dann runden.
+        Oder: Berechnung in Cents (Integer-Arithmetik).
+
+3.8  Download-URL zu frueh revoked (download_service_web.dart)
+     -----------------------------------------------------------
+     URL.revokeObjectURL() wird nach 200ms aufgerufen. Bei langsamen
+     Systemen/Browsern koennte der Download noch nicht gestartet sein.
+     -> Loesung: Laengeren Timeout (z.B. 2s) oder Event-basiertes Cleanup.
+
+================================================================================
+4. VALIDIERUNGSLUECKEN (Screens / UI)
+================================================================================
+
+4.1  Korrekturgrund nicht validiert (entry_form_screen.dart)
+     --------------------------------------------------------
+     Das Feld "correctionReason" ist als "Pflicht bei Aenderungen" beschrieben,
+     hat aber KEINEN Validator. User koennen ohne Begruendung aendern.
+     -> Compliance-Risiko: Aenderungen an Arbeitszeiten muessen nachvollziehbar sein.
+
+4.2  Standort-Dropdown ohne Validator (entry_form_screen.dart)
+     -----------------------------------------------------------
+     Site-Auswahl hat keinen Validator. Eintraege koennen ohne Standort
+     gespeichert werden, obwohl dieser fuer Compliance relevant ist.
+
+4.3  Keine E-Mail-Format-Validierung (auth_screen.dart)
+     ----------------------------------------------------
+     Das E-Mail-Feld akzeptiert beliebigen Text. Kein RegEx-Check.
+     -> Loesung: E-Mail-Validator hinzufuegen.
+
+4.4  Kein Passwort-Bestaetigungsfeld (auth_screen.dart)
+     ----------------------------------------------------
+     Bei der Registrierung/Invitation-Aktivierung kann sich der User
+     beim Passwort vertippen. Kein Bestaetigungsfeld vorhanden.
+
+4.5  CSV-Export ohne Escaping (statistics_screen.dart)
+     --------------------------------------------------
+     entry.note wird direkt in CSV geschrieben. Enthaelt die Notiz
+     Semikolons oder Anfuehrungszeichen, ist die CSV-Datei kaputt.
+     -> Loesung: Felder mit Quotes escapen.
+
+4.6  Break-Minutes-Validierung unvollstaendig (entry_form_screen.dart)
+     -------------------------------------------------------------------
+     Nur negativer Wert wird geprueft. Kein Maximum-Check (z.B. > Arbeitszeit)
+     und kein Ganzzahl-Check.
+
+4.7  Settings: 0 Stunden erlaubt (settings_screen.dart)
+     ----------------------------------------------------
+     _hoursCtrl Validator erlaubt 0 Wochenstunden. Sollte > 0 sein.
+
+4.8  Fehlende Bestaetigungsdialoge fuer destruktive Aktionen
+     ---------------------------------------------------------
+     Loeschen von Standorten, Teams, Mitgliedern: Keine Confirm-Dialogs
+     sichtbar. User koennen versehentlich Daten loeschen.
+
+================================================================================
+5. MODELL-INKONSISTENZEN
+================================================================================
+
+5.1  Inkonsistente Empty-String-Behandlung
+     ----------------------------------------
+     ShiftTemplate: _normalizeNullable() -> leerer String wird null
+     SiteDefinition: _trimmedOrNull() -> leerer String wird null
+     WorkTemplate: _normalizeNote() -> leerer String wird null
+     TeamDefinition: KEINE Normalisierung -> leerer String bleibt erhalten
+     -> Loesung: Einheitliche Hilfsfunktion in allen Models nutzen.
+
+5.2  Inkonsistente copyWith-clear-Parameter
+     -----------------------------------------
+     ShiftTemplate.copyWith(): hat clearTeamId, clearSiteId, clearNotes
+     Shift.copyWith(): hat 6 clear*-Parameter
+     WorkEntry.copyWith(): hat 6 clear*-Parameter
+     UserSettings.copyWith(): hat KEINE clear-Parameter
+     -> Loesung: Einheitliches Pattern fuer alle Models mit nullable Feldern.
+
+5.3  Enum-Default-Werte verschlucken unbekannte Eingaben
+     -----------------------------------------------------
+     ShiftStatus.fromValue(): null/unbekannt -> planned (still)
+     AbsenceType.fromValue(): null/unbekannt -> vacation (still)
+     Neue Enum-Werte in Firestore werden silent als Default interpretiert.
+     -> Loesung: Logging bei unbekannten Werten, oder eigener "unknown" Enum-Wert.
+
+5.4  breakMinutes-Validierung nur in ShiftTemplate
+     ------------------------------------------------
+     ShiftTemplate hat _normalizeMinutes() fuer breakMinutes.
+     WorkEntry, Shift, WorkTemplate: KEINE solche Validierung.
+     Negative breakMinutes koennen in diese Models gelangen.
+     -> Loesung: Validierung in allen Models die breakMinutes haben.
+
+5.5  Ungenutzter Code: SiteDefinition.isValidGermanPostalCode()
+     -------------------------------------------------------------
+     Statische Methode existiert, wird aber nirgends aufgerufen.
+     PLZ-Feld wird nicht validiert.
+     -> Loesung: In fromMap()/fromFirestore() nutzen oder entfernen.
+
+================================================================================
+6. SICHERHEITS-HINWEISE
+================================================================================
+
+6.1  Cloud Functions ohne Rate-Limiting (functions/index.js)
+     ---------------------------------------------------------
+     Batch-Operationen haben kein Limit fuer die Anzahl der Dokumente.
+     Ein boesartiger Client koennte grosse Batches senden.
+     -> Loesung: Maximale Batch-Groesse in Cloud Functions pruefen.
+
+6.2  Hardcoded Test-Member (team_provider.dart)
+     ---------------------------------------------
+     peter@example.com ist als Test-Member im Offline-Modus hardcoded.
+     Wenn APP_DISABLE_AUTH versehentlich in Production aktiv ist, existiert
+     ein Test-User im System.
+     -> Hinweis: validateEnvironment() in app_config.dart sichert Release-Mode ab,
+        aber Debug-Builds auf echten Geraeten sind nicht geschuetzt.
+
+6.3  Token-Format nicht validiert (auth_service.dart)
+     --------------------------------------------------
+     idToken wird auf null geprueft, aber das Format wird nicht validiert.
+     Ein fehlerhaftes Token koennte zu unklaren Fehlern fuehren.
+
+6.4  Web-Persistence-Fehler still ignoriert (auth_service.dart)
+     ------------------------------------------------------------
+     Wenn setPersistence() auf Web fehlschlaegt, wird nur geloggt.
+     User denken sie sind eingeloggt, aber nach Page-Refresh sind sie raus.
+     -> Loesung: Fehler an UI weiterleiten.
+
+================================================================================
+7. ARCHITEKTUR-VERBESSERUNGEN
+================================================================================
+
+7.1  Dual-Serialization als groesster Wartungsaufwand
+     --------------------------------------------------
+     Jedes Model hat toMap() (snake_case) UND toFirestoreMap() (camelCase).
+     Bei 14+ Models ist das eine erhebliche Fehlerquelle und Wartungslast.
+     -> Vorschlag: Eine Serialization-Strategie waehlen (z.B. nur camelCase)
+        und SharedPreferences ebenfalls darauf umstellen. Oder json_serializable
+        / freezed mit konfigurierbarer Namenskonvention nutzen.
+
+7.2  Provider-Komplexitaet (work_provider.dart)
+     ---------------------------------------------
+     work_provider.dart ist extrem gross und komplex mit Clock-State,
+     Entry-Management, Subscriptions, Validation, Templates, und Overtime
+     in einer Klasse. Schwer zu testen und zu warten.
+     -> Vorschlag: Aufteilen in:
+        - ClockProvider (Stempeluhr-Logik)
+        - EntryProvider (CRUD fuer Eintraege)
+        - ValidationService (Validierungslogik)
+
+7.3  Kein Optimistic Locking
+     -------------------------
+     Kein Model hat ein Versions-/Timestamp-Feld fuer Concurrent Updates.
+     Wenn zwei Admins gleichzeitig ein Dokument bearbeiten, gewinnt der
+     letzte Schreiber ohne Warnung.
+     -> Vorschlag: updatedAt als Optimistic-Lock nutzen (bei Update pruefen
+        ob sich der Wert seit dem Lesen geaendert hat).
+
+7.4  Keine einheitliche Fehlerbehandlung
+     --------------------------------------
+     Manche Provider setzen _errorMessage, manche werfen Exceptions,
+     manche loggen nur. Kein konsistentes Pattern.
+     -> Vorschlag: Result-Type (Either/Result) oder einheitliches Error-Pattern.
+
+================================================================================
+8. ZUSAMMENFASSUNG
+================================================================================
+
+Behobene Befunde seit letzter Analyse:
+  [x] Zentrale Date/Num-Parser (Redundanz 1.1)
+  [x] Negative workedHours (Logik 2.1)
+  [x] Absence-Overlap End-Boundary (Logik 2.11)
+  [x] createdAt in Shift.toFirestoreMap (Logik 2.6)
+  [x] Night-Window-Deduplizierung (Redundanz 1.5)
+  [x] Public resolveRuleSet() (Redundanz 1.4)
+  [x] dart:html zu dart:js_interop Migration (Architektur 3.4)
+  [x] Ungenutzte Funktionen entfernt (Redundanz 1.7)
+  [x] Release-Mode Auth-Guard (Sicherheit 4.3)
+  [x] Granulares Permission-System (Sicherheit 4.1)
+
+Verbleibende / neue Befunde:
+  - 5 kritische Probleme (Race Conditions, nicht-atomare Operationen)
+  - 5 Probleme mit hoher Prioritaet (Dateninkonsistenz)
+  - 8 Probleme mittlerer Prioritaet (Zuverlaessigkeit)
+  - 8 Validierungsluecken in der UI
+  - 5 Modell-Inkonsistenzen
+  - 4 Sicherheitshinweise
+  - 4 Architektur-Verbesserungsvorschlaege
+
+Empfohlene Reihenfolge:
+  1. Race Conditions in Clock-In/Out und Subscriptions beheben (1.1, 1.2)
+  2. Validierungen in Entry-Form vervollstaendigen (4.1, 4.2)
+  3. createdAt in fehlenden Models ergaenzen (2.5)
+  4. Einheitliche Fehlerbehandlung einfuehren (7.4)
+  5. Dual-Serialization langfristig vereinheitlichen (7.1)
+
+================================================================================

@@ -1,0 +1,658 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function currentUserPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function hasProfile() {
+      return signedIn() && exists(currentUserPath());
+    }
+
+    function currentUser() {
+      return get(currentUserPath());
+    }
+
+    function hasUserProfile(uid) {
+      return exists(userPath(uid));
+    }
+
+    function userProfile(uid) {
+      return get(userPath(uid));
+    }
+
+    function dataField(data, field, legacyField) {
+      return field in data
+          ? data[field]
+          : (legacyField in data ? data[legacyField] : null);
+    }
+
+    function currentOrgId() {
+      return dataField(currentUser().data, 'orgId', 'org_id');
+    }
+
+    function dataOrgId(data) {
+      return dataField(data, 'orgId', 'org_id');
+    }
+
+    function dataIsActive(data) {
+      return dataField(data, 'isActive', 'is_active');
+    }
+
+    function isTruthy(value) {
+      return value == true
+          || (value is string && value.lower() == 'true')
+          || (value is int && value != 0)
+          || (value is float && value != 0.0);
+    }
+
+    function normalizedRoleValue(value) {
+      return value is string
+          ? (value.lower() == 'teamleiter' ? 'teamlead' : value.lower())
+          : '';
+    }
+
+    function roleIsAdminValue(value) {
+      return normalizedRoleValue(value) == 'admin';
+    }
+
+    function roleIsTeamLeadValue(value) {
+      return normalizedRoleValue(value) == 'teamlead';
+    }
+
+    function isActiveUser() {
+      return hasProfile() && isTruthy(dataIsActive(currentUser().data));
+    }
+
+    function isAdmin() {
+      return isActiveUser() && roleIsAdminValue(currentUser().data.role);
+    }
+
+    function defaultCanViewSchedule() {
+      return isActiveUser();
+    }
+
+    function defaultCanEditSchedule() {
+      return isActiveUser()
+          && (
+            roleIsAdminValue(currentUser().data.role)
+            || roleIsTeamLeadValue(currentUser().data.role)
+          );
+    }
+
+    function defaultCanViewTimeTracking() {
+      return isActiveUser();
+    }
+
+    function defaultCanEditTimeEntries() {
+      return isActiveUser();
+    }
+
+    function defaultCanViewReports() {
+      return isActiveUser();
+    }
+
+    function hasPermissionField(field) {
+      return 'permissions' in currentUser().data
+          && currentUser().data.permissions != null
+          && field in currentUser().data.permissions;
+    }
+
+    function permissionOrDefault(field, fallback) {
+      return hasPermissionField(field)
+          ? isTruthy(currentUser().data.permissions[field])
+          : fallback;
+    }
+
+    function defaultCanViewScheduleForRole(role) {
+      return true;
+    }
+
+    function defaultCanEditScheduleForRole(role) {
+      return roleIsAdminValue(role) || roleIsTeamLeadValue(role);
+    }
+
+    function defaultCanViewTimeTrackingForRole(role) {
+      return true;
+    }
+
+    function defaultCanEditTimeEntriesForRole(role) {
+      return true;
+    }
+
+    function defaultCanViewReportsForRole(role) {
+      return true;
+    }
+
+    function permissionValueFromData(data, field, fallback) {
+      return 'permissions' in data
+          && data.permissions != null
+          && field in data.permissions
+          ? isTruthy(data.permissions[field])
+          : fallback;
+    }
+
+    function dataCanViewSchedule(data) {
+      return permissionValueFromData(
+        data,
+        'canViewSchedule',
+        defaultCanViewScheduleForRole(data.role),
+      );
+    }
+
+    function dataCanEditSchedule(data) {
+      return permissionValueFromData(
+        data,
+        'canEditSchedule',
+        defaultCanEditScheduleForRole(data.role),
+      );
+    }
+
+    function dataCanViewTimeTracking(data) {
+      return permissionValueFromData(
+        data,
+        'canViewTimeTracking',
+        defaultCanViewTimeTrackingForRole(data.role),
+      );
+    }
+
+    function dataCanEditTimeEntries(data) {
+      return permissionValueFromData(
+        data,
+        'canEditTimeEntries',
+        defaultCanEditTimeEntriesForRole(data.role),
+      );
+    }
+
+    function dataCanViewReports(data) {
+      return permissionValueFromData(
+        data,
+        'canViewReports',
+        defaultCanViewReportsForRole(data.role),
+      );
+    }
+
+    function dataCanManageShifts(data) {
+      return isTruthy(dataIsActive(data)) && dataCanEditSchedule(data);
+    }
+
+    function userCanManageShifts(uid) {
+      return hasUserProfile(uid) && dataCanManageShifts(userProfile(uid).data);
+    }
+
+    function permissionsEquivalent(left, right) {
+      return dataCanViewSchedule(left) == dataCanViewSchedule(right)
+          && dataCanEditSchedule(left) == dataCanEditSchedule(right)
+          && dataCanViewTimeTracking(left) == dataCanViewTimeTracking(right)
+          && dataCanEditTimeEntries(left) == dataCanEditTimeEntries(right)
+          && dataCanViewReports(left) == dataCanViewReports(right);
+    }
+
+    function workRuleValueFromData(data, field, fallback) {
+      return 'workRuleSettings' in data
+          && data.workRuleSettings != null
+          && field in data.workRuleSettings
+          ? isTruthy(data.workRuleSettings[field])
+          : fallback;
+    }
+
+    function workRuleSettingsEquivalent(left, right) {
+      return workRuleValueFromData(left, 'enforceMinRestTime', true)
+              == workRuleValueFromData(right, 'enforceMinRestTime', true)
+          && workRuleValueFromData(left, 'enforceBreakAfterSixHours', true)
+              == workRuleValueFromData(
+                right,
+                'enforceBreakAfterSixHours',
+                true,
+              )
+          && workRuleValueFromData(left, 'enforceBreakAfterNineHours', true)
+              == workRuleValueFromData(
+                right,
+                'enforceBreakAfterNineHours',
+                true,
+              )
+          && workRuleValueFromData(left, 'enforceMaxDailyMinutes', true)
+              == workRuleValueFromData(
+                right,
+                'enforceMaxDailyMinutes',
+                true,
+              )
+          && workRuleValueFromData(left, 'enforceMinijobLimit', true)
+              == workRuleValueFromData(right, 'enforceMinijobLimit', true)
+          && workRuleValueFromData(left, 'warnDailyAverageExceeded', true)
+              == workRuleValueFromData(
+                right,
+                'warnDailyAverageExceeded',
+                true,
+              )
+          && workRuleValueFromData(left, 'warnForwardRotation', true)
+              == workRuleValueFromData(right, 'warnForwardRotation', true)
+          && workRuleValueFromData(left, 'warnOvertime', true)
+              == workRuleValueFromData(right, 'warnOvertime', true)
+          && workRuleValueFromData(left, 'warnSundayWork', true)
+              == workRuleValueFromData(right, 'warnSundayWork', true);
+    }
+
+    function canViewSchedule() {
+      return isAdmin()
+          || permissionOrDefault('canViewSchedule', defaultCanViewSchedule());
+    }
+
+    function canEditSchedule() {
+      return isAdmin()
+          || permissionOrDefault('canEditSchedule', defaultCanEditSchedule());
+    }
+
+    function canViewTimeTracking() {
+      return isAdmin()
+          || permissionOrDefault(
+            'canViewTimeTracking',
+            defaultCanViewTimeTracking(),
+          );
+    }
+
+    function canEditTimeEntries() {
+      return isAdmin()
+          || permissionOrDefault(
+            'canEditTimeEntries',
+            defaultCanEditTimeEntries(),
+          );
+    }
+
+    function canViewReports() {
+      return isAdmin()
+          || permissionOrDefault('canViewReports', defaultCanViewReports());
+    }
+
+    function canManageShifts() {
+      return isActiveUser() && canEditSchedule();
+    }
+
+    function canReviewAbsenceRequestData(data) {
+      return sameOrg(dataOrgId(data))
+          && canManageShifts()
+          && (
+            isAdmin()
+            || (
+              data.userId != request.auth.uid
+              && hasUserProfile(data.userId)
+              && !userCanManageShifts(data.userId)
+            )
+          );
+    }
+
+    function canEditOwnPendingAbsenceRequest(before, after) {
+      return sameOrg(dataOrgId(before))
+          && before.userId == request.auth.uid
+          && before.status == 'pending'
+          && after.orgId == before.orgId
+          && after.userId == before.userId
+          && after.employeeName == before.employeeName
+          && after.status == before.status
+          && after.reviewedByUid == before.reviewedByUid;
+    }
+
+    function canManageApprovedVacationRequestData(data) {
+      return sameOrg(dataOrgId(data))
+          && canManageShifts()
+          && data.type == 'vacation'
+          && data.status == 'approved'
+          && (
+            isAdmin()
+            || data.userId == request.auth.uid
+            || (
+              hasUserProfile(data.userId)
+              && !userCanManageShifts(data.userId)
+            )
+          );
+    }
+
+    function canEditManagedApprovedVacationRequest(before, after) {
+      return canManageApprovedVacationRequestData(before)
+          && after.orgId == before.orgId
+          && after.userId == before.userId
+          && after.employeeName == before.employeeName
+          && after.type == before.type
+          && after.status == before.status
+          && after.reviewedByUid == before.reviewedByUid;
+    }
+
+    function canDeleteOwnPendingAbsenceRequest(data) {
+      return sameOrg(dataOrgId(data))
+          && data.userId == request.auth.uid
+          && data.status == 'pending';
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function sameOrg(orgId) {
+      return isActiveUser() && currentOrgId() == orgId;
+    }
+
+    function inviteIdForCurrentUser() {
+      return request.auth.token.email.lower();
+    }
+
+    function ownInvitePath() {
+      return /databases/$(database)/documents/userInvites/$(inviteIdForCurrentUser());
+    }
+
+    function hasOwnInvite() {
+      return signedIn() && exists(ownInvitePath());
+    }
+
+    function ownInvite() {
+      return get(ownInvitePath());
+    }
+
+    match /users/{uid} {
+      allow read: if (signedIn() && isSelf(uid))
+          || (
+            isActiveUser()
+            && canManageShifts()
+            && dataOrgId(resource.data) == currentOrgId()
+          );
+
+      allow create: if isSelf(uid)
+          && signedIn()
+          && request.resource.data.email == request.auth.token.email
+          && isTruthy(dataIsActive(request.resource.data))
+          && hasOwnInvite()
+          && isTruthy(dataIsActive(ownInvite().data))
+          && dataOrgId(request.resource.data) == dataOrgId(ownInvite().data)
+          && normalizedRoleValue(request.resource.data.role)
+              == normalizedRoleValue(ownInvite().data.role)
+          && (
+            !('permissions' in ownInvite().data)
+            || permissionsEquivalent(
+              request.resource.data,
+              ownInvite().data,
+            )
+          );
+
+      allow update: if isActiveUser()
+          && (
+            (
+              isSelf(uid)
+              && dataOrgId(request.resource.data) == dataOrgId(resource.data)
+              && normalizedRoleValue(request.resource.data.role)
+                  == normalizedRoleValue(resource.data.role)
+              && request.resource.data.email == resource.data.email
+              && isTruthy(dataIsActive(request.resource.data))
+                  == isTruthy(dataIsActive(resource.data))
+              && permissionsEquivalent(
+                request.resource.data,
+                resource.data,
+              )
+              && workRuleSettingsEquivalent(
+                request.resource.data,
+                resource.data,
+              )
+            )
+            || (
+              isAdmin()
+              && dataOrgId(resource.data) == currentOrgId()
+              && dataOrgId(request.resource.data) == currentOrgId()
+            )
+          );
+
+      allow delete: if false;
+    }
+
+    match /userInvites/{inviteId} {
+      allow get: if isAdmin()
+          || (
+            signedIn()
+            && inviteId == inviteIdForCurrentUser()
+          );
+
+      allow list: if isAdmin();
+
+      allow create: if isAdmin()
+          && dataOrgId(request.resource.data) == currentOrgId();
+
+      allow update: if (
+            isAdmin()
+            && dataOrgId(resource.data) == currentOrgId()
+            && dataOrgId(request.resource.data) == currentOrgId()
+          ) || (
+            signedIn()
+            && inviteId == inviteIdForCurrentUser()
+            && dataOrgId(request.resource.data) == dataOrgId(resource.data)
+            && request.resource.data.email == resource.data.email
+            && request.resource.data.emailLower == resource.data.emailLower
+            && normalizedRoleValue(request.resource.data.role)
+                == normalizedRoleValue(resource.data.role)
+            && isTruthy(dataIsActive(request.resource.data))
+                == isTruthy(dataIsActive(resource.data))
+            && permissionsEquivalent(
+              request.resource.data,
+              resource.data,
+            )
+            && request.resource.data.acceptedByUid == request.auth.uid
+          );
+
+      allow delete: if isAdmin() && dataOrgId(resource.data) == currentOrgId();
+    }
+
+    match /organizations/{orgId} {
+      allow read: if sameOrg(orgId);
+      allow create, update: if isAdmin() && request.resource.data.name is string;
+      allow delete: if false;
+
+      match /workEntries/{entryId} {
+        allow read: if sameOrg(orgId)
+            && (
+              canManageShifts()
+              || (
+                resource.data.userId == request.auth.uid
+                && (canViewTimeTracking() || canViewReports())
+              )
+            );
+
+        allow create: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                request.resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            )
+            && request.resource.data.orgId == orgId;
+
+        allow update: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            )
+            && request.resource.data.orgId == orgId;
+
+        allow delete: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            );
+      }
+
+      match /workTemplates/{templateId} {
+        allow read: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            );
+
+        allow create: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                request.resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            )
+            && request.resource.data.orgId == orgId;
+
+        allow update: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            )
+            && request.resource.data.orgId == orgId;
+
+        allow delete: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            );
+      }
+
+      match /shiftTemplates/{templateId} {
+        allow read: if sameOrg(orgId)
+            && canManageShifts()
+            && resource.data.userId == request.auth.uid;
+
+        allow create: if sameOrg(orgId)
+            && canManageShifts()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.userId == request.auth.uid;
+
+        allow update: if sameOrg(orgId)
+            && canManageShifts()
+            && resource.data.userId == request.auth.uid
+            && request.resource.data.orgId == orgId
+            && request.resource.data.userId == request.auth.uid;
+
+        allow delete: if sameOrg(orgId)
+            && canManageShifts()
+            && resource.data.userId == request.auth.uid;
+      }
+
+      match /teams/{teamId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      match /shifts/{shiftId} {
+        allow read: if sameOrg(orgId)
+            && (
+              canManageShifts()
+              || (
+                resource.data.userId == request.auth.uid
+                && canViewSchedule()
+              )
+            );
+        allow create: if sameOrg(orgId)
+            && canManageShifts()
+            && request.resource.data.orgId == orgId;
+
+        allow update: if sameOrg(orgId)
+            && canManageShifts()
+            && request.resource.data.orgId == orgId;
+
+        allow delete: if sameOrg(orgId) && canManageShifts();
+      }
+
+      match /absenceRequests/{requestId} {
+        allow read: if sameOrg(orgId)
+            && (canManageShifts() || resource.data.userId == request.auth.uid);
+
+        allow create: if sameOrg(orgId)
+            && request.resource.data.userId == request.auth.uid
+            && request.resource.data.orgId == orgId;
+
+        allow update: if (
+              canReviewAbsenceRequestData(resource.data)
+              || canEditManagedApprovedVacationRequest(
+                resource.data,
+                request.resource.data,
+              )
+              || canEditOwnPendingAbsenceRequest(
+                resource.data,
+                request.resource.data,
+              )
+            )
+            && request.resource.data.orgId == orgId
+            && request.resource.data.userId == resource.data.userId;
+
+        allow delete: if (canManageShifts() && sameOrg(orgId))
+            || canDeleteOwnPendingAbsenceRequest(resource.data);
+      }
+
+      match /sites/{siteId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      match /qualifications/{qualificationId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      match /employmentContracts/{contractId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      match /employeeSiteAssignments/{assignmentId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      match /ruleSets/{ruleSetId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      match /travelTimeRules/{ruleId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+    }
+  }
+}
