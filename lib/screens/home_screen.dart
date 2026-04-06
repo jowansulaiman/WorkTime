@@ -4329,6 +4329,7 @@ class _PunchClockSheet extends StatelessWidget {
     final provider = context.watch<WorkProvider>();
     final team = context.watch<TeamProvider>();
     final currentUser = provider.currentUser;
+    final pagePadding = MobileBreakpoints.screenPadding(context);
 
     if (currentUser == null) {
       return const SizedBox(
@@ -4345,7 +4346,12 @@ class _PunchClockSheet extends StatelessWidget {
     final lastClockEntry = _resolveLastClockEntry(provider.entries);
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: EdgeInsets.fromLTRB(
+        pagePadding.left,
+        8,
+        pagePadding.right,
+        24,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -4578,266 +4584,478 @@ class _PunchClockHero extends StatelessWidget {
           ),
         ],
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stackHeader = constraints.maxWidth < 700;
+          final stackStats = constraints.maxWidth < 520;
+          final compact = constraints.maxWidth < 420;
+          final horizontalPadding = compact ? 16.0 : 20.0;
+          final statusText = isClockedIn
+              ? (provider.isClockBackedByEntry ? 'Eintrag laeuft' : 'Im Dienst')
+              : 'Nicht im Dienst';
+          final helperText = isClockedIn
+              ? (provider.isClockBackedByEntry
+                  ? 'Zeitfenster aus Eintrag seit $startLabel aktiv'
+                  : 'Laufende Zeit seit $startLabel')
+              : activeShift == null
+                  ? 'Check-in nur waehrend einer aktiven Schicht moeglich'
+                  : lastClockEntry == null
+                      ? 'Bereit fuer den naechsten Check-in'
+                      : 'Letzter Einsatz endete um $endLabel';
+          final breakSourceLabel = isClockedIn
+              ? (provider.isClockBackedByEntry ? 'Aus Zeit' : 'Automatisch')
+              : 'Letzter Eintrag';
+
+          return Padding(
+            padding: EdgeInsets.all(horizontalPadding),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Column(
+                if (stackHeader) ...[
+                  _PunchClockHeaderInfo(
+                    todayLabel: todayLabel,
+                    siteLabel: siteLabel,
+                    hasSiteAssignment: hasSiteAssignment,
+                    activeShift: activeShift,
+                    isClockedIn: isClockedIn,
+                    canClock: canClock,
+                    isClockBackedByEntry: provider.isClockBackedByEntry,
+                  ),
+                  if (codeLabel.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _PunchClockCodeBadge(label: codeLabel),
+                  ],
+                ] else
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Heute',
-                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                              letterSpacing: 0.5,
-                            ),
+                      Expanded(
+                        child: _PunchClockHeaderInfo(
+                          todayLabel: todayLabel,
+                          siteLabel: siteLabel,
+                          hasSiteAssignment: hasSiteAssignment,
+                          activeShift: activeShift,
+                          isClockedIn: isClockedIn,
+                          canClock: canClock,
+                          isClockBackedByEntry: provider.isClockBackedByEntry,
+                        ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        todayLabel,
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
-                      ),
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          _PunchClockChip(
-                            icon: Icons.storefront_outlined,
-                            label: siteLabel,
-                            active: hasSiteAssignment,
-                          ),
-                          _PunchClockChip(
-                            icon: Icons.event_available_rounded,
-                            label: activeShift == null
-                                ? 'Keine aktive Schicht'
-                                : _formatShiftWindow(activeShift!),
-                            active: activeShift != null,
-                          ),
-                          _PunchClockChip(
-                            icon: Icons.sync_rounded,
-                            label: isClockedIn
-                                ? (provider.isClockBackedByEntry
-                                    ? 'Eintrag aktiv'
-                                    : 'Aktiv')
-                                : canClock
-                                    ? 'Bereit'
-                                    : 'Gesperrt',
-                            active: isClockedIn || canClock,
-                          ),
-                        ],
-                      ),
+                      if (codeLabel.isNotEmpty) ...[
+                        const SizedBox(width: 14),
+                        _PunchClockCodeBadge(label: codeLabel),
+                      ],
                     ],
                   ),
-                ),
-                if (codeLabel.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colorScheme.surface.withValues(alpha: 0.88),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Text(
-                      codeLabel,
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
+                const SizedBox(height: 18),
+                Container(
+                  padding: EdgeInsets.all(compact ? 16 : 18),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surface.withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(24),
                   ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                color: colorScheme.surface.withValues(alpha: 0.92),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Column(
-                children: [
-                  Row(
+                  child: Column(
                     children: [
-                      Expanded(
-                        child: _ClockStatTile(
+                      if (stackStats) ...[
+                        _ClockStatTile(
                           label: 'Start',
                           time: startLabel,
                           icon: Icons.login_rounded,
                           color: appColors.success,
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _ClockStatTile(
+                        const SizedBox(height: 10),
+                        _ClockStatTile(
                           label: 'Ende',
                           time: endLabel,
                           icon: Icons.logout_rounded,
                           color: colorScheme.error,
                         ),
+                      ] else
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _ClockStatTile(
+                                label: 'Start',
+                                time: startLabel,
+                                icon: Icons.login_rounded,
+                                color: appColors.success,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _ClockStatTile(
+                                label: 'Ende',
+                                time: endLabel,
+                                icon: Icons.logout_rounded,
+                                color: colorScheme.error,
+                              ),
+                            ),
+                          ],
+                        ),
+                      const SizedBox(height: 14),
+                      _PunchClockBreakCard(
+                        breakLabel: breakLabel,
+                        sourceLabel: breakSourceLabel,
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  Container(
-                    width: double.infinity,
+                ),
+                const SizedBox(height: 14),
+                Center(
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 340),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 12,
+                      horizontal: 18,
+                      vertical: 10,
                     ),
                     decoration: BoxDecoration(
-                      color: colorScheme.surfaceContainerHighest
-                          .withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(18),
+                      color: colorScheme.surface.withValues(alpha: 0.8),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: isClockedIn
+                            ? statusColor.withValues(alpha: 0.3)
+                            : colorScheme.outlineVariant.withValues(alpha: 0.5),
+                      ),
                     ),
                     child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (isClockedIn)
+                          TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0.4, end: 1.0),
+                            duration: const Duration(milliseconds: 800),
+                            curve: Curves.easeInOut,
+                            builder: (context, val, child) {
+                              return Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: statusColor.withValues(alpha: val),
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: statusColor.withValues(
+                                        alpha: val * 0.5,
+                                      ),
+                                      blurRadius: 8 * val,
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          )
+                        else
+                          Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: statusColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Text(
+                            statusText,
+                            textAlign: TextAlign.center,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              letterSpacing: 0.4,
+                              fontWeight: FontWeight.w600,
+                              color: isClockedIn
+                                  ? colorScheme.onSurface
+                                  : colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Center(
+                  child: Column(
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        constraints: const BoxConstraints(maxWidth: 360),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: compact ? 18 : 24,
+                          vertical: compact ? 10 : 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surface.withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(28),
+                          border: Border.all(
+                            color: colorScheme.outlineVariant.withValues(
+                              alpha: 0.4,
+                            ),
+                          ),
+                        ),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            durationLabel,
+                            style: theme.textTheme.displayMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -1.2,
+                              color: colorScheme.onSurface,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 420),
+                        child: Text(
+                          helperText,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                _SlideClockAction(
+                  enabled: canClock,
+                  label: isClockedIn
+                      ? 'Zum Ausstempeln ziehen'
+                      : 'Zum Einstempeln ziehen',
+                  color: isClockedIn
+                      ? colorScheme.errorContainer
+                      : appColors.successContainer,
+                  textColor: isClockedIn
+                      ? colorScheme.onErrorContainer
+                      : appColors.onSuccessContainer,
+                  knobColor:
+                      isClockedIn ? colorScheme.error : appColors.success,
+                  onCompleted: canClock ? onPrimaryAction : null,
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: canClock ? onQrAction : null,
+                    icon: const Icon(Icons.qr_code_2_rounded),
+                    label: Text(
+                      isClockedIn ? 'QR-Ausstempeln' : 'QR-Einstempeln',
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: appColors.successContainer,
+                      foregroundColor: appColors.onSuccessContainer,
+                      minimumSize: const Size.fromHeight(56),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _LocationStatusCard(
+                  siteAssignment: siteAssignment,
+                  site: site,
+                  hasSiteAssignment: hasSiteAssignment,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _PunchClockHeaderInfo extends StatelessWidget {
+  const _PunchClockHeaderInfo({
+    required this.todayLabel,
+    required this.siteLabel,
+    required this.hasSiteAssignment,
+    required this.activeShift,
+    required this.isClockedIn,
+    required this.canClock,
+    required this.isClockBackedByEntry,
+  });
+
+  final String todayLabel;
+  final String siteLabel;
+  final bool hasSiteAssignment;
+  final Shift? activeShift;
+  final bool isClockedIn;
+  final bool canClock;
+  final bool isClockBackedByEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Heute',
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                letterSpacing: 0.5,
+              ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          todayLabel,
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _PunchClockChip(
+              icon: Icons.storefront_outlined,
+              label: siteLabel,
+              active: hasSiteAssignment,
+            ),
+            _PunchClockChip(
+              icon: Icons.event_available_rounded,
+              label: activeShift == null
+                  ? 'Keine aktive Schicht'
+                  : _formatShiftWindow(activeShift!),
+              active: activeShift != null,
+            ),
+            _PunchClockChip(
+              icon: Icons.sync_rounded,
+              label: isClockedIn
+                  ? (isClockBackedByEntry ? 'Eintrag aktiv' : 'Aktiv')
+                  : canClock
+                      ? 'Bereit'
+                      : 'Gesperrt',
+              active: isClockedIn || canClock,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _PunchClockCodeBadge extends StatelessWidget {
+  const _PunchClockCodeBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 260),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: colorScheme.surface.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Text(
+        label,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+      ),
+    );
+  }
+}
+
+class _PunchClockBreakCard extends StatelessWidget {
+  const _PunchClockBreakCard({
+    required this.breakLabel,
+    required this.sourceLabel,
+  });
+
+  final String breakLabel;
+  final String sourceLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 420;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: compact
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
                         Icon(
                           Icons.coffee_outlined,
                           color: colorScheme.onSurfaceVariant,
                         ),
                         const SizedBox(width: 10),
-                        Text(
-                          breakLabel,
-                          style:
-                              Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          isClockedIn
-                              ? (provider.isClockBackedByEntry
-                                  ? 'Aus Zeit'
-                                  : 'Automatisch')
-                              : 'Letzter Eintrag',
-                          style:
-                              Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
+                        Expanded(
+                          child: Text(
+                            breakLabel,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
                         ),
                       ],
                     ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Center(
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                decoration: BoxDecoration(
-                  color: colorScheme.surface.withValues(alpha: 0.72),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
+                    const SizedBox(height: 8),
+                    Text(
+                      sourceLabel,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                )
+              : Row(
                   children: [
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
-                      ),
+                    Icon(
+                      Icons.coffee_outlined,
+                      color: colorScheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        breakLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
                     Text(
-                      isClockedIn
-                          ? (provider.isClockBackedByEntry
-                              ? 'Eintrag laeuft'
-                              : 'Im Dienst')
-                          : 'Nicht im Dienst',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            letterSpacing: 0.4,
-                            fontWeight: FontWeight.w600,
+                      sourceLabel,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: colorScheme.onSurfaceVariant,
                           ),
                     ),
                   ],
                 ),
-              ),
-            ),
-            const SizedBox(height: 18),
-            Center(
-              child: Column(
-                children: [
-                  Text(
-                    durationLabel,
-                    style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                          fontWeight: FontWeight.w500,
-                          color: colorScheme.onSurface,
-                        ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    isClockedIn
-                        ? (provider.isClockBackedByEntry
-                            ? 'Zeitfenster aus Eintrag seit $startLabel aktiv'
-                            : 'Laufende Zeit seit $startLabel')
-                        : activeShift == null
-                            ? 'Check-in nur waehrend einer aktiven Schicht moeglich'
-                            : lastClockEntry == null
-                                ? 'Bereit fuer den naechsten Check-in'
-                                : 'Letzter Einsatz endete um $endLabel',
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
-            _SlideClockAction(
-              enabled: canClock,
-              label: isClockedIn
-                  ? 'Zum Ausstempeln ziehen'
-                  : 'Zum Einstempeln ziehen',
-              color: isClockedIn
-                  ? colorScheme.errorContainer
-                  : appColors.successContainer,
-              textColor: isClockedIn
-                  ? colorScheme.onErrorContainer
-                  : appColors.onSuccessContainer,
-              knobColor: isClockedIn ? colorScheme.error : appColors.success,
-              onCompleted: canClock ? onPrimaryAction : null,
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: canClock ? onQrAction : null,
-                icon: const Icon(Icons.qr_code_2_rounded),
-                label: Text(isClockedIn ? 'QR-Ausstempeln' : 'QR-Einstempeln'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: appColors.successContainer,
-                  foregroundColor: appColors.onSuccessContainer,
-                  minimumSize: const Size.fromHeight(56),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            _LocationStatusCard(
-              siteAssignment: siteAssignment,
-              site: site,
-              hasSiteAssignment: hasSiteAssignment,
-            ),
-          ],
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -4858,30 +5076,39 @@ class _PunchClockChip extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final appColors = theme.appColors;
+    final width = MediaQuery.sizeOf(context).width;
     final background = active
         ? appColors.successContainer
         : colorScheme.surface.withValues(alpha: 0.9);
     final foreground =
         active ? appColors.onSuccessContainer : colorScheme.onSurfaceVariant;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 18, color: foreground),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: foreground,
-                  fontWeight: FontWeight.w600,
-                ),
-          ),
-        ],
+    final maxChipWidth = width < 480 ? width - 96 : 320.0;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxChipWidth),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: foreground),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: foreground,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -4906,37 +5133,52 @@ class _ClockStatTile extends StatelessWidget {
         ThemeData.estimateBrightnessForColor(color) == Brightness.dark
             ? Colors.white
             : Theme.of(context).colorScheme.onSurface;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                letterSpacing: 0.5,
-              ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Icon(icon, color: iconColor),
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.38),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(14),
             ),
-            const SizedBox(width: 10),
-            Text(
-              time,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+            child: Icon(icon, color: iconColor),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                        letterSpacing: 0.5,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    time,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                   ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -4986,28 +5228,51 @@ class _SlideClockActionState extends State<_SlideClockAction> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        const knobSize = 52.0;
+        final compact = width < 390;
+        final displayLabel = compact
+            ? (widget.label.contains('Aus') ? 'Ausstempeln' : 'Einstempeln')
+            : widget.label;
+        const knobSize = 56.0;
         final maxTravel = width - knobSize - 8;
         final left = 4 + maxTravel * _progress.clamp(0.0, 1.0);
         return Opacity(
           opacity: widget.enabled ? 1 : 0.55,
           child: Container(
-            height: 60,
+            height: 64,
             decoration: BoxDecoration(
               color: widget.color,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(32),
+              border: Border.all(
+                color: widget.color.withValues(alpha: 0.8),
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: widget.color.withValues(alpha: 0.15),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
             child: Stack(
               alignment: Alignment.center,
               children: [
                 Center(
-                  child: Text(
-                    _busy ? 'BITTE WARTEN...' : widget.label,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: widget.textColor,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.6,
-                        ),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: compact ? 70 : 82,
+                    ),
+                    child: Text(
+                      _busy ? 'BITTE WARTEN...' : displayLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: widget.textColor,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8,
+                          ),
+                    ),
                   ),
                 ),
                 Positioned(
@@ -5052,18 +5317,19 @@ class _SlideClockActionState extends State<_SlideClockAction> {
                       height: knobSize,
                       decoration: BoxDecoration(
                         color: widget.knobColor,
-                        borderRadius: BorderRadius.circular(16),
+                        shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: widget.knobColor.withValues(alpha: 0.28),
-                            blurRadius: 18,
-                            offset: const Offset(0, 8),
+                            color: widget.knobColor.withValues(alpha: 0.35),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
                           ),
                         ],
                       ),
                       child: Icon(
-                        _busy ? Icons.more_horiz : Icons.arrow_forward_rounded,
+                        _busy ? Icons.more_horiz : Icons.double_arrow_rounded,
                         color: knobIconColor,
+                        size: 26,
                       ),
                     ),
                   ),
@@ -5093,143 +5359,170 @@ class _LocationStatusCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final appColors = theme.appColors;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colorScheme.surface.withValues(alpha: 0.9),
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 430;
+        return Container(
+          padding: EdgeInsets.all(compact ? 12 : 14),
+          decoration: BoxDecoration(
+            color: colorScheme.surface.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Standort',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              const Spacer(),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: (hasSiteAssignment
-                          ? appColors.successContainer
-                          : colorScheme.errorContainer)
-                      .withValues(alpha: 0.8),
-                  borderRadius: BorderRadius.circular(999),
+              if (compact) ...[
+                Text(
+                  'Standort',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-                child: Text(
-                  hasSiteAssignment ? 'Standort aktiv' : 'Standort fehlt',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: hasSiteAssignment
-                            ? appColors.onSuccessContainer
-                            : colorScheme.error,
+                const SizedBox(height: 10),
+                _LocationStatusBadge(hasSiteAssignment: hasSiteAssignment),
+              ] else
+                Row(
+                  children: [
+                    Text(
+                      'Standort',
+                      style: theme.textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
+                    ),
+                    const Spacer(),
+                    _LocationStatusBadge(hasSiteAssignment: hasSiteAssignment),
+                  ],
+                ),
+              const SizedBox(height: 10),
+              Text(
+                siteAssignment?.siteName ??
+                    'Kein Standort fuer die Stempeluhr zugewiesen.',
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (site != null &&
+                  (site!.displayCode.isNotEmpty ||
+                      (site!.federalState?.trim().isNotEmpty ?? false) ||
+                      site!.displayAddress.isNotEmpty ||
+                      site!.coordinateLabel.isNotEmpty)) ...[
+                const SizedBox(height: 4),
+                Text(
+                  [
+                    if (site!.displayCode.isNotEmpty) site!.displayCode,
+                    if (site!.federalState?.trim().isNotEmpty ?? false)
+                      site!.federalState!,
+                    if (site!.displayAddress.isNotEmpty) site!.displayAddress,
+                    if (site!.coordinateLabel.isNotEmpty)
+                      'GPS ${site!.coordinateLabel}',
+                  ].join(' · '),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 4),
+              Text(
+                hasSiteAssignment
+                    ? 'Standortpruefung ist fuer ${siteAssignment!.siteName} vorbereitet.'
+                    : 'Bitte in der Teamverwaltung einen Primaerstandort hinterlegen.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 14),
+              AspectRatio(
+                aspectRatio: compact ? 1.2 : 1.55,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    gradient: LinearGradient(
+                      colors: [
+                        appColors.successContainer.withValues(alpha: 0.82),
+                        colorScheme.secondaryContainer.withValues(alpha: 0.72),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                  ),
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _MapLikePainter(
+                            lineColor: colorScheme.outlineVariant,
+                            accent: appColors.info,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: const Alignment(0.05, 0.08),
+                        child: Container(
+                          width: compact ? 96 : 120,
+                          height: compact ? 96 : 120,
+                          decoration: BoxDecoration(
+                            color: appColors.info.withValues(alpha: 0.18),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: const Alignment(0.05, 0.08),
+                        child: Container(
+                          width: 18,
+                          height: 18,
+                          decoration: BoxDecoration(
+                            color: appColors.info,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: const Alignment(0.05, 0.08),
+                        child: Icon(
+                          Icons.location_on_rounded,
+                          color: appColors.onInfo,
+                          size: 16,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          Text(
-            siteAssignment?.siteName ??
-                'Kein Standort fuer die Stempeluhr zugewiesen.',
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-          ),
-          if (site != null &&
-              (site!.displayCode.isNotEmpty ||
-                  (site!.federalState?.trim().isNotEmpty ?? false) ||
-                  site!.displayAddress.isNotEmpty ||
-                  site!.coordinateLabel.isNotEmpty)) ...[
-            const SizedBox(height: 4),
-            Text(
-              [
-                if (site!.displayCode.isNotEmpty) site!.displayCode,
-                if (site!.federalState?.trim().isNotEmpty ?? false)
-                  site!.federalState!,
-                if (site!.displayAddress.isNotEmpty) site!.displayAddress,
-                if (site!.coordinateLabel.isNotEmpty)
-                  'GPS ${site!.coordinateLabel}',
-              ].join(' · '),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
+        );
+      },
+    );
+  }
+}
+
+class _LocationStatusBadge extends StatelessWidget {
+  const _LocationStatusBadge({required this.hasSiteAssignment});
+
+  final bool hasSiteAssignment;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final appColors = Theme.of(context).appColors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: (hasSiteAssignment
+                ? appColors.successContainer
+                : colorScheme.errorContainer)
+            .withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        hasSiteAssignment ? 'Standort aktiv' : 'Standort fehlt',
+        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: hasSiteAssignment
+                  ? appColors.onSuccessContainer
+                  : colorScheme.error,
+              fontWeight: FontWeight.bold,
             ),
-          ],
-          const SizedBox(height: 4),
-          Text(
-            hasSiteAssignment
-                ? 'Standortpruefung ist fuer ${siteAssignment!.siteName} vorbereitet.'
-                : 'Bitte in der Teamverwaltung einen Primaerstandort hinterlegen.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-          ),
-          const SizedBox(height: 14),
-          AspectRatio(
-            aspectRatio: 1.55,
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                gradient: LinearGradient(
-                  colors: [
-                    appColors.successContainer.withValues(alpha: 0.82),
-                    colorScheme.secondaryContainer.withValues(alpha: 0.72),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: _MapLikePainter(
-                        lineColor: colorScheme.outlineVariant,
-                        accent: appColors.info,
-                      ),
-                    ),
-                  ),
-                  Align(
-                    alignment: const Alignment(0.05, 0.08),
-                    child: Container(
-                      width: 120,
-                      height: 120,
-                      decoration: BoxDecoration(
-                        color: appColors.info.withValues(alpha: 0.18),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                  Align(
-                    alignment: const Alignment(0.05, 0.08),
-                    child: Container(
-                      width: 18,
-                      height: 18,
-                      decoration: BoxDecoration(
-                        color: appColors.info,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                  Align(
-                    alignment: const Alignment(0.05, 0.08),
-                    child: Icon(
-                      Icons.location_on_rounded,
-                      color: appColors.onInfo,
-                      size: 16,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

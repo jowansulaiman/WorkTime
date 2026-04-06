@@ -152,6 +152,11 @@ class ScheduleProvider extends ChangeNotifier {
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
 
+  /// Im Hybrid-Modus werden Schichten, Vorlagen und Abwesenheiten lokal
+  /// gespeichert, da Firestore-Schichtoperationen das Pay-as-you-go-Abo
+  /// erfordern. Diese Property fasst local und hybrid zusammen.
+  bool get _schedulesUseLocalStorage => usesLocalStorage || usesHybridStorage;
+
   void updateReferenceData({
     required List<AppUserProfile> members,
     required List<EmploymentContract> contracts,
@@ -354,23 +359,15 @@ class ScheduleProvider extends ChangeNotifier {
         );
 
         for (final occurrence in occurrences) {
-          final localShift = occurrence.copyWith(
-            id: occurrence.id ?? _nextLocalId('shift'),
+          _upsertLocalShift(
+            occurrence.copyWith(
+              id: occurrence.id ?? _nextLocalId('shift'),
+            ),
           );
-          final index =
-              _localShifts.indexWhere((item) => item.id == localShift.id);
-          if (index == -1) {
-            _localShifts.add(localShift);
-          } else {
-            _localShifts[index] = localShift;
-          }
         }
       }
 
-      await DatabaseService.saveLocalShifts(
-        _localShifts,
-        scope: _localScope,
-      );
+      await _persistLocalShifts();
       _applyLocalState();
       notifyListeners();
       return;
@@ -385,7 +382,23 @@ class ScheduleProvider extends ChangeNotifier {
           ),
         )
         .toList(growable: false);
-    await _firestoreService.saveShiftBatch(occurrences);
+    try {
+      await _firestoreService.saveShiftBatch(occurrences);
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      for (final occurrence in occurrences) {
+        _upsertLocalShift(
+          occurrence.copyWith(
+            id: occurrence.id ?? _nextLocalId('shift'),
+          ),
+        );
+      }
+      await _persistLocalShifts();
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   Future<void> saveShiftTemplate(ShiftTemplate template) async {
@@ -400,29 +413,32 @@ class ScheduleProvider extends ChangeNotifier {
         orgId: currentUser.orgId,
         userId: currentUser.uid,
       );
-      final index = _localShiftTemplates.indexWhere(
-        (item) => item.id == localTemplate.id,
-      );
-      if (index == -1) {
-        _localShiftTemplates.add(localTemplate);
-      } else {
-        _localShiftTemplates[index] = localTemplate;
-      }
-      await DatabaseService.saveLocalShiftTemplates(
-        _localShiftTemplates,
-        scope: _localScope,
-      );
+      _upsertLocalShiftTemplate(localTemplate);
+      await _persistLocalShiftTemplates();
       _applyLocalState();
       notifyListeners();
       return;
     }
 
-    await _firestoreService.saveShiftTemplate(
-      template.copyWith(
-        orgId: currentUser.orgId,
-        userId: currentUser.uid,
-      ),
+    final preparedTemplate = template.copyWith(
+      orgId: currentUser.orgId,
+      userId: currentUser.uid,
     );
+    try {
+      await _firestoreService.saveShiftTemplate(preparedTemplate);
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      _upsertLocalShiftTemplate(
+        preparedTemplate.copyWith(
+          id: preparedTemplate.id ?? _nextLocalId('shift-template'),
+        ),
+      );
+      await _persistLocalShiftTemplates();
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   Future<void> deleteShiftTemplate(String id) async {
@@ -792,26 +808,30 @@ class ScheduleProvider extends ChangeNotifier {
       final localRequest = requestWithContext.copyWith(
         id: requestWithContext.id ?? _nextLocalId('absence'),
       );
-      final index = _localAbsenceRequests.indexWhere(
-        (item) => item.id == localRequest.id,
-      );
-      if (index == -1) {
-        _localAbsenceRequests.add(localRequest);
-      } else {
-        _localAbsenceRequests[index] = localRequest;
-      }
-      await DatabaseService.saveLocalAbsenceRequests(
-        _localAbsenceRequests,
-        scope: _localScope,
-      );
+      _upsertLocalAbsenceRequest(localRequest);
+      await _persistLocalAbsenceRequests();
       _applyLocalState();
       notifyListeners();
       return;
     }
 
-    await _firestoreService.saveAbsenceRequest(
-      requestWithContext,
-    );
+    try {
+      await _firestoreService.saveAbsenceRequest(
+        requestWithContext,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      _upsertLocalAbsenceRequest(
+        requestWithContext.copyWith(
+          id: requestWithContext.id ?? _nextLocalId('absence'),
+        ),
+      );
+      await _persistLocalAbsenceRequests();
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   Future<void> deleteAbsenceRequest(String requestId) async {
@@ -879,21 +899,42 @@ class ScheduleProvider extends ChangeNotifier {
         status: status,
         reviewedByUid: currentUser.uid,
       );
-      await DatabaseService.saveLocalAbsenceRequests(
-        _localAbsenceRequests,
-        scope: _localScope,
-      );
+      await _persistLocalAbsenceRequests();
       _applyLocalState();
       notifyListeners();
       return;
     }
 
-    await _firestoreService.reviewAbsenceRequest(
-      orgId: currentUser.orgId,
-      requestId: requestId,
-      status: status,
-      reviewerUid: currentUser.uid,
-    );
+    try {
+      await _firestoreService.reviewAbsenceRequest(
+        orgId: currentUser.orgId,
+        requestId: requestId,
+        status: status,
+        reviewerUid: currentUser.uid,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      final index =
+          _localAbsenceRequests.indexWhere((item) => item.id == requestId);
+      if (index == -1) {
+        _upsertLocalAbsenceRequest(
+          request.copyWith(
+            status: status,
+            reviewedByUid: currentUser.uid,
+          ),
+        );
+      } else {
+        _localAbsenceRequests[index] = _localAbsenceRequests[index].copyWith(
+          status: status,
+          reviewedByUid: currentUser.uid,
+        );
+      }
+      await _persistLocalAbsenceRequests();
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   AbsenceRequest? _findAbsenceRequestById(String requestId) {
@@ -1275,23 +1316,41 @@ class ScheduleProvider extends ChangeNotifier {
       return;
     }
 
-    final shifts = _localShifts
-        .where((shift) => shift.orgId == currentUser.orgId)
-        .toList(growable: false);
-    if (shifts.isNotEmpty) {
-      await _firestoreService.saveShiftBatch(shifts);
-    }
+    if (currentUser.canManageShifts) {
+      final shifts = _localShifts
+          .where((shift) => shift.orgId == currentUser.orgId)
+          .toList(growable: false);
+      if (shifts.isNotEmpty) {
+        try {
+          await _firestoreService.saveShiftBatch(shifts);
+        } catch (error) {
+          debugPrint('syncLocalStateToCloud(schedule): Schichten konnten '
+              'nicht geschrieben werden: $error');
+        }
+      }
 
-    for (final template in _localShiftTemplates.where(
-      (item) => item.orgId == currentUser.orgId,
-    )) {
-      await _firestoreService.saveShiftTemplate(template);
+      for (final template in _localShiftTemplates.where(
+        (item) => item.orgId == currentUser.orgId,
+      )) {
+        try {
+          await _firestoreService.saveShiftTemplate(template);
+        } catch (error) {
+          debugPrint('syncLocalStateToCloud(schedule): Schichtvorlage '
+              'konnte nicht geschrieben werden: $error');
+        }
+      }
     }
 
     for (final request in _localAbsenceRequests.where(
-      (item) => item.orgId == currentUser.orgId,
+      (item) =>
+          item.orgId == currentUser.orgId && item.userId == currentUser.uid,
     )) {
-      await _firestoreService.saveAbsenceRequest(request);
+      try {
+        await _firestoreService.saveAbsenceRequest(request);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud(schedule): Abwesenheitsantrag '
+            'konnte nicht geschrieben werden: $error');
+      }
     }
   }
 
@@ -1316,16 +1375,10 @@ class ScheduleProvider extends ChangeNotifier {
     _loading = true;
     _safeNotify();
 
-    await _shiftsSubscription?.cancel();
-    await _absenceSubscription?.cancel();
-    await _allAbsenceSubscription?.cancel();
-    await _templatesSubscription?.cancel();
-    if (!usesHybridStorage) {
-      _shifts = [];
-      _shiftTemplates = [];
-      _absenceRequests = [];
-      _allAbsenceRequests = [];
-    }
+    final oldShiftsSub = _shiftsSubscription;
+    final oldAbsenceSub = _absenceSubscription;
+    final oldAllAbsenceSub = _allAbsenceSubscription;
+    final oldTemplatesSub = _templatesSubscription;
 
     final range = _currentRange();
     final filterUserId =
@@ -1341,6 +1394,7 @@ class ScheduleProvider extends ChangeNotifier {
         userId: filterUserId,
       )
           .listen((items) {
+        oldShiftsSub?.cancel();
         _shifts = items;
         _loading = false;
         _errorMessage = null;
@@ -1356,11 +1410,14 @@ class ScheduleProvider extends ChangeNotifier {
         }
         _safeNotify();
       }, onError: (Object error) {
+        oldShiftsSub?.cancel();
         _errorMessage = 'Fehler beim Laden der Schichten: $error';
+        _shifts = [];
         _loading = false;
         _safeNotify();
       });
     } else {
+      oldShiftsSub?.cancel();
       _loading = false;
       _errorMessage = null;
     }
@@ -1372,16 +1429,20 @@ class ScheduleProvider extends ChangeNotifier {
         userId: currentUser.uid,
       )
           .listen((items) {
+        oldTemplatesSub?.cancel();
         _shiftTemplates = items;
         if (usesHybridStorage) {
           unawaited(_storeHybridShiftTemplatesSnapshot(items));
         }
         _safeNotify();
       }, onError: (Object error) {
+        oldTemplatesSub?.cancel();
         debugPrint(
           'ScheduleProvider: Fehler beim Laden der Schichtvorlagen: $error',
         );
       });
+    } else {
+      oldTemplatesSub?.cancel();
     }
 
     _allAbsenceSubscription = _firestoreService
@@ -1390,12 +1451,14 @@ class ScheduleProvider extends ChangeNotifier {
       userId: currentUser.canManageShifts ? null : currentUser.uid,
     )
         .listen((items) {
+      oldAllAbsenceSub?.cancel();
       _allAbsenceRequests = items;
       if (usesHybridStorage) {
         unawaited(_storeHybridAbsenceRequestsSnapshot(items));
       }
       _safeNotify();
     }, onError: (Object error) {
+      oldAllAbsenceSub?.cancel();
       debugPrint(
           'ScheduleProvider: Fehler beim Laden der kompletten Abwesenheiten: $error');
     });
@@ -1408,11 +1471,15 @@ class ScheduleProvider extends ChangeNotifier {
       userId: filterUserId,
     )
         .listen((items) {
+      oldAbsenceSub?.cancel();
       _absenceRequests = items;
       _safeNotify();
     }, onError: (Object error) {
+      oldAbsenceSub?.cancel();
       debugPrint(
           'ScheduleProvider: Fehler beim Laden der Abwesenheiten: $error');
+      _absenceRequests = [];
+      _safeNotify();
     });
   }
 
@@ -1503,7 +1570,18 @@ class ScheduleProvider extends ChangeNotifier {
       return;
     }
 
-    _localShifts = _localShifts.where((shift) {
+    final scopedLocalShifts = _localShifts.where((shift) {
+      final inRange =
+          !shift.startTime.isBefore(start) && shift.startTime.isBefore(end);
+      if (!inRange) {
+        return false;
+      }
+      if (filterUserId == null) {
+        return true;
+      }
+      return shift.userId == filterUserId;
+    }).toList(growable: false);
+    final unaffectedShifts = _localShifts.where((shift) {
       final inRange =
           !shift.startTime.isBefore(start) && shift.startTime.isBefore(end);
       if (!inRange) {
@@ -1513,14 +1591,22 @@ class ScheduleProvider extends ChangeNotifier {
         return false;
       }
       return shift.userId != filterUserId;
-    }).toList(growable: true)
-      ..addAll(items)
-      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+    }).toList(growable: false);
 
-    await DatabaseService.saveLocalShifts(
-      _localShifts,
-      scope: scope,
-    );
+    _localShifts = [
+      ...unaffectedShifts,
+      ..._mergeByKey(
+        scopedLocalShifts,
+        items,
+        (shift) => shift.id?.trim().isNotEmpty == true
+            ? 'id:${shift.id}'
+            : 'shift:${shift.userId}:${shift.startTime.toIso8601String()}:${shift.endTime.toIso8601String()}',
+      ),
+    ]..sort((a, b) => a.startTime.compareTo(b.startTime));
+
+    await _persistLocalShifts();
+    _applyLocalState();
+    _safeNotify();
   }
 
   Future<void> _storeHybridShiftTemplatesSnapshot(
@@ -1530,11 +1616,16 @@ class ScheduleProvider extends ChangeNotifier {
     if (!usesHybridStorage || scope == null) {
       return;
     }
-    _localShiftTemplates = [...items];
-    await DatabaseService.saveLocalShiftTemplates(
+    _localShiftTemplates = _mergeByKey(
       _localShiftTemplates,
-      scope: scope,
+      items,
+      (template) => template.id?.trim().isNotEmpty == true
+          ? 'id:${template.id}'
+          : 'template:${template.userId}:${template.name}:${template.startMinutes}:${template.endMinutes}',
     );
+    await _persistLocalShiftTemplates();
+    _applyLocalState();
+    _safeNotify();
   }
 
   Future<void> _storeHybridAbsenceRequestsSnapshot(
@@ -1544,15 +1635,90 @@ class ScheduleProvider extends ChangeNotifier {
     if (!usesHybridStorage || scope == null) {
       return;
     }
-    _localAbsenceRequests = [...items];
-    await DatabaseService.saveLocalAbsenceRequests(
+    _localAbsenceRequests = _mergeByKey(
       _localAbsenceRequests,
-      scope: scope,
+      items,
+      (request) => request.id?.trim().isNotEmpty == true
+          ? 'id:${request.id}'
+          : 'absence:${request.userId}:${request.startDate.toIso8601String()}:${request.endDate.toIso8601String()}:${request.type.value}',
     );
+    await _persistLocalAbsenceRequests();
+    _applyLocalState();
+    _safeNotify();
   }
 
   String _nextLocalId(String prefix) {
     return '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+  }
+
+  void _upsertLocalShift(Shift shift) {
+    final index = _localShifts.indexWhere((item) => item.id == shift.id);
+    if (index == -1) {
+      _localShifts.add(shift);
+      return;
+    }
+    _localShifts[index] = shift;
+  }
+
+  void _upsertLocalShiftTemplate(ShiftTemplate template) {
+    final index =
+        _localShiftTemplates.indexWhere((item) => item.id == template.id);
+    if (index == -1) {
+      _localShiftTemplates.add(template);
+      return;
+    }
+    _localShiftTemplates[index] = template;
+  }
+
+  void _upsertLocalAbsenceRequest(AbsenceRequest request) {
+    final index =
+        _localAbsenceRequests.indexWhere((item) => item.id == request.id);
+    if (index == -1) {
+      _localAbsenceRequests.add(request);
+      return;
+    }
+    _localAbsenceRequests[index] = request;
+  }
+
+  Future<void> _persistLocalShifts() {
+    return DatabaseService.saveLocalShifts(
+      _localShifts,
+      scope: _localScope,
+    );
+  }
+
+  Future<void> _persistLocalShiftTemplates() {
+    return DatabaseService.saveLocalShiftTemplates(
+      _localShiftTemplates,
+      scope: _localScope,
+    );
+  }
+
+  Future<void> _persistLocalAbsenceRequests() {
+    return DatabaseService.saveLocalAbsenceRequests(
+      _localAbsenceRequests,
+      scope: _localScope,
+    );
+  }
+
+  List<T> _mergeByKey<T>(
+    Iterable<T> localItems,
+    Iterable<T> remoteItems,
+    String Function(T item) keyOf,
+  ) {
+    final merged = <String, T>{};
+    var index = 0;
+    for (final item in localItems) {
+      final key = keyOf(item).trim();
+      merged[key.isEmpty ? 'local:$index' : key] = item;
+      index++;
+    }
+    for (final item in remoteItems) {
+      final key = keyOf(item).trim();
+      merged[key.isEmpty ? 'remote:$index' : key] = item;
+      index++;
+    }
+    return merged.values.toList(growable: true);
   }
 
   List<Shift> _filterShifts(

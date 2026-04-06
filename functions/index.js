@@ -22,6 +22,13 @@ exports.upsertShiftBatch = onCall({region: REGION}, async (request) => {
     return {savedIds: [], issues: []};
   }
 
+  if (rawShifts.length > 50) {
+    throw new HttpsError(
+      "resource-exhausted",
+      "Batch Limit ueberschritten (max 50 Schichten)."
+    );
+  }
+
   const shifts = rawShifts.map((item, index) => parseShift(item, index, orgId));
   const issues = await validateShiftBatch({orgId, shifts});
   if (issues.some((issue) => issue.violations.some(isBlockingViolation))) {
@@ -49,6 +56,13 @@ exports.publishShiftBatch = onCall({region: REGION}, async (request) => {
   const rawShifts = asArray(request.data?.shifts);
   if (rawShifts.length === 0) {
     return {savedIds: [], issues: []};
+  }
+
+  if (rawShifts.length > 50) {
+    throw new HttpsError(
+      "resource-exhausted",
+      "Batch Limit ueberschritten (max 50 Schichten)."
+    );
   }
 
   const shifts = rawShifts
@@ -117,6 +131,13 @@ exports.upsertWorkEntryBatch = onCall({region: REGION}, async (request) => {
   const rawEntries = asArray(request.data?.entries);
   if (rawEntries.length === 0) {
     return {savedIds: [], validations: []};
+  }
+
+  if (rawEntries.length > 50) {
+    throw new HttpsError(
+      "resource-exhausted",
+      "Batch Limit ueberschritten (max 50 Eintraege)."
+    );
   }
 
   const entries = rawEntries.map((item) => parseWorkEntry(item));

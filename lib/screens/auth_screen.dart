@@ -5,6 +5,7 @@ import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/app_logo.dart';
+import '../widgets/responsive_layout.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -39,46 +40,68 @@ class _AuthScreenState extends State<AuthScreen>
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final pagePadding = MobileBreakpoints.screenPadding(context);
 
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 980),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final stacked = constraints.maxWidth < 760;
-                final intro = _IntroPanel(colorScheme: colorScheme);
-                final form = _AuthCard(
-                  tabController: _tabController,
-                  loginEmailController: _loginEmailController,
-                  loginPasswordController: _loginPasswordController,
-                  activateEmailController: _activateEmailController,
-                  activatePasswordController: _activatePasswordController,
-                );
+      body: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              colorScheme.secondaryContainer.withValues(alpha: 0.45),
+              colorScheme.surface,
+              colorScheme.primaryContainer.withValues(alpha: 0.28),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(
+              pagePadding.left,
+              20,
+              pagePadding.right,
+              24,
+            ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 980),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final stacked = constraints.maxWidth < 760;
+                    final intro = _IntroPanel(colorScheme: colorScheme);
+                    final form = _AuthCard(
+                      tabController: _tabController,
+                      loginEmailController: _loginEmailController,
+                      loginPasswordController: _loginPasswordController,
+                      activateEmailController: _activateEmailController,
+                      activatePasswordController: _activatePasswordController,
+                    );
 
-                if (stacked) {
-                  return ListView(
-                    shrinkWrap: true,
-                    children: [
-                      intro,
-                      const SizedBox(height: 20),
-                      form,
-                    ],
-                  );
-                }
+                    if (stacked) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          intro,
+                          const SizedBox(height: 18),
+                          form,
+                        ],
+                      );
+                    }
 
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: intro),
-                    const SizedBox(width: 24),
-                    Expanded(child: form),
-                  ],
-                );
-              },
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: intro),
+                        const SizedBox(width: 24),
+                        Expanded(child: form),
+                      ],
+                    );
+                  },
+                ),
+              ),
             ),
           ),
         ),
@@ -94,73 +117,111 @@ class _IntroPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            colorScheme.primary,
-            colorScheme.secondary,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(28),
-      ),
-      padding: const EdgeInsets.all(28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-            decoration: BoxDecoration(
-              color: colorScheme.surface.withValues(alpha: 0.92),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: colorScheme.onPrimary.withValues(alpha: 0.12),
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 420;
+        final padding = compact ? 20.0 : 28.0;
+        return Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                colorScheme.primary,
+                colorScheme.secondary,
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-            child: const AppLogo(height: 86),
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: colorScheme.shadow.withValues(alpha: 0.08),
+                blurRadius: 22,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-          const SizedBox(height: 28),
-          Text(
-            'Arbeitszeiten erfassen, Schichten planen und das Team im Blick behalten.',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+          padding: EdgeInsets.all(padding),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: colorScheme.surface.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  'Digitale Arbeitsorganisation',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: colorScheme.onPrimary,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                      ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Container(
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 14 : 18,
+                  vertical: compact ? 14 : 16,
+                ),
+                decoration: BoxDecoration(
+                  color: colorScheme.surface.withValues(alpha: 0.92),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: colorScheme.onPrimary.withValues(alpha: 0.12),
+                  ),
+                ),
+                child: AppLogo(height: compact ? 72 : 86),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'Arbeitszeiten erfassen, Schichten planen und das Team im Blick behalten.',
+                style: (compact
+                        ? Theme.of(context).textTheme.headlineSmall
+                        : Theme.of(context).textTheme.headlineMedium)
+                    ?.copyWith(
                   color: colorScheme.onPrimary,
                   fontWeight: FontWeight.bold,
                 ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Die Software unterstuetzt bei Zeiterfassung, Einsatzplanung, '
+                'Abwesenheiten und Auswertungen. So bleiben Arbeitsablaeufe '
+                'uebersichtlich und wichtige Informationen schnell verfuegbar.',
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: colorScheme.onPrimary.withValues(alpha: 0.92),
+                      height: 1.35,
+                    ),
+              ),
+              const SizedBox(height: 20),
+              const _FeatureItem(
+                icon: Icons.badge_outlined,
+                title: 'Zeiterfassung',
+                text:
+                    'Arbeitsbeginn, Pausen und Arbeitsende sauber dokumentieren.',
+              ),
+              const SizedBox(height: 12),
+              const _FeatureItem(
+                icon: Icons.schedule_outlined,
+                title: 'Schichtplanung',
+                text:
+                    'Einsaetze uebersichtlich planen und Verfuegbarkeiten oder Abwesenheiten direkt beruecksichtigen.',
+              ),
+              const SizedBox(height: 12),
+              const _FeatureItem(
+                icon: Icons.insights_outlined,
+                title: 'Auswertungen',
+                text:
+                    'Monatsberichte, Uebersichten und Exporte fuer Verwaltung und Nachweise nutzen.',
+              ),
+            ],
           ),
-          const SizedBox(height: 16),
-          Text(
-            'Die Software unterstuetzt bei Zeiterfassung, Einsatzplanung, '
-            'Abwesenheiten und Auswertungen. So bleiben Arbeitsablaeufe '
-            'uebersichtlich und wichtige Informationen schnell verfuegbar.',
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: colorScheme.onPrimary.withValues(alpha: 0.92),
-                  height: 1.35,
-                ),
-          ),
-          const SizedBox(height: 24),
-          const _FeatureItem(
-            icon: Icons.badge_outlined,
-            title: 'Zeiterfassung',
-            text: 'Arbeitsbeginn, Pausen und Arbeitsende sauber dokumentieren.',
-          ),
-          const SizedBox(height: 12),
-          const _FeatureItem(
-            icon: Icons.schedule_outlined,
-            title: 'Schichtplanung',
-            text:
-                'Einsaetze uebersichtlich planen und Verfuegbarkeiten oder Abwesenheiten direkt beruecksichtigen.',
-          ),
-          const SizedBox(height: 12),
-          const _FeatureItem(
-            icon: Icons.insights_outlined,
-            title: 'Auswertungen',
-            text:
-                'Monatsberichte, Uebersichten und Exporte fuer Verwaltung und Nachweise nutzen.',
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -179,39 +240,51 @@ class _FeatureItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: colorScheme.onPrimary.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Icon(icon, color: colorScheme.onPrimary),
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.onPrimary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: colorScheme.onPrimary.withValues(alpha: 0.08),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: colorScheme.onPrimary,
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              Text(
-                text,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.onPrimary.withValues(alpha: 0.92),
-                    ),
-              ),
-            ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: colorScheme.onPrimary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, color: colorScheme.onPrimary),
           ),
-        ),
-      ],
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: colorScheme.onPrimary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  text,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onPrimary.withValues(alpha: 0.92),
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -234,89 +307,138 @@ class _AuthCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Anmeldung',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 420;
+
+        return Card(
+          child: Padding(
+            padding: EdgeInsets.all(compact ? 18 : 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest.withValues(
+                      alpha: 0.8,
                     ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Melde dich an, um Zeiten zu erfassen, Schichten einzusehen und Teamfunktionen zu nutzen.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-            ),
-            if (auth.errorMessage != null) ...[
-              const SizedBox(height: 16),
-              _ErrorBanner(
-                message: auth.errorMessage!,
-                onDismiss: auth.clearError,
-              ),
-            ],
-            if (auth.authDisabled) ...[
-              const SizedBox(height: 18),
-              _LocalDemoAccountsSection(
-                accounts: auth.localDemoAccounts,
-              ),
-              const SizedBox(height: 18),
-              _EmailLoginForm(
-                emailController: loginEmailController,
-                passwordController: loginPasswordController,
-                submitLabel: 'Mit Demo-Account anmelden',
-              ),
-            ] else ...[
-              const SizedBox(height: 18),
-              OutlinedButton.icon(
-                onPressed: auth.busy ? null : () => auth.signInWithGoogle(),
-                icon: const Icon(Icons.login),
-                label: const Text('Mit Google anmelden'),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(52),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    auth.authDisabled ? 'Demo-Zugang' : 'Sicherer Zugang',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 18),
-              TabBar(
-                controller: tabController,
-                tabs: const [
-                  Tab(text: 'Login'),
-                  Tab(text: 'Einladung'),
+                const SizedBox(height: 16),
+                Text(
+                  'Anmeldung',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Melde dich an, um Zeiten zu erfassen, Schichten einzusehen und Teamfunktionen zu nutzen.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+                if (auth.errorMessage != null) ...[
+                  const SizedBox(height: 16),
+                  _ErrorBanner(
+                    message: auth.errorMessage!,
+                    onDismiss: auth.clearError,
+                  ),
                 ],
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 340,
-                child: TabBarView(
-                  controller: tabController,
-                  children: [
-                    _EmailLoginForm(
-                      emailController: loginEmailController,
-                      passwordController: loginPasswordController,
+                if (auth.authDisabled) ...[
+                  const SizedBox(height: 18),
+                  _LocalDemoAccountsSection(
+                    accounts: auth.localDemoAccounts,
+                  ),
+                  const SizedBox(height: 18),
+                  _EmailLoginForm(
+                    emailController: loginEmailController,
+                    passwordController: loginPasswordController,
+                    submitLabel: 'Mit Demo-Account anmelden',
+                  ),
+                ] else ...[
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          auth.busy ? null : () => auth.signInWithGoogle(),
+                      icon: const Icon(Icons.login),
+                      label: const Text('Mit Google anmelden'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                      ),
                     ),
-                    _InvitationActivationForm(
-                      emailController: activateEmailController,
-                      passwordController: activatePasswordController,
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest.withValues(
+                        alpha: 0.45,
+                      ),
+                      borderRadius: BorderRadius.circular(18),
                     ),
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
+                    child: TabBar(
+                      controller: tabController,
+                      dividerColor: Colors.transparent,
+                      indicator: BoxDecoration(
+                        color: colorScheme.primary,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      indicatorSize: TabBarIndicatorSize.tab,
+                      labelColor: colorScheme.onPrimary,
+                      unselectedLabelColor: colorScheme.onSurfaceVariant,
+                      tabs: const [
+                        Tab(text: 'Login'),
+                        Tab(text: 'Einladung'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  AnimatedBuilder(
+                    animation: tabController,
+                    builder: (context, _) {
+                      final selectedIndex = tabController.index;
+                      return AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        switchInCurve: Curves.easeOut,
+                        switchOutCurve: Curves.easeIn,
+                        child: KeyedSubtree(
+                          key: ValueKey(selectedIndex),
+                          child: selectedIndex == 0
+                              ? _EmailLoginForm(
+                                  emailController: loginEmailController,
+                                  passwordController: loginPasswordController,
+                                )
+                              : _InvitationActivationForm(
+                                  emailController: activateEmailController,
+                                  passwordController:
+                                      activatePasswordController,
+                                ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -348,6 +470,7 @@ class _EmailLoginFormState extends State<_EmailLoginForm> {
     return Form(
       key: _formKey,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextFormField(
             controller: widget.emailController,
@@ -379,26 +502,29 @@ class _EmailLoginFormState extends State<_EmailLoginForm> {
             },
           ),
           const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: auth.busy
-                ? null
-                : () {
-                    if (!_formKey.currentState!.validate()) return;
-                    auth.signInWithEmailPassword(
-                      email: widget.emailController.text,
-                      password: widget.passwordController.text,
-                    );
-                  },
-            icon: auth.busy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.login),
-            label: Text(widget.submitLabel),
-            style: FilledButton.styleFrom(
-              minimumSize: const Size.fromHeight(52),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: auth.busy
+                  ? null
+                  : () {
+                      if (!_formKey.currentState!.validate()) return;
+                      auth.signInWithEmailPassword(
+                        email: widget.emailController.text,
+                        password: widget.passwordController.text,
+                      );
+                    },
+              icon: auth.busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.login),
+              label: Text(widget.submitLabel),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(52),
+              ),
             ),
           ),
         ],
@@ -499,8 +625,8 @@ class _LocalDemoAccountTile extends StatelessWidget {
                 ),
           ),
           const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
+          SizedBox(
+            width: double.infinity,
             child: FilledButton.icon(
               onPressed: auth.busy
                   ? null
@@ -548,6 +674,7 @@ class _InvitationActivationFormState extends State<_InvitationActivationForm> {
     return Form(
       key: _formKey,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextFormField(
             controller: widget.emailController,
@@ -601,26 +728,29 @@ class _InvitationActivationFormState extends State<_InvitationActivationForm> {
                 ),
           ),
           const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: auth.busy
-                ? null
-                : () {
-                    if (!_formKey.currentState!.validate()) return;
-                    auth.activateInvite(
-                      email: widget.emailController.text,
-                      password: widget.passwordController.text,
-                    );
-                  },
-            icon: auth.busy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.person_add_alt_1),
-            label: const Text('Einladung aktivieren'),
-            style: FilledButton.styleFrom(
-              minimumSize: const Size.fromHeight(52),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: auth.busy
+                  ? null
+                  : () {
+                      if (!_formKey.currentState!.validate()) return;
+                      auth.activateInvite(
+                        email: widget.emailController.text,
+                        password: widget.passwordController.text,
+                      );
+                    },
+              icon: auth.busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.person_add_alt_1),
+              label: const Text('Einladung aktivieren'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(52),
+              ),
             ),
           ),
         ],
@@ -638,38 +768,91 @@ class _ErrorBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: colorScheme.errorContainer,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.error_outline,
-              color: colorScheme.onErrorContainer, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              message,
-              style: TextStyle(
-                color: colorScheme.onErrorContainer,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 380;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: colorScheme.errorContainer,
+            borderRadius: BorderRadius.circular(14),
           ),
-          if (onDismiss != null)
-            IconButton(
-              icon: Icon(Icons.close,
-                  size: 18, color: colorScheme.onErrorContainer),
-              onPressed: onDismiss,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
-              tooltip: 'Schliessen',
-            ),
-        ],
-      ),
+          child: compact
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.error_outline,
+                          color: colorScheme.onErrorContainer,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            message,
+                            style: TextStyle(
+                              color: colorScheme.onErrorContainer,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (onDismiss != null) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: IconButton(
+                          icon: Icon(
+                            Icons.close,
+                            size: 18,
+                            color: colorScheme.onErrorContainer,
+                          ),
+                          onPressed: onDismiss,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: 'Schliessen',
+                        ),
+                      ),
+                    ],
+                  ],
+                )
+              : Row(
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      color: colorScheme.onErrorContainer,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        message,
+                        style: TextStyle(
+                          color: colorScheme.onErrorContainer,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (onDismiss != null)
+                      IconButton(
+                        icon: Icon(
+                          Icons.close,
+                          size: 18,
+                          color: colorScheme.onErrorContainer,
+                        ),
+                        onPressed: onDismiss,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        tooltip: 'Schliessen',
+                      ),
+                  ],
+                ),
+        );
+      },
     );
   }
 }
@@ -679,37 +862,46 @@ class FirebaseSetupScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final pagePadding = MobileBreakpoints.screenPadding(context);
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: Card(
-            margin: const EdgeInsets.all(24),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Center(
-                    child: AppLogo(height: 92),
-                  ),
-                  const SizedBox(height: 18),
-                  Text(
-                    'Anmeldung derzeit nicht verfuegbar',
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Die Anwendung kann in dieser Umgebung noch nicht fuer die Anmeldung bereitgestellt werden.',
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Bitte wende dich an die zustaendige Person, damit die Bereitstellung abgeschlossen wird.',
-                  ),
-                ],
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: Card(
+              margin: EdgeInsets.fromLTRB(
+                pagePadding.left,
+                24,
+                pagePadding.right,
+                24,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Center(
+                      child: AppLogo(height: 92),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'Anmeldung derzeit nicht verfuegbar',
+                      style:
+                          Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Die Anwendung kann in dieser Umgebung noch nicht fuer die Anmeldung bereitgestellt werden.',
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Bitte wende dich an die zustaendige Person, damit die Bereitstellung abgeschlossen wird.',
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

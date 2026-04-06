@@ -90,12 +90,27 @@ class _AppBootstrapState extends State<AppBootstrap> {
     // Firestore Offline-Persistence aktivieren: Daten werden lokal gecacht,
     // sodass Reads auch offline bedient werden und beim Reconnect automatisch
     // synchronisiert werden. Reduziert Cloud-Reads erheblich.
-    FirebaseFirestore.instance.settings = const Settings(
+    FirebaseFirestore.instance.settings = _buildFirestoreSettings();
+
+    await _authProvider.init();
+  }
+
+  Settings _buildFirestoreSettings() {
+    if (kIsWeb) {
+      return const Settings(
+        persistenceEnabled: true,
+        cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+        webExperimentalAutoDetectLongPolling: true,
+        webExperimentalLongPollingOptions: WebExperimentalLongPollingOptions(
+          timeoutDuration: Duration(seconds: 30),
+        ),
+      );
+    }
+
+    return const Settings(
       persistenceEnabled: true,
       cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
     );
-
-    await _authProvider.init();
   }
 
   void _retryInitialization() {
@@ -177,32 +192,6 @@ class WorkTimeApp extends StatelessWidget {
           },
         ),
         ChangeNotifierProxyProvider3<AuthProvider, TeamProvider,
-            StorageModeProvider, WorkProvider>(
-          create: (_) => WorkProvider(
-            firestoreService: firestoreService,
-          ),
-          update: (_, auth, team, storage, provider) {
-            provider ??= WorkProvider(firestoreService: firestoreService);
-            _dispatchProviderUpdate(
-              provider.updateSession(
-                auth.profile,
-                localStorageOnly: storage.isLocalOnly,
-                hybridStorageEnabled: storage.isHybrid,
-              ),
-              'WorkProvider.updateSession',
-            );
-            provider.updateReferenceData(
-              members: team.members,
-              sites: team.sites,
-              contracts: team.contracts,
-              siteAssignments: team.siteAssignments,
-              ruleSets: team.ruleSets,
-              travelTimeRules: team.travelTimeRules,
-            );
-            return provider;
-          },
-        ),
-        ChangeNotifierProxyProvider3<AuthProvider, TeamProvider,
             StorageModeProvider, ScheduleProvider>(
           create: (_) => ScheduleProvider(
             firestoreService: firestoreService,
@@ -227,27 +216,52 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
-      ],
-      child: _ShiftCompletionWiring(
-        child: Consumer<ThemeProvider>(
-          builder: (context, themeProvider, _) => MaterialApp(
-            title: 'timework',
-            debugShowCheckedModeBanner: false,
-            theme: AppTheme.light,
-            darkTheme: AppTheme.dark,
-            themeMode: themeProvider.themeMode,
-            localizationsDelegates: const [
-              GlobalMaterialLocalizations.delegate,
-              GlobalWidgetsLocalizations.delegate,
-              GlobalCupertinoLocalizations.delegate,
-            ],
-            supportedLocales: const [
-              Locale('de', 'DE'),
-              Locale('en', 'US'),
-            ],
-            locale: themeProvider.locale,
-            home: const _AuthGate(),
+        ChangeNotifierProxyProvider4<AuthProvider, TeamProvider,
+            StorageModeProvider, ScheduleProvider, WorkProvider>(
+          create: (_) => WorkProvider(
+            firestoreService: firestoreService,
           ),
+          update: (_, auth, team, storage, schedule, provider) {
+            provider ??= WorkProvider(firestoreService: firestoreService);
+            provider.updateScheduleProvider(schedule);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'WorkProvider.updateSession',
+            );
+            provider.updateReferenceData(
+              members: team.members,
+              sites: team.sites,
+              contracts: team.contracts,
+              siteAssignments: team.siteAssignments,
+              ruleSets: team.ruleSets,
+              travelTimeRules: team.travelTimeRules,
+            );
+            return provider;
+          },
+        ),
+      ],
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, _) => MaterialApp(
+          title: 'timework',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light,
+          darkTheme: AppTheme.dark,
+          themeMode: themeProvider.themeMode,
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: const [
+            Locale('de', 'DE'),
+            Locale('en', 'US'),
+          ],
+          locale: themeProvider.locale,
+          home: const _AuthGate(),
         ),
       ),
     );
@@ -260,36 +274,6 @@ void _dispatchProviderUpdate(Future<void> future, String label) {
       debugPrint('$label failed: $error\n$stackTrace');
     }),
   );
-}
-
-/// Verbindet WorkProvider und ScheduleProvider: Wenn ein Arbeitszeiteintrag
-/// fuer eine Schicht gespeichert wird, wird die Schicht automatisch als
-/// erledigt markiert.
-class _ShiftCompletionWiring extends StatefulWidget {
-  const _ShiftCompletionWiring({required this.child});
-
-  final Widget child;
-
-  @override
-  State<_ShiftCompletionWiring> createState() => _ShiftCompletionWiringState();
-}
-
-class _ShiftCompletionWiringState extends State<_ShiftCompletionWiring> {
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final work = context.read<WorkProvider>();
-    final schedule = context.read<ScheduleProvider>();
-    work.onShiftWorked ??= (sourceShiftId) {
-      _dispatchProviderUpdate(
-        schedule.completeShiftForEntry(sourceShiftId),
-        'ScheduleProvider.completeShiftForEntry',
-      );
-    };
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
 }
 
 class _BootstrapShell extends StatelessWidget {

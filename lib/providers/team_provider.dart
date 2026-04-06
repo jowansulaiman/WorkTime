@@ -198,9 +198,20 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    // Im Hybrid-Modus kein manuelles Laden aus SharedPreferences noetig:
-    // Firestore Offline-Persistence stellt Stammdaten automatisch bereit,
-    // die Stream-Listener unten uebernehmen die Aktualisierung.
+    if (usesHybridStorage &&
+        (changed ||
+            storageModeChanged ||
+            (_localMembers.isEmpty &&
+                _localInvites.isEmpty &&
+                _localTeams.isEmpty &&
+                _localSites.isEmpty &&
+                _localQualifications.isEmpty &&
+                _localContracts.isEmpty &&
+                _localSiteAssignments.isEmpty &&
+                _localRuleSets.isEmpty &&
+                _localTravelTimeRules.isEmpty))) {
+      await _loadLocalState();
+    }
 
     if (!user.canManageShifts) {
       _members = [user];
@@ -221,23 +232,23 @@ class TeamProvider extends ChangeNotifier {
       await _ruleSetsSubscription?.cancel();
       await _travelTimeRulesSubscription?.cancel();
 
-      // ---------------------------------------------------------------
-      // Hybrid-Strategie: Alle Stammdaten in diesem Provider sind
-      // *strukturelle* Daten (Teams, Sites, Qualifikationen, etc.).
-      // Im Hybrid-Modus werden diese NUR in der Cloud gehalten —
-      // Firestore Offline-Persistence cached sie automatisch lokal.
-      // Manuelles SharedPreferences-Caching entfaellt, wodurch
-      // Schreibvorgaenge drastisch reduziert werden und der
-      // Firebase-Spark-Freitarif eingehalten wird.
-      //
-      // Das manuelle Caching in _local*-Listen bleibt nur fuer den
-      // reinen Local-Modus erhalten (kein Firebase verfuegbar).
-      // ---------------------------------------------------------------
+      // Im Hybrid-Modus bleiben strukturelle Stammdaten lokal als Fallback
+      // erhalten. Cloud-Snapshots aktualisieren diesen Cache inkrementell,
+      // damit beim Wechsel aus dem Local-Modus oder bei unvollstaendigen
+      // Transfers keine Standorte, Zuordnungen oder Regeln verloren gehen.
 
       if (user.canManageShifts) {
         _membersSubscription = _firestoreService
             .watchOrganizationUsers(user.orgId)
             .listen((items) {
+          if (usesHybridStorage) {
+            unawaited(
+              _storeHybridMembersSnapshot(
+                items.where((member) => member.uid != user.uid).toList(),
+              ),
+            );
+            return;
+          }
           _members = items;
           _loading = false;
           _safeNotify();
@@ -250,6 +261,10 @@ class TeamProvider extends ChangeNotifier {
         if (user.isAdmin) {
           _invitesSubscription =
               _firestoreService.watchInvites(user.orgId).listen((items) {
+            if (usesHybridStorage) {
+              unawaited(_storeHybridInvitesSnapshot(items));
+              return;
+            }
             _invites = items;
             _safeNotify();
           }, onError: (Object error) {
@@ -263,6 +278,10 @@ class TeamProvider extends ChangeNotifier {
         _teamsSubscription = _firestoreService.watchTeams(user.orgId).listen((
           items,
         ) {
+          if (usesHybridStorage) {
+            unawaited(_storeHybridTeamsSnapshot(items));
+            return;
+          }
           _teams = items;
           _safeNotify();
         }, onError: (Object error) {
@@ -276,6 +295,10 @@ class TeamProvider extends ChangeNotifier {
 
       _sitesSubscription = _firestoreService.watchSites(user.orgId).listen(
         (items) {
+          if (usesHybridStorage) {
+            unawaited(_storeHybridSitesSnapshot(items));
+            return;
+          }
           _sites = items;
           _safeNotify();
         },
@@ -286,6 +309,10 @@ class TeamProvider extends ChangeNotifier {
 
       _qualificationsSubscription =
           _firestoreService.watchQualifications(user.orgId).listen((items) {
+        if (usesHybridStorage) {
+          unawaited(_storeHybridQualificationsSnapshot(items));
+          return;
+        }
         _qualifications = items;
         _safeNotify();
       }, onError: (Object error) {
@@ -296,6 +323,10 @@ class TeamProvider extends ChangeNotifier {
       _contractsSubscription = _firestoreService
           .watchEmploymentContracts(user.orgId)
           .listen((items) {
+        if (usesHybridStorage) {
+          unawaited(_storeHybridContractsSnapshot(items));
+          return;
+        }
         _contracts = items;
         _safeNotify();
       }, onError: (Object error) {
@@ -304,6 +335,10 @@ class TeamProvider extends ChangeNotifier {
 
       _siteAssignmentsSubscription =
           _firestoreService.watchSiteAssignments(user.orgId).listen((items) {
+        if (usesHybridStorage) {
+          unawaited(_storeHybridSiteAssignmentsSnapshot(items));
+          return;
+        }
         _siteAssignments = items;
         _safeNotify();
       }, onError: (Object error) {
@@ -313,7 +348,6 @@ class TeamProvider extends ChangeNotifier {
 
       _ruleSetsSubscription =
           _firestoreService.watchRuleSets(user.orgId).listen((items) async {
-        _ruleSets = items;
         if (user.isAdmin && items.isEmpty) {
           await saveRuleSet(
             ComplianceRuleSet.defaultRetail(
@@ -323,6 +357,11 @@ class TeamProvider extends ChangeNotifier {
           );
           return;
         }
+        if (usesHybridStorage) {
+          await _storeHybridRuleSetsSnapshot(items);
+          return;
+        }
+        _ruleSets = items;
         _safeNotify();
       }, onError: (Object error) {
         debugPrint('TeamProvider: Fehler beim Laden der Regelwerke: $error');
@@ -330,6 +369,10 @@ class TeamProvider extends ChangeNotifier {
 
       _travelTimeRulesSubscription =
           _firestoreService.watchTravelTimeRules(user.orgId).listen((items) {
+        if (usesHybridStorage) {
+          unawaited(_storeHybridTravelTimeRulesSnapshot(items));
+          return;
+        }
         _travelTimeRules = items;
         _safeNotify();
       }, onError: (Object error) {
@@ -917,24 +960,64 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.upsertUserProfile(currentUser);
+    try {
+      await _firestoreService.upsertUserProfile(currentUser);
+    } catch (error) {
+      debugPrint('syncLocalStateToCloud: eigenes Profil konnte nicht '
+          'geschrieben werden: $error');
+    }
+
+    if (!currentUser.isAdmin) {
+      return;
+    }
+
     for (final member in _localMembers) {
-      await _firestoreService.upsertUserProfile(member);
+      try {
+        await _firestoreService.upsertUserProfile(member);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Mitglied ${member.uid} '
+            'konnte nicht geschrieben werden: $error');
+      }
     }
     for (final invite in _localInvites) {
-      await _firestoreService.createOrUpdateInvite(invite);
+      try {
+        await _firestoreService.createOrUpdateInvite(invite);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Einladung konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
     for (final team in _localTeams) {
-      await _firestoreService.saveTeam(team);
+      try {
+        await _firestoreService.saveTeam(team);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Team konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
     for (final site in _localSites) {
-      await _firestoreService.saveSite(site);
+      try {
+        await _firestoreService.saveSite(site);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Standort konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
     for (final qualification in _localQualifications) {
-      await _firestoreService.saveQualification(qualification);
+      try {
+        await _firestoreService.saveQualification(qualification);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Qualifikation konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
     for (final contract in _localContracts) {
-      await _firestoreService.saveEmploymentContract(contract);
+      try {
+        await _firestoreService.saveEmploymentContract(contract);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Vertrag konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
 
     final assignmentsByUser = <String, List<EmployeeSiteAssignment>>{};
@@ -944,18 +1027,33 @@ class TeamProvider extends ChangeNotifier {
           .add(assignment);
     }
     for (final entry in assignmentsByUser.entries) {
-      await _firestoreService.saveSiteAssignments(
-        orgId: currentUser.orgId,
-        userId: entry.key,
-        assignments: entry.value,
-      );
+      try {
+        await _firestoreService.saveSiteAssignments(
+          orgId: currentUser.orgId,
+          userId: entry.key,
+          assignments: entry.value,
+        );
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Standortzuweisungen konnten '
+            'nicht geschrieben werden: $error');
+      }
     }
 
     for (final ruleSet in _localRuleSets) {
-      await _firestoreService.saveRuleSet(ruleSet);
+      try {
+        await _firestoreService.saveRuleSet(ruleSet);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Regelwerk konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
     for (final rule in _localTravelTimeRules) {
-      await _firestoreService.saveTravelTimeRule(rule);
+      try {
+        await _firestoreService.saveTravelTimeRule(rule);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud: Fahrtzeitregel konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
   }
 
@@ -1118,6 +1216,167 @@ class TeamProvider extends ChangeNotifier {
       return 'local';
     }
     return usesHybridStorage ? 'hybrid' : 'cloud';
+  }
+
+  Future<void> _storeHybridMembersSnapshot(
+    List<AppUserProfile> items,
+  ) async {
+    await _storeHybridCollection<AppUserProfile>(
+      cloudItems: items,
+      currentLocalItems: _localMembers,
+      assignLocal: (merged) => _localMembers = merged,
+      persist: DatabaseService.saveLocalTeamMembers,
+      keyOf: (member) => member.uid,
+    );
+  }
+
+  Future<void> _storeHybridInvitesSnapshot(
+    List<UserInvite> items,
+  ) async {
+    await _storeHybridCollection<UserInvite>(
+      cloudItems: items,
+      currentLocalItems: _localInvites,
+      assignLocal: (merged) => _localInvites = merged,
+      persist: DatabaseService.saveLocalInvites,
+      keyOf: (invite) =>
+          invite.id?.trim().isNotEmpty == true ? invite.id! : invite.emailLower,
+    );
+  }
+
+  Future<void> _storeHybridTeamsSnapshot(
+    List<TeamDefinition> items,
+  ) async {
+    await _storeHybridCollection<TeamDefinition>(
+      cloudItems: items,
+      currentLocalItems: _localTeams,
+      assignLocal: (merged) => _localTeams = merged,
+      persist: DatabaseService.saveLocalTeams,
+      keyOf: (team) =>
+          team.id?.trim().isNotEmpty == true ? team.id! : team.name,
+    );
+  }
+
+  Future<void> _storeHybridSitesSnapshot(
+    List<SiteDefinition> items,
+  ) async {
+    await _storeHybridCollection<SiteDefinition>(
+      cloudItems: items,
+      currentLocalItems: _localSites,
+      assignLocal: (merged) => _localSites = merged,
+      persist: DatabaseService.saveLocalSites,
+      keyOf: (site) =>
+          site.id?.trim().isNotEmpty == true ? site.id! : site.name,
+    );
+  }
+
+  Future<void> _storeHybridQualificationsSnapshot(
+    List<QualificationDefinition> items,
+  ) async {
+    await _storeHybridCollection<QualificationDefinition>(
+      cloudItems: items,
+      currentLocalItems: _localQualifications,
+      assignLocal: (merged) => _localQualifications = merged,
+      persist: DatabaseService.saveLocalQualifications,
+      keyOf: (qualification) => qualification.id?.trim().isNotEmpty == true
+          ? qualification.id!
+          : qualification.name,
+    );
+  }
+
+  Future<void> _storeHybridContractsSnapshot(
+    List<EmploymentContract> items,
+  ) async {
+    await _storeHybridCollection<EmploymentContract>(
+      cloudItems: items,
+      currentLocalItems: _localContracts,
+      assignLocal: (merged) => _localContracts = merged,
+      persist: DatabaseService.saveLocalEmploymentContracts,
+      keyOf: (contract) => contract.id?.trim().isNotEmpty == true
+          ? contract.id!
+          : '${contract.userId}:${contract.validFrom.toIso8601String()}',
+    );
+  }
+
+  Future<void> _storeHybridSiteAssignmentsSnapshot(
+    List<EmployeeSiteAssignment> items,
+  ) async {
+    await _storeHybridCollection<EmployeeSiteAssignment>(
+      cloudItems: items,
+      currentLocalItems: _localSiteAssignments,
+      assignLocal: (merged) => _localSiteAssignments = merged,
+      persist: DatabaseService.saveLocalSiteAssignments,
+      keyOf: (assignment) => assignment.id?.trim().isNotEmpty == true
+          ? assignment.id!
+          : '${assignment.userId}:${assignment.siteId}',
+    );
+  }
+
+  Future<void> _storeHybridRuleSetsSnapshot(
+    List<ComplianceRuleSet> items,
+  ) async {
+    await _storeHybridCollection<ComplianceRuleSet>(
+      cloudItems: items,
+      currentLocalItems: _localRuleSets,
+      assignLocal: (merged) => _localRuleSets = merged,
+      persist: DatabaseService.saveLocalRuleSets,
+      keyOf: (ruleSet) =>
+          ruleSet.id?.trim().isNotEmpty == true ? ruleSet.id! : ruleSet.name,
+    );
+  }
+
+  Future<void> _storeHybridTravelTimeRulesSnapshot(
+    List<TravelTimeRule> items,
+  ) async {
+    await _storeHybridCollection<TravelTimeRule>(
+      cloudItems: items,
+      currentLocalItems: _localTravelTimeRules,
+      assignLocal: (merged) => _localTravelTimeRules = merged,
+      persist: DatabaseService.saveLocalTravelTimeRules,
+      keyOf: (rule) => rule.id?.trim().isNotEmpty == true
+          ? rule.id!
+          : '${rule.fromSiteId}:${rule.toSiteId}',
+    );
+  }
+
+  Future<void> _storeHybridCollection<T>({
+    required List<T> cloudItems,
+    required List<T> currentLocalItems,
+    required void Function(List<T> items) assignLocal,
+    required Future<void> Function(
+      List<T> items, {
+      LocalStorageScope? scope,
+    }) persist,
+    required String Function(T item) keyOf,
+  }) async {
+    final scope = _localScope;
+    if (!usesHybridStorage || scope == null) {
+      return;
+    }
+    final merged = _mergeByKey(currentLocalItems, cloudItems, keyOf);
+    assignLocal(merged);
+    _applyLocalState();
+    _safeNotify();
+    await persist(merged, scope: scope);
+  }
+
+  List<T> _mergeByKey<T>(
+    Iterable<T> localItems,
+    Iterable<T> remoteItems,
+    String Function(T item) keyOf,
+  ) {
+    final merged = <String, T>{};
+    var index = 0;
+    for (final item in localItems) {
+      final key = keyOf(item).trim();
+      merged[key.isEmpty ? 'local:$index' : key] = item;
+      index++;
+    }
+    for (final item in remoteItems) {
+      final key = keyOf(item).trim();
+      merged[key.isEmpty ? 'remote:$index' : key] = item;
+      index++;
+    }
+    return merged.values.toList(growable: true);
   }
 
   void _upsertLocalInvite(UserInvite invite) {

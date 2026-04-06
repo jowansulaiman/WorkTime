@@ -1,5 +1,6 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/absence_request.dart';
 import 'package:worktime_app/models/app_user.dart';
@@ -272,6 +273,99 @@ void main() {
         provider.shifts.map((shift) => shift.title),
         containsAll(['Cloud-Schicht', 'Lokale Schicht']),
       );
+    });
+
+    test(
+        'keeps local shifts when switching from local-only to hybrid with empty cloud',
+        () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+      );
+      final shiftDay = dayInCurrentWeek(1);
+      final shiftStart = DateTime(
+        shiftDay.year,
+        shiftDay.month,
+        shiftDay.day,
+        8,
+      );
+      await DatabaseService.saveLocalShifts(
+        [
+          Shift(
+            id: 'local-shift',
+            orgId: adminUser.orgId,
+            userId: adminUser.uid,
+            employeeName: adminUser.displayName,
+            title: 'Lokale Hybrid-Schicht',
+            startTime: shiftStart,
+            endTime: shiftStart.add(const Duration(hours: 8)),
+            breakMinutes: 30,
+            siteId: defaultSite.id,
+            siteName: defaultSite.name,
+            location: defaultSite.name,
+          ),
+        ],
+        scope: LocalStorageScope.fromUser(adminUser),
+      );
+
+      await provider.updateSession(adminUser, localStorageOnly: true);
+
+      expect(provider.shifts, hasLength(1));
+      expect(provider.shifts.single.id, 'local-shift');
+
+      await provider.updateSession(adminUser, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.shifts, hasLength(1));
+      expect(provider.shifts.single.id, 'local-shift');
+      expect(provider.shifts.single.location, 'Berlin');
+    });
+
+    test('stores hybrid shifts locally when cloud transfer fails', () async {
+      final failingService = FirestoreService(
+        firestore: FakeFirebaseFirestore(),
+        cloudFunctionInvoker: (_, __) async {
+          throw FirebaseFunctionsException(
+            code: 'internal',
+            message: 'save failed',
+          );
+        },
+      );
+      final provider = ScheduleProvider(firestoreService: failingService);
+      final shiftDay = dayInCurrentWeek(2);
+      final shiftStart = DateTime(
+        shiftDay.year,
+        shiftDay.month,
+        shiftDay.day,
+        9,
+      );
+
+      await provider.updateSession(adminUser, hybridStorageEnabled: true);
+      seedCompliance(provider);
+
+      await provider.saveShift(
+        Shift(
+          orgId: adminUser.orgId,
+          userId: adminUser.uid,
+          employeeName: adminUser.displayName,
+          title: 'Hybrid-Fallback',
+          startTime: shiftStart,
+          endTime: shiftStart.add(const Duration(hours: 8)),
+          breakMinutes: 30,
+          siteId: defaultSite.id,
+          siteName: defaultSite.name,
+          location: defaultSite.name,
+        ),
+      );
+
+      expect(provider.shifts, hasLength(1));
+      expect(provider.shifts.single.title, 'Hybrid-Fallback');
+
+      final persistedShifts = await DatabaseService.loadLocalShifts(
+        scope: LocalStorageScope.fromUser(adminUser),
+      );
+      expect(persistedShifts, hasLength(1));
+      expect(persistedShifts.single.location, 'Berlin');
     });
 
     test('stores and reloads shift templates locally', () async {
@@ -920,6 +1014,7 @@ void main() {
         ),
       ]);
 
+      provider.setVisibleDate(DateTime(2026, 4, 1));
       expect(provider.shifts, hasLength(2));
       expect(provider.shifts.map((shift) => shift.employeeName), [
         'Anna',

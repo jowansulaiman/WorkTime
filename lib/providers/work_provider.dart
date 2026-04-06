@@ -19,6 +19,7 @@ import '../models/work_template.dart';
 import '../services/compliance_service.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
+import 'schedule_provider.dart';
 
 const _clockInKey = 'clock_in_time';
 const _clockInSiteIdKey = 'clock_in_site_id';
@@ -75,23 +76,21 @@ class OvertimeApprovalRequired implements Exception {
   }
 }
 
-/// Callback der aufgerufen wird, wenn ein Arbeitszeiteintrag fuer eine
-/// Schicht gespeichert wurde (sourceShiftId).
-typedef OnShiftWorked = void Function(String sourceShiftId);
-
 class WorkProvider extends ChangeNotifier {
   WorkProvider({
     required FirestoreService firestoreService,
     ComplianceService? complianceService,
-    this.onShiftWorked,
     bool? disableAuthentication,
   })  : _firestoreService = firestoreService,
         _complianceService = complianceService ?? const ComplianceService(),
         _forceLocalStorage =
             disableAuthentication ?? AppConfig.disableAuthentication;
 
-  /// Wird gesetzt, sobald die Provider in main.dart verkabelt sind.
-  OnShiftWorked? onShiftWorked;
+  ScheduleProvider? _scheduleProvider;
+
+  void updateScheduleProvider(ScheduleProvider scheduleProvider) {
+    _scheduleProvider = scheduleProvider;
+  }
 
   final FirestoreService _firestoreService;
   final ComplianceService _complianceService;
@@ -393,29 +392,35 @@ class WorkProvider extends ChangeNotifier {
       throw StateError(blocking.map((item) => item.message).join('\n'));
     }
     if (usesLocalStorage) {
-      final localEntry = preparedEntry.copyWith(
-        id: preparedEntry.id ?? _nextLocalId('entry'),
+      _upsertLocalEntry(
+        preparedEntry.copyWith(
+          id: preparedEntry.id ?? _nextLocalId('entry'),
+        ),
       );
-      final index =
-          _localEntries.indexWhere((item) => item.id == localEntry.id);
-      if (index == -1) {
-        _localEntries.add(localEntry);
-      } else {
-        _localEntries[index] = localEntry;
-      }
-      await DatabaseService.saveLocalEntries(
-        _localEntries,
-        scope: _localScope,
-      );
+      await _persistLocalEntries();
       _applyLocalState();
-      _notifyShiftWorked(preparedEntry.sourceShiftId);
+      await _notifyShiftWorked(preparedEntry.sourceShiftId);
       notifyListeners();
       return;
     }
-    await _firestoreService.saveWorkEntry(
-      preparedEntry,
-    );
-    _notifyShiftWorked(preparedEntry.sourceShiftId);
+    try {
+      await _firestoreService.saveWorkEntry(
+        preparedEntry,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      _upsertLocalEntry(
+        preparedEntry.copyWith(
+          id: preparedEntry.id ?? _nextLocalId('entry'),
+        ),
+      );
+      await _persistLocalEntries();
+      _applyLocalState();
+      _safeNotify();
+    }
+    await _notifyShiftWorked(preparedEntry.sourceShiftId);
   }
 
   Future<void> addEntries(List<WorkEntry> entries) async {
@@ -443,32 +448,40 @@ class WorkProvider extends ChangeNotifier {
 
     if (usesLocalStorage) {
       for (final entry in preparedEntries) {
-        final localEntry = entry.copyWith(
-          id: entry.id ?? _nextLocalId('entry'),
+        _upsertLocalEntry(
+          entry.copyWith(
+            id: entry.id ?? _nextLocalId('entry'),
+          ),
         );
-        final index =
-            _localEntries.indexWhere((item) => item.id == localEntry.id);
-        if (index == -1) {
-          _localEntries.add(localEntry);
-        } else {
-          _localEntries[index] = localEntry;
-        }
       }
-      await DatabaseService.saveLocalEntries(
-        _localEntries,
-        scope: _localScope,
-      );
+      await _persistLocalEntries();
       _applyLocalState();
       for (final entry in preparedEntries) {
-        _notifyShiftWorked(entry.sourceShiftId);
+        await _notifyShiftWorked(entry.sourceShiftId);
       }
       notifyListeners();
       return;
     }
 
-    await _firestoreService.saveWorkEntryBatch(preparedEntries);
+    try {
+      await _firestoreService.saveWorkEntryBatch(preparedEntries);
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      for (final entry in preparedEntries) {
+        _upsertLocalEntry(
+          entry.copyWith(
+            id: entry.id ?? _nextLocalId('entry'),
+          ),
+        );
+      }
+      await _persistLocalEntries();
+      _applyLocalState();
+      _safeNotify();
+    }
     for (final entry in preparedEntries) {
-      _notifyShiftWorked(entry.sourceShiftId);
+      await _notifyShiftWorked(entry.sourceShiftId);
     }
   }
 
@@ -548,27 +561,31 @@ class WorkProvider extends ChangeNotifier {
         orgId: currentUser.orgId,
         userId: currentUser.uid,
       );
-      final index =
-          _localTemplates.indexWhere((item) => item.id == localTemplate.id);
-      if (index == -1) {
-        _localTemplates.add(localTemplate);
-      } else {
-        _localTemplates[index] = localTemplate;
-      }
-      await DatabaseService.saveLocalTemplates(
-        _localTemplates,
-        scope: _localScope,
-      );
+      _upsertLocalTemplate(localTemplate);
+      await _persistLocalTemplates();
       _applyLocalState();
       notifyListeners();
       return;
     }
-    await _firestoreService.saveWorkTemplate(
-      template.copyWith(
-        orgId: currentUser.orgId,
-        userId: currentUser.uid,
-      ),
+    final preparedTemplate = template.copyWith(
+      orgId: currentUser.orgId,
+      userId: currentUser.uid,
     );
+    try {
+      await _firestoreService.saveWorkTemplate(preparedTemplate);
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      _upsertLocalTemplate(
+        preparedTemplate.copyWith(
+          id: preparedTemplate.id ?? _nextLocalId('template'),
+        ),
+      );
+      await _persistLocalTemplates();
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   Future<void> updateTemplate(WorkTemplate template) async {
@@ -613,15 +630,35 @@ class WorkProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _firestoreService.upsertUserProfile(
-      currentUser.copyWith(settings: settings),
-    );
+    final updatedUser = currentUser.copyWith(settings: settings);
+    try {
+      await _firestoreService.upsertUserProfile(updatedUser);
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      await DatabaseService.saveLocalUserSettings(
+        settings,
+        scope: _localScope,
+      );
+      _currentUser = updatedUser;
+      if (_reportUser?.uid == currentUser.uid) {
+        _reportUser = _currentUser;
+      }
+      _safeNotify();
+      return;
+    }
     if (usesHybridStorage) {
       await DatabaseService.saveLocalUserSettings(
         settings,
         scope: _localScope,
       );
     }
+    _currentUser = updatedUser;
+    if (_reportUser?.uid == currentUser.uid) {
+      _reportUser = _currentUser;
+    }
+    _safeNotify();
   }
 
   Future<void> cacheCloudStateLocally() async {
@@ -662,7 +699,12 @@ class WorkProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.upsertUserProfile(currentUser);
+    try {
+      await _firestoreService.upsertUserProfile(currentUser);
+    } catch (error) {
+      debugPrint('syncLocalStateToCloud(work): eigenes Profil konnte nicht '
+          'geschrieben werden: $error');
+    }
 
     final entries = _localEntries
         .where((entry) =>
@@ -674,7 +716,12 @@ class WorkProvider extends ChangeNotifier {
             ))
         .toList(growable: false);
     if (entries.isNotEmpty) {
-      await _firestoreService.saveWorkEntryBatch(entries);
+      try {
+        await _firestoreService.saveWorkEntryBatch(entries);
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud(work): Eintraege konnten nicht '
+            'geschrieben werden: $error');
+      }
     }
 
     for (final template in _localTemplates.where(
@@ -682,12 +729,17 @@ class WorkProvider extends ChangeNotifier {
           item.orgId == currentUser.orgId &&
           (item.userId.isEmpty || item.userId == currentUser.uid),
     )) {
-      await _firestoreService.saveWorkTemplate(
-        template.copyWith(
-          orgId: currentUser.orgId,
-          userId: template.userId.isEmpty ? currentUser.uid : template.userId,
-        ),
-      );
+      try {
+        await _firestoreService.saveWorkTemplate(
+          template.copyWith(
+            orgId: currentUser.orgId,
+            userId: template.userId.isEmpty ? currentUser.uid : template.userId,
+          ),
+        );
+      } catch (error) {
+        debugPrint('syncLocalStateToCloud(work): Template konnte nicht '
+            'geschrieben werden: $error');
+      }
     }
   }
 
@@ -1542,11 +1594,16 @@ class WorkProvider extends ChangeNotifier {
     if (!usesHybridStorage || scope == null) {
       return;
     }
-    _localTemplates = [...items];
-    await DatabaseService.saveLocalTemplates(
+    _localTemplates = _mergeByKey(
       _localTemplates,
-      scope: scope,
+      items,
+      (template) => template.id?.trim().isNotEmpty == true
+          ? 'id:${template.id}'
+          : 'template:${template.userId}:${template.name}:${template.startMinutes}:${template.endMinutes}',
     );
+    await _persistLocalTemplates();
+    _applyLocalState();
+    _safeNotify();
   }
 
   Future<void> _storeHybridWorkEntriesSnapshot(
@@ -1559,29 +1616,103 @@ class WorkProvider extends ChangeNotifier {
       return;
     }
 
-    _localEntries = _localEntries.where((entry) {
+    final scopedLocalEntries = _localEntries.where((entry) {
+      final sameUser = entry.userId == userId;
+      final sameMonth =
+          entry.date.year == month.year && entry.date.month == month.month;
+      return sameUser && sameMonth;
+    }).toList(growable: false);
+    final unaffectedEntries = _localEntries.where((entry) {
       final sameUser = entry.userId == userId;
       final sameMonth =
           entry.date.year == month.year && entry.date.month == month.month;
       return !(sameUser && sameMonth);
-    }).toList(growable: true)
-      ..addAll(items)
-      ..sort((a, b) => a.date.compareTo(b.date));
+    }).toList(growable: false);
 
-    await DatabaseService.saveLocalEntries(
-      _localEntries,
-      scope: scope,
-    );
+    _localEntries = [
+      ...unaffectedEntries,
+      ..._mergeByKey(
+        scopedLocalEntries,
+        items,
+        (entry) => entry.id?.trim().isNotEmpty == true
+            ? 'id:${entry.id}'
+            : 'entry:${entry.userId}:${entry.startTime.toIso8601String()}:${entry.endTime.toIso8601String()}',
+      ),
+    ]..sort((a, b) => a.date.compareTo(b.date));
+
+    await _persistLocalEntries();
+    _applyLocalState();
+    _safeNotify();
   }
 
-  void _notifyShiftWorked(String? sourceShiftId) {
+  Future<void> _notifyShiftWorked(String? sourceShiftId) async {
     final shiftId = sourceShiftId?.trim();
     if (shiftId == null || shiftId.isEmpty) return;
-    onShiftWorked?.call(shiftId);
+    try {
+      final schedule = _scheduleProvider;
+      if (schedule != null) {
+        await schedule.completeShiftForEntry(shiftId);
+      }
+    } catch (e) {
+      _errorMessage = 'Fehler beim Abschluss der Schicht: $e';
+      _safeNotify();
+    }
   }
 
   String _nextLocalId(String prefix) {
     return '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+  }
+
+  void _upsertLocalEntry(WorkEntry entry) {
+    final index = _localEntries.indexWhere((item) => item.id == entry.id);
+    if (index == -1) {
+      _localEntries.add(entry);
+      return;
+    }
+    _localEntries[index] = entry;
+  }
+
+  void _upsertLocalTemplate(WorkTemplate template) {
+    final index = _localTemplates.indexWhere((item) => item.id == template.id);
+    if (index == -1) {
+      _localTemplates.add(template);
+      return;
+    }
+    _localTemplates[index] = template;
+  }
+
+  Future<void> _persistLocalEntries() {
+    return DatabaseService.saveLocalEntries(
+      _localEntries,
+      scope: _localScope,
+    );
+  }
+
+  Future<void> _persistLocalTemplates() {
+    return DatabaseService.saveLocalTemplates(
+      _localTemplates,
+      scope: _localScope,
+    );
+  }
+
+  List<T> _mergeByKey<T>(
+    Iterable<T> localItems,
+    Iterable<T> remoteItems,
+    String Function(T item) keyOf,
+  ) {
+    final merged = <String, T>{};
+    var index = 0;
+    for (final item in localItems) {
+      final key = keyOf(item).trim();
+      merged[key.isEmpty ? 'local:$index' : key] = item;
+      index++;
+    }
+    for (final item in remoteItems) {
+      final key = keyOf(item).trim();
+      merged[key.isEmpty ? 'remote:$index' : key] = item;
+      index++;
+    }
+    return merged.values.toList(growable: true);
   }
 
   Future<Shift?> _findCoveringShift({

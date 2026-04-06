@@ -368,7 +368,21 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
                               'Pflicht bei Aenderungen an Zeit, Pause oder Standort',
                         ),
                         validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
+                          if (widget.entry == null) return null;
+                          final currentStart = DateTime(
+                            _date.year, _date.month, _date.day,
+                            _startTime.hour, _startTime.minute,
+                          );
+                          final currentEnd = DateTime(
+                            _date.year, _date.month, _date.day,
+                            _endTime.hour, _endTime.minute,
+                          );
+                          final hasChanges = widget.entry!.startTime != currentStart ||
+                              widget.entry!.endTime != currentEnd ||
+                              widget.entry!.breakMinutes != (double.tryParse(_breakCtrl.text) ?? 0) ||
+                              widget.entry!.siteId != _selectedSiteId;
+
+                          if (hasChanges && (value == null || value.trim().isEmpty)) {
                             return 'Bitte einen Korrekturgrund angeben';
                           }
                           return null;

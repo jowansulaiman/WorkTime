@@ -1,5 +1,6 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/compliance_rule_set.dart';
@@ -501,6 +502,102 @@ void main() {
       );
 
       expect(provider.entries, hasLength(2));
+    });
+
+    test(
+        'keeps local entries when switching from local-only to hybrid with empty cloud',
+        () async {
+      final provider = WorkProvider(
+        firestoreService: firestoreService,
+      );
+      final now = DateTime.now();
+      await DatabaseService.saveLocalEntries(
+        [
+          WorkEntry(
+            id: 'local-entry',
+            orgId: user.orgId,
+            userId: user.uid,
+            date: now,
+            startTime: now.subtract(const Duration(hours: 2)),
+            endTime: now.subtract(const Duration(hours: 1)),
+            breakMinutes: 0,
+            siteId: 'site-1',
+            siteName: 'Berlin',
+          ),
+        ],
+        scope: LocalStorageScope.fromUser(user),
+      );
+
+      await provider.updateSession(user, localStorageOnly: true);
+      await provider.selectMonth(DateTime(now.year, now.month));
+
+      expect(provider.entries, hasLength(1));
+      expect(provider.entries.single.id, 'local-entry');
+
+      await provider.updateSession(user, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.entries, hasLength(1));
+      expect(provider.entries.single.id, 'local-entry');
+      expect(provider.entries.single.siteName, 'Berlin');
+    });
+
+    test('stores hybrid entries locally when cloud transfer fails', () async {
+      final failingService = FirestoreService(
+        firestore: firestore,
+        cloudFunctionInvoker: (_, __) async {
+          throw FirebaseFunctionsException(
+            code: 'internal',
+            message: 'save failed',
+          );
+        },
+      );
+      final provider = WorkProvider(
+        firestoreService: failingService,
+      );
+      await provider.updateSession(user, hybridStorageEnabled: true);
+      provider.updateReferenceData(
+        sites: const [],
+        contracts: const [],
+        siteAssignments: const [
+          EmployeeSiteAssignment(
+            id: 'assign-1',
+            orgId: 'org-1',
+            userId: 'employee-1',
+            siteId: 'site-1',
+            siteName: 'Berlin',
+            isPrimary: true,
+          ),
+        ],
+        ruleSets: [ComplianceRuleSet.defaultRetail('org-1')],
+        travelTimeRules: const <TravelTimeRule>[],
+      );
+      await seedCurrentShift();
+
+      final now = DateTime.now();
+      await provider.addEntry(
+        WorkEntry(
+          orgId: user.orgId,
+          userId: user.uid,
+          date: now,
+          startTime: now.subtract(const Duration(minutes: 30)),
+          endTime: now.subtract(const Duration(minutes: 5)),
+          breakMinutes: 0,
+          siteId: 'site-1',
+          siteName: 'Berlin',
+          sourceShiftId: 'shift-1',
+        ),
+      );
+
+      expect(provider.entries, hasLength(1));
+      expect(provider.entries.single.siteName, 'Berlin');
+
+      final persistedEntries = await DatabaseService.loadLocalEntries(
+        scope: LocalStorageScope.fromUser(user),
+      );
+      expect(persistedEntries, hasLength(1));
+      expect(persistedEntries.single.siteName, 'Berlin');
     });
 
     test('blocks clock in when an overlapping work entry already exists',

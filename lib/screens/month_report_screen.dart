@@ -9,6 +9,7 @@ import '../providers/team_provider.dart';
 import '../providers/work_provider.dart';
 import '../services/export_service.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/responsive_layout.dart';
 
 class MonthReportScreen extends StatefulWidget {
   const MonthReportScreen({
@@ -24,18 +25,23 @@ class MonthReportScreen extends StatefulWidget {
 
 class _MonthReportScreenState extends State<MonthReportScreen> {
   bool _exporting = false;
+  final Set<String> _selectedSiteIds = {};
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final auth = context.watch<AuthProvider>();
     final work = context.watch<WorkProvider>();
     final team = context.watch<TeamProvider>();
     final isAdmin = auth.isAdmin;
     final currentUser = auth.profile;
     final reportUser = work.reportUser ?? auth.profile;
-    final entries = work.reportEntries;
+    final rawEntries = work.reportEntries;
     final settings = work.reportSettings;
-    final colorScheme = Theme.of(context).colorScheme;
+    final colorScheme = theme.colorScheme;
+    final pagePadding = MobileBreakpoints.screenPadding(context);
+    final isCompactScreen = MobileBreakpoints.isCompact(context);
+    final sectionSpacing = isCompactScreen ? 16.0 : 20.0;
 
     if (!(currentUser?.canViewReports ?? false)) {
       return Scaffold(
@@ -62,6 +68,33 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
       );
     }
 
+    final availableSites = <String, String>{};
+    for (final entry in rawEntries) {
+      if (entry.siteId != null && entry.siteName != null) {
+        availableSites[entry.siteId!] = entry.siteName!;
+      }
+    }
+    for (final site in team.sites) {
+      if (site.id != null) {
+        availableSites[site.id!] = site.name;
+      }
+    }
+
+    final entries = _selectedSiteIds.isEmpty
+        ? rawEntries
+        : rawEntries
+            .where(
+                (e) => e.siteId != null && _selectedSiteIds.contains(e.siteId))
+            .toList();
+
+    final totalHours =
+        entries.fold(0.0, (sum, entry) => sum + entry.workedHours);
+    final overtimeHours = entries.fold(0.0, (sum, entry) {
+      final diff = entry.workedHours - settings.dailyHours;
+      return sum + (diff > 0 ? diff : 0);
+    });
+    final totalWage = totalHours * settings.hourlyRate;
+
     final content = SafeArea(
       child: Align(
         alignment: Alignment.topCenter,
@@ -71,27 +104,32 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
             slivers: [
               SliverToBoxAdapter(
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: EdgeInsets.fromLTRB(
+                    pagePadding.left,
+                    16,
+                    pagePadding.right,
+                    16,
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         'Monatsbericht',
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineMedium
+                        style: (isCompactScreen
+                                ? theme.textTheme.headlineSmall
+                                : theme.textTheme.headlineMedium)
                             ?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 8),
                       Text(
                         'Monatssummen, Eintragsdetails und PDF-Export fuer Mitarbeiter und Admins.',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                            ),
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                       ),
-                      const SizedBox(height: 20),
+                      SizedBox(height: sectionSpacing),
                       _MonthSelector(provider: work),
                       const SizedBox(height: 16),
                       if (isAdmin)
@@ -100,6 +138,9 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
                           selectedUser: reportUser,
                           onChanged: (value) {
                             work.selectReportUser(value);
+                            setState(() {
+                              _selectedSiteIds.clear();
+                            });
                           },
                         ),
                       if (isAdmin) const SizedBox(height: 16),
@@ -120,26 +161,30 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
                             trailing: Text(reportUser.role.label),
                           ),
                         ),
-                      const SizedBox(height: 20),
+                      SizedBox(height: sectionSpacing),
+                      if (availableSites.isNotEmpty) ...[
+                        _buildSiteFilter(availableSites),
+                        SizedBox(height: sectionSpacing),
+                      ],
                       Text(
                         'Zusammenfassung',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       _StatsGrid(
-                        totalHours: work.totalReportHoursThisMonth,
-                        overtimeHours: work.reportOvertimeThisMonth,
-                        totalWage: work.totalReportWageThisMonth,
+                        totalHours: totalHours,
+                        overtimeHours: overtimeHours,
+                        totalWage: totalWage,
                         entryCount: entries.length,
                         settings: settings,
                       ),
-                      const SizedBox(height: 20),
+                      SizedBox(height: sectionSpacing),
                       FilledButton.icon(
                         onPressed: entries.isEmpty || _exporting
                             ? null
-                            : () => _exportPdf(work),
+                            : () => _exportPdf(work, entries),
                         icon: _exporting
                             ? SizedBox(
                                 width: 18,
@@ -159,12 +204,12 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
                           foregroundColor: colorScheme.onTertiary,
                         ),
                       ),
-                      const SizedBox(height: 24),
+                      SizedBox(height: isCompactScreen ? 20 : 24),
                       Text(
                         'Eintraege (${entries.length})',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 8),
                     ],
@@ -209,11 +254,50 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
     );
   }
 
-  Future<void> _exportPdf(WorkProvider work) async {
+  Widget _buildSiteFilter(Map<String, String> sites) {
+    final sortedSites = sites.entries.toList()
+      ..sort((a, b) => a.value.compareTo(b.value));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Standort-Filter',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final site in sortedSites)
+              FilterChip(
+                label: Text(site.value),
+                selected: _selectedSiteIds.contains(site.key),
+                onSelected: (selected) {
+                  setState(() {
+                    if (selected) {
+                      _selectedSiteIds.add(site.key);
+                    } else {
+                      _selectedSiteIds.remove(site.key);
+                    }
+                  });
+                },
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _exportPdf(
+      WorkProvider work, List<WorkEntry> entriesToExport) async {
     setState(() => _exporting = true);
     try {
       await ExportService.exportMonthlyReport(
-        entries: work.reportEntries,
+        entries: entriesToExport,
         settings: work.reportSettings,
         year: work.selectedMonth.year,
         month: work.selectedMonth.month,
@@ -396,15 +480,28 @@ class _StatsGrid extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final singleColumn = constraints.maxWidth < 720;
-        return GridView.count(
-          crossAxisCount: singleColumn ? 1 : 2,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-          childAspectRatio: singleColumn ? 3.8 : 2.2,
-          children: items.map((item) => _StatGridCard(item: item)).toList(),
+        final columns = constraints.maxWidth >= 980
+            ? items.length.clamp(1, 4)
+            : constraints.maxWidth >= 680
+                ? 2
+                : constraints.maxWidth >= 360 && items.length > 1
+                    ? 2
+                    : 1;
+        const spacing = 12.0;
+        final itemWidth = columns == 1
+            ? constraints.maxWidth
+            : (constraints.maxWidth - (spacing * (columns - 1))) / columns;
+
+        return Wrap(
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final item in items)
+              SizedBox(
+                width: itemWidth,
+                child: _StatGridCard(item: item),
+              ),
+          ],
         );
       },
     );
@@ -427,38 +524,70 @@ class _StatGridCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: item.color.withValues(alpha: 0.14),
-                borderRadius: BorderRadius.circular(12),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 190;
+
+        return Card(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: compact ? 96 : 104),
+            child: Padding(
+              padding: EdgeInsets.all(compact ? 14 : 16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: EdgeInsets.all(compact ? 8 : 10),
+                    decoration: BoxDecoration(
+                      color: item.color.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(item.icon, color: item.color, size: 18),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          item.label,
+                          maxLines: compact ? 2 : 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                        ),
+                        const SizedBox(height: 6),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              item.value,
+                              style: (compact
+                                      ? Theme.of(context).textTheme.titleMedium
+                                      : Theme.of(context).textTheme.titleLarge)
+                                  ?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: item.color,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              child: Icon(item.icon, color: item.color, size: 18),
             ),
-            const SizedBox(height: 8),
-            Text(
-              item.value,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: item.color,
-                  ),
-            ),
-            Text(
-              item.label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -475,6 +604,7 @@ class _ReportEntryTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final pagePadding = MobileBreakpoints.screenPadding(context);
     final dateFmt = DateFormat('EE, dd.MM.', 'de_DE');
     final timeFmt = DateFormat('HH:mm');
     final wage = entry.workedHours * settings.hourlyRate;
@@ -486,42 +616,130 @@ class _ReportEntryTile extends StatelessWidget {
     final isOvertime =
         entry.workedHours > settings.dailyHours && settings.dailyHours > 0;
 
+    final detailText =
+        '${timeFmt.format(entry.startTime)} - ${timeFmt.format(entry.endTime)}'
+        '${entry.note != null ? ' · ${entry.note}' : ''}';
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Card(
-        child: ListTile(
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          title: Row(
-            children: [
-              Expanded(child: Text(dateFmt.format(entry.date))),
-              if (isOvertime)
-                Icon(
-                  Icons.trending_up,
-                  size: 16,
-                  color: colorScheme.tertiary,
+      padding: EdgeInsets.fromLTRB(
+        pagePadding.left,
+        4,
+        pagePadding.right,
+        4,
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 430;
+
+          if (!compact) {
+            return Card(
+              child: ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                title: Row(
+                  children: [
+                    Expanded(child: Text(dateFmt.format(entry.date))),
+                    if (isOvertime)
+                      Icon(
+                        Icons.trending_up,
+                        size: 16,
+                        color: colorScheme.tertiary,
+                      ),
+                  ],
                 ),
-            ],
-          ),
-          subtitle: Text(
-            '${timeFmt.format(entry.startTime)} - ${timeFmt.format(entry.endTime)}'
-            '${entry.note != null ? ' · ${entry.note}' : ''}',
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          leading: CircleAvatar(
-            child: Text(entry.workedHours.toStringAsFixed(1)),
-          ),
-          trailing: settings.hourlyRate > 0
-              ? Text(
-                  currencyFmt.format(wage),
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: colorScheme.primary,
+                subtitle: Text(
+                  detailText,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                leading: CircleAvatar(
+                  child: Text(entry.workedHours.toStringAsFixed(1)),
+                ),
+                trailing: settings.hourlyRate > 0
+                    ? Text(
+                        currencyFmt.format(wage),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary,
+                        ),
+                      )
+                    : null,
+              ),
+            );
+          }
+
+          return Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          dateFmt.format(entry.date),
+                          style:
+                              Theme.of(context).textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ),
+                      if (isOvertime)
+                        Icon(
+                          Icons.trending_up,
+                          size: 16,
+                          color: colorScheme.tertiary,
+                        ),
+                    ],
                   ),
-                )
-              : null,
-        ),
+                  const SizedBox(height: 6),
+                  Text(
+                    detailText,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '${entry.workedHours.toStringAsFixed(1)} h',
+                          style:
+                              Theme.of(context).textTheme.labelLarge?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ),
+                      if (settings.hourlyRate > 0) ...[
+                        const Spacer(),
+                        Text(
+                          currencyFmt.format(wage),
+                          style:
+                              Theme.of(context).textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                    color: colorScheme.primary,
+                                  ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

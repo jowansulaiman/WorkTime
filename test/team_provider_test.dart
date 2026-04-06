@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/local_demo_data.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/employee_site_assignment.dart';
 import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/team_definition.dart';
 import 'package:worktime_app/models/travel_time_rule.dart';
@@ -173,6 +174,51 @@ void main() {
       expect(provider.sites, hasLength(1));
       expect(provider.sites.single.name, 'Berlin');
       expect(provider.ruleSets, isNotEmpty);
+    });
+
+    test(
+        'keeps local sites and assignments when switching to hybrid with empty cloud',
+        () async {
+      final provider = TeamProvider(
+        firestoreService: firestoreService,
+      );
+      final scope = LocalStorageScope.fromUser(adminUser);
+      await DatabaseService.saveLocalSites(
+        [
+          buildGermanSite(
+            'Berlin',
+            id: 'site-local',
+          ),
+        ],
+        scope: scope,
+      );
+      await DatabaseService.saveLocalSiteAssignments(
+        const [
+          EmployeeSiteAssignment(
+            id: 'assignment-local',
+            orgId: 'org-1',
+            userId: 'admin-1',
+            siteId: 'site-local',
+            siteName: 'Berlin',
+            isPrimary: true,
+          ),
+        ],
+        scope: scope,
+      );
+
+      await provider.updateSession(adminUser, localStorageOnly: true);
+
+      expect(provider.sites, hasLength(1));
+      expect(provider.siteAssignments, hasLength(1));
+
+      await provider.updateSession(adminUser, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.sites, hasLength(1));
+      expect(provider.sites.single.name, 'Berlin');
+      expect(provider.siteAssignments, hasLength(1));
+      expect(provider.siteAssignments.single.siteName, 'Berlin');
     });
 
     test('stores employee-specific protection rules in the contract', () async {

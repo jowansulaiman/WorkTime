@@ -227,7 +227,7 @@ class ComplianceService {
               candidate.startTime.month == shift.startTime.month)
           .fold<int>(durationMinutes,
               (sum, candidate) => sum + candidate.workedHours.round() * 60);
-      final projectedCents = (monthlyMinutes * contract.hourlyRate * 100 ~/ 60);
+      final projectedCents = ((monthlyMinutes / 60) * contract.hourlyRate * 100).round();
       final monthlyLimit =
           contract.monthlyIncomeLimitCents ?? ruleSet.minijobMonthlyLimitCents;
       if (projectedCents > monthlyLimit) {
@@ -518,7 +518,7 @@ class ComplianceService {
             workedMinutes,
             (sum, candidate) => sum + candidate.workedHours.round() * 60,
           );
-      final projectedCents = (monthlyMinutes * contract.hourlyRate * 100 ~/ 60);
+      final projectedCents = ((monthlyMinutes / 60) * contract.hourlyRate * 100).round();
       final monthlyLimit =
           contract.monthlyIncomeLimitCents ?? ruleSet.minijobMonthlyLimitCents;
       if (projectedCents > monthlyLimit) {

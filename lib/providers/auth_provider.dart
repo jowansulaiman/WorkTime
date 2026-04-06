@@ -31,6 +31,7 @@ class AuthProvider extends ChangeNotifier {
   bool _initialized = false;
   bool _busy = false;
   String? _errorMessage;
+  int _authChangeExecutionId = 0;
 
   bool get initialized => _initialized;
   bool get busy => _busy;
@@ -210,6 +211,8 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> _onAuthChanged(User? user) async {
+    final executionId = ++_authChangeExecutionId;
+
     await _profileSubscription?.cancel();
     _profileSubscription = null;
     _firebaseUser = user;
@@ -224,6 +227,8 @@ class AuthProvider extends ChangeNotifier {
     try {
       final ensuredProfile =
           await _firestoreService.ensureProfileForSignedInUser(user);
+      if (executionId != _authChangeExecutionId) return;
+
       _profile = ensuredProfile;
       notifyListeners();
       _profileSubscription =
@@ -244,11 +249,14 @@ class AuthProvider extends ChangeNotifier {
       });
       _errorMessage = null;
     } catch (error) {
+      if (executionId != _authChangeExecutionId) return;
       _errorMessage = _mapError(error);
       await _authService.signOut();
     } finally {
-      _initialized = true;
-      notifyListeners();
+      if (executionId == _authChangeExecutionId) {
+        _initialized = true;
+        notifyListeners();
+      }
     }
   }
 
