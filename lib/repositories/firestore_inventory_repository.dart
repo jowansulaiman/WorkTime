@@ -42,6 +42,13 @@ class FirestoreInventoryRepository implements InventoryRepository {
   ) =>
       _organizationDoc(orgId).collection('stockMovements');
 
+  // Bewusste Entscheidung (missing-orderby-updatedat-index-delta / full-read-no-
+  // delta-sync): Lieferanten/Artikel werden als vollstaendiger, nach nameLower
+  // sortierter Stream gelesen – kein where('updatedAt', isGreaterThan: cursor).
+  // Firestore-snapshots() ziehen nach dem ersten Snapshot ohnehin nur DocChanges
+  // (Deltas) aus dem lokalen Cache; ein echter updatedAt-Cursor + Index lohnt erst
+  // bei deutlich groesseren Bestaenden als den zwei Laeden. Bis dahin nicht
+  // ueberdimensionieren.
   @override
   Stream<List<Supplier>> watchSuppliers(String orgId) {
     return _supplierCollection(orgId).orderBy('nameLower').snapshots().map(
@@ -76,11 +83,17 @@ class FirestoreInventoryRepository implements InventoryRepository {
   Stream<List<StockMovement>> watchStockMovements(
     String orgId, {
     String? productId,
+    String? siteId,
     int limit = 100,
   }) {
     Query<Map<String, dynamic>> query = _stockMovementCollection(orgId);
+    // productId hat Vorrang (eigener (productId, createdAt)-Index); sonst optional
+    // standortgescopt ueber den (siteId, createdAt)-Composite-Index. Beide bedienen
+    // orderBy('createdAt') serverseitig statt clientseitig zu filtern.
     if (productId != null && productId.isNotEmpty) {
       query = query.where('productId', isEqualTo: productId);
+    } else if (siteId != null && siteId.isNotEmpty) {
+      query = query.where('siteId', isEqualTo: siteId);
     }
     query = query.orderBy('createdAt', descending: true).limit(limit);
     return query.snapshots().map(

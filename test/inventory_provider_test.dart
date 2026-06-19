@@ -44,9 +44,15 @@ class _OfflineInventoryRepository implements InventoryRepository {
   Stream<List<StockMovement>> watchStockMovements(
     String orgId, {
     String? productId,
+    String? siteId,
     int limit = 100,
   }) =>
-      _delegate.watchStockMovements(orgId, productId: productId, limit: limit);
+      _delegate.watchStockMovements(
+        orgId,
+        productId: productId,
+        siteId: siteId,
+        limit: limit,
+      );
 
   @override
   Future<void> deleteSupplier({

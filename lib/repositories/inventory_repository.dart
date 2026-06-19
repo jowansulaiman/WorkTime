@@ -18,10 +18,13 @@ abstract interface class InventoryRepository {
 
   Stream<List<PurchaseOrder>> watchPurchaseOrders(String orgId);
 
-  /// Letzte Bestandsbewegungen, optional auf einen Artikel gefiltert.
+  /// Letzte Bestandsbewegungen, optional auf einen Artikel ([productId]) oder
+  /// – fuer den standortgescopten Verlauf – auf einen Standort ([siteId])
+  /// gefiltert. Ist [productId] gesetzt, hat es Vorrang vor [siteId].
   Stream<List<StockMovement>> watchStockMovements(
     String orgId, {
     String? productId,
+    String? siteId,
     int limit = 100,
   });
 
