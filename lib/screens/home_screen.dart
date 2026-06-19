@@ -20,7 +20,10 @@ import '../providers/work_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/info_chip.dart';
 import '../widgets/responsive_layout.dart';
+import '../widgets/section_card.dart';
+import '../widgets/section_header.dart';
 import 'entry_form_screen.dart';
 import 'inventory_screen.dart';
 import 'month_report_screen.dart';
@@ -1020,15 +1023,15 @@ Future<void> _showShiftDetailsSheet(
               spacing: 8,
               runSpacing: 8,
               children: [
-                _InfoChip(
+                InfoChip(
                   icon: Icons.storefront_outlined,
                   label: shift.effectiveSiteLabel ?? 'Standort offen',
                 ),
-                _InfoChip(
+                InfoChip(
                   icon: Icons.person_outline,
                   label: shift.employeeName,
                 ),
-                _InfoChip(
+                InfoChip(
                   icon: Icons.hourglass_bottom_outlined,
                   label:
                       '${shift.workedHours.toStringAsFixed(1)} h inkl. ${shift.breakMinutes.toStringAsFixed(0)} min Pause',
@@ -1445,15 +1448,15 @@ class _EmployeeHeroCard extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _InfoChip(
+                  InfoChip(
                     icon: Icons.storefront_outlined,
                     label: nextShift.effectiveSiteLabel ?? 'Standort offen',
                   ),
-                  _InfoChip(
+                  InfoChip(
                     icon: Icons.badge_outlined,
                     label: nextShift.title,
                   ),
-                  _InfoChip(
+                  InfoChip(
                     icon: Icons.hourglass_bottom_outlined,
                     label: '${nextShift.workedHours.toStringAsFixed(1)} h',
                   ),
@@ -1545,7 +1548,7 @@ class _EmployeeWeekStrip extends StatelessWidget {
       (index) => DateTime(today.year, today.month, today.day + index),
     );
 
-    return _SectionCard(
+    return SectionCard(
       title: 'Deine Woche',
       child: SizedBox(
         height: 110,
@@ -1667,15 +1670,15 @@ class _PlannerHeroCard extends StatelessWidget {
               spacing: 10,
               runSpacing: 10,
               children: [
-                _InfoChip(
+                InfoChip(
                   icon: Icons.people_alt_outlined,
                   label: '$activeMembers aktiv',
                 ),
-                _InfoChip(
+                InfoChip(
                   icon: Icons.event_note_outlined,
                   label: '$pendingAbsenceCount offen',
                 ),
-                _InfoChip(
+                InfoChip(
                   icon: Icons.swap_horiz,
                   label: '$pendingSwapCount Tausch',
                 ),
@@ -1837,7 +1840,7 @@ class _EmployeeDashboardTab extends StatelessWidget {
               vertical: 16,
             ),
             children: [
-              _HeaderSection(
+              SectionHeader(
                 title: 'Heute',
                 subtitle:
                     'Naechste Schicht, Arbeitszeit und offene Aufgaben ohne Umwege.',
@@ -1898,7 +1901,7 @@ class _EmployeeDashboardTab extends StatelessWidget {
                 ),
               const SizedBox(height: 16),
               if (pendingAbsences.isNotEmpty || pendingSwapCount > 0)
-                _SectionCard(
+                SectionCard(
                   title: 'Offene Aufgaben',
                   child: Column(
                     children: [
@@ -1937,7 +1940,7 @@ class _EmployeeDashboardTab extends StatelessWidget {
                 _PendingAbsencesWidget(absences: pendingAbsences),
               ],
               const SizedBox(height: 20),
-              _SectionCard(
+              SectionCard(
                 title: 'Naechste Schichten',
                 child: upcomingShifts.isEmpty
                     ? const _EmptyState(
@@ -1959,7 +1962,7 @@ class _EmployeeDashboardTab extends StatelessWidget {
                       ),
               ),
               const SizedBox(height: 20),
-              _SectionCard(
+              SectionCard(
                 title: 'Letzte Eintraege',
                 child: recentEntries.isEmpty
                     ? const _EmptyState(
@@ -2511,19 +2514,19 @@ class _WeeklyProgressWidgetState extends State<_WeeklyProgressWidget> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    _InfoChip(
+                    InfoChip(
                       icon: Icons.schedule_outlined,
                       label: data == null || data.shiftCount == 0
                           ? 'Kein Schichtplan'
                           : '${data.shiftCount} ${data.shiftCount == 1 ? 'Schicht' : 'Schichten'}',
                     ),
-                    _InfoChip(
+                    InfoChip(
                       icon: Icons.link_rounded,
                       label: data == null || data.linkedEntryCount == 0
                           ? 'Noch nicht verknuepft'
                           : '${data.linkedEntryCount} verknuepft',
                     ),
-                    _InfoChip(
+                    InfoChip(
                       icon: diff >= 0
                           ? Icons.trending_up_rounded
                           : Icons.trending_down_rounded,
@@ -2716,7 +2719,7 @@ class _AdminDashboardTab extends StatelessWidget {
               vertical: 16,
             ),
             children: [
-              _HeaderSection(
+              SectionHeader(
                 title: 'Heute',
                 subtitle:
                     'Filialbetrieb, Ausnahmen und Entscheidungen fuer den laufenden Tag.',
@@ -2806,7 +2809,7 @@ class _AdminDashboardTab extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 20),
-              _SectionCard(
+              SectionCard(
                 title: 'Heute priorisieren',
                 child: Column(
                   children: [
@@ -2831,7 +2834,7 @@ class _AdminDashboardTab extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 20),
-              _SectionCard(
+              SectionCard(
                 title: 'Naechste Schichten',
                 child: upcomingShifts.isEmpty
                     ? const _EmptyState(
@@ -2853,7 +2856,7 @@ class _AdminDashboardTab extends StatelessWidget {
                       ),
               ),
               const SizedBox(height: 20),
-              _SectionCard(
+              SectionCard(
                 title: 'Naechste Entscheidungen',
                 child: _ManagerDecisionList(
                   pendingAbsences: pendingAbsences,
@@ -4030,7 +4033,7 @@ class _TimeTrackingTabState extends State<_TimeTrackingTab> {
                     constraints: const BoxConstraints(maxWidth: 520),
                     child: Padding(
                       padding: const EdgeInsets.all(24),
-                      child: _SectionCard(
+                      child: SectionCard(
                         title: 'Kein Zugriff',
                         child: Text(
                           'Die Zeiterfassung ist fuer dieses Profil deaktiviert. '
@@ -4074,7 +4077,7 @@ class _TimeTrackingTabState extends State<_TimeTrackingTab> {
                               child: Padding(
                                 padding:
                                     const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                                child: _HeaderSection(
+                                child: SectionHeader(
                                   title: 'Zeiterfassung',
                                   subtitle:
                                       'Monatsansicht, Kalendertage und Eintragsdetails fuer deine Arbeitszeiten.',
@@ -4420,7 +4423,7 @@ class _PunchClockSheet extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _HeaderSection(
+          const SectionHeader(
             title: 'Stempeluhr',
             subtitle:
                 'Ein- und ausstempeln, Standort pruefen und den aktuellen Einsatz verwalten.',
@@ -4522,50 +4525,6 @@ String _formatClockBreakLabel(
   return 'Auto-Pause ab ${provider.settings.autoBreakAfterMinutes} min';
 }
 
-class _HeaderSection extends StatelessWidget {
-  const _HeaderSection({
-    required this.title,
-    required this.subtitle,
-    this.breadcrumbs,
-    this.onBack,
-  });
-
-  final String title;
-  final String subtitle;
-  final List<BreadcrumbItem>? breadcrumbs;
-  final VoidCallback? onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    final compact = MobileBreakpoints.isCompact(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (breadcrumbs != null && breadcrumbs!.isNotEmpty) ...[
-          ShellBreadcrumb(
-            breadcrumbs: breadcrumbs!,
-            onBack: onBack,
-          ),
-          const SizedBox(height: 10),
-        ],
-        Text(
-          title,
-          style: (compact
-                  ? Theme.of(context).textTheme.headlineSmall
-                  : Theme.of(context).textTheme.headlineMedium)
-              ?.copyWith(fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          subtitle,
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-        ),
-      ],
-    );
-  }
-}
 
 class _PunchClockHero extends StatelessWidget {
   const _PunchClockHero({
@@ -5758,47 +5717,6 @@ class _DashboardMetricCard extends StatelessWidget {
   }
 }
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.child,
-  });
-
-  final String title;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest.withValues(
-                  alpha: 0.7,
-                ),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                title,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            child,
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 class _EmptyState extends StatelessWidget {
   const _EmptyState({
@@ -6169,7 +6087,7 @@ class _ProfileHubTab extends StatelessWidget {
               vertical: 16,
             ),
             children: [
-              _HeaderSection(
+              SectionHeader(
                 title: 'Profil',
                 subtitle:
                     'Persoenliche Daten, Arbeitszeit-Einstellungen und Auswertungen an einem Ort.',
@@ -6218,18 +6136,18 @@ class _ProfileHubTab extends StatelessWidget {
                             spacing: 8,
                             runSpacing: 8,
                             children: [
-                              _InfoChip(
+                              InfoChip(
                                 icon: Icons.storefront_outlined,
                                 label: primarySite?.name.trim().isEmpty ?? true
                                     ? 'Kein Stammstandort'
                                     : primarySite!.name,
                               ),
-                              _InfoChip(
+                              InfoChip(
                                 icon: Icons.schedule_outlined,
                                 label:
                                     '${work.settings.dailyHours.toStringAsFixed(1)} h Soll/Tag',
                               ),
-                              _InfoChip(
+                              InfoChip(
                                 icon: Icons.beach_access_outlined,
                                 label:
                                     '${work.settings.vacationDays} Urlaubstage',
@@ -6335,7 +6253,7 @@ class _ProfileHubTab extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 16),
-              _SectionCard(
+              SectionCard(
                 title: 'Sicherheit',
                 child: Column(
                   children: [
@@ -6369,43 +6287,6 @@ class _ProfileHubTab extends StatelessWidget {
   }
 }
 
-class _InfoChip extends StatelessWidget {
-  const _InfoChip({
-    required this.icon,
-    required this.label,
-  });
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHigh.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: colorScheme.primary),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 class _ShiftStatusBadge extends StatelessWidget {
   const _ShiftStatusBadge({required this.status});
@@ -6538,29 +6419,29 @@ class _DayEntries extends StatelessWidget {
             runSpacing: 8,
             children: [
               if (plannedHours > 0)
-                _InfoChip(
+                InfoChip(
                   icon: Icons.schedule_outlined,
                   label: 'Soll ${plannedHours.toStringAsFixed(1)} h',
                 ),
-              _InfoChip(
+              InfoChip(
                 icon: Icons.task_alt_outlined,
                 label: 'Ist ${actualHours.toStringAsFixed(1)} h',
               ),
               if (plannedHours > 0)
-                _InfoChip(
+                InfoChip(
                   icon: actualHours >= plannedHours
                       ? Icons.trending_up_rounded
                       : Icons.trending_down_rounded,
                   label: _formatSignedHours(actualHours - plannedHours),
                 ),
               if (linkedEntries.isNotEmpty)
-                _InfoChip(
+                InfoChip(
                   icon: Icons.link_rounded,
                   label:
                       '${linkedEntries.length} ${linkedEntries.length == 1 ? 'Link' : 'Links'}',
                 ),
               if (unlinkedCount > 0)
-                _InfoChip(
+                InfoChip(
                   icon: Icons.link_off_outlined,
                   label: '$unlinkedCount ohne Schichtbezug',
                 ),
@@ -6695,18 +6576,18 @@ class _DayShiftPlanPanel extends StatelessWidget {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          _InfoChip(
+                          InfoChip(
                             icon: Icons.schedule_outlined,
                             label:
                                 'Soll ${shift.workedHours.toStringAsFixed(1)} h',
                           ),
-                          _InfoChip(
+                          InfoChip(
                             icon: Icons.task_alt_outlined,
                             label: linkedEntries.isEmpty
                                 ? 'Noch kein Ist'
                                 : 'Ist ${linkedHours.toStringAsFixed(1)} h',
                           ),
-                          _InfoChip(
+                          InfoChip(
                             icon: Icons.compare_arrows,
                             label: linkedEntries.isEmpty
                                 ? 'Offen'
