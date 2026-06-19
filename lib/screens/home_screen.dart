@@ -1172,6 +1172,46 @@ class _ShellStatusBanner extends StatelessWidget {
   }
 }
 
+/// Wochentags-/Datums-Kopfzelle der mobilen Wochenansicht
+/// (extrahiert aus build-helper-methods-to-widget-classes).
+class _DayHeaderCell extends StatelessWidget {
+  const _DayHeaderCell({
+    required this.day,
+    required this.isToday,
+    required this.isSelected,
+  });
+
+  final DateTime day;
+  final bool isToday;
+  final bool isSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          DateFormat('EEEE', 'de_DE').format(day),
+          style: theme.textTheme.labelLarge?.copyWith(
+            fontWeight:
+                isSelected || isToday ? FontWeight.bold : FontWeight.w600,
+            color: isSelected || isToday ? colorScheme.primary : null,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          DateFormat('dd.MM.', 'de_DE').format(day),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _QuickActionListTile extends StatelessWidget {
   const _QuickActionListTile({
     required this.icon,
@@ -3083,9 +3123,8 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
                             for (final day in days)
                               Padding(
                                 padding: const EdgeInsets.all(10),
-                                child: _buildDayHeader(
-                                  context,
-                                  day,
+                                child: _DayHeaderCell(
+                                  day: day,
                                   isToday: _isSameDay(day, today),
                                   isSelected: _isSameDay(day, _selectedDay),
                                 ),
@@ -3249,36 +3288,6 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
             ),
           );
         }),
-      ],
-    );
-  }
-
-  Widget _buildDayHeader(
-    BuildContext context,
-    DateTime day, {
-    required bool isToday,
-    required bool isSelected,
-  }) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          DateFormat('EEEE', 'de_DE').format(day),
-          style: theme.textTheme.labelLarge?.copyWith(
-            fontWeight:
-                isSelected || isToday ? FontWeight.bold : FontWeight.w600,
-            color: isSelected || isToday ? colorScheme.primary : null,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          DateFormat('dd.MM.', 'de_DE').format(day),
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: colorScheme.onSurfaceVariant,
-          ),
-        ),
       ],
     );
   }

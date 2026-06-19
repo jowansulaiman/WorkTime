@@ -1726,8 +1726,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                     ),
                     const SizedBox(height: 8),
                     for (final member in widget.members)
-                      _buildSidebarCheckbox(
-                        context,
+                      _PlannerSidebarCheckbox(
                         label: member.displayName,
                         selected: _selectedMonthEmployeeIds.contains(
                           member.uid,
@@ -1759,8 +1758,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                       )
                     else
                       for (final location in locations)
-                        _buildSidebarCheckbox(
-                          context,
+                        _PlannerSidebarCheckbox(
                           label: location,
                           selected: _selectedMonthLocations.contains(location),
                           onChanged: (selected) => syncState(() {
@@ -1929,11 +1927,13 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                   children: [
                     for (final day in week)
                       Expanded(
-                        child: _buildMiniCalendarDay(
-                          context,
+                        child: _PlannerMiniCalendarDay(
                           day: day,
                           visibleDate: visibleDate,
-                          schedule: schedule,
+                          onTap: () {
+                            schedule.setVisibleDate(day);
+                            schedule.setViewMode(ScheduleViewMode.day);
+                          },
                         ),
                       ),
                   ],
@@ -1996,8 +1996,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
             if (_sidebarEmployeesExpanded) ...[
               const SizedBox(height: 4),
               for (final member in widget.members)
-                _buildSidebarCheckbox(
-                  context,
+                _PlannerSidebarCheckbox(
                   label: member.displayName,
                   selected: _selectedMonthEmployeeIds.contains(member.uid),
                   onChanged: (selected) {
@@ -2068,8 +2067,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
             if (_sidebarLocationsExpanded) ...[
               const SizedBox(height: 4),
               for (final location in locations)
-                _buildSidebarCheckbox(
-                  context,
+                _PlannerSidebarCheckbox(
                   label: location,
                   selected: _selectedMonthLocations.contains(location),
                   onChanged: (selected) {
@@ -2083,91 +2081,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                   },
                 ),
             ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMiniCalendarDay(
-    BuildContext context, {
-    required DateTime day,
-    required DateTime visibleDate,
-    required ScheduleProvider schedule,
-  }) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final isInMonth =
-        day.month == visibleDate.month && day.year == visibleDate.year;
-    final isToday = isSameDay(day, DateTime.now());
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: () {
-        schedule.setVisibleDate(day);
-        schedule.setViewMode(ScheduleViewMode.day);
-      },
-      child: Container(
-        height: 28,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: isToday ? colorScheme.primary : null,
-          shape: BoxShape.circle,
-        ),
-        child: Text(
-          '${day.day}',
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: isToday
-                ? colorScheme.onPrimary
-                : (isInMonth
-                    ? colorScheme.onSurface
-                    : colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
-            fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSidebarCheckbox(
-    BuildContext context, {
-    required String label,
-    required bool selected,
-    required ValueChanged<bool> onChanged,
-  }) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(8),
-      onTap: () => onChanged(!selected),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 2),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 20,
-              height: 20,
-              child: Checkbox(
-                value: selected,
-                onChanged: (value) => onChanged(value ?? false),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: selected
-                      ? colorScheme.onSurface
-                      : colorScheme.onSurfaceVariant,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                ),
-              ),
-            ),
           ],
         ),
       ),
@@ -5106,6 +5019,108 @@ class _PlannerQuickAddButton extends StatelessWidget {
           Icons.add,
           size: 18,
           color: colorScheme.primary,
+        ),
+      ),
+    );
+  }
+}
+
+/// Einzelner Tag im Mini-Monatskalender der Planer-Sidebar
+/// (extrahiert aus build-helper-methods-to-widget-classes).
+class _PlannerMiniCalendarDay extends StatelessWidget {
+  const _PlannerMiniCalendarDay({
+    required this.day,
+    required this.visibleDate,
+    required this.onTap,
+  });
+
+  final DateTime day;
+  final DateTime visibleDate;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isInMonth =
+        day.month == visibleDate.month && day.year == visibleDate.year;
+    final isToday = isSameDay(day, DateTime.now());
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: Container(
+        height: 28,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: isToday ? colorScheme.primary : null,
+          shape: BoxShape.circle,
+        ),
+        child: Text(
+          '${day.day}',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: isToday
+                ? colorScheme.onPrimary
+                : (isInMonth
+                    ? colorScheme.onSurface
+                    : colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
+            fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Kompakte Checkbox-Zeile der Planer-Sidebar (Mitarbeiter-/Standortfilter)
+/// (extrahiert aus build-helper-methods-to-widget-classes).
+class _PlannerSidebarCheckbox extends StatelessWidget {
+  const _PlannerSidebarCheckbox({
+    required this.label,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool selected;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => onChanged(!selected),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 2),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: Checkbox(
+                value: selected,
+                onChanged: (value) => onChanged(value ?? false),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: selected
+                      ? colorScheme.onSurface
+                      : colorScheme.onSurfaceVariant,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
