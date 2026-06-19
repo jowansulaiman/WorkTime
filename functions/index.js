@@ -436,6 +436,44 @@ async function writeShiftBatch({callerUid, shifts}) {
   return savedIds;
 }
 
+// Genehmigte Abwesenheiten der betroffenen Nutzer im relevanten Zeitfenster.
+// Nutzt den vorhandenen (userId, status, startDate)-Composite-Index und filtert
+// userId+status serverseitig, statt die gesamte Org-Abwesenheitsliste zu laden
+// und im Speicher zu filtern (absence-query-missing-status-index-filter).
+// Firestore erlaubt max. 30 Werte pro "in"-Filter -> userIds chunken.
+async function loadApprovedAbsencesInRange(orgId, userIds, maxEnd) {
+  if (userIds.length === 0) {
+    return [];
+  }
+  const collection = organizationCollection(orgId, "absenceRequests");
+  const maxEndTs = Timestamp.fromDate(maxEnd);
+  const chunks = [];
+  for (let i = 0; i < userIds.length; i += 30) {
+    chunks.push(userIds.slice(i, i + 30));
+  }
+  const snaps = await Promise.all(
+    chunks.map((chunk) =>
+      collection
+        .where("userId", "in", chunk)
+        .where("status", "==", "approved")
+        .where("startDate", "<=", maxEndTs)
+        .get(),
+    ),
+  );
+  const seen = new Set();
+  const absences = [];
+  for (const snap of snaps) {
+    for (const doc of snap.docs) {
+      if (seen.has(doc.id)) {
+        continue;
+      }
+      seen.add(doc.id);
+      absences.push(fromFirestoreAbsence(doc));
+    }
+  }
+  return absences;
+}
+
 async function loadShiftValidationContext(orgId, shifts) {
   const userIds = [...new Set(shifts.map((shift) => shift.userId).filter(Boolean))];
   const minStart = new Date(
@@ -447,7 +485,7 @@ async function loadShiftValidationContext(orgId, shifts) {
 
   const [
     shiftsSnap,
-    absencesSnap,
+    absences,
     contractsSnap,
     assignmentsSnap,
     rulesSnap,
@@ -459,10 +497,7 @@ async function loadShiftValidationContext(orgId, shifts) {
       .where("startTime", "<", Timestamp.fromDate(maxEnd))
       .orderBy("startTime")
       .get(),
-    organizationCollection(orgId, "absenceRequests")
-      .where("startDate", "<=", Timestamp.fromDate(maxEnd))
-      .orderBy("startDate")
-      .get(),
+    loadApprovedAbsencesInRange(orgId, userIds, maxEnd),
     organizationCollection(orgId, "employmentContracts").get(),
     organizationCollection(orgId, "employeeSiteAssignments").get(),
     organizationCollection(orgId, "ruleSets").get(),
@@ -474,10 +509,7 @@ async function loadShiftValidationContext(orgId, shifts) {
     existingShifts: shiftsSnap.docs
       .map(fromFirestoreShift)
       .filter((shift) => userIds.includes(shift.userId)),
-    absences: absencesSnap.docs
-      .map(fromFirestoreAbsence)
-      .filter((absence) => absence.status === "approved")
-      .filter((absence) => userIds.includes(absence.userId)),
+    absences,
     contracts: contractsSnap.docs.map(fromFirestoreContract),
     siteAssignments: assignmentsSnap.docs.map(fromFirestoreSiteAssignment),
     ruleSets: rulesSnap.docs.map(fromFirestoreRuleSet),
