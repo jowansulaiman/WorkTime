@@ -111,7 +111,13 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 169 → **17
 - **`no-desktop-keyboard-shortcuts` (erledigt):** Shell in `CallbackShortcuts` + `FocusTraversalGroup`; `Strg/Ctrl + 1..9` springt auf die n-te Rail-Destination (gleicher Pfad wie ein Rail-Tap). Maus-/Touch-Navigation unverändert.
 - **`web-renderer-bundle-not-pinned` (erledigt, Doku):** Default-Renderer als bewusste Entscheidung in `web/index.html` kommentiert; nächster Schritt (deferred imports schwerer Screens, `--analyze-size`) festgehalten, erst bei messbarer Startzeit.
 
-**Noch offen (13):** die großen Refactors (`split-shift-planner-god-file` 🔴, `split-home-screen-god-file`, `planner-board-eager-listview`, `timestamp-leaks-into-domain`) als eigene Strangler-Fig-Wellen; die Sync-Redesigns (`no-outbox-retry-queue`, `no-connectivity-no-sync-status-ux`, `no-delta-sync-endpoint`, `full-read-no-delta-sync`); `no-flavors-dev-prod` (Bruchrisiko lokales `flutter run`); `no-perf-traces-critical-flows` (firebase_performance-Dep); `team-management-eager-member-list` (SliverGrid-Umbau); `layer-first-structure` (Repo-Konsistenz höher gewichtet); `no-golden-tests` (auf macOS erzeugte Goldens würden die Ubuntu-CI rot färben). Jeweils mit Begründung in den Batch-1/2-Abschnitten und im Gap-Katalog.
+**Noch offen (13):** die großen Refactors (`split-shift-planner-god-file` 🔴 *(Schritt 1 erledigt, s. Batch 4)*, `split-home-screen-god-file`, `planner-board-eager-listview`, `timestamp-leaks-into-domain`) als eigene Strangler-Fig-Wellen; die Sync-Redesigns (`no-outbox-retry-queue`, `no-connectivity-no-sync-status-ux`, `no-delta-sync-endpoint`, `full-read-no-delta-sync`); `no-flavors-dev-prod` (Bruchrisiko lokales `flutter run`); `no-perf-traces-critical-flows` (firebase_performance-Dep); `team-management-eager-member-list` (SliverGrid-Umbau); `layer-first-structure` (Repo-Konsistenz höher gewichtet); `no-golden-tests` (auf macOS erzeugte Goldens würden die Ubuntu-CI rot färben). Jeweils mit Begründung in den Batch-1/2-Abschnitten und im Gap-Katalog.
+
+## Umsetzungsstand Welle 3 — Batch 4 (God-File-Split shift_planner, Schritt 1)
+
+Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 173 → **185** (+12 Unit-Tests). Vorab per read-only Explore-Agent die Extraktions-Cluster + ihre file-private Abhängigkeiten kartiert (sicherste/wertvollste Reihenfolge zuerst).
+
+- **`split-shift-planner-god-file` (begonnen `[~]`, Strangler-Fig Schritt 1):** Die reinen, BuildContext-freien Datums-/Listen-Helfer (`rangeDays`, `chunkDays`, `calendarMonthGridDays`, `dayKey`, `isoWeekNumber`) sind aus `shift_planner_screen.dart` in das neue, isoliert testbare `lib/screens/shift_planner/planner_logic.dart` gehoben; alle Aufrufstellen delegieren an die public Funktionen. **Nebenbefund/Bugfix:** Die Test-Isolation deckte auf, dass `isoWeekNumber` die Tagesdifferenz in Lokalzeit zählte und über eine Sommerzeit-Umstellung hinweg die KW um 1 verfehlte (2026-07-01 → KW 26 statt 27) — jetzt UTC-intern korrekt (Rückgabe ist int, kein Downstream-Effekt). Die datumsliefernden Helfer bleiben verhaltensgleich (Downstream nutzt nur `dayKey`/`DateFormat`, beide y/m/d-robust). **Offene Folgeschritte** (je eigener Commit, jeweils vorab fresh-recon wegen gedrifteter Zeilennummern): Blatt-Cell-Widgets (`_PlannerDayHeaderCell`/`_PlannerAbsencePill`/`_PlannerBoardShiftCard` + Painter/Farb-Helfer) per `part`-Datei auslagern; danach der `_ShiftEditorSheet`-Block (~1700 LOC) in eine eigene Datei.
 
 ## Leitplanken
 
@@ -181,7 +187,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 169 → **17
 
 ### Welle 3 — größere/optionale Vorhaben
 
-- [ ] **split-shift-planner-god-file** (🔴 kritisch, clean-code) — shift_planner_screen.dart ist ein God-File (8041 LOC) mit zwei Mega-State-Klassen
+- [~] **split-shift-planner-god-file** (🔴 kritisch, clean-code) — shift_planner_screen.dart ist ein God-File (8041 LOC) mit zwei Mega-State-Klassen
 - [x] **no-release-build-pipeline** (🟠 hoch, cicd) — Keine automatisierte Build-/Release-Pipeline fuer Web/Android/iOS
 - [ ] **split-home-screen-god-file** (🟠 hoch, clean-code) — home_screen.dart ist ein God-File (7065 LOC) mit vermischten Tab-Implementierungen
 - [ ] **planner-board-eager-listview** (🟠 hoch, performance) — Schichtplaner-Board materialisiert das gesamte Wochen-Grid eager statt lazy
