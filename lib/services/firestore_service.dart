@@ -7,6 +7,8 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
+import '../core/app_logger.dart';
+import '../core/retry.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
@@ -40,13 +42,18 @@ class FirestoreService {
     FirebaseFunctions? functions,
     CloudFunctionInvoker? cloudFunctionInvoker,
     Uuid? uuid,
+    Duration retryBaseDelay = const Duration(milliseconds: 200),
   })  : _providedFirestore = firestore,
         _functions = functions,
         _cloudFunctionInvoker = cloudFunctionInvoker,
-        _uuid = uuid ?? const Uuid();
+        _uuid = uuid ?? const Uuid(),
+        _retryBaseDelay = retryBaseDelay;
 
   final FirebaseFirestore? _providedFirestore;
   final Uuid _uuid;
+  // Basiswartezeit fuer Retry-Backoff transienter, idempotenter Cloud-Writes.
+  // Tests setzen Duration.zero fuer sofortige Wiederholungen.
+  final Duration _retryBaseDelay;
   FirebaseFunctions? _functions;
   final CloudFunctionInvoker? _cloudFunctionInvoker;
   FirebaseFirestore? _firestoreInstance;
@@ -644,7 +651,7 @@ class FirestoreService {
         SetOptions(merge: true),
       );
     }
-    await batch.commit();
+    await retryTransient(batch.commit, baseDelay: _retryBaseDelay);
   }
 
   Future<void> deleteWorkEntry({
@@ -1377,7 +1384,7 @@ class FirestoreService {
           },
           SetOptions(merge: true));
     }
-    await batch.commit();
+    await retryTransient(batch.commit, baseDelay: _retryBaseDelay);
   }
 
   Future<void> deleteShift({
@@ -1581,7 +1588,17 @@ class FirestoreService {
     Map<String, dynamic> payload,
   ) async {
     try {
-      await _callCloudFunction(name, payload);
+      // Callables sind durch stabile Client-IDs idempotent -> transiente
+      // Fehler (unavailable/deadline-exceeded) duerfen mit Backoff wiederholt
+      // werden, bevor der Hybrid-/Cloud-Fallback greift (no-retry-backoff-idempotent).
+      await retryTransient(
+        () => _callCloudFunction(name, payload),
+        baseDelay: _retryBaseDelay,
+        onRetry: (error, attempt) => AppLogger.warning(
+          'Callable $name transienter Fehler – Retry $attempt',
+          error: error,
+        ),
+      );
       return true;
     } on FirebaseFunctionsException catch (error) {
       if (error.code == 'not-found' || error.code == 'unavailable') {

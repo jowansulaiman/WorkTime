@@ -371,6 +371,50 @@ void main() {
     );
 
     test(
+      'saveWorkEntry wiederholt transiente Callable-Fehler vor dem Fallback '
+      '(no-retry-backoff-idempotent)',
+      () async {
+        var calls = 0;
+        final retryingService = FirestoreService(
+          firestore: firestore,
+          retryBaseDelay: Duration.zero,
+          cloudFunctionInvoker: (name, payload) async {
+            calls++;
+            if (calls < 3) {
+              throw FirebaseFunctionsException(
+                code: 'unavailable',
+                message: 'temporaer nicht erreichbar',
+              );
+            }
+            return {'issues': <dynamic>[]};
+          },
+        );
+
+        await retryingService.saveWorkEntry(
+          WorkEntry(
+            id: 'entry-retry',
+            orgId: 'org-1',
+            userId: 'employee-1',
+            date: DateTime(2026, 4, 5),
+            startTime: DateTime(2026, 4, 5, 8),
+            endTime: DateTime(2026, 4, 5, 16),
+            breakMinutes: 30,
+          ),
+        );
+
+        expect(calls, 3, reason: 'zwei transiente Fehler, dann Erfolg');
+
+        // Kein direkter Fallback-Write, da der Callable letztlich erfolgreich war.
+        final snapshot = await firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('workEntries')
+            .get();
+        expect(snapshot.docs, isEmpty);
+      },
+    );
+
+    test(
       'adjustProductStock mit gleicher clientMutationId bucht nur einmal '
       '(no-idempotency-on-stock-mutations)',
       () async {
