@@ -25,7 +25,7 @@ class ExportService {
       month: month,
     );
 
-    final stamp = DateFormat('yyyy-MM').format(DateTime(year, month));
+    final stamp = DateFormat('yyyy-MM', 'de_DE').format(DateTime(year, month));
     final fileName = 'arbeitszeitbericht-$stamp.pdf';
     await downloadPdfBytes(bytes: bytes, fileName: fileName);
   }
@@ -105,10 +105,10 @@ class ExportService {
 
     for (final shift in sortedShifts) {
       buffer.writeln([
-        DateFormat('dd.MM.yyyy').format(shift.startTime),
+        DateFormat('dd.MM.yyyy', 'de_DE').format(shift.startTime),
         _weekdayShort(shift.startTime.weekday),
-        DateFormat('HH:mm').format(shift.startTime),
-        DateFormat('HH:mm').format(shift.endTime),
+        DateFormat('HH:mm', 'de_DE').format(shift.startTime),
+        DateFormat('HH:mm', 'de_DE').format(shift.endTime),
         shift.breakMinutes.toStringAsFixed(0),
         shift.workedHours.toStringAsFixed(2),
         shift.employeeName,
@@ -127,9 +127,9 @@ class ExportService {
     required DateTime rangeEnd,
     required String extension,
   }) {
-    final startStamp = DateFormat('yyyy-MM-dd').format(rangeStart);
+    final startStamp = DateFormat('yyyy-MM-dd', 'de_DE').format(rangeStart);
     final inclusiveEnd = rangeEnd.subtract(const Duration(days: 1));
-    final endStamp = DateFormat('yyyy-MM-dd').format(
+    final endStamp = DateFormat('yyyy-MM-dd', 'de_DE').format(
       inclusiveEnd.isBefore(rangeStart) ? rangeStart : inclusiveEnd,
     );
     final suffix =

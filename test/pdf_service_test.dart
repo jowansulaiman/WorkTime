@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_entry.dart';
@@ -7,6 +8,7 @@ import 'package:worktime_app/services/pdf_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() => initializeDateFormatting('de_DE'));
 
   group('PdfService', () {
     test('generates a monthly report without external font downloads',
