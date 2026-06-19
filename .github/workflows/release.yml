@@ -1,0 +1,136 @@
+name: Release
+
+# Automatisierte Build-/Deploy-Pipeline (no-release-build-pipeline). Laeuft NUR
+# bei einem Versions-Tag vX.Y.Z und beruehrt damit weder Branch-Pushes noch PRs.
+# Build-Nummer wird automatisch aus github.run_number hochgezaehlt
+# (no-build-number-automation); Stores verlangen monoton steigende Codes.
+#
+# Benoetigte Repository-Secrets (in den Job-Steps referenziert):
+#   FIREBASE_CONFIG_JSON       -> Inhalt der dart-define-from-file-Konfig (FIREBASE_*/APP_*)
+#   FIREBASE_SERVICE_ACCOUNT   -> Service-Account-JSON fuer Hosting-Deploy
+#   FIREBASE_PROJECT_ID        -> Firebase-Projekt-ID
+#   ANDROID_KEYSTORE_BASE64    -> base64-kodierter Upload-Keystore
+#   ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS
+# Fehlt ein Secret, ueberspringt der jeweilige Schritt sich selbst (siehe if:).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FLUTTER_VERSION: 3.41.9
+
+jobs:
+  web-deploy:
+    name: Web build & Firebase Hosting deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Materialise dart-define config
+        env:
+          CONFIG: ${{ secrets.FIREBASE_CONFIG_JSON }}
+        run: printf '%s' "$CONFIG" > release_config.json
+      - name: Build web
+        run: flutter build web --release --dart-define-from-file=release_config.json
+      - name: Deploy to Firebase Hosting
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: ${{ secrets.FIREBASE_PROJECT_ID }}
+          channelId: live
+
+  android-aab:
+    name: Android App Bundle (obfuscated)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Materialise dart-define config
+        env:
+          CONFIG: ${{ secrets.FIREBASE_CONFIG_JSON }}
+        run: printf '%s' "$CONFIG" > release_config.json
+      - name: Materialise upload keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 --decode > android/upload-keystore.jks
+          {
+            echo "storeFile=upload-keystore.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyPassword=$KEY_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+          } > android/key.properties
+      - name: Derive version name from tag
+        run: echo "VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Build App Bundle
+        run: >
+          flutter build appbundle --release
+          --dart-define-from-file=release_config.json
+          --obfuscate --split-debug-info=build/symbols
+          --build-name=${{ env.VERSION_NAME }}
+          --build-number=${{ github.run_number }}
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/*.aab
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-symbols
+          path: build/symbols
+
+  ios-ipa:
+    name: iOS build (unsigned archive)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Materialise dart-define config
+        env:
+          CONFIG: ${{ secrets.FIREBASE_CONFIG_JSON }}
+        run: printf '%s' "$CONFIG" > release_config.json
+      - name: Derive version name from tag
+        run: echo "VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Build iOS (no codesign)
+        run: >
+          flutter build ipa --release --no-codesign
+          --dart-define-from-file=release_config.json
+          --obfuscate --split-debug-info=build/symbols
+          --build-name=${{ env.VERSION_NAME }}
+          --build-number=${{ github.run_number }}
+      - name: Upload iOS archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-archive
+          path: build/ios/archive
