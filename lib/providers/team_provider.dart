@@ -16,6 +16,7 @@ import '../models/user_invite.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
 import '../core/app_logger.dart';
+import '../core/error_reporter.dart';
 
 class TeamProvider extends ChangeNotifier {
   TeamProvider({
@@ -63,6 +64,7 @@ class TeamProvider extends ChangeNotifier {
   List<TravelTimeRule> _localTravelTimeRules = [];
   bool _loading = false;
   bool _disposed = false;
+  String? _errorMessage;
 
   List<AppUserProfile> get members => _members;
   List<UserInvite> get invites => _invites;
@@ -75,6 +77,7 @@ class TeamProvider extends ChangeNotifier {
   List<ComplianceRuleSet> get ruleSets => _effectiveRuleSets(_ruleSets);
   List<TravelTimeRule> get travelTimeRules => _travelTimeRules;
   bool get loading => _loading;
+  String? get errorMessage => _errorMessage;
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
@@ -83,6 +86,20 @@ class TeamProvider extends ChangeNotifier {
     if (!_disposed) {
       notifyListeners();
     }
+  }
+
+  /// Macht einen dauerhaften Stammdaten-Stream-Fehler sichtbar: setzt eine
+  /// Nutzer-Botschaft, meldet ihn ans Crash-Reporting und benachrichtigt die
+  /// UI (statt ihn nur ins Log zu schlucken — stream-onerror-debugprint-only).
+  void _setStreamError(String bereich, Object error) {
+    _errorMessage = 'Fehler beim Laden ($bereich). Bitte später erneut versuchen.';
+    _loading = false;
+    ErrorReporter.report(
+      error,
+      StackTrace.current,
+      context: 'TeamProvider-Stream: $bereich',
+    );
+    _safeNotify();
   }
 
   String? _lastSessionKey;
@@ -222,6 +239,7 @@ class TeamProvider extends ChangeNotifier {
 
     if (changed || storageModeChanged) {
       _loading = true;
+      _errorMessage = null; // stale Stream-Fehler vor Neuaufbau zuruecksetzen
       _safeNotify();
       await _membersSubscription?.cancel();
       await _invitesSubscription?.cancel();
@@ -254,9 +272,7 @@ class TeamProvider extends ChangeNotifier {
           _loading = false;
           _safeNotify();
         }, onError: (Object error) {
-          AppLogger.warning('TeamProvider: Fehler beim Laden der Mitglieder: $error');
-          _loading = false;
-          _safeNotify();
+          _setStreamError('Mitglieder', error);
         });
 
         if (user.isAdmin) {
@@ -269,8 +285,7 @@ class TeamProvider extends ChangeNotifier {
             _invites = items;
             _safeNotify();
           }, onError: (Object error) {
-            AppLogger.warning(
-                'TeamProvider: Fehler beim Laden der Einladungen: $error');
+            _setStreamError('Einladungen', error);
           });
         } else {
           _invites = [];
@@ -286,7 +301,7 @@ class TeamProvider extends ChangeNotifier {
           _teams = items;
           _safeNotify();
         }, onError: (Object error) {
-          AppLogger.warning('TeamProvider: Fehler beim Laden der Teams: $error');
+          _setStreamError('Teams', error);
         });
       } else {
         _members = [user];
@@ -304,7 +319,7 @@ class TeamProvider extends ChangeNotifier {
           _safeNotify();
         },
         onError: (Object error) {
-          AppLogger.warning('TeamProvider: Fehler beim Laden der Standorte: $error');
+          _setStreamError('Standorte', error);
         },
       );
 
@@ -317,8 +332,7 @@ class TeamProvider extends ChangeNotifier {
         _qualifications = items;
         _safeNotify();
       }, onError: (Object error) {
-        AppLogger.warning(
-            'TeamProvider: Fehler beim Laden der Qualifikationen: $error');
+        _setStreamError('Qualifikationen', error);
       });
 
       _contractsSubscription = _firestoreService
@@ -331,7 +345,7 @@ class TeamProvider extends ChangeNotifier {
         _contracts = items;
         _safeNotify();
       }, onError: (Object error) {
-        AppLogger.warning('TeamProvider: Fehler beim Laden der Vertraege: $error');
+        _setStreamError('Verträge', error);
       });
 
       _siteAssignmentsSubscription =
@@ -343,8 +357,7 @@ class TeamProvider extends ChangeNotifier {
         _siteAssignments = items;
         _safeNotify();
       }, onError: (Object error) {
-        AppLogger.warning(
-            'TeamProvider: Fehler beim Laden der Standortzuordnungen: $error');
+        _setStreamError('Standortzuordnungen', error);
       });
 
       _ruleSetsSubscription =
@@ -365,7 +378,7 @@ class TeamProvider extends ChangeNotifier {
         _ruleSets = items;
         _safeNotify();
       }, onError: (Object error) {
-        AppLogger.warning('TeamProvider: Fehler beim Laden der Regelwerke: $error');
+        _setStreamError('Regelwerke', error);
       });
 
       _travelTimeRulesSubscription =
@@ -377,8 +390,7 @@ class TeamProvider extends ChangeNotifier {
         _travelTimeRules = items;
         _safeNotify();
       }, onError: (Object error) {
-        AppLogger.warning(
-            'TeamProvider: Fehler beim Laden der Fahrtzeitregeln: $error');
+        _setStreamError('Fahrtzeitregeln', error);
       });
     }
   }

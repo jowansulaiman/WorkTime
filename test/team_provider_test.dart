@@ -13,6 +13,16 @@ import 'package:worktime_app/providers/team_provider.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
 
+/// Liefert fuer einen Stammdaten-Stream (Standorte) einen Fehler, um das
+/// Sichtbarmachen von Stream-Fehlern zu testen (stream-onerror-debugprint-only).
+class _ErroringSitesFirestoreService extends FirestoreService {
+  _ErroringSitesFirestoreService({required super.firestore});
+
+  @override
+  Stream<List<SiteDefinition>> watchSites(String orgId) =>
+      Stream<List<SiteDefinition>>.error(StateError('permission-denied'));
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -408,6 +418,28 @@ void main() {
       firestoreService = FirestoreService(
         firestore: firestore,
       );
+    });
+
+    test(
+        'macht einen Stammdaten-Stream-Fehler sichtbar '
+        '(stream-onerror-debugprint-only)', () async {
+      const teamLead = AppUserProfile(
+        uid: 'lead-1',
+        orgId: 'org-1',
+        email: 'lead@example.com',
+        role: UserRole.teamlead,
+        isActive: true,
+        settings: UserSettings(name: 'Lead'),
+      );
+      final provider = TeamProvider(
+        firestoreService: _ErroringSitesFirestoreService(firestore: firestore),
+      );
+      await provider.updateSession(teamLead);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.errorMessage, isNotNull,
+          reason: 'ein dauerhafter Stream-Fehler darf nicht still verschwinden');
+      expect(provider.errorMessage, contains('Standorte'));
     });
 
     test('teamlead loads organization members and teams for planning',
