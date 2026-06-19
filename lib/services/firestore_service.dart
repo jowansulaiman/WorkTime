@@ -1308,12 +1308,26 @@ class FirestoreService {
         .toList(growable: false);
   }
 
+  /// Version des Callable-Payload-Vertrags (no-api-contract-versioning). Der
+  /// Server kann über eine Mindestversion ein Force-Update erzwingen, ohne dass
+  /// ein Feld-Rename alte Clients still falsch validieren lässt.
+  static const int clientApiVersion = 1;
+
   Future<dynamic> _callCloudFunction(
     String name,
     Map<String, dynamic> payload,
   ) {
+    // Jeden Callable-Payload zentral anreichern:
+    //  - apiVersion: Vertragsversion (no-api-contract-versioning)
+    //  - _request_id: Korrelations-/Trace-ID Client->Server (no-distributed-tracing),
+    //    die der Server mitloggt, damit Client- und Server-Fehler verknüpfbar sind.
+    final enriched = <String, dynamic>{
+      ...payload,
+      'apiVersion': clientApiVersion,
+      '_request_id': _uuid.v4(),
+    };
     if (_cloudFunctionInvoker != null) {
-      return _cloudFunctionInvoker!(name, payload);
+      return _cloudFunctionInvoker!(name, enriched);
     }
     // Timeout, damit ein hängender Aufruf bei schlechter Verbindung nicht
     // unbegrenzt blockiert; bei Überschreitung greift der Hybrid-Fallback.
@@ -1322,7 +1336,7 @@ class FirestoreService {
           name,
           options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
         )
-        .call(payload);
+        .call(enriched);
   }
 
   Future<bool> _callCloudFunctionIfAvailable(

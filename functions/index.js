@@ -10,8 +10,38 @@ const db = admin.firestore();
 const FieldValue = admin.firestore.FieldValue;
 const Timestamp = admin.firestore.Timestamp;
 const REGION = "europe-west3";
+// Mindestversion des Callable-Payload-Vertrags (no-api-contract-versioning).
+// Wird sie erhoeht, lehnt der Server zu alte Clients mit APP_UPDATE_REQUIRED ab.
+const MIN_SUPPORTED_API_VERSION = 1;
+
+// Vertragsversion pruefen: fehlt/unparsbar -> tolerieren (Backwards-Compat fuer
+// Clients vor Einfuehrung des Feldes); nur eine ausdruecklich zu alte Version
+// wird mit failed-precondition (APP_UPDATE_REQUIRED) blockiert.
+function assertSupportedVersion(request) {
+  const raw = request.data?.apiVersion;
+  const version = typeof raw === "number" ? raw : Number.parseInt(raw, 10);
+  if (Number.isFinite(version) && version < MIN_SUPPORTED_API_VERSION) {
+    throw new HttpsError(
+      "failed-precondition",
+      "APP_UPDATE_REQUIRED",
+      {minApiVersion: MIN_SUPPORTED_API_VERSION},
+    );
+  }
+}
+
+// Korrelations-/Trace-ID (no-distributed-tracing) des Clients mitloggen, damit
+// Server-Logs mit Client-Fehlern verknuepfbar sind. Loggt keine PII.
+function traceCallable(name, request) {
+  const requestId = request.data?._request_id;
+  if (requestId) {
+    console.log(JSON.stringify({fn: name, requestId}));
+  }
+  return requestId;
+}
 
 exports.upsertShiftBatch = onCall({region: REGION}, async (request) => {
+  traceCallable("upsertShiftBatch", request);
+  assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertScheduler(caller);
 
@@ -47,6 +77,8 @@ exports.upsertShiftBatch = onCall({region: REGION}, async (request) => {
 });
 
 exports.publishShiftBatch = onCall({region: REGION}, async (request) => {
+  traceCallable("publishShiftBatch", request);
+  assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertScheduler(caller);
 
@@ -85,6 +117,8 @@ exports.publishShiftBatch = onCall({region: REGION}, async (request) => {
 });
 
 exports.upsertWorkEntry = onCall({region: REGION}, async (request) => {
+  traceCallable("upsertWorkEntry", request);
+  assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertTimeEntryEditor(caller);
   const entry = parseWorkEntry(request.data?.entry);
@@ -124,6 +158,8 @@ exports.upsertWorkEntry = onCall({region: REGION}, async (request) => {
 });
 
 exports.upsertWorkEntryBatch = onCall({region: REGION}, async (request) => {
+  traceCallable("upsertWorkEntryBatch", request);
+  assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertTimeEntryEditor(caller);
   const orgId = requiredString(request.data?.orgId, "orgId");
@@ -172,6 +208,8 @@ exports.upsertWorkEntryBatch = onCall({region: REGION}, async (request) => {
 });
 
 exports.previewCompliance = onCall({region: REGION}, async (request) => {
+  traceCallable("previewCompliance", request);
+  assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   const orgId = requiredString(request.data?.orgId, "orgId");
   assertSameOrg(caller, orgId);
