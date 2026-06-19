@@ -1,21 +1,18 @@
 import 'dart:typed_data';
 
-import 'package:share_plus/share_plus.dart';
+// Echter Stub: wird nur ausgewählt, wenn weder dart:io (Mobile/Desktop) noch
+// dart:html (Web) verfügbar ist. Auf den unterstützten Flutter-Plattformen
+// greift immer eine der konkreten Implementierungen
+// (download_service_io.dart bzw. download_service_web.dart). Dieser Pfad ist
+// die dokumentierte „nicht unterstützt"-Grenze des plattformneutralen Vertrags.
 
 Future<void> downloadFileBytes({
   required Uint8List bytes,
   required String fileName,
   required String mimeType,
 }) {
-  return Share.shareXFiles(
-    [
-      XFile.fromData(
-        bytes,
-        mimeType: mimeType,
-        name: fileName,
-      ),
-    ],
-    subject: fileName,
+  throw UnsupportedError(
+    'Datei-Download wird auf dieser Plattform nicht unterstützt.',
   );
 }
 
@@ -23,9 +20,7 @@ Future<void> downloadPdfBytes({
   required Uint8List bytes,
   required String fileName,
 }) {
-  return downloadFileBytes(
-    bytes: bytes,
-    fileName: fileName,
-    mimeType: 'application/pdf',
+  throw UnsupportedError(
+    'PDF-Download wird auf dieser Plattform nicht unterstützt.',
   );
 }
