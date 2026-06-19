@@ -146,12 +146,41 @@ class ScheduleProvider extends ChangeNotifier {
   bool _disposed = false;
   ShiftStatus? _statusFilter;
 
+  // Memoisierung des shifts-Getters: die gefilterte Liste wird gegen die
+  // Eingaben (Identitaet von _shifts + Status-/Team-Filter) gecacht, damit
+  // nicht bei jedem Rebuild/Getter-Zugriff neu allokiert/gefiltert wird
+  // (schedule-shifts-getter-refilters). _shifts wird stets neu zugewiesen
+  // (nie in-place mutiert), daher ist der Identitaetsvergleich korrekt.
+  List<Shift>? _filteredShiftsCache;
+  List<Shift>? _filteredShiftsCacheSource;
+  ShiftStatus? _filteredShiftsCacheStatus;
+  String? _filteredShiftsCacheTeamId;
+  String? _filteredShiftsCacheTeamName;
+
   DateTime get visibleDate => _visibleDate;
   ScheduleViewMode get viewMode => _viewMode;
   String? get selectedUserId => _selectedUserId;
   String? get selectedTeamId => _selectedTeamId;
   String? get selectedTeamName => _selectedTeamName;
-  List<Shift> get shifts => _filterShifts(_shifts);
+  List<Shift> get shifts {
+    final cached = _filteredShiftsCache;
+    if (cached != null &&
+        identical(_filteredShiftsCacheSource, _shifts) &&
+        _filteredShiftsCacheStatus == _statusFilter &&
+        _filteredShiftsCacheTeamId == _selectedTeamId &&
+        _filteredShiftsCacheTeamName == _selectedTeamName) {
+      return cached;
+    }
+    // Unveraenderlich, da die Referenz gecacht und geteilt wird (ein
+    // versehentliches In-Place-sort() wuerde sonst den Cache korrumpieren).
+    final result = List<Shift>.unmodifiable(_filterShifts(_shifts));
+    _filteredShiftsCache = result;
+    _filteredShiftsCacheSource = _shifts;
+    _filteredShiftsCacheStatus = _statusFilter;
+    _filteredShiftsCacheTeamId = _selectedTeamId;
+    _filteredShiftsCacheTeamName = _selectedTeamName;
+    return result;
+  }
   List<ShiftTemplate> get shiftTemplates => _shiftTemplates;
   List<AbsenceRequest> get absenceRequests => _absenceRequests;
   List<AbsenceRequest> get allAbsenceRequests => _allAbsenceRequests;

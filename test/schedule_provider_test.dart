@@ -163,6 +163,43 @@ void main() {
       expect(reloaded.shifts.single.title, 'Tagdienst');
     });
 
+    test('shifts-Getter ist memoisiert (schedule-shifts-getter-refilters)',
+        () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+      seedCompliance(provider);
+
+      final start = DateTime.now();
+      final shiftStart = DateTime(start.year, start.month, start.day, 8);
+      await provider.saveShift(
+        Shift(
+          orgId: adminUser.orgId,
+          userId: adminUser.uid,
+          employeeName: adminUser.displayName,
+          title: 'Tagdienst',
+          startTime: shiftStart,
+          endTime: shiftStart.add(const Duration(hours: 8)),
+          breakMinutes: 30,
+          siteId: defaultSite.id,
+          siteName: defaultSite.name,
+          location: defaultSite.name,
+        ),
+      );
+
+      final first = provider.shifts;
+      final second = provider.shifts;
+      expect(identical(first, second), isTrue,
+          reason: 'unveraenderte Eingaben -> gecachte Instanz wiederverwenden');
+
+      provider.setStatusFilter(ShiftStatus.completed);
+      final afterFilter = provider.shifts;
+      expect(identical(first, afterFilter), isFalse,
+          reason: 'Filterwechsel muss den Cache invalidieren');
+    });
+
     test('reloads cloud shifts when switching back from local-only mode',
         () async {
       final remoteFirestore = FakeFirebaseFirestore();
