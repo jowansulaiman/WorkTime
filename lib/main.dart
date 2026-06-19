@@ -210,6 +210,7 @@ class WorkTimeApp extends StatelessWidget {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'TeamProvider.updateSession',
+              onError: provider.surfaceSessionError,
             );
             return provider;
           },
@@ -228,6 +229,7 @@ class WorkTimeApp extends StatelessWidget {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'ScheduleProvider.updateSession',
+              onError: provider.surfaceSessionError,
             );
             provider.updateReferenceData(
               members: team.members,
@@ -253,6 +255,7 @@ class WorkTimeApp extends StatelessWidget {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'InventoryProvider.updateSession',
+              onError: provider.surfaceSessionError,
             );
             return provider;
           },
@@ -272,6 +275,7 @@ class WorkTimeApp extends StatelessWidget {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'WorkProvider.updateSession',
+              onError: provider.surfaceSessionError,
             );
             provider.updateReferenceData(
               members: team.members,
@@ -309,10 +313,17 @@ class WorkTimeApp extends StatelessWidget {
   }
 }
 
-void _dispatchProviderUpdate(Future<void> future, String label) {
+void _dispatchProviderUpdate(
+  Future<void> future,
+  String label, {
+  void Function(Object error)? onError,
+}) {
   unawaited(
     future.catchError((Object error, StackTrace stackTrace) {
       ErrorReporter.report(error, stackTrace, context: label);
+      // Fehler zusaetzlich in der UI sichtbar machen, statt ihn still im Log zu
+      // belassen (fire-and-forget-updatesession).
+      onError?.call(error);
     }),
   );
 }

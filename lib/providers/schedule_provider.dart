@@ -158,6 +158,14 @@ class ScheduleProvider extends ChangeNotifier {
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
   ShiftStatus? get statusFilter => _statusFilter;
+
+  /// Macht einen Fehler beim fire-and-forget Sitzungsaufbau in der UI sichtbar
+  /// (fire-and-forget-updatesession).
+  void surfaceSessionError(Object error) {
+    _errorMessage =
+        'Daten konnten nicht geladen werden. Bitte später erneut versuchen.';
+    _safeNotify();
+  }
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;

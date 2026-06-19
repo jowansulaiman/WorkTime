@@ -191,6 +191,14 @@ class InventoryProvider extends ChangeNotifier {
     _safeNotify();
   }
 
+  /// Macht einen Fehler beim fire-and-forget Sitzungsaufbau in der UI sichtbar
+  /// (fire-and-forget-updatesession).
+  void surfaceSessionError(Object error) {
+    _errorMessage =
+        'Daten konnten nicht geladen werden. Bitte später erneut versuchen.';
+    _safeNotify();
+  }
+
   void clearError() {
     if (_errorMessage != null) {
       _errorMessage = null;

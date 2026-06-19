@@ -260,5 +260,19 @@ void main() {
       expect(provider.suppliers, isEmpty);
       expect(provider.purchaseOrders, isEmpty);
     });
+
+    test(
+        'surfaceSessionError macht einen Sitzungsfehler sichtbar '
+        '(fire-and-forget-updatesession)', () {
+      final provider = newLocalProvider();
+      var notified = false;
+      provider.addListener(() => notified = true);
+
+      provider.surfaceSessionError(StateError('boom'));
+
+      expect(provider.errorMessage, isNotNull);
+      expect(notified, isTrue,
+          reason: 'die UI muss ueber den Fehler benachrichtigt werden');
+    });
   });
 }

@@ -151,6 +151,14 @@ class WorkProvider extends ChangeNotifier {
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
+  /// Macht einen Fehler beim fire-and-forget Sitzungsaufbau in der UI sichtbar
+  /// (fire-and-forget-updatesession), statt ihn nur ins Log zu schreiben.
+  void surfaceSessionError(Object error) {
+    _errorMessage =
+        'Daten konnten nicht geladen werden. Bitte später erneut versuchen.';
+    _safeNotify();
+  }
+
   bool get _isReportingCurrentUser =>
       reportUser == null || reportUser!.uid == _currentUser?.uid;
 

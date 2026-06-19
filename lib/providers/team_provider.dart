@@ -78,6 +78,11 @@ class TeamProvider extends ChangeNotifier {
   List<TravelTimeRule> get travelTimeRules => _travelTimeRules;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
+
+  /// Macht einen Fehler beim fire-and-forget Sitzungsaufbau in der UI sichtbar
+  /// (fire-and-forget-updatesession).
+  void surfaceSessionError(Object error) => _setStreamError('Daten', error);
+
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
