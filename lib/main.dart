@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 
@@ -35,6 +36,13 @@ Future<void> main() async {
     () async {
       WidgetsFlutterBinding.ensureInitialized();
       AppConfig.validateEnvironment();
+
+      // Saubere Web-URLs ohne #-Fragment (web-url-strategy-missing). Auf nicht-
+      // Web-Plattformen ist usePathUrlStrategy ein No-op, wir gaten dennoch
+      // explizit per kIsWeb.
+      if (kIsWeb) {
+        usePathUrlStrategy();
+      }
 
       FlutterError.onError = (details) {
         FlutterError.presentError(details);
