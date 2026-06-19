@@ -73,6 +73,14 @@ class DatabaseService {
   static const _scopedPrefix = 'local_v2';
   static const _orgScopeInitializedKey = '__org_initialized';
   static const _userScopeInitializedKey = '__user_initialized';
+  static const _schemaVersionKey = '__schema_version';
+
+  /// Aktuelle Schema-Version der lokalen Persistenz (no-local-schema-version).
+  /// Version 1 == Ist-Zustand (kein Migrationsschritt). Bei breaking Model-
+  /// Aenderungen (Rename/Typwechsel) hochzaehlen und in
+  /// [_ensureScopedSchemaVersion] einen geordneten Migrationsschritt ergaenzen,
+  /// statt sich auf das stille Verwerfen inkompatibler Eintraege zu verlassen.
+  static const int currentLocalSchemaVersion = 1;
   static const _orgScopedCollectionKeys = <String>{
     _entriesKey,
     _shiftsKey,
@@ -830,6 +838,27 @@ class DatabaseService {
 
     await _ensureOrgScopedStorageInitialized(prefs, scope);
     await _ensureUserScopedStorageInitialized(prefs, scope);
+    await _ensureScopedSchemaVersion(prefs, _orgScopeSchemaVersionKey(scope));
+    await _ensureScopedSchemaVersion(prefs, _userScopeSchemaVersionKey(scope));
+  }
+
+  /// Versioniert die lokale Persistenz pro Scope. Liest die gespeicherte
+  /// Version (0 = noch keine), fuehrt geordnete, vorwaertsgerichtete
+  /// Migrationsschritte aus und stempelt am Ende [currentLocalSchemaVersion].
+  /// Aktuell ist Version 1 der Ist-Zustand -> ein No-op-Stempel; die toleranten
+  /// Parser (FormatException/TypeError werden in _loadCollection uebersprungen)
+  /// bleiben als Defense-in-Depth bestehen.
+  static Future<void> _ensureScopedSchemaVersion(
+    SharedPreferences prefs,
+    String versionKey,
+  ) async {
+    final stored = prefs.getInt(versionKey) ?? 0;
+    if (stored >= currentLocalSchemaVersion) {
+      return;
+    }
+    // Künftige Migrationen hier einhaengen, z. B.:
+    //   if (stored < 2) { await _migrateV1ToV2(prefs, ...); }
+    await prefs.setInt(versionKey, currentLocalSchemaVersion);
   }
 
   static Future<void> _ensureOrgScopedStorageInitialized(
@@ -1093,5 +1122,13 @@ class DatabaseService {
 
   static String _userScopeInitializedMarkerKey(LocalStorageScope scope) {
     return '${_userScopePrefix(scope)}$_userScopeInitializedKey';
+  }
+
+  static String _orgScopeSchemaVersionKey(LocalStorageScope scope) {
+    return '${_orgScopePrefix(scope)}$_schemaVersionKey';
+  }
+
+  static String _userScopeSchemaVersionKey(LocalStorageScope scope) {
+    return '${_userScopePrefix(scope)}$_schemaVersionKey';
   }
 }
