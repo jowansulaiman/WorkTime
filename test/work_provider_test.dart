@@ -9,6 +9,7 @@ import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/travel_time_rule.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_entry.dart';
+import 'package:worktime_app/models/work_template.dart';
 import 'package:worktime_app/providers/work_provider.dart';
 import 'package:worktime_app/services/compliance_rejected_exception.dart';
 import 'package:worktime_app/services/database_service.dart';
@@ -43,8 +44,55 @@ class _TestWorkProvider extends WorkProvider {
   }
 }
 
+/// Liefert fuer den Vorlagen-Stream einen Fehler, um das Sichtbarmachen
+/// von Stream-Fehlern zu testen (work-template-report-stream-silent).
+class _ErroringTemplatesFirestoreService extends FirestoreService {
+  _ErroringTemplatesFirestoreService({required super.firestore});
+
+  @override
+  Stream<List<WorkTemplate>> watchWorkTemplates({
+    required String orgId,
+    required String userId,
+  }) =>
+      Stream<List<WorkTemplate>>.error(StateError('permission-denied'));
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('WorkProvider Stream-Fehler', () {
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      DatabaseService.resetCachedPrefs();
+    });
+
+    test(
+        'macht einen Vorlagen-Stream-Fehler sichtbar statt ihn zu schlucken',
+        () async {
+      final firestore = FakeFirebaseFirestore();
+      const admin = AppUserProfile(
+        uid: 'admin-1',
+        orgId: 'org-1',
+        email: 'admin@example.com',
+        role: UserRole.admin,
+        isActive: true,
+        settings: UserSettings(name: 'Admin'),
+      );
+      final provider = WorkProvider(
+        firestoreService:
+            _ErroringTemplatesFirestoreService(firestore: firestore),
+      );
+      addTearDown(provider.dispose);
+
+      await provider.updateSession(admin);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.errorMessage, isNotNull,
+          reason: 'ein dauerhafter Stream-Fehler darf nicht still verschwinden');
+      expect(provider.errorMessage, contains('Vorlagen'));
+    });
+  });
 
   group('WorkProvider clocking', () {
     late FirestoreService firestoreService;

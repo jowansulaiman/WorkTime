@@ -23,6 +23,7 @@ import '../services/compliance_rejected_exception.dart';
 import '../services/firestore_service.dart';
 import 'schedule_provider.dart';
 import '../core/app_logger.dart';
+import '../core/error_reporter.dart';
 
 const _clockInKey = 'clock_in_time';
 const _clockInSiteIdKey = 'clock_in_site_id';
@@ -156,7 +157,39 @@ class WorkProvider extends ChangeNotifier {
   void surfaceSessionError(Object error) {
     _errorMessage =
         'Daten konnten nicht geladen werden. Bitte später erneut versuchen.';
+    _errorArea = null;
     _safeNotify();
+  }
+
+  // Bereich des aktuell angezeigten Stream-Fehlers (z.B. 'Vorlagen'), damit ein
+  // erholter Stream nur SEINEN eigenen Fehler loescht und einen persistenten
+  // Fehler eines anderen Bereichs nicht versteckt.
+  String? _errorArea;
+
+  /// Macht einen dauerhaften Stream-Fehler sichtbar: setzt eine Nutzer-Botschaft,
+  /// meldet ihn ans Crash-Reporting und benachrichtigt die UI (statt ihn nur ins
+  /// Log zu schlucken — work-template-report-stream-silent).
+  void _setStreamError(String bereich, Object error) {
+    _errorMessage = 'Fehler beim Laden ($bereich). Bitte später erneut versuchen.';
+    _errorArea = bereich;
+    _loading = false;
+    ErrorReporter.report(
+      error,
+      StackTrace.current,
+      context: 'WorkProvider-Stream: $bereich',
+    );
+    _safeNotify();
+  }
+
+  /// Loescht einen zuvor gesetzten Stream-Fehler, sobald GENAU DIESER Bereich
+  /// wieder gesund Daten liefert (ohne einen persistenten Fehler eines anderen
+  /// Bereichs zu verstecken).
+  void _markStreamHealthy(String bereich) {
+    if (_errorMessage != null && _errorArea == bereich) {
+      _errorMessage = null;
+      _errorArea = null;
+      _safeNotify();
+    }
   }
 
   bool get _isReportingCurrentUser =>
@@ -1478,7 +1511,7 @@ class WorkProvider extends ChangeNotifier {
             _withoutTombstonedEntries(items).toList(growable: false);
         _entries = visible;
         _loading = false;
-        _errorMessage = null;
+        _markStreamHealthy('Eintraege');
         if (usesHybridStorage) {
           unawaited(
             _storeHybridWorkEntriesSnapshot(
@@ -1490,9 +1523,7 @@ class WorkProvider extends ChangeNotifier {
         }
         _safeNotify();
       }, onError: (Object error) {
-        _errorMessage = 'Fehler beim Laden der Eintraege: $error';
-        _loading = false;
-        _safeNotify();
+        _setStreamError('Eintraege', error);
       });
     } else {
       _entriesSubscription = null;
@@ -1509,12 +1540,13 @@ class WorkProvider extends ChangeNotifier {
       )
           .listen((items) {
         _templates = items;
+        _markStreamHealthy('Vorlagen');
         if (usesHybridStorage) {
           unawaited(_storeHybridTemplatesSnapshot(items));
         }
         _safeNotify();
       }, onError: (Object error) {
-        AppLogger.warning('WorkProvider: Fehler beim Laden der Vorlagen: $error');
+        _setStreamError('Vorlagen', error);
       });
     } else {
       _templatesSubscription = null;
@@ -1551,6 +1583,7 @@ class WorkProvider extends ChangeNotifier {
     )
         .listen((items) {
       _reportEntries = items;
+      _markStreamHealthy('Berichtsdaten');
       if (usesHybridStorage) {
         unawaited(
           _storeHybridWorkEntriesSnapshot(
@@ -1562,7 +1595,7 @@ class WorkProvider extends ChangeNotifier {
       }
       _safeNotify();
     }, onError: (Object error) {
-      AppLogger.warning('WorkProvider: Fehler beim Laden der Berichtsdaten: $error');
+      _setStreamError('Berichtsdaten', error);
     });
   }
 
