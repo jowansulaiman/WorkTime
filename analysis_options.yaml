@@ -9,6 +9,12 @@
 # packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
+# Architektur-Importgrenze (no-architecture-fitness-lint): Die Presentation-
+# Schicht (lib/screens/**) importiert NICHT direkt aus lib/services/**.
+# Der Dart-Analyzer kann diese Grenze nicht ausdruecken; sie wird stattdessen
+# von tool/check_layering.dart geprueft (in .github/workflows/ci.yml erzwungen).
+# Bewusste Ausnahmen werden dort gewhitelistet.
+
 analyzer:
   # Quality Gate scharf halten: tote/ungenutzte Symbole brechen den Build,
   # statt nur als Hinweis durchzurutschen (CLAUDE.md: keine CI -> jetzt via

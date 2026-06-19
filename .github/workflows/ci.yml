@@ -39,6 +39,9 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
+      - name: Architecture layering check
+        run: dart run tool/check_layering.dart
+
       - name: Run tests
         run: flutter test
 
