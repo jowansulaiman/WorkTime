@@ -548,8 +548,6 @@ void main() {
       seedCompliance(provider, members: const [employee]);
 
       final today = dayInCurrentWeek(1);
-      final updatedStart = dayInCurrentWeek(3);
-      final updatedEnd = dayInCurrentWeek(4);
       await provider.submitAbsenceRequest(
         AbsenceRequest(
           orgId: employee.orgId,
@@ -583,8 +581,6 @@ void main() {
       seedCompliance(provider, members: const [employee]);
 
       final today = dayInCurrentWeek(1);
-      final updatedStart = dayInCurrentWeek(3);
-      final updatedEnd = dayInCurrentWeek(4);
       await provider.submitAbsenceRequest(
         AbsenceRequest(
           orgId: employee.orgId,

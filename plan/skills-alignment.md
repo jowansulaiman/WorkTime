@@ -1,0 +1,921 @@
+# Plan: Angleichung der WorkTime-App an die 19 claude-skills
+
+> Erzeugt durch einen Audit-Workflow (12 Skill-Domänen × Audit-Agent + adversarialer Verify-Agent gegen den echten Code). **91 Gaps gemeldet, 90 im Code bestätigt, 1 widerlegt.** Jeder Gap unten ist gegen die reale Quelle verifiziert (`file:line`-Referenzen). Baseline beim Start: `flutter analyze` = 14 Issues, `flutter test` = 124 grün.
+
+## Überblick
+
+| Severity | Anzahl |
+|---|---|
+| 🔴 kritisch | 6 |
+| 🟠 hoch | 25 |
+| 🟡 mittel | 35 |
+| ⚪ niedrig | 24 |
+| **gesamt** | **90** |
+
+
+**Umsetzungswellen:** Welle 1 = 26 Gaps (dieser Durchlauf, additiv & nicht-brechend, Tests bleiben grün) · Welle 2 = 22 Gaps (gezielte Folge-Iterationen: Repository-Schicht, God-File-Splits, Offline-Sync-Härtung) · Welle 3 = 42 Gaps (größere/optionale Vorhaben).
+
+## Umsetzungsstand (dieser Durchlauf)
+
+**Verifiziert grün:** `flutter analyze` = 0 Issues (mit verschärftem Lint-Regelwerk), `flutter test` von 124 → **134** Tests, alle grün (+7 Inventory-Provider-, +2 Inventory-Screen-, +1 Compliance-Regressionstest). Baseline-Verhalten der App unverändert.
+
+Umgesetzt (24 von 26 Welle-1-Gaps):
+- **CI & Lint:** `.github/workflows/ci.yml` (analyze + test + functions syntax-check, Flutter 3.41.9 gepinnt); `analysis_options.yaml` verschärft (tote/ungenutzte Symbole = Fehler + rauscharme Korrektheits-Lints); alle 14 Alt-`analyze`-Issues behoben; Radio-API auf `RadioGroup` migriert.
+- **Observability/Errors:** neue `lib/core/app_logger.dart` (Level, PII-Maskierung, release-fest) + `lib/core/error_reporter.dart` (Crashlytics-Einhängepunkt); `main()` in `runZonedGuarded`, globale Handler + `_dispatchProviderUpdate` darüber; Release-`ErrorWidget.builder`; 38 `debugPrint` → `AppLogger.warning` migriert.
+- **Resilience/Backend:** Callable-Timeout (30 s); neue `ComplianceRejectedException` bewahrt strukturierte `{issues}`/`{validations}`; **KRITISCH-Fix** hybrid-catch reicht bewusste Server-Ablehnung durch statt sie lokal zu überschreiben (transienter Fallback bleibt erhalten) – mit Regressionstest.
+- **Security:** HSTS/X-Content-Type-Options/X-Frame-Options/Referrer-Policy in `firebase.json`; CSP-Meta in `web/index.html`; `previewCompliance` mit Rollen-Gate (assertScheduler / assertTimeEntryEditor + self-or-admin).
+- **UI/Daten:** neues `lib/widgets/empty_state.dart` (ersetzt file-private Kopie in `inventory_screen`); **Inventory lokale Persistenz** (4 neue org-skopierte Collections in `DatabaseService` + Laden/Speichern im `InventoryProvider`) → keine Datenverluste mehr im local-Modus.
+- **Tests:** `test/inventory_provider_test.dart` (7 Tests, inkl. Persistenz-Round-Trip), `test/inventory_screen_test.dart` (Widget-Smoke-Tests).
+
+**Bewusst auf Welle 2 verschoben (mit Begründung):**
+- `web-url-strategy-missing` (PathUrlStrategy): braucht `flutter_web_plugins`-Dependency + Web-Build-Verifikation – nicht ohne lauffähigen Web-Build abzusichern.
+- `batch-limit-no-client-chunking`: Server lehnt > 50 bereits sauber ab; clientseitiges Chunking ist additiv und folgt separat.
+- **Crashlytics-Dependency** selbst: nur der Einhängepunkt (`ErrorReporter.externalSink`) wurde gebaut; `firebase_crashlytics` als Paket + Verdrahtung folgt in Welle 2 (vermeidet ungetestete Dependency-Auflösung in diesem Durchlauf).
+
+**Vor Deploy zu prüfen:** CSP-Meta gegen echten `flutter build web` + Login-Flow smoke-testen (Kommentar in `web/index.html`).
+
+## Umsetzungsstand Welle 2 (Sync-/Daten-Härtung – laufend)
+
+Verifiziert grün: `flutter analyze` = 0, `flutter test` = **136** (zwei neue Sync-Regressionstests).
+
+- **`blind-lww-merge-no-version` (erledigt):** `_mergeByKey` (beide Provider) hat einen optionalen `updatedAtOf`-Tie-Breaker (Last-Write-Wins) – eine lokal neuere Version wird nicht mehr von einem älteren Server-Snapshot überschrieben. Verdrahtet für Shifts (hat bereits `updatedAt`) und WorkEntry; dafür wurde ein lesbares `updatedAt` zu `WorkEntry` ergänzt (6-Serialisierungs-Regel) und lokale Schreibvorgänge stempeln es frisch. + Round-Trip-Test.
+- **`no-tombstones-for-deletes` / `no-soft-delete-tombstones` (WorkEntry erledigt):** persistierter Tombstone-Store in `DatabaseService` (`loadTombstones`/`saveTombstones`); lokale Löschungen werden gemerkt und beim Wiedereinspielen aus der Cloud (Cache, Hybrid-Merge **und** Live-Stream) gefiltert; beim `syncLocalStateToCloud` wird die Löschung in Firestore propagiert und der Tombstone aufgelöst. + Regressionstest (lokal löschen → Cloud-Modus → bleibt gelöscht).
+- **Offen (gleiches Muster):** Tombstones auf `Shift`/`AbsenceRequest` ausweiten; Outbox-Retry-Queue (`no-outbox-retry-queue`); Inventory-Hybrid-Offline (`inventory-no-offline-support`).
+
+## Leitplanken
+
+- **Die App funktioniert; nichts brechen.** Bevorzugt werden additive Änderungen (neue Dateien, neue optionale Felder). Nach jeder Gruppe `flutter analyze` + `flutter test`.
+
+- **Pragmatisch für 2 Läden / Spark-Free-Tier.** Kein Kubernetes/Kafka/Service-Mesh. Kostenbewusste Firestore-Writes bleiben Designziel.
+
+- **Zwei-Serialisierungs-Regel beachten** (CLAUDE.md): jedes neue Modellfeld in `toFirestoreMap`/`fromFirestore`/`toMap`/`fromMap`/`copyWith` (+`clearX`) und ggf. `functions/index.js`.
+
+- **Deutsche UI-/Fehlertexte**, `de_DE` hart, kein i18n.
+
+## Umsetzungs-Roadmap
+
+### Welle 1 — jetzt (additiv, verifiziert grün)
+
+- [x] **no-ci-quality-gate-workflow** (🔴 kritisch, cicd) — Keine CI: flutter analyze/test laufen nirgends automatisiert
+- [x] **hybrid-catch-swallows-blocking-stateerror** (🔴 kritisch, error-handling) — Hybrid-Fallback-catch verschluckt serverseitige Compliance-Blocks (StateError) und schreibt trotzdem lokal
+- [x] **no-crash-reporting** (🔴 kritisch, observability) — Kein Crash-/Fehler-Reporting in Produktion — App ist im Feld blind
+- [x] **inventory-provider-untested** (🔴 kritisch, testing) — InventoryProvider hat keinerlei Unit-Tests (kritischster Coverage-Gap)
+- [x] **blocking-violations-discarded-client** (🟠 hoch, backend-api) — Strukturierte Compliance-Verletzungen ({issues}/{validations}) gehen im Client verloren
+- [x] **analyze-not-zero-warnings** (🟠 hoch, clean-code) — flutter analyze ist nicht warnungsfrei und mehrere Dateien sind nicht dart-format-konform
+- [x] **inventory-not-locally-persisted** (🟠 hoch, daten-persistenz) — Warenwirtschaft wird im Local-Modus nur In-Memory gehalten - Datenverlust beim App-Neustart
+- [x] **no-timeout-on-remote-calls** (🟠 hoch, error-handling) — Keine Timeouts auf Cloud-Function-Callables und Firestore-Reads
+- [x] **global-handlers-no-crash-reporting** (🟠 hoch, error-handling) — Globale Fehler-Handler loggen nur per debugPrint statt an ein Crash-Reporting weiterzuleiten
+- [x] **no-runzoneguarded** (🟠 hoch, observability) — main() läuft nicht in runZonedGuarded — Zone-Fehler unerfasst
+- [x] **no-structured-logging** (🟠 hoch, observability) — debugPrint statt strukturiertem Logging mit Leveln (~40 Stellen)
+- [x] **silent-compliance-bypass-fallback** (🟠 hoch, sicherheit) — Stiller Direct-Write-Fallback umgeht serverseitige Compliance-Validierung
+- [x] **inventory-screens-no-widget-tests** (🟠 hoch, testing) — Inventory- und Bestell-Screens (2400+ Zeilen UI) komplett ohne Widget-Tests
+- [x] **duplicate-emptystate-widget** (🟠 hoch, ux-ui) — _EmptyState (und weitere Reuse-Widgets) doppelt file-private kopiert statt nach lib/widgets gehoben
+- [ ] **batch-limit-no-client-chunking** (🟡 mittel, backend-api) — Batch-Limit 50 wird serverseitig hart abgelehnt, Client teilt nicht in Chunks
+- [x] **no-flutter-version-pin** (🟡 mittel, cicd) — Flutter-/Dart-SDK-Version nicht gepinnt — Builds nicht reproduzierbar
+- [x] **strengthen-lint-ruleset** (🟡 mittel, clean-code) — analysis_options.yaml hat leeren rules-Block (nur flutter_lints, keine Verschaerfung)
+- [x] **extract-shared-empty-section-widgets** (🟡 mittel, clean-code) — Aehnliche file-private Widgets (_EmptyState, _SectionCard, _HeaderSection) ueber mehrere Screens dupliziert
+- [x] **no-errorwidget-builder** (🟡 mittel, error-handling) — Kein angepasster ErrorWidget.builder — roter Fehlerschirm erreicht Endnutzer
+- [x] **compliance-issues-swallowed** (🟡 mittel, observability) — Strukturierte Server-Compliance-Signale werden verworfen (blinder Fleck)
+- [x] **pii-in-logs** (🟡 mittel, observability) — Personenbezogene Daten (uid) in Log-Ausgaben
+- [x] **missing-web-security-headers** (🟡 mittel, sicherheit) — Hosting-Header ohne HSTS, CSP, X-Content-Type-Options, X-Frame-Options
+- [x] **preview-compliance-no-role-gate** (🟡 mittel, sicherheit) — previewCompliance Callable ohne Rollen-/Permission-Gate
+- [ ] **web-url-strategy-missing** (🟡 mittel, ux-ui) — Keine PathUrlStrategy — Web-Adressen mit Hash, kein Deeplink/Back-Forward-Support
+- [x] **no-timeout-on-callable** (⚪ niedrig, backend-api) — Callable-Aufrufe ohne Timeout - haengende Calls blockieren ohne Fallback
+- [x] **no-csp-in-index-html** (⚪ niedrig, sicherheit) — Kein Content-Security-Policy-Meta-Tag in web/index.html
+
+### Welle 2 — nächste Iterationen (gezielt, je eigener Commit + Tests)
+
+- [x] **no-tombstones-for-deletes** (🔴 kritisch, sync) — Loeschungen erzeugen keine Tombstones – geloeschte Datensaetze tauchen beim naechsten Sync wieder auf
+- [ ] **missing-repository-layer** (🟠 hoch, architektur) — Provider übernehmen die Repository-Rolle: Storage-Strategie (cloud/hybrid/local) ist über 4 Provider gestreut statt gekapselt
+- [ ] **firestore-service-god-object** (🟠 hoch, architektur) — FirestoreService ist ein 1791-Zeilen-God-Object mit 88 Public-Methoden über alle Domänen + Cloud-Functions-Aufrufe
+- [ ] **no-domain-repository-interfaces-dip** (🟠 hoch, architektur) — Kein einziges Repository-/Service-Interface — Provider hängen an konkreter FirestoreService-Klasse (DIP verletzt)
+- [ ] **no-idempotency-key** (🟠 hoch, backend-api) — Schreib-Callables haben keinen Idempotency-Key gegen Retry-Duplikate aus instabilen Mobilnetzen
+- [ ] **android-release-debug-signing** (🟠 hoch, cicd) — Android-Release-Build signiert mit dem Debug-Keystore
+- [ ] **planner-build-on-on-quadratic-filtering** (🟠 hoch, performance) — Quadratische Synchron-Filterung im Planner-build() pro Frame
+- [ ] **home-shell-watches-all-providers** (🟠 hoch, performance) — HomeScreen-Shell rebuildt komplett bei jeder Provider-Aenderung (zu breiter watch)
+- [x] **blind-lww-merge-no-version** (🟠 hoch, sync) — _mergeByKey ist blindes Last-Write-Wins ohne Versions-/Zeitstempelvergleich – Offline-Edits werden still ueberschrieben
+- [ ] **no-outbox-retry-queue** (🟠 hoch, sync) — Kein Outbox/Retry – lokal gepufferte hybrid-Writes werden nie automatisch zur Cloud nachgepusht
+- [ ] **inventory-no-offline-support** (🟠 hoch, sync) — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
+- [ ] **no-medium-window-class** (🟠 hoch, ux-ui) — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett
+- [ ] **no-semantics-screenreader** (🟠 hoch, ux-ui) — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
+- [ ] **fire-and-forget-updatesession** (🟡 mittel, architektur) — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
+- [ ] **build-helper-methods-to-widget-classes** (🟡 mittel, clean-code) — 15+ Widget _buildXxx Helper-Methoden statt const-faehiger Widget-Klassen
+- [ ] **no-secure-storage-for-sensitive** (🟡 mittel, daten-persistenz) — Sensible Geschaefts-/Personaldaten liegen unverschluesselt im Klartext in SharedPreferences
+- [ ] **no-idempotency-on-stock-mutations** (🟡 mittel, daten-persistenz) — Stock-Adjust/Wareneingang haben keinen Idempotency-Schluessel - Client-Retry kann Bestand doppelt buchen
+- [ ] **no-retry-backoff-idempotent** (🟡 mittel, error-handling) — Keine Retry-mit-Backoff fuer idempotente Cloud-Writes; einmaliger transienter Fehler degradiert sofort lokal
+- [ ] **stream-onerror-debugprint-only** (🟡 mittel, error-handling) — Stammdaten-Stream-Fehler (TeamProvider) werden nur per debugPrint verschluckt, ohne Nutzer-Feedback
+- [ ] **counters-bopla-no-monotonic-check** (🟡 mittel, sicherheit) — counters und stockMovements: keine serverseitige Feld-/Wertvalidierung (BOPLA)
+- [ ] **timestamp-ids-not-uuid** (🟡 mittel, sync) — Client-generierte IDs sind Timestamp-basiert statt UUID/ULID – Kollisions- und Re-Sync-Risiko
+- [ ] **no-soft-delete-tombstones** (⚪ niedrig, daten-persistenz) — Harte Loeschungen ohne Tombstones/Soft-Delete verhindern Loescherkennung beim Offline-Sync
+
+### Welle 3 — größere/optionale Vorhaben
+
+- [ ] **split-shift-planner-god-file** (🔴 kritisch, clean-code) — shift_planner_screen.dart ist ein God-File (8041 LOC) mit zwei Mega-State-Klassen
+- [ ] **no-release-build-pipeline** (🟠 hoch, cicd) — Keine automatisierte Build-/Release-Pipeline fuer Web/Android/iOS
+- [ ] **split-home-screen-god-file** (🟠 hoch, clean-code) — home_screen.dart ist ein God-File (7065 LOC) mit vermischten Tab-Implementierungen
+- [ ] **planner-board-eager-listview** (🟠 hoch, performance) — Schichtplaner-Board materialisiert das gesamte Wochen-Grid eager statt lazy
+- [ ] **timestamp-leaks-into-domain** (🟡 mittel, architektur) — 18 von 20 Modellen importieren package:cloud_firestore — Firestore-Typ Timestamp leckt in die Domäne
+- [ ] **no-architecture-fitness-lint** (🟡 mittel, architektur) — Keine automatisierte Layering-/Import-Grenzprüfung — Schichtverstöße brechen den Build nicht
+- [ ] **no-delta-sync-endpoint** (🟡 mittel, backend-api) — Kein Delta-/since-Sync-Endpunkt und keine Tombstones - jeder Read ist Vollabzug
+- [ ] **no-api-contract-versioning** (🟡 mittel, backend-api) — Callable-Payload-Vertrag ist unversioniert - alte App-Versionen koennen still brechen
+- [ ] **no-feature-flags-force-update** (🟡 mittel, cicd) — Kein Feature-Flag-/Force-Update-/Minimum-Version-Mechanismus
+- [ ] **no-build-number-automation** (🟡 mittel, cicd) — Statische Versionsnummer ohne automatisches Build-Counter-Hochzaehlen
+- [ ] **no-local-schema-version** (🟡 mittel, daten-persistenz) — Lokale Persistenz hat keine echte Schema-Versionierung (nur ein Prefix-Konstante)
+- [ ] **no-distributed-tracing** (🟡 mittel, observability) — Keine Trace-Korrelation Client -> Cloud Functions
+- [ ] **no-analytics-screen-tracking** (🟡 mittel, observability) — Keine Produkt-Telemetrie / kein Screen-Tracking für Nutzerflüsse
+- [ ] **no-repaintboundary-shift-cards** (🟡 mittel, performance) — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
+- [ ] **schedule-shifts-getter-refilters** (🟡 mittel, performance) — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff
+- [ ] **no-connectivity-no-sync-status-ux** (🟡 mittel, sync) — Keine Konnektivitaetserkennung und keine Sync-Status-UX – Eventual Consistency ist fuer den Nutzer unsichtbar
+- [ ] **hybrid-delete-rethrows** (🟡 mittel, sync) — hybrid-Delete folgt nicht dem dokumentierten catch-Fallback-Muster – Loeschungen schlagen offline hart fehl
+- [ ] **csv-escaping-bom-undertested** (🟡 mittel, testing) — CSV-Export: Escaping-Sonderfaelle (Semikolon, Anfuehrungszeichen, Zeilenumbruch) ungetestet
+- [ ] **loading-not-adaptive-no-skeletons** (🟡 mittel, ux-ui) — Ladezustände immer Material-CircularProgressIndicator (nicht .adaptive), keine Skeletons
+- [ ] **no-spacing-radii-tokens** (🟡 mittel, ux-ui) — ThemeExtension nur für Farben — Spacing/Radii sind als magische Zahlen verstreut
+- [ ] **no-textscaler-reduce-motion** (🟡 mittel, ux-ui) — Keine Textskalierungs-Robustheit und kein Reduce-Motion-Respekt
+- [ ] **layer-first-structure** (⚪ niedrig, architektur) — Layer-first-Struktur statt Feature-first — Warenwirtschaft-Modul über 6 Verzeichnisse zersplittert
+- [ ] **download-service-stub-misnamed-platform-split** (⚪ niedrig, architektur) — Plattform-Split der Download-Datei greift nur Web vs. Nicht-Web ab; 'Stub' ist faktisch die Mobile/Desktop-Impl (share_plus)
+- [ ] **absence-query-missing-status-index-filter** (⚪ niedrig, backend-api) — Server-seitige absenceRequests-Query filtert Status erst im Speicher statt per indexiertem Query
+- [ ] **no-flavors-dev-prod** (⚪ niedrig, cicd) — Keine Flavors/Build-Varianten fuer dev/prod — Demo-Build und Prod teilen Bundle-ID
+- [ ] **dedupe-absence-sort-comparator** (⚪ niedrig, clean-code) — Identischer Sort-Comparator fuer AbsenceRequest dupliziert (watchAll/getAll)
+- [ ] **missing-orderby-updatedat-index-delta** (⚪ niedrig, daten-persistenz) — Kein Index/Query auf updatedAt - keine inkrementelle Delta-Synchronisation, volle Collection-Streams
+- [ ] **stockmovements-no-org-time-index** (⚪ niedrig, daten-persistenz) — watchStockMovements ohne productId nutzt orderBy(createdAt) ohne standortgescopten Composite-Index
+- [ ] **barcode-no-index-clientside-scan** (⚪ niedrig, daten-persistenz) — Barcode-/SKU-Suche und Kategorie-Filter laufen rein clientseitig (kein Feld-Index)
+- [ ] **work-template-report-stream-silent** (⚪ niedrig, error-handling) — Vorlagen- und Bericht-Stream-Fehler im WorkProvider werden ohne Nutzer-Feedback geschluckt
+- [ ] **order-number-fallback-collision** (⚪ niedrig, error-handling) — Bestellnummer-Fallback verschluckt jeden Fehler und kann kollidierende/duplizierte Nummern erzeugen
+- [ ] **no-perf-traces-critical-flows** (⚪ niedrig, observability) — Keine RUM-Performance-Signale / Custom Traces um kritische Abläufe
+- [ ] **team-management-eager-member-list** (⚪ niedrig, performance) — Team-Management materialisiert Mitarbeiter-/Site-Listen eager in ListView(children:)
+- [ ] **web-renderer-bundle-not-pinned** (⚪ niedrig, performance) — Web-Renderer/CanvasKit-Startkosten nicht bewusst konfiguriert
+- [ ] **no-obfuscation-build-guidance** (⚪ niedrig, sicherheit) — Release-Builds ohne dokumentiertes --obfuscate/--split-debug-info
+- [ ] **web-token-storage-not-documented** (⚪ niedrig, sicherheit) — Auth-Token-Speicherung auf Web (localStorage-Persistenz) ohne dokumentierte Risikoabwägung
+- [ ] **full-read-no-delta-sync** (⚪ niedrig, sync) — Hybrid spiegelt per Voll-Monatsstream statt Delta-Sync; cacheCloudStateLocally laedt alle Eintraege ohne Cursor
+- [ ] **no-golden-tests** (⚪ niedrig, testing) — Keine Golden-Tests fuer die Multiplattform-UI (Web/iOS/Android)
+- [ ] **order-number-determinism** (⚪ niedrig, testing) — Bestellnummern-Allokation: Transaktions-Counter und Fallback-Pfad nicht deterministisch getestet
+- [ ] **inventory-firestore-fallback-untested** (⚪ niedrig, testing) — Inventory-Firestore-Pfad: kein Stream-onError-Test (KEIN Hybrid-Fallback im Provider)
+- [ ] **no-coverage-gate-doc** (⚪ niedrig, testing) — Keine reproduzierbare Coverage-Messung dokumentiert (kein --coverage-Workflow)
+- [ ] **no-desktop-keyboard-shortcuts** (⚪ niedrig, ux-ui) — Keine Tastatur-Shortcuts/Hover für Desktop- und Web-Nutzung trotz Rail-Layout ab 1120dp
+
+---
+
+## Vollständiger Gap-Katalog (nach Domäne)
+
+
+### Sicherheit (01 API-Sicherheit · 02 Software-Sicherheit)
+
+#### 🟠 hoch `silent-compliance-bypass-fallback` — Stiller Direct-Write-Fallback umgeht serverseitige Compliance-Validierung
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`, `firestore.rules`
+- **Skill-Prinzip:** 01_api-sicherheit.md §5 (Function-Level-Authorization/BOLA, Durchsetzung serverseitig) und 02_software-sicherheit.md §1 (Trust Boundaries: clientseitige Sicherheitsentscheidungen sind umgehbar)
+- **Problem:** _callCloudFunctionIfAvailable fängt FirebaseFunctionsException mit code not-found/unavailable ab und gibt false zurück, woraufhin saveWorkEntry/saveWorkEntryBatch/saveShiftBatch/publishShiftBatch still auf direkte Firestore-Writes zurückfallen. firestore.rules erlauben diese Writes (shifts: canManageShifts; workEntries: self+canEditTimeEntries oder admin). Damit lässt sich die serverseitige Compliance-Prüfung umgehen, auch bei Functions-Störung oder Region-Mismatch.
+- **Fix:** In _callCloudFunctionIfAvailable den not-found/unavailable-Fall im cloud-only-Modus NICHT mehr still auf Direct-Write fallen lassen, sondern deutschen StateError werfen; Fallback nur explizit für hybrid/local beibehalten. Zusätzlich debugPrint-Warnung wenn Fallback greift. Region-Mismatch (AppConfig.firebaseFunctionsRegion vs. const REGION in functions/index.js) als häufigste Ursache dokumentieren. Optional firestore.rules härten.
+- **Verify-Notiz:** Bestätigt. lib/services/firestore_service.dart:1499 _callCloudFunctionIfAvailable: bei code=='not-found'||'unavailable' return false. saveWorkEntry (Z.563) -> _saveWorkEntryDirect; saveShiftBatch (Z.1233) -> _saveShiftBatchDirect; publishShiftBatch (Z.1253) -> _saveShiftBatchDirect; alle gated nur durch !AppConfig.disableAuthentication, kein Storage-Modus-Branch beim Fallback. firestore.rules:579 shifts allow create/update: canManageShifts; Z.471/481 workEntries allow create/update: isAdmin() || (userId==auth.uid && canEditTimeEntries()). Direkte Writes umgehen die einzige serverseitige Compliance-Validierung. Korrektur zum Audit: der Fallback unterscheidet aktuell NICHT zwischen cloud/hybrid/local; _callCloudFunctionIfAvailable kennt den Storage-Modus gar nicht, es gibt nur das disableAuthentication-Gate. Severity hoch korrekt.
+
+#### 🟡 mittel `missing-web-security-headers` — Hosting-Header ohne HSTS, CSP, X-Content-Type-Options, X-Frame-Options
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `firebase.json`
+- **Skill-Prinzip:** 01_api-sicherheit.md §3 (Web-Sicherheit über HSTS/CSP serverseitig) und §8 (Security-Header); 02_software-sicherheit.md §7 (HSTS, X-Frame-Options/Frame-Ancestors gegen Clickjacking)
+- **Problem:** Der hosting.headers-Block in firebase.json setzt nur Cache-Control/Pragma/Expires für source **. Es fehlen Strict-Transport-Security, Content-Security-Policy, X-Content-Type-Options: nosniff, Referrer-Policy und X-Frame-Options/frame-ancestors. Die App nutzt Browser-basierte Firebase-Auth-Persistence; fehlende Header erhöhen XSS-/Clickjacking-/Downgrade-Risiko.
+- **Fix:** In firebase.json hosting.headers für source ** ergänzen: Strict-Transport-Security: max-age=31536000; includeSubDomains, X-Content-Type-Options: nosniff, Referrer-Policy: strict-origin-when-cross-origin, X-Frame-Options: DENY. CSP separat und zunächst report-only (Flutter Web/CanvasKit braucht wasm-unsafe-eval/unsafe-inline, Firebase-Domains in connect-src).
+- **Verify-Notiz:** Bestätigt. firebase.json Z.9-26: hosting.headers enthält für source ** ausschließlich Cache-Control, Pragma, Expires. Keine Security-Header vorhanden. Severity-Korrektur: Audit meldete hoch; HSTS wird von Firebase Hosting standardmäßig für *.web.app/*.firebaseapp.com gesetzt, und ohne custom domain ist das Downgrade-Risiko geringer. Für eine 2-Läden-App ist mittel angemessener als hoch. Fix korrekt.
+
+#### 🟡 mittel `preview-compliance-no-role-gate` — previewCompliance Callable ohne Rollen-/Permission-Gate
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `functions/index.js`
+- **Skill-Prinzip:** 01_api-sicherheit.md §5 (Function-Level-Authorization API05 serverseitig erzwingen) und §8 (keine sensiblen Daten preisgeben); STRIDE Information Disclosure (02_software-sicherheit.md §1)
+- **Problem:** previewCompliance lädt das Caller-Profil und prüft assertSameOrg, aber im Gegensatz zu upsertShiftBatch (assertScheduler) und upsertWorkEntry (assertTimeEntryEditor) fehlt jede Rollen-/Permission-Prüfung. Jedes aktive Org-Mitglied kann beliebige Schicht-/Zeiteintrags-Pakete (auch fremde userId) übergeben und über zurückgegebene violations Rückschlüsse auf sensible Personaldaten ziehen.
+- **Fix:** In functions/index.js previewCompliance analog gaten: bei Shift-Preview assertScheduler(caller), bei Entry-Preview assertTimeEntryEditor(caller) plus self-or-admin-Check (caller.uid !== entry.userId && !caller.isAdmin -> permission-denied). Ändert kein Dart-Verhalten, da Client die Callable nicht aufruft.
+- **Verify-Notiz:** Bestätigt. functions/index.js:174 previewCompliance: nur loadCallerProfile(request) + requiredString(orgId) + assertSameOrg(caller, orgId), danach validateShiftBatch bzw. validateWorkEntry; kein assertScheduler/assertTimeEntryEditor. upsertShiftBatch nutzt assertScheduler, upsertWorkEntry assertTimeEntryEditor. grep bestätigt: previewCompliance wird in lib/ nirgends aufgerufen (CLAUDE.md-Notiz korrekt), daher kein Dart-/Test-Impact. Real exploitable nur via direktem Callable-Aufruf. Severity mittel plausibel (eher niedrig-mittel, da Defense-in-Depth und ungenutzter Pfad). Fix korrekt.
+
+#### 🟡 mittel `counters-bopla-no-monotonic-check` — counters und stockMovements: keine serverseitige Feld-/Wertvalidierung (BOPLA)
+- **Welle:** 2 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `firestore.rules`
+- **Skill-Prinzip:** 01_api-sicherheit.md §5 (BOPLA/Mass Assignment API03 - Felder whitelisten) und §6 (serverseitige Validierung als Sicherheitsgrenze)
+- **Problem:** counters/{counterId} erlaubt jedem Inventar-Manager beliebiges create+update ohne Plausibilitätsprüfung; der seq-Zähler (Bestellnummern) kann zurückgesetzt werden, wodurch Bestellnummern-Kollisionen entstehen. stockMovements (Audit-Log, update/delete:false korrekt) validiert beim create kein Feld außer orgId (Mass Assignment / fehlende Server-Validierung). Bestellnummern-Vergabe läuft als clientseitige Transaktion (_allocateOrderNumber).
+- **Fix:** In firestore.rules für counters monotones Update erzwingen: das Feld heißt seq (nicht value) - z.B. request.resource.data.seq is int && request.resource.data.seq >= resource.data.seq beim update; create mit seq>=0 validieren. Für stockMovements create Feld-Allowlist + Typprüfung (quantity is number, type in [...], createdByUid == request.auth.uid). Reine Rules-Änderung. Hinweis: Monotonie-Rule muss mit dem clientseitigen merge:true-Write in _allocateOrderNumber (firestore_service.dart:1061-1073, schreibt nur seq+updatedAt) kompatibel sein.
+- **Verify-Notiz:** Bestätigt. firestore.rules:700 counters: allow create, update: if sameOrg(orgId) && canManageInventory(); keine Wertprüfung, keine Monotonie. firestore.rules:691 stockMovements: allow create: if sameOrg(orgId) && canManageInventory() && request.resource.data.orgId == orgId; keine quantity/type/createdByUid-Validierung; update,delete:false korrekt. _allocateOrderNumber (firestore_service.dart:1060) macht runTransaction read-modify-write auf counters/purchaseOrders Feld 'seq', Format BST-YYYY-NNNN; rein clientseitig, kein Callable. Korrektur am Audit-Fix: das Zählerfeld heißt seq, nicht value. Severity mittel ist eher hoch gegriffen für 2-Läden-Org mit vertrauenswürdigen Managern; niedrig-mittel realistischer. Fix grundsätzlich korrekt mit Feldnamen-Korrektur.
+
+#### ⚪ niedrig `no-csp-in-index-html` — Kein Content-Security-Policy-Meta-Tag in web/index.html
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `web/index.html`
+- **Skill-Prinzip:** 02_software-sicherheit.md §7 (Content Security Policy setzen; bei JS-Interop auf XSS achten) und 01_api-sicherheit.md §6 (XSS bei Flutter Web)
+- **Problem:** web/index.html enthält keinen <meta http-equiv="Content-Security-Policy">-Tag; nur ein veralteter X-UA-Compatible-Tag (Z.20) ist gesetzt. Ohne CSP fehlt eine zweite Verteidigungslinie gegen eingeschleustes Script.
+- **Fix:** Restriktiven CSP-Meta-Tag im <head> ergänzen, abgestimmt auf Flutter-CanvasKit + Firebase (default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://europe-west3-*.cloudfunctions.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'). Gegen offline-Demo-Build und Firebase-Build testen, da CanvasKit sonst bricht.
+- **Verify-Notiz:** Bestätigt. web/index.html: kein CSP-Meta-Tag im <head>; vorhanden nur <meta content="IE=Edge" http-equiv="X-UA-Compatible"> (Z.20, veraltet). Hinweis: Eine Meta-CSP kann frame-ancestors nicht setzen (nur via HTTP-Header), daher überschneidet sich dieser Gap teilweise mit missing-web-security-headers und ist nur Defense-in-Depth. Severity auf niedrig reduziert (Audit: mittel), da reine Flutter-App ohne JS-Interop/dynamisches HTML aktuell geringe XSS-Fläche hat. Fix korrekt.
+
+#### ⚪ niedrig `no-obfuscation-build-guidance` — Release-Builds ohne dokumentiertes --obfuscate/--split-debug-info
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `CLAUDE.md`
+- **Skill-Prinzip:** 02_software-sicherheit.md §3 (flutter build --obfuscate --split-debug-info für AOT-Builds) und §8 (Secure SDLC)
+- **Problem:** Weder CLAUDE.md (Deployment-Abschnitt) noch ein Build-Skript dokumentieren flutter build --obfuscate --split-debug-info=<dir> für Android/iOS. Ohne Obfuscation ist die Reverse-Engineering-Hürde für die Client-Compliance-/Berechtigungslogik minimal.
+- **Fix:** Im Deployment-Abschnitt von CLAUDE.md (oder neues Skript scripts/build_release.sh) die Release-Build-Befehle mit --obfuscate --split-debug-info=build/symbols für android/ios dokumentieren und den Symbol-Ordner via .gitignore ausschließen. Additive Doku/Datei-Änderung, kein Laufzeitrisiko.
+- **Verify-Notiz:** Bestätigt. grep nach obfuscate/split-debug-info in CLAUDE.md und README.md: keine Treffer. Kein scripts/-Verzeichnis vorhanden (ls scripts schlug fehl). CLAUDE.md Deployment-Abschnitt listet nur firebase deploy/emulators, keine mobilen Release-Builds. Reine Doku-Lücke, niedrig korrekt. createsNewFilesOnly bleibt false, da Audit primär CLAUDE.md-Edit vorschlägt (scripts/ nur optional).
+
+#### ⚪ niedrig `web-token-storage-not-documented` — Auth-Token-Speicherung auf Web (localStorage-Persistenz) ohne dokumentierte Risikoabwägung
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/auth_service.dart`
+- **Skill-Prinzip:** 01_api-sicherheit.md §1 (Auf Web kein sicherer nativer Speicher; Refresh Tokens nie ins JS-zugängliche Storage; kurzlebige Access Tokens im RAM)
+- **Problem:** configurePersistence() setzt auf Web Persistence.LOCAL (Firebase-Refresh-Token in IndexedDB, JS-zugänglich). SPA-Standard und von Firebase getragen, aber ohne CSP XSS-exponiert; keine dokumentierte Abwägung oder Option auf Persistence.SESSION.
+- **Fix:** Primär CSP/Hosting-Header als Defense-in-Depth umsetzen (siehe andere Gaps). Optional in auth_service.dart die Persistenz per dart-define (z.B. APP_WEB_AUTH_SESSION_ONLY) zwischen Persistence.LOCAL und Persistence.SESSION umschaltbar machen und Trade-offs in CLAUDE.md/docs notieren. Kein Pflicht-Eingriff für die 2-Läden-Größe.
+- **Verify-Notiz:** Bestätigt. lib/services/auth_service.dart:21-31 configurePersistence(): if(!kIsWeb) return; sonst await _firebaseAuth.setPersistence(Persistence.LOCAL). Auf Web wird also LOCAL-Persistenz (IndexedDB, JS-zugänglich) gesetzt, ohne dokumentierte Abwägung oder SESSION-Option. Firebase-SPA-Standard, nur in Kombination mit fehlender CSP relevant; severity niedrig korrekt. Fix ist überwiegend Doku/optionale Flexibilisierung.
+
+
+### Architektur (04 Software-Architektur · 15 Mobile)
+
+#### 🟠 hoch `missing-repository-layer` — Provider übernehmen die Repository-Rolle: Storage-Strategie (cloud/hybrid/local) ist über 4 Provider gestreut statt gekapselt
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart`, `lib/providers/schedule_provider.dart`, `lib/providers/team_provider.dart`, `lib/providers/inventory_provider.dart`
+- **Skill-Prinzip:** Skill 04 §3 (Repository Pattern & Data Sources): Repository als Single Source of Truth pro Domäne; §1 Abhängigkeitsregel: Presentation enthält keine Datenzugriffslogik.
+- **Problem:** Es gibt KEINE Repository-Schicht. Die ChangeNotifier-Provider (Presentation/State) entscheiden selbst die Speicher-Strategie: usesLocalStorage/_usesFirestore-Branching kommt 18/28/19/12-mal pro Provider vor, jeder Mutator hat das Muster 'if (_usesFirestore) { firestore } else { lokal mutieren + persist + notify }'. Provider rufen FirestoreService UND DatabaseService direkt auf. Die UI/State-Schicht weiß damit, woher die Daten kommen.
+- **Fix:** Pro Domäne ein XRepository-Interface in lib/repositories/ (abstract class, pures Dart) + Impl, die die usesLocalStorage/hybrid-Entscheidung und das catch-Fallback-Muster genau einmal kapselt. Beginne additiv mit InventoryProvider. Provider-Kette in main.dart unverändert lassen (Repo injizieren).
+- **Verify-Notiz:** Bestätigt. Branching-Zählung exakt verifiziert: grep -cE 'usesLocalStorage|_usesFirestore' ergibt work=18, schedule=28, team=19, inventory=12. Keine lib/repositories/ existiert. Provider rufen FirestoreService direkt (z.B. inventory_provider.dart:29 'final FirestoreService _firestoreService') und DatabaseService direkt (auth/schedule/team/work/storage_mode/theme providers via grep). KORREKTUR zum proposedFix: InventoryProvider ist KEIN ideales Pilot-Beispiel für das catch-Fallback-Muster — anders als die anderen 3 Provider persistiert es im local-Modus NUR in-memory (kein DatabaseService, kein SharedPreferences) und hat KEIN catch-Fallback (inventory_provider.dart:288-291: reines 'if(_usesFirestore){await firestore;return;} else {in-memory}'). Der hybrid-catch-Fallback existiert also bei Inventory nicht. Inventory bleibt das beste Pilot wegen Jugend/Einfachheit, aber die Behauptung 'lokal mutieren + persist' trifft für Inventory nicht zu (kein persist). Severity hoch ist für eine 2-Läden-App eher mittel, aber das strukturelle Problem ist real.
+
+#### 🟠 hoch `firestore-service-god-object` — FirestoreService ist ein 1791-Zeilen-God-Object mit 88 Public-Methoden über alle Domänen + Cloud-Functions-Aufrufe
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`
+- **Skill-Prinzip:** Skill 04 §5 (SOLID): SRP — eine Verantwortung je Klasse; ISP — schmale Interfaces; §2 klare Modulgrenzen reduzieren Merge-Konflikte.
+- **Problem:** Eine einzige Klasse FirestoreService bündelt Collection-Getter und CRUD/Streams für users, invites, teams, sites, qualifications, contracts, siteAssignments, ruleSets, travelTimeRules, shifts, shiftTemplates, workEntries, workTemplates, absences UND das komplette Inventar (suppliers/products/orders/movements) — plus Cloud-Functions-Callables und Auth-Provisioning. 88 Public Future/Stream-Methoden. Verletzt SRP.
+- **Fix:** FirestoreService in domänenspezifische Data-Sources aufteilen. Pragmatisch additiv: zuerst Inventar (watchSuppliers/watchProducts/watchPurchaseOrders/watchStockMovements + saveSupplier/saveProduct/adjustProductStock/savePurchaseOrder/receivePurchaseOrder) in InventoryFirestoreDataSource extrahieren und FirestoreService delegieren lassen. Konstruktor-Seam (firestore/functions/invoker) übernehmen.
+- **Verify-Notiz:** Bestätigt. wc -l = 1791 Zeilen. grep -cE '^\s+(Future|Stream)<' = exakt 88 Public-Methoden. Inventar-Methoden verifiziert: watchSuppliers (249), watchProducts (257), watchPurchaseOrders (265), watchStockMovements (277), saveSupplier (829), deleteSupplier (839), saveProduct (848), deleteProduct (858), adjustProductStock (870), savePurchaseOrder (916), deletePurchaseOrder (933), receivePurchaseOrder (946). Cloud-Functions: _firebaseFunctions (127), httpsCallable (1496), _cloudFunctionInvoker (50). Auth-Provisioning: ensureProfileForSignedInUser (1096), migrateLegacyDataIfNeeded (1540). Alle Behauptungen exakt zutreffend. Der Konstruktor-Seam liegt bei Zeile 36-44 (firestore/functions/cloudFunctionInvoker).
+
+#### 🟠 hoch `no-domain-repository-interfaces-dip` — Kein einziges Repository-/Service-Interface — Provider hängen an konkreter FirestoreService-Klasse (DIP verletzt)
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/inventory_provider.dart`, `lib/providers/work_provider.dart`, `lib/providers/auth_provider.dart`, `lib/services/firestore_service.dart`
+- **Skill-Prinzip:** Skill 04 §4 (DI & IoC): High-Level-Module hängen von Abstraktionen ab (DIP); §5 Komposition vor Vererbung.
+- **Problem:** grep 'abstract class' lib/ liefert null Treffer in services/providers. Alle Provider deklarieren 'final FirestoreService _firestoreService' — Abhängigkeit von konkreter Klasse, nicht von Abstraktion. Testbarkeit nur über FakeFirebaseFirestore + Subklassen-Seam; echter In-Memory-Fake ohne Firestore-Internals unmöglich, weil kein Interface.
+- **Fix:** Für die in 'missing-repository-layer' eingeführten Repos je ein 'abstract class XRepository'; Provider-Konstruktoren auf Interface typisieren. main.dart injiziert die Impl. Ersetzt den Subklassen-Seam durch handgeschriebenen Fake-Repo (kein Mockito, wie CLAUDE.md fordert).
+- **Verify-Notiz:** Bestätigt. grep -rn 'abstract class' lib/ liefert 0 Treffer (im gesamten lib/, nicht nur services/providers). inventory_provider.dart:29 'final FirestoreService _firestoreService', identisch in den anderen Providern. CLAUDE.md Tests-Sektion bestätigt den Subklassen-Seam '_TestWorkProvider extends WorkProvider' und 'kein Mockito (nicht vorhanden — nicht einführen)'. DIP-Verletzung real. Anmerkung: Für eine 2-Läden-App ist ein vollständiges Interface-Layer Over-Engineering-Risiko — pragmatisch nur dort einführen, wo Repo (Gap 1) ohnehin entsteht. Severity realistisch mittel statt hoch.
+
+#### 🟡 mittel `timestamp-leaks-into-domain` — 18 von 20 Modellen importieren package:cloud_firestore — Firestore-Typ Timestamp leckt in die Domäne
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/models/product.dart`, `lib/models/shift.dart`, `lib/models/work_entry.dart`, `lib/models/app_user.dart`, `lib/models/purchase_order.dart`, `lib/models/stock_movement.dart`, `lib/models/supplier.dart`
+- **Skill-Prinzip:** Skill 04 §1/§3: Domain ist framework-frei; DTOs vom Domain-Entity trennen, Mapping in der Data-Schicht; §7 Domain frei von SDK-Bindung.
+- **Problem:** Modelle importieren package:cloud_firestore (für Timestamp/FieldValue in toFirestoreMap/fromFirestore). Damit hängen die Entities am Firestore-SDK. Reiner Domain-Unit-Test ohne Firebase-Plugin oder Persistenz-Wechsel berührt alle Modelle. DTO-↔-Entity-Vermischung.
+- **Fix:** Nicht alle auf einmal. toFirestoreMap/fromFirestore-Mapping je Model in Mapper-Extensions in lib/data/mappers/ auslagern, sodass nur Mapper cloud_firestore importieren. Mit den jungen Inventar-Modellen (product/supplier/purchase_order/stock_movement) beginnen.
+- **Verify-Notiz:** Bestätigt mit Mengenkorrektur: 18 von 20 Model-Files importieren package:cloud_firestore (nicht 'alle 18' — es sind 20 Files total, 18 importieren cloud_firestore). Verifiziert via grep -l: product, app_user, purchase_order, stock_movement, supplier, shift, work_entry u.a. alle enthalten. Die 2 ohne Import wurden nicht namentlich geprüft, ändert das Problem nicht. Titel auf '18 von 20' korrigiert. ACHTUNG zum proposedFix: Die Zwei-Serialisierungs-Regel (CLAUDE.md) macht das riskanter als dargestellt — fromFirestore wird auch zum Seeden von FakeFirebaseFirestore in Tests genutzt; eine Auslagerung in Extensions bricht alle Test-Call-Sites (Supplier.fromFirestore(...) → ProductFirestoreX-Aufruf). Effort L korrekt, Risiko eher mittel-hoch wegen Test-Kopplung.
+
+#### 🟡 mittel `fire-and-forget-updatesession` — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
+- **Welle:** 2 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart`, `lib/providers/inventory_provider.dart`
+- **Skill-Prinzip:** Skill 04 §6 (State-Architektur): asynchrone Zustände explizit (loading/data/error) modellieren; Skill 15 §3: Fehler explizit behandeln, nicht verschlucken.
+- **Problem:** _dispatchProviderUpdate führt das async updateSession per unawaited(...catchError(debugPrint)) aus. Schlägt der initiale Session-/Datenladeaufbau fehl, wird der Fehler nur per debugPrint geloggt — die UI rebuildt mit leeren Listen und der Nutzer sieht stillen Datenverlust statt Fehlermeldung.
+- **Fix:** _dispatchProviderUpdate einen Fehler-Callback geben, der den Provider in einen sichtbaren Fehlerzustand versetzt. InventoryProvider hat bereits _setError (Zeile 150) — updateSession soll eine catch-Klausel haben, die _setError aufruft. Additiv, keine Signatur-Brüche.
+- **Verify-Notiz:** Teilweise bestätigt mit wichtiger Einschränkung. main.dart:290-296 zeigt exakt 'unawaited(future.catchError((error,stack){debugPrint(...)}))' — fire-and-forget mit nur debugPrint, bestätigt. InventoryProvider hat _setError (Zeile 150) und _errorMessage (45). ABER: updateSession in inventory_provider.dart:168-199 enthält selbst KEIN await auf fehleranfällige Operationen — _startFirestoreSubscriptions (231) ist synchron und reicht Stream-Fehler bereits über onError:_setError weiter (Zeilen 240/246/252/258). Der initiale Stream-Fehler wird also für Inventory BEREITS sichtbar gemacht. Das fire-and-forget-Risiko greift v.a. bei Providern, deren updateSession await-Operationen ausführt, die werfen (z.B. lokales Laden, Migration). Severity mittel ist für Inventory überzogen (dort schon onError); für die anderen Provider muss geprüft werden, ob updateSession werfende awaits enthält. Das strukturelle debugPrint-Schlucken in main.dart ist real, aber der konkrete 'leere Listen'-Effekt ist provider-abhängig und für Inventory bereits via onError abgedeckt.
+
+#### 🟡 mittel `no-architecture-fitness-lint` — Keine automatisierte Layering-/Import-Grenzprüfung — Schichtverstöße brechen den Build nicht
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** ja
+- **Dateien:** `analysis_options.yaml`, `lib/screens/month_report_screen.dart`, `lib/screens/shift_planner_screen.dart`, `lib/screens/statistics_screen.dart`
+- **Skill-Prinzip:** Skill 04 §8 (Architektur-Governance): Importgrenzen/Layering via Lints absichern.
+- **Problem:** Keine CI, nur nacktes flutter_lints/flutter.yaml. Nichts verhindert, dass Presentation direkt Services importiert — 3 Screens importieren services/ direkt. Keine erzwungene Importgrenze.
+- **Fix:** Pragmatisch (Over-Engineering-Gefahr für 2-Läden-App): Importgrenzen-Konvention in analysis_options.yaml dokumentieren + ein grep-basiertes tool/check_layering.dart-Skript, das fehlschlägt, wenn lib/screens/** etwas aus lib/services/** importiert (Whitelist für die bekannten Fälle). Reines neues Skript-File.
+- **Verify-Notiz:** Bestätigt mit Faktenkorrektur. analysis_options.yaml enthält nur 'include: package:flutter_lints/flutter.yaml' mit leerem rules-Block — keine Importgrenzen. KORREKTUR der Datei-/Import-Behauptungen: month_report_screen.dart importiert services/export_service.dart (nicht an Zeile 10, sondern 10 ist export_service; Zeile 9 ist work_provider). shift_planner_screen.dart:16 importiert services/EXPORT_service.dart (NICHT download_service wie im Gap-Text 'export_service.dart, download_service.dart' suggeriert). statistics_screen.dart:9 importiert services/download_service.dart. Also: 3 Screens importieren services/ direkt (2x export_service, 1x download_service) — bestätigt, aber die im problem-Text genannten konkreten Service-Namen pro Screen waren teilweise vertauscht. Das Kernproblem (keine erzwungene Importgrenze) ist real. createsNewFilesOnly=true korrekt (nur neues Skript + yaml-Kommentar).
+
+#### ⚪ niedrig `layer-first-structure` — Layer-first-Struktur statt Feature-first — Warenwirtschaft-Modul über 6 Verzeichnisse zersplittert
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/inventory_provider.dart`, `lib/screens/inventory_screen.dart`, `lib/screens/purchase_order_screens.dart`, `lib/models/product.dart`, `lib/models/supplier.dart`, `lib/models/purchase_order.dart`, `lib/models/stock_movement.dart`
+- **Skill-Prinzip:** Skill 04 §2 (Projektstruktur Feature-first): lib/features/<feature>/{presentation,domain,data} statt layer-first.
+- **Problem:** Das neu hinzugefügte Warenwirtschaft-Feature ist layer-first über lib/models, lib/providers, lib/screens und die FirestoreService-Inventar-Methoden verstreut. Skill empfiehlt feature-first.
+- **Fix:** Für das junge Inventar-Modul lib/features/inventory/{presentation,domain,data} als Pilot anlegen und die ungetrackten Inventar-Dateien dorthin verschieben. Imports anpassen. Bestehende Domänen unangetastet lassen. Da Dateien neu/ungetrackt, geringes Regressionsrisiko.
+- **Verify-Notiz:** Bestätigt als reale Strukturbeobachtung. Inventar-Dateien existieren tatsächlich layer-first verteilt: lib/providers/inventory_provider.dart, lib/screens/inventory_screen.dart + purchase_order_screens.dart, lib/models/{product,supplier,purchase_order,stock_movement}.dart, plus Inventar-Methoden in firestore_service.dart. Alle als ?? (untracked) in git status. Severity niedrig korrekt. ANMERKUNG: Das gesamte Projekt ist konsistent layer-first (CLAUDE.md Verzeichnis-Map bestätigt lib/models|services|providers|screens). Ein einzelnes feature-first-Inselmodul erzeugt Inkonsistenz im Repo — pragmatisch fraglich, ob das für eine 2-Läden-App den Aufwand und die Bruch-aller-Imports-Kosten rechtfertigt. Gap ist real, aber Priorität niedrig und proposedFix ggf. nicht umsetzen (Konsistenz mit Repo-Konvention höher gewichten).
+
+#### ⚪ niedrig `download-service-stub-misnamed-platform-split` — Plattform-Split der Download-Datei greift nur Web vs. Nicht-Web ab; 'Stub' ist faktisch die Mobile/Desktop-Impl (share_plus)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/download_service.dart`, `lib/services/download_service_stub.dart`, `lib/services/download_service_web.dart`
+- **Skill-Prinzip:** Skill 15 §1/§8: Plattformlogik hinter Abstraktionen statt verstreuter Sonderfälle; §4 Plattform-Support einer Dependency vor Nutzung prüfen.
+- **Problem:** Conditional-Import-Kapselung grundsätzlich korrekt, aber irreführend benannt: download_service_stub.dart ist kein Stub, sondern echte Mobile/Desktop-Impl via share_plus. Kein plattformneutraler Vertrag/Interface, nur zwei freie Funktionen mit identischer Signatur, deren Konsistenz nicht erzwungen wird.
+- **Fix:** download_service_stub.dart in download_service_io.dart umbenennen (Conditional auf dart.library.io), neuen echten _stub.dart der UnsupportedError wirft. Beide Funktionen über dokumentierte Signaturkonvention halten. Rein additive Umbenennung.
+- **Verify-Notiz:** Bestätigt. download_service.dart:1-2: "export 'download_service_stub.dart' if (dart.library.html) 'download_service_web.dart';". download_service_stub.dart importiert 'package:share_plus/share_plus.dart' und implementiert downloadFileBytes via Share.shareXFiles — also die echte Nicht-Web-Implementierung, kein Stub. Web-Variante nutzt dart:js_interop + package:web. Zwei freie Funktionen identischer Signatur ohne erzwungenen Vertrag, bestätigt. Naming-Nitpick korrekt. KORREKTUR: Die Conditional-Bedingung ist 'dart.library.html' (vorhanden in der Web-Datei via dart:js_interop), nicht das im proposedFix erwähnte Detail — funktional egal. Severity niedrig korrekt, reines Naming/Klarheits-Issue, kein funktionaler Bug. createsNewFilesOnly=false korrekt (Umbenennung berührt bestehende Dateien).
+
+
+### Backend & API (18 Backend-Daten · 06 API · 05 Microservices)
+
+#### 🟠 hoch `blocking-violations-discarded-client` — Strukturierte Compliance-Verletzungen ({issues}/{validations}) gehen im Client verloren
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1499`, `lib/services/firestore_service.dart:1233`, `lib/services/firestore_service.dart:563`, `functions/index.js:34`, `functions/index.js:159`
+- **Skill-Prinzip:** 06_api-architektur Abschnitt 2/8: einheitliches Fehlerformat (RFC 9457 Problem Details), konsistente Fehlercodes; 18_backend-daten Abschnitt 8: konsistente Fehlerformate fuer robuste Client-Behandlung
+- **Problem:** Die Callables werfen bei blockierender Verletzung HttpsError('failed-precondition', msg, {issues}) bzw. {validations} mit voll strukturierten Violation-Objekten. Der Client in _callCloudFunctionIfAvailable faengt JEDEN FirebaseFunctionsException (ausser not-found/unavailable) ab und wirft nur StateError(error.message) - die error.details mit {issues}/{validations} werden komplett verworfen.
+- **Fix:** Eine neue Exception-Klasse ComplianceRejectedException (lib/services/compliance_rejected_exception.dart) mit message + List<ComplianceViolation> issues. In _callCloudFunctionIfAvailable bei error.code=='failed-precondition' die error.details (Map mit 'issues'/'validations') parsen und als ComplianceRejectedException werfen statt nur StateError(message). Additiv.
+- **Verify-Notiz:** Bestaetigt im Code. functions/index.js:35-39 wirft HttpsError('failed-precondition', '...Schichtplan...', {issues}); Zeile 100-105 mit validation (enthaelt violations) fuer upsertWorkEntry; Zeile 160-164 {validations} fuer upsertWorkEntryBatch. firestore_service.dart:1506-1513: try/catch faengt FirebaseFunctionsException; nur not-found/unavailable -> return false; sonst throw StateError(error.message!.trim()) - error.details werden nie gelesen. UI bekommt nur generischen deutschen Satz. Hinweis: Audit-Zeile 566 korrigiert auf 563 (saveWorkEntry beginnt dort), inhaltlich identisch.
+
+#### 🟠 hoch `no-idempotency-key` — Schreib-Callables haben keinen Idempotency-Key gegen Retry-Duplikate aus instabilen Mobilnetzen
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `functions/index.js:109`, `functions/index.js:1512`, `functions/index.js:1495`, `functions/index.js:1528`, `lib/services/firestore_service.dart:563`, `lib/providers/work_provider.dart:397`, `lib/providers/schedule_provider.dart:364`
+- **Skill-Prinzip:** 18_backend-daten Abschnitt 2: Idempotente Schreib-Endpunkte (Idempotency-Key/client-UUID), damit Retries aus instabilen Mobilnetzen keine Duplikate erzeugen; 05_microservices: Idempotency Keys
+- **Problem:** Bei neuen Entitaeten (id == null) wird eine inhaltsbasierte Hash-ID verwendet (buildWorkEntryDocumentId/buildShiftDocumentId). Diese ist nur idempotent, wenn der INHALT exakt gleich bleibt. Aendert sich zwischen Retry und Erst-Call ein Feld, oder erzeugt der Nutzer zwei legitime Eintraege mit identischen Kern-Feldern, kollidieren bzw. duplizieren sie. Kein expliziter clientUUID/Idempotency-Key im Payload-Vertrag.
+- **Fix:** WorkEntry/Shift bereits beim clientseitigen Erzeugen eine stabile UUID als id zuweisen (in WorkProvider/ScheduleProvider via _uuid.v4()), sodass id nie null an die Callable geht und Server die Doc-ID = client-UUID nutzt -> set(merge:true) natuerlich idempotent. Server-Fallback auf Hash bleibt additiv erhalten.
+- **Verify-Notiz:** Bestaetigt. functions/index.js:109 docId = entry.id ?? buildWorkEntryDocumentId(entry); buildShiftDocumentId (1495-1510) und buildWorkEntryDocumentId (1512-1523) hashen Inhaltsfelder (inkl. status, index, category). writeWorkEntryBatch:1528 nutzt entry.id || buildWorkEntryDocumentId(entry). KRITISCH bestaetigt: work_provider.dart weist _nextLocalId('entry') NUR im usesLocalStorage- bzw. hybrid-catch-Pfad zu (Zeilen 397, 416, 453, 475) - im Cloud-/Hybrid-Erstpfad (saveWorkEntry, firestore_service.dart:563) geht id==null an die Callable. Gleiches Muster in schedule_provider.dart:364/394. Kein client_request_id/Idempotency-Feld im Payload-Vertrag (grep leer). Gap real.
+
+#### 🟡 mittel `no-delta-sync-endpoint` — Kein Delta-/since-Sync-Endpunkt und keine Tombstones - jeder Read ist Vollabzug
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:425`, `lib/services/firestore_service.dart:633`, `lib/services/firestore_service.dart:1314`, `firestore.indexes.json:1`
+- **Skill-Prinzip:** 18_backend-daten Abschnitt 2: Delta-Endpunkte 'gib alle Aenderungen seit Cursor X' inkl. Tombstones; 06_api-architektur Abschnitt 7: Delta-/Inkrement-Endpunkte (?since=cursor), Soft-Deletes/Tombstones im Vertrag
+- **Problem:** Listen-Reads (Shifts via snapshots() mit startTime-Range 425-435, getAllShifts 442-451) laufen als vollstaendige where-Range-Queries ohne 'gib alle Aenderungen seit Cursor X'. Loeschungen sind harte deletes (deleteWorkEntry:633, deleteShift:1314 jeweils .doc(id).delete()) ohne Tombstone - im local/hybrid-Cache kann ein geloeschtes Doc bestehen bleiben, weil keine deletedAt-Markierung synchronisiert wird.
+- **Fix:** Pragmatisch fuer 2 Laeden: Soft-Delete einfuehren (deleteShift/deleteWorkEntry auf set({deletedAt: serverTimestamp()}, merge:true) plus Filter deletedAt==null in Read-Queries) und optionalen Delta-Read where('updatedAt','>', lastCursor). Je ein neuer Composite-Index in firestore.indexes.json. Kein neuer Backend-Service.
+- **Verify-Notiz:** Bestaetigt. firestore_service.dart:425-435 watchShifts nutzt where startTime>=/< + orderBy + snapshots() (Vollabzug des Zeitraums). deleteWorkEntry:633 return _entryCollection(orgId).doc(entryId).delete(); deleteShift:1314 .doc(shiftId).delete() - beides harte Deletes, kein deletedAt. Audit-Zeilennummern 431/1360/629/1310 leicht daneben (tatsaechlich 425/438/633/1314), inhaltlich korrekt. Models tragen updatedAt (sortiert wird darauf, 557-559), aber keine Read-Query filtert nach updatedAt>cursor. Severity mittel angemessen fuer 2-Laeden-Skala.
+
+#### 🟡 mittel `no-api-contract-versioning` — Callable-Payload-Vertrag ist unversioniert - alte App-Versionen koennen still brechen
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `functions/index.js:14`, `functions/index.js:1267`, `functions/index.js:1371`, `lib/services/firestore_service.dart:563`
+- **Skill-Prinzip:** 06_api-architektur Abschnitt 4 (KRITISCH): Alte App-Versionen leben lange; Breaking Changes nur ueber explizite Versionierung; Minimum Supported Version + Force-Update-Mechanismus
+- **Problem:** Die Callable-Payloads (snake_case toMap()) tragen keine Versions-/Schema-Kennung. parseShift/parseWorkEntry/fromValue haben Default-Branches, die fehlende/unbekannte Felder still verschlucken. Ein Server-seitiger Feld-Rename kann eine alte App still falsch validieren lassen; keine Minimum-Supported-Version oder Force-Update-Signalisierung.
+- **Fix:** Additiv: ein 'apiVersion'/'clientVersion'-Feld in jeden Callable-Payload (zentrale Konstante in firestore_service.dart). Server in assertSupportedVersion(request.data) pruefen, bei zu alter Version HttpsError('failed-precondition','APP_UPDATE_REQUIRED'), das der Client auf Force-Update mappt. Min-Version als const in index.js neben REGION.
+- **Verify-Notiz:** Bestaetigt. grep nach apiVersion/clientVersion/schemaVersion/minVersion/forceUpdate/client_version in firestore_service.dart UND functions/index.js liefert KEINEN Treffer. Payloads enthalten nur {entry}/{shifts}/{orgId}/{status} (firestore_service.dart 567, 1240-1244, 1264-1268). parseShift defaultet status auf 'planned' (index.js:1371) und absence status auf 'pending' (1386), enum-fromValue defaultet still - bestaetigt das stille Verschlucken. Keinerlei Versionsverhandlung. Gap real; Severity mittel angemessen (latentes Risiko, kein aktueller Bug).
+
+#### 🟡 mittel `batch-limit-no-client-chunking` — Batch-Limit 50 wird serverseitig hart abgelehnt, Client teilt nicht in Chunks
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `functions/index.js:25`, `functions/index.js:61`, `functions/index.js:136`, `lib/services/firestore_service.dart:1233`, `lib/services/firestore_service.dart:578`
+- **Skill-Prinzip:** 18_backend-daten Abschnitt 2: Batch-Endpoints fuer effizientes Hochladen der Client-Outbox; 06_api-architektur Abschnitt 3: Pagination/Chunking; 05_microservices: Graceful Degradation
+- **Problem:** Server wirft bei >50 Schichten/Eintraegen HttpsError('resource-exhausted'). Der Client (saveShiftBatch/publishShiftBatch/saveWorkEntryBatch) sendet die volle Liste in EINEM Call ohne Chunking. resource-exhausted ist kein not-found/unavailable -> _callCloudFunctionIfAvailable reicht es als StateError nach oben (kein Fallback). Eine lange Schichtserie (woechentlich >~1 Jahr) oder Mehrfach-Anlage ueber Nutzer/Standorte hinweg schlaegt komplett fehl.
+- **Fix:** In firestore_service.dart eine _chunked<T>(list, 50)-Hilfe und saveShiftBatch/publishShiftBatch/saveWorkEntryBatch ueber Chunks iterieren (sequentiell await), savedIds akkumulieren. 50er-Server-Limit bleibt als Schutz. Keine Server-Aenderung.
+- **Verify-Notiz:** Im Kern bestaetigt, Beispiel KORRIGIERT. index.js:25-30, 61-66, 136-141 werfen resource-exhausted bei rawShifts/rawEntries.length>50. firestore_service.dart:1233-1250 saveShiftBatch und 578 saveWorkEntryBatch senden die volle Liste in einem Call. Da resource-exhausted nicht in {not-found,unavailable} faellt (1507), wirft _callCloudFunctionIfAvailable StateError. WICHTIGE KORREKTUR: RecurrencePattern hat NUR none/weekly/biWeekly/monthly (shift.dart:8) - KEIN 'daily'. Das Audit-Beispiel 'taegliche Schicht ueber 2 Monate' ist falsch; >50 Vorkommen via buildShiftOccurrences (firestore_service.dart:1678 while-Loop) erfordert woechentliche Serie ueber ~1 Jahr. Trotzdem real erreichbar (lange Serien oder Mehrfach-Anlage), Gap bleibt gueltig, Severity mittel angemessen.
+
+#### ⚪ niedrig `no-timeout-on-callable` — Callable-Aufrufe ohne Timeout - haengende Calls blockieren ohne Fallback
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1496`, `lib/services/firestore_service.dart:1499`, `lib/services/firestore_service.dart:1507`
+- **Skill-Prinzip:** 05_microservices Abschnitt 5 (KRITISCH): Timeouts auf jedem Remote-Call, Retry mit Backoff+Jitter; 06_api-architektur Abschnitt 6: Retry-After/Backoff
+- **Problem:** _callCloudFunction ruft _firebaseFunctions.httpsCallable(name).call(payload) ohne HttpsCallableOptions(timeout: ...). Auf instabilem Mobilfunk kann der Future lange (Default 70s) haengen, bevor ein not-found/unavailable-Fallback auf den direkten Firestore-Write greift.
+- **Fix:** _callCloudFunction die Callable mit httpsCallable(name, options: HttpsCallableOptions(timeout: const Duration(seconds: 30))) erstellen. In _callCloudFunctionIfAvailable den code 'deadline-exceeded' wie 'unavailable' behandeln (return false -> direkter Fallback im hybrid-Modus). Rein additiv.
+- **Verify-Notiz:** Bestaetigt. firestore_service.dart:1496 return _firebaseFunctions.httpsCallable(name).call(payload); - keine HttpsCallableOptions, kein Timeout. _callCloudFunctionIfAvailable (1507) behandelt nur not-found/unavailable als Fallback, deadline-exceeded wuerde aktuell als StateError geworfen. Audit-Zeilen 1489/1496/1503 minimal verschoben (tatsaechlich Methode 1489, Aufruf 1496, catch 1507). Severity niedrig angemessen.
+
+#### ⚪ niedrig `absence-query-missing-status-index-filter` — Server-seitige absenceRequests-Query filtert Status erst im Speicher statt per indexiertem Query
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `functions/index.js:450`, `functions/index.js:465`, `firestore.indexes.json:101`
+- **Skill-Prinzip:** 18_backend-daten Abschnitt 5: App-DB ist OLTP, nicht mit unnoetig breiten Reads belasten; 16/17 Datenbank: passenden Index nutzen statt In-Memory-Filter
+- **Problem:** loadShiftValidationContext liest absenceRequests nur mit where('startDate','<=',maxEnd).orderBy('startDate') und filtert danach im Speicher auf status=='approved' und userId in userIds. Bei wachsender Org laedt das alle Abwesenheiten der Org (auch pending/rejected, auch fremder User) in die Function, obwohl ein Index absenceRequests userId+status+startDate bereits existiert.
+- **Fix:** Da userIds bekannt sind, Abfrage auf where('userId','in', userIds.slice(0,30)).where('status','==','approved').where('startDate','<=',maxEnd) umstellen (Firestore 'in' max 30 - bei mehr User chunken). Nutzt den vorhandenen userId+status+startDate-Index. Reine Server-Aenderung.
+- **Verify-Notiz:** Bestaetigt. index.js:450-453 Query nur .where('startDate','<=',maxEnd).orderBy('startDate'); Filterung auf status==='approved' (Zeile 467) und userIds.includes (468) erst in-memory nach .get(). firestore.indexes.json:102-117 enthaelt absenceRequests userId+status+startDate-Index, der hier ungenutzt bleibt. KONTEXT-EINSCHRAENKUNG: Bei 2 Laeden/kleiner Org ist der Effekt aktuell vernachlaessigbar (wenige Docs); Severity niedrig korrekt. Beachten: vorgeschlagene Query mit 'in' userId+'=='status+'<='startDate ist eine Range auf startDate mit in-Filter - sollte gegen den Index passen, aber Firestore behandelt 'in' als mehrere Equality-Queries; ggf. Index/Query-Plan beim Deploy verifizieren.
+
+
+### Daten & Persistenz (16 Datenbank · 17 Datenbankarchitektur)
+
+#### 🟠 hoch `inventory-not-locally-persisted` — Warenwirtschaft wird im Local-Modus nur In-Memory gehalten - Datenverlust beim App-Neustart
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/inventory_provider.dart`, `lib/services/database_service.dart`
+- **Skill-Prinzip:** 16_datenbank.md Abschnitt 6 (Lokale DB als Cache & Offline-Source-of-Truth): UI liest aus lokaler DB, Daten ueberleben Neustart.
+- **Problem:** InventoryProvider haelt _suppliers/_products/_orders/_movements im Local-Modus ausschliesslich in Speicher-Listen (Zeile 40-43). Mutationen (saveSupplier, saveProduct, adjustStock, receiveOrder) schreiben im usesLocalStorage-Zweig nur in In-Memory-Listen, nie nach DatabaseService. Es gibt keine loadLocal*/saveLocal*-Methoden fuer products/suppliers/purchase_orders/stock_movements und keine Keys in _orgScopedCollectionKeys (68-82). Im reinen local-Modus gehen alle Warenwirtschafts-Daten beim Neustart verloren, waehrend Schichten/Zeiteintraege persistiert werden.
+- **Fix:** In database_service.dart vier Keys (products, suppliers, purchase_orders, stock_movements) als org-skopiert registrieren und loadLocal*/saveLocal*-Methoden ergaenzen (NICHT in _migrateScopedCollection aufnehmen - neue Collections ohne Legacy). In inventory_provider.dart im usesLocalStorage-Zweig nach jeder Mutation persistieren und beim updateSession laden. Round-trip-Test in test/inventory_service_test.dart.
+- **Verify-Notiz:** Voll bestaetigt. inventory_provider.dart 40-43: _suppliers/_products/_orders/_movements als reine In-Memory-Listen. Alle usesLocalStorage-Zweige (saveSupplier 292-301, saveProduct 337-346, adjustStock->_applyLocalStockChange 389/508, receiveOrder->_applyLocalReceipt 502/542, deleteX) mutieren nur die Listen + _safeNotify, kein DatabaseService-Aufruf. _maybeSeedLocalDemo (204-221) seedet nur fuer Demo-Nutzer und nur In-Memory. database_service.dart _orgScopedCollectionKeys (68-82) enthaelt KEINE products/suppliers/purchase_orders/stock_movements - es gibt keine entsprechenden Keys oder loadLocal*/saveLocal*-Methoden. Im reinen local-Modus (localStorageOnly) ist die Warenwirtschaft fluechtig, im Gegensatz zu WorkEntry/Shift. Inkonsistent zum dokumentierten Verhalten. Severity 'hoch' korrekt.
+
+#### 🟡 mittel `no-local-schema-version` — Lokale Persistenz hat keine echte Schema-Versionierung (nur ein Prefix-Konstante)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/database_service.dart`
+- **Skill-Prinzip:** 16_datenbank.md Abschnitt 5 (Migrationen): Schema-Versionierung von Anfang an, additive/vorwaertsgerichtete Migrationen; Anti-Pattern 'DB bei Schemaaenderung loeschen -> Nutzer verlieren lokale/ungesyncte Daten'.
+- **Problem:** Die lokale SharedPreferences-Persistenz kennt keine versionierte Migrationsstrategie. Es gibt nur die Konstante _scopedPrefix = 'local_v2' (Zeile 65). Eine Schema-Aenderung an einem Model verlaesst sich darauf, dass _loadCollection korrupte/inkompatible Eintraege via catch (FormatException/TypeError) still ueberspringt - inkompatible Datensaetze werden lautlos verworfen statt migriert. Es gibt keine gespeicherte Versionsnummer; die einzige Migration ist die einmalige legacy->v2-Wanderung, gesteuert durch __org_initialized/__user_initialized-Marker.
+- **Fix:** Neue Datei lib/services/local_schema_version.dart: gespeicherter int-Key local_v2/__schema_version pro Scope plus migrateIfNeeded(SharedPreferences, LocalStorageScope) mit geordneter Migrationsliste. DatabaseService ruft sie in _ensure*Initialized auf. Vorerst Version 1 = Ist-Zustand (no-op). Bestehende Catch-Bloecke als Defense-in-Depth behalten.
+- **Verify-Notiz:** Bestaetigt im Code. Zeile 65: 'static const _scopedPrefix = 'local_v2';' - reine String-Konstante, keine Versionsnummer. _ensureOrgScopedStorageInitialized/_ensureUserScopedStorageInitialized (653-822) nutzen nur __org_initialized/__user_initialized als Bool-Marker ('true'), keinen Versions-Integer. _loadCollection 619-628 faengt FormatException und TypeError ab und ueberspringt den Eintrag still ('continue'). Es gibt KEINEN Versionsabgleich, gegen den additiv upgegradet werden koennte. SEVERITY KORRIGIERT von 'hoch' auf 'mittel': Bei reiner Additiv-Aenderung (neues nullable Feld, toleranter Parser via parse.* und FirestoreDateParser) bricht fromMap NICHT - das stille Verwerfen tritt nur bei breaking Renames/Typwechseln auf. Die Modelle parsen ohnehin tolerant (CLAUDE.md: 'Parser nie hart casten'), daher ist der reale Datenverlust-Pfad enger als beschrieben. Gap real, aber nicht 'hoch'.
+
+#### 🟡 mittel `no-secure-storage-for-sensitive` — Sensible Geschaefts-/Personaldaten liegen unverschluesselt im Klartext in SharedPreferences
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/database_service.dart`
+- **Skill-Prinzip:** 16_datenbank.md Abschnitt 3 (Secrets & sensible Kleindaten) + Abschnitt 7 (Verschluesselung at Rest): Klartext-SharedPreferences als Anti-Pattern fuer sensible Daten.
+- **Problem:** Personenbezogene und Gehaltsdaten werden im Local-/Hybrid-Modus als Klartext-JSON in SharedPreferences abgelegt: Stundenlohn (hourly_rate, Zeile 512), Teammitglieder inkl. E-Mail/Rollen (saveLocalTeamMembers, Zeile 252), Arbeitsvertraege mit Verguetung (saveLocalEmploymentContracts, Zeile 367). SharedPreferences ist auf allen Plattformen Klartext. Keine Verschluesselung-at-Rest, kein flutter_secure_storage.
+- **Fix:** Pragmatisch: (a) Gehalts-/Vertragsfelder im Hybrid-Modus NICHT lokal spiegeln (Stammdaten werden ohnehin nicht gespiegelt - fuer Contracts dokumentieren und durchsetzen); (b) optional duenne SecureLocalStore-Wrapper-Klasse mit flutter_secure_storage fuer hourly_rate/Vertrags-Cents, Klartext-Fallback im Web. Mindestens als Gap dokumentieren.
+- **Verify-Notiz:** Code-Fakten bestaetigt: saveLocalUserSettings 502-524 schreibt 'hourly_rate': settings.hourlyRate.toString() (Zeile 512, nicht 513) als Klartext-String in prefs. saveLocalTeamMembers 252-262 serialisiert AppUserProfile (inkl. E-Mail/Rolle) als JSON. saveLocalEmploymentContracts 367-377 serialisiert Vertraege als JSON. Alle via prefs.setString/setStringList = Klartext. WICHTIGE EINSCHRAENKUNG (Korrektur): CLAUDE.md sagt explizit, dass im hybrid-Modus Stammdaten (inkl. employmentContracts) NICHT lokal gespiegelt werden - lokale Schreibwege fuer Contracts/Members greifen also nur im reinen 'local'-Modus (Dev/Demo). Im Default-Hybrid-Betrieb landen Vertraege/Member NICHT in SharedPreferences. Das reale Expositionsfenster ist damit der local-only-Dev-Modus, nicht der Produktiv-Default. SEVERITY KORRIGIERT von 'hoch' auf 'mittel'. Gap real (Klartext-Persistenz existiert), aber Scope kleiner als das Audit suggeriert.
+
+#### 🟡 mittel `no-idempotency-on-stock-mutations` — Stock-Adjust/Wareneingang haben keinen Idempotency-Schluessel - Client-Retry kann Bestand doppelt buchen
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`, `lib/providers/inventory_provider.dart`
+- **Skill-Prinzip:** 17_datenbankarchitektur.md Abschnitt 7 (Konsistenz, Transaktionen & Integritaet): Idempotente Schreibendpunkte ueber Unique-Constraints/Idempotency-Keys.
+- **Problem:** adjustProductStock (Zeile 870) und receivePurchaseOrder (Zeile 946) sind als Firestore-Transaktionen atomar, besitzen aber keinen Idempotency-Key. Bei Netzwerk-Timeout und Client-Retry wird currentStock += delta erneut angewendet und eine zweite stockMovement geschrieben. Die Bestandsbewegung wird mit _stockMovementCollection(orgId).doc() (auto-ID) erzeugt, also kein dedup-faehiger Key. _allocateOrderNumber hat einen zeitbasierten Fallback (1078).
+- **Fix:** adjustProductStock/receiveOrder einen optionalen clientMutationId (UUID, im Provider erzeugt) durchreichen; in der Transaktion die stockMovement-Doc-ID deterministisch aus dieser ID ableiten (.doc(mutationId)) und vor dem Inkrement pruefen, ob das Movement schon existiert -> dann no-op. Idempotenter Buchungspfad ohne Cloud-Function. Retry-Test mit FakeFirebaseFirestore.
+- **Verify-Notiz:** Code-Fakten bestaetigt: adjustProductStock 870-912 - movementRef = _stockMovementCollection(orgId).doc() (Auto-ID, Zeile 880), Transaktion liest currentStock und schreibt newStock = product.currentStock + delta. Kein Idempotency-Key/Existenzpruefung. receivePurchaseOrder 946-1056 schreibt Movements ebenfalls mit .doc() (Auto-ID, Zeile 1017) und erhoeht Bestaende. _allocateOrderNumber 1060-1079 hat zeitbasierten Fallback bei Counter-Fehler (kollisionsanfaellig bei Retry). PRAEZISIERUNG: Firestores runTransaction wiederholt bei Contention automatisch atomar (kein Doppelbuchen innerhalb einer Transaktionsausfuehrung). Das Risiko entsteht bei einem APPLIKATIONS-Level-Retry nach Timeout/uebergeordnetem Fehler, wo der Client unsicher ist, ob die Transaktion durchlief - dann buchen zwei separate Transaktionen doppelt. Im Spark-/Offline-Szenario realistisch. Severity 'mittel' korrekt, Fix-Vorschlag (deterministische Movement-Doc-ID aus mutationId) ist tragfaehig.
+
+#### ⚪ niedrig `no-soft-delete-tombstones` — Harte Loeschungen ohne Tombstones/Soft-Delete verhindern Loescherkennung beim Offline-Sync
+- **Welle:** 2 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`, `lib/providers/inventory_provider.dart`, `lib/services/database_service.dart`
+- **Skill-Prinzip:** 17_datenbankarchitektur.md Abschnitt 2 (Sync- & offline-taugliches Schema): deleted_at/is_deleted statt physischem Loeschen.
+- **Problem:** Loeschungen erfolgen als physisches .delete() (deleteProduct firestore_service.dart:862, deleteSupplier:843) bzw. lokales Herausfiltern (inventory_provider.dart:361-364). Kein Model traegt deletedAt/isDeleted. Im Hybrid-Modus kann ein Client eine auf einem anderen Geraet erfolgte Loeschung nicht zuverlaessig erkennen, weil Streams nur vorhandene Docs liefern und kein Tombstone das lokale Loeschen ausloest.
+- **Fix:** Additiv: fuer Produkte (haben bereits isActive) deleteProduct optional auf isActive:false + deletedAt umstellen und Streams/Provider filtern. Fuer reine Stammdaten (sites/teams) belassen. Primaer als Doku-Gap die Kopplung benennen, nicht ueberdimensionieren.
+- **Verify-Notiz:** Code-Fakten teilweise bestaetigt, aber Zeilennummern/Schwere korrigiert. deleteProduct ist tatsaechlich physisches .delete() auf firestore_service.dart:862 (bestaetigt). deleteSite-Verweis im Audit war :729 - dort steht aber watchWorkEntries-Code, NICHT deleteSite; physische .delete() existieren generell (deleteSupplier:843, deletePurchaseOrder:937). inventory_provider.dart:361-364 filtert lokal heraus (bestaetigt). Kein Model hat deletedAt/isDeleted. ABER: Im hybrid-Modus verlaesst sich der Code auf Firestores eigenen Offline-Cache fuer Stammdaten (CLAUDE.md), und Warenwirtschaft wird im hybrid-Modus ueber Live-Streams gelesen - Firestore-Streams propagieren Loeschungen (removed-DocChange) zuverlaessig, solange der Client online war. Das beschriebene Problem (verwaister lokaler Cache) tritt nur auf, wenn Warenwirtschaft auch lokal gespiegelt waere - das ist sie aktuell gar nicht (siehe inventory-not-locally-persisted). Daher heute weitgehend theoretisch. SEVERITY KORRIGIERT von 'mittel' auf 'niedrig'.
+
+#### ⚪ niedrig `missing-orderby-updatedat-index-delta` — Kein Index/Query auf updatedAt - keine inkrementelle Delta-Synchronisation, volle Collection-Streams
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`, `firestore.indexes.json`
+- **Skill-Prinzip:** 17_datenbankarchitektur.md Abschnitt 3 (Change-Feeds & Delta-Abfragen) + Abschnitt 4 (Indizierung).
+- **Problem:** watchProducts (Zeile 257) und watchSuppliers (Zeile 249) streamen die GESAMTE Collection (orderBy('nameLower'), kein Limit, kein where updatedAt >). Es gibt weder einen Index auf updatedAt noch eine Delta-Query. Bei jedem Reconnect wird die komplette Liste gezogen. Models tragen bereits updatedAt (Product.toFirestoreMap Zeile 174).
+- **Fix:** Composite/Single-Field-Index products(updatedAt DESC) und suppliers(updatedAt DESC) vorbereiten. Optional watchProductsSince(orgId, since). Fuer aktuelle Datenmenge (2 Laeden) nur Index vorbereiten und als bewusste Entscheidung dokumentieren; nicht ueberdimensionieren.
+- **Verify-Notiz:** Code-Fakten bestaetigt: watchSuppliers 249-255 = orderBy('nameLower'), kein limit. watchProducts 257-263 = orderBy('nameLower'), kein limit, kein updatedAt-where. firestore.indexes.json (1-215) enthaelt KEINEN updatedAt-Index fuer products/suppliers. Product.toFirestoreMap:174 schreibt updatedAt (FieldValue.serverTimestamp). Es gibt KEINE Delta-Query. Faktisch korrekt. ABER: Firestore-snapshots()-Listener ziehen NICHT bei jedem Reconnect die volle Collection - nach dem initialen Snapshot liefert Firestore nur DocChanges (Deltas) und nutzt den lokalen Offline-Cache als Resume-Point. Die Aussage 'bei jedem App-Start/Reconnect komplette Liste' ist daher ueberzogen. Reales Kostenproblem nur beim ersten Cold-Read pro Geraet. Fuer 2 Laeden vernachlaessigbar. SEVERITY 'niedrig' (Audit sagte 'mittel') - korrigiert nach unten; Audit raeumt selbst ein 'fuer 2 Laeden tolerabel'.
+
+#### ⚪ niedrig `stockmovements-no-org-time-index` — watchStockMovements ohne productId nutzt orderBy(createdAt) ohne standortgescopten Composite-Index
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`, `firestore.indexes.json`
+- **Skill-Prinzip:** 17_datenbankarchitektur.md Abschnitt 4: zusammengesetzte Indizes passend zu Filter-/Sortierreihenfolge; Abschnitt 5: Sync-Queries tenant-/standortgescoped.
+- **Problem:** Der einzige stockMovements-Index ist (productId ASC, createdAt DESC) (indexes.json:199-212). watchStockMovements ohne productId (Default im Provider, Zeile 254-255) laeuft orderBy('createdAt') mit limit(100). Es gibt keinen (siteId, createdAt)-Index; ein standort-gefilterter Verlauf ist nicht serverseitig queryfaehig und faellt auf clientseitige Filterung zurueck.
+- **Fix:** Composite-Index stockMovements(siteId ASC, createdAt DESC) ergaenzen und watchStockMovements um optionalen siteId-Filter erweitern (analog zum productId-Zweig).
+- **Verify-Notiz:** Code-Fakten bestaetigt: watchStockMovements 277-292 baut Query mit optionalem productId-where, sonst nur orderBy('createdAt', descending:true).limit(100). Provider ruft es Default ohne productId (inventory_provider.dart:254-255). indexes.json 199-212 = einziger stockMovements-Index (productId ASC, createdAt DESC). Kein (siteId, createdAt)-Index. rules:691-697 bestaetigt append-only (update/delete:false). KLARSTELLUNG: orderBy('createdAt') ohne where braucht KEINEN Composite-Index (Single-Field-Auto-Index reicht) - die aktuelle Default-Query funktioniert also. Der Gap ist real nur als 'fehlende standort-serverseitige Filtermoeglichkeit', nicht als Laufzeitfehler. Mit limit(100) ist die Liveansicht ohnehin begrenzt. SEVERITY 'niedrig' (Audit 'mittel') - korrigiert: kein akutes Problem, Verbesserungsvorschlag fuer kuenftigen standortgefilterten Verlauf.
+
+#### ⚪ niedrig `barcode-no-index-clientside-scan` — Barcode-/SKU-Suche und Kategorie-Filter laufen rein clientseitig (kein Feld-Index)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/inventory_screen.dart`, `lib/models/product.dart`, `firestore.indexes.json`
+- **Skill-Prinzip:** 16_datenbank.md Abschnitt 4 (Schema, Indizes & Queries): Indizes auf haeufig gefilterte Spalten, N+1/Full-Scan vermeiden.
+- **Problem:** Produktsuche per Barcode/SKU/Kategorie geschieht ausschliesslich clientseitig durch Iteration ueber alle gestreamten Produkte (inventory_screen.dart:495-503, .where(... barcode.contains ...)). Firestore haelt barcode/category als Felder vor (product.dart:162-163), aber kein Index und keine serverseitige Query. Fuer Barcode-Scan am POS waere eine indizierte where('barcode', isEqualTo:)-Query der natuerliche Pfad.
+- **Fix:** Wenn ein Barcode-Scan-Feature kommt: Field-Index auf barcode (bzw. (siteId, barcode) fuer org-Stream) und findProductByBarcode(orgId, code) in firestore_service.dart. Fuer das heutige Volltextfilter-UI ist clientseitig vertretbar - als bewusste Entscheidung im Code-Kommentar festhalten.
+- **Verify-Notiz:** Bestaetigt: inventory_screen.dart 495-503 filtert clientseitig ueber product.name/sku/barcode/category mit .contains(query). product.dart:162-164 fuehrt barcode/category als Firestore-Felder. Keine where-Query auf diese Felder im FirestoreService (kein findProductByBarcode), kein Index in indexes.json. Faktisch korrekt. Severity 'niedrig' korrekt - das ist ein Volltext-Substring-Filter (contains), den Firestore ohnehin nicht serverseitig kann; eine Equality-Barcode-Query waere nur fuer ein noch nicht existierendes Scan-Feature relevant. Vorausschauender Hinweis, kein heutiger Defekt.
+
+
+### Datensynchronisierung (19)
+
+#### 🔴 kritisch `no-tombstones-for-deletes` — Loeschungen erzeugen keine Tombstones – geloeschte Datensaetze tauchen beim naechsten Sync wieder auf
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:530`, `lib/providers/work_provider.dart:1698`, `lib/providers/schedule_provider.dart:677`, `lib/providers/schedule_provider.dart:1704`, `lib/providers/inventory_provider.dart:349`
+- **Skill-Prinzip:** Abschnitt 3 (Delta-Sync, Cursor & Tombstones): 'Loeschungen ueber Tombstones/Soft-Deletes propagieren — ohne sie koennen Clients geloeschte Datensaetze nicht entfernen.'
+- **Problem:** Im local-Modus loeschen deleteEntry/deleteShift/deleteAbsenceRequest den Datensatz nur aus der lokalen Liste. Beim spaeteren Wechsel in hybrid/cloud (cacheCloudStateLocally) bzw. beim hybrid-Stream-Merge _mergeByKey wird der noch in Firestore vorhandene Datensatz wieder eingespielt. Kein Soft-Delete/Tombstone-Feld propagiert die Loeschung.
+- **Fix:** Soft-Delete einfuehren: neues nullable Feld deletedAt/isDeleted an WorkEntry/Shift/AbsenceRequest (6-Stellen-Regel: toMap/fromMap/toFirestoreMap/fromFirestore/copyWith+clear, plus snake_case in functions/index.js falls ueber Callable). Loesch-Mutatoren markieren statt entfernen; _applyLocalState-Filter und Stream-Mapper blenden deletedAt != null aus; _mergeByKey entfernt Eintraege mit gesetztem Tombstone aus dem lokalen Cache. Pragmatisch fuer 2 Laeden: optional nur fuer hybrid/cloud aktiv, local-only kann hart loeschen.
+- **Verify-Notiz:** Bestaetigt. work_provider.dart:530 deleteEntry mit _localEntries.removeWhere(...) (Zeile 536) im local-Zweig und _firestoreService.deleteWorkEntry (546) im sonstigen Zweig. schedule_provider.dart:677 deleteShift mit _localShifts.removeWhere (684). _mergeByKey (work:1698, schedule:1704) ist identisch und baut nur eine Vereinigungs-Map ohne Loesch-Erkennung – ein Key der lokal entfernt aber remote noch vorhanden ist, kehrt zurueck. grep ueber lib/models/ findet KEIN deletedAt/isDeleted/tombstone-Feld. inventory_provider.dart:349 ist deleteProduct (where(id != ...)) – auch dort hartes Entfernen ohne Tombstone. Dateipfade/Zeilen korrekt. severity kritisch angemessen fuer hybrid-Nutzer.
+
+#### 🟠 hoch `blind-lww-merge-no-version` — _mergeByKey ist blindes Last-Write-Wins ohne Versions-/Zeitstempelvergleich – Offline-Edits werden still ueberschrieben
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:1698`, `lib/providers/schedule_provider.dart:1704`, `lib/providers/work_provider.dart:1609`
+- **Skill-Prinzip:** Abschnitt 5 (Konfliktauflösung): 'LWW ist einfach, verliert aber Daten bei echten Parallelschreibungen … Konflikte erkennen (Versionen/Vektoruhren), nicht nur blind ueberschreiben.'
+- **Problem:** _mergeByKey (identisch in work_ und schedule_provider) baut eine Map und laesst bei gleichem Key bedingungslos den remote-Eintrag gewinnen. Kein Vergleich von updatedAt/Version. Szenario hybrid: Nutzer editiert offline einen WorkEntry (lokaler Fallback in addEntry), bevor der Cloud-Stream wieder eintrifft; der naechste _storeHybridWorkEntriesSnapshot ueberschreibt die lokale, neuere Version mit dem aelteren Server-Snapshot.
+- **Fix:** _mergeByKey um Tie-Breaker erweitern: bei Key-Kollision den Eintrag mit dem juengeren updatedAt/correctedAt behalten statt pauschal remote. WorkEntry hat aktuell KEIN lesbares updatedAt (nur write-only FieldValue.serverTimestamp in toFirestoreMap) – ein lokales updatedAt-Feld muss zuerst eingefuehrt und in toMap/fromMap geparst werden, bevor der Vergleich greift. Shift hat bereits ein lesbares updatedAt. Funktion in beide Provider identisch ziehen (gemeinsames Helfer-File in lib/core/).
+- **Verify-Notiz:** Bestaetigt. work_provider.dart:1698-1716 _mergeByKey: zwei for-Schleifen befuellen merged[key]; die remote-Schleife laeuft NACH der local-Schleife, also gewinnt remote bedingungslos. schedule_provider.dart:1704 identisch. _storeHybridWorkEntriesSnapshot (work:1609) ruft _mergeByKey(scopedLocalEntries, items, ...) auf. KORREKTUR zum proposedFix des Audit-Agenten: WorkEntry (lib/models/work_entry.dart) hat KEIN parsbares updatedAt-Feld – Zeile 174 schreibt 'updatedAt': FieldValue.serverTimestamp() nur raus, fromFirestore/fromMap lesen es nicht zurueck (nur correctedAt, Zeilen 22/126/149). Der Tie-Breaker per updatedAt erfordert also zuerst Modell-Erweiterung; effort daher eher M-L. Ansonsten Gap real.
+
+#### 🟠 hoch `no-outbox-retry-queue` — Kein Outbox/Retry – lokal gepufferte hybrid-Writes werden nie automatisch zur Cloud nachgepusht
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:406`, `lib/providers/schedule_provider.dart:385`, `lib/providers/work_provider.dart:696`, `lib/screens/settings_screen.dart:378`
+- **Skill-Prinzip:** Abschnitt 4 (Outbox-Queue & zuverlaessige Uebertragung): 'lokale Schreibvorgaenge in eine Queue-/Outbox-Tabelle schreiben und in Reihenfolge synchronisieren … Retry mit exponentiellem Backoff. Outbox ueberlebt App-Neustarts.'
+- **Problem:** Bei einem Firestore-Fehler im hybrid-Modus faellt addEntry/saveShift/submitAbsenceRequest auf lokale Persistenz zurueck, aber es wird kein Retry geplant und keine pending-Markierung gesetzt. Der einzige Weg, lokal entstandene Aenderungen je zur Cloud zu bringen, ist syncLocalStateToCloud, das ausschliesslich manuell beim Speichermoduswechsel im Settings-Screen aufgerufen wird. Geht ein hybrid-Write offline verloren und der Nutzer wechselt nie den Modus, bleibt die Aenderung dauerhaft nur lokal. Keine Idempotenz-/Backoff-Logik.
+- **Fix:** Kleine Outbox einfuehren: neue Datei lib/services/sync_outbox_service.dart, die fehlgeschlagene Mutationen (typ, payload als toMap, clientUuid) in einer eigenen SharedPreferences-Collection ablegt. Im hybrid-catch der Provider statt nur lokal zu cachen zusaetzlich outbox.enqueue(...) aufrufen. Ein Flush-Trigger bei App-Resume/updateSession verarbeitet die Queue mit begrenztem Retry.
+- **Verify-Notiz:** Bestaetigt. work_provider.dart:406-422 try/catch faellt im hybrid-Fall auf _upsertLocalEntry + _persistLocalEntries zurueck, ohne Markierung/Enqueue. schedule_provider.dart:385-401 (saveShift) identisches Muster. syncLocalStateToCloud existiert in work(696)/schedule(1313)/team(957), wird aber laut grep ausschliesslich aus settings_screen.dart:379-381 in _changeStorageLocation aufgerufen – kein App-Resume-/Login-Trigger. grep nach outbox/retry/pending in lib/providers+services findet nur Treffer fuer AbsenceStatus.pending bzw. swapStatus 'pending' (false positives). Keine Outbox, kein Backoff. Gap real.
+
+#### 🟠 hoch `inventory-no-offline-support` — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/inventory_provider.dart:57`, `lib/providers/inventory_provider.dart:288`, `lib/providers/inventory_provider.dart:333`, `lib/providers/inventory_provider.dart:379`
+- **Skill-Prinzip:** Abschnitt 1 (Offline-First-Architektur): 'die lokale DB ist die Source of Truth fuer die UI, Sync laeuft asynchron im Hintergrund … Optimistic UI: lokale Schreibvorgaenge sofort anzeigen … bei Fehler kompensieren/zurueckrollen.'
+- **Problem:** InventoryProvider kennt nur usesLocalStorage vs _usesFirestore – kein hybrid-Begriff, keine lokale Spiegelung, kein catch-Fallback. saveSupplier/saveProduct/adjustStock/savePurchaseOrder rufen im _usesFirestore-Zweig direkt Firestore auf und return ohne try/catch. Schlaegt der Write fehl (offline), wird kein Optimistic-State gehalten und kein lokaler Fallback geschrieben. adjustProductStock/receivePurchaseOrder sind reine Firestore-Transaktionen und damit komplett offline-untauglich.
+- **Fix:** InventoryProvider an das hybrid-Muster der anderen Provider angleichen: usesHybridStorage einfuehren, im Mutator bei hybrid try/Firestore mit lokalem Fallback (lokale Liste + DatabaseService-Persistenz, neue org-skopierte Keys 'suppliers'/'products'/'purchase_orders' in _orgScopedCollectionKeys registrieren), Streams cachen. Bestandsbuchungen bei hybrid lokal als pending-Movement vormerken und via Outbox nachfuehren. Inkrementell, da Modul neu.
+- **Verify-Notiz:** Bestaetigt. inventory_provider.dart:57-58 usesLocalStorage / _usesFirestore = !usesLocalStorage; kein _hybridStorageEnabled-Zweig in den Mutatoren (das Feld existiert zwar Zeile 32 und fliesst in _storageModeKey, wird aber in den Schreibpfaden nie verzweigt). saveSupplier (288): if(_usesFirestore){ await ...saveSupplier(prepared); return; } – kein try/catch. saveProduct (333), adjustStock (378-387 ruft adjustProductStock), savePurchaseOrder (427), receiveOrder (493 ruft receivePurchaseOrder) alle gleiches Muster: direkter Firestore-Call ohne Fallback, lokale Liste nur im Else-Zweig. Bei Firestore-Fehler propagiert die Exception zur UI ohne Optimistic-State. _maybeSeedLocalDemo zeigt zudem, dass local nur fuer Demo gedacht ist (kein DatabaseService-Persist – im local-Modus ist sogar gar keine Persistenz!). Gap real, severity hoch fuer ein als Offline-First positioniertes 2-Laeden-Modul plausibel.
+
+#### 🟡 mittel `timestamp-ids-not-uuid` — Client-generierte IDs sind Timestamp-basiert statt UUID/ULID – Kollisions- und Re-Sync-Risiko
+- **Welle:** 2 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:1662`, `lib/providers/schedule_provider.dart:1650`, `lib/providers/inventory_provider.dart:272`
+- **Skill-Prinzip:** Abschnitt 3: 'Client-generierte IDs (UUIDv7/ULID) fuer offline angelegte Datensaetze, damit kein Server-Roundtrip fuer IDs noetig ist und keine Kollisionen entstehen.'
+- **Problem:** _nextLocalId erzeugt IDs wie 'entry-<microsecondsSinceEpoch>'. Beim Push dieser Eintraege zur Cloud behaelt _saveWorkEntryDirect die ID als Doc-ID. Auf demselben Geraet bei schnellen Batch-Inserts (zwei Eintraege in derselben Mikrosekunde) oder ueber mehrere Geraete derselben Org koennen IDs kollidieren. FirestoreService besitzt bereits eine Uuid-Instanz, die hier nicht genutzt wird.
+- **Fix:** _nextLocalId in work_ und schedule_provider auf eine UUID umstellen, z.B. const Uuid().v4() mit lesbarem Praefix ('entry-<uuid>'). uuid (^4.5.3) ist bereits Dependency. Optional uuid via Konstruktor injizierbar fuer deterministische Tests. inventory_provider ist durch zusaetzlichen Sequenzzaehler weniger anfaellig (siehe verifyNote), kann aber zur Konsistenz mitgezogen werden.
+- **Verify-Notiz:** Bestaetigt mit Nuance. work_provider.dart:1662-1664 und schedule_provider.dart:1650-1652: return '$prefix-${DateTime.now().microsecondsSinceEpoch}' – rein zeitbasiert, kollidiert bei Same-Microsecond-Batch und geraetueberschreitend. _saveWorkEntryDirect (firestore_service.dart:601) nutzt collection.doc(entry.id), also wird die lokale ID zur Doc-ID (merge:true wuerde ueberschreiben). uuid ^4.5.3 in pubspec.yaml:43; FirestoreService hat _uuid (firestore_service.dart:48). KORREKTUR: inventory_provider.dart:272-275 _nextLocalId haengt zusaetzlich einen monoton steigenden _localSeq an ('local-$prefix-<micros>-$_localSeq'), womit Same-Microsecond-Kollisionen auf demselben Geraet ausgeschlossen sind; Cross-Device-Risiko bleibt theoretisch, ist aber im Inventory-local-Modus (kein Cloud-Push fuer Inventory, siehe inventory-no-offline-support) derzeit nicht relevant. work/schedule sind die echten Treffer.
+
+#### 🟡 mittel `no-connectivity-no-sync-status-ux` — Keine Konnektivitaetserkennung und keine Sync-Status-UX – Eventual Consistency ist fuer den Nutzer unsichtbar
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/storage_mode_provider.dart:23`, `lib/providers/work_provider.dart:1432`, `lib/providers/schedule_provider.dart:1412`
+- **Skill-Prinzip:** Abschnitt 7+8 (CAP/PACELC, Konnektivitaet & Konflikt-UX): 'Eventual Consistency … der UX sichtbar machen: Sync-Status, zuletzt aktualisiert, ausstehende Aenderungen' und 'connectivity_plus zum Erkennen von Online/Offline'.
+- **Problem:** Die App hat keinerlei Online/Offline-Erkennung (kein connectivity_plus) und zeigt dem Nutzer nicht an, ob Daten nur lokal gepuffert oder bereits cloud-bestaetigt sind. Stream-Fehler werden lediglich in _errorMessage bzw. via debugPrint geschluckt. Im hybrid-Modus gibt es keinen ausstehend/zuletzt-synchronisiert-Indikator. Der Nutzer kann nicht erkennen, dass eine Aenderung die Cloud nie erreicht hat.
+- **Fix:** Pragmatisch: kleiner SyncStatusProvider (neue Datei lib/providers/sync_status_provider.dart), der Anzahl ausstehender Outbox-Eintraege und 'zuletzt erfolgreich synchronisiert' haelt, plus dezenter Status-Chip in home_screen/settings. Online-Erkennung optional ueber connectivity_plus; mindestens die drei Datenzustaende (lokal/pending/bestaetigt) sichtbar machen.
+- **Verify-Notiz:** Bestaetigt. grep nach connectivity/Connectivity in pubspec.yaml und lib/ liefert keine Treffer (exit 1) – kein connectivity_plus, keine Reachability. work_provider.dart:1432 onError setzt nur _errorMessage = 'Fehler beim Laden der Eintraege: ...'; schedule_provider.dart:1412 onError analog. Template-/Report-Streams loggen Fehler nur via debugPrint (work:1457, schedule:1440). Kein Sync-Status-Feld/Provider und keine 'pending'-UX vorhanden (siehe no-outbox-retry-queue). Hinaeg storage_mode_provider.dart:23 ist nur das Mode-Enum, ohne Status. Gap real; severity mittel angemessen.
+
+#### 🟡 mittel `hybrid-delete-rethrows` — hybrid-Delete folgt nicht dem dokumentierten catch-Fallback-Muster – Loeschungen schlagen offline hart fehl
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:546`, `lib/providers/work_provider.dart:610`, `lib/providers/schedule_provider.dart:694`, `lib/providers/schedule_provider.dart:866`
+- **Skill-Prinzip:** Abschnitt 1+4 (Offline-First / zuverlaessige Uebertragung): Mutationen muessen offline reaktionsschnell und konsistent behandelt werden; CLAUDE.md-Kopplung 'bei hybrid lokal fallbacken, nicht rethrow'.
+- **Problem:** CLAUDE.md schreibt das Mutator-Muster vor: 'im catch: bei hybrid lokal fallbacken (NICHT rethrow)'. Saves halten sich daran, aber die Delete-Pfade nicht: deleteEntry, deleteTemplate, deleteShift, deleteAbsenceRequest rufen im Nicht-local-Zweig direkt _firestoreService.deleteX(...) ohne try/catch auf. Offline im hybrid-Modus wirft Firestore. Inkonsistente Resilienz zwischen Create und Delete.
+- **Fix:** Delete-Pfade in work_/schedule_provider an das Save-Muster angleichen: im hybrid-Fall den Firestore-Delete in try/catch wrappen und im catch den Eintrag lokal entfernen bzw. (siehe Tombstone-Gap) lokal als deletedAt markieren + persistieren, statt zu rethrowen. Bei cloud-only weiterhin rethrow.
+- **Verify-Notiz:** Bestaetigt. work_provider.dart:546-549 deleteEntry: await _firestoreService.deleteWorkEntry(...) ohne try/catch. work_provider.dart:610-613 deleteTemplate analog. schedule_provider.dart:694-697 deleteShift: await _firestoreService.deleteShift(...) ohne try/catch. schedule_provider.dart:866-869 deleteAbsenceRequest analog. Im Kontrast halten die Save-Pfade (addEntry 410, addTemplate 576, saveShift 387, submitAbsenceRequest 822) das if(!usesHybridStorage) rethrow; sonst lokal-Fallback-Muster ein. Offline wirft FirebaseException im hybrid-Delete sichtbar. Hinweis: Anmerkung zu Firestore-Offline-Persistenz – deletes werden lokal gequeued solange die App-Session laeuft, die Exception tritt eher bei expliziten Fehlern/Permission auf, dennoch ist die Inkonsistenz zum Save-Muster real und verletzt die CLAUDE.md-Kopplung. severity mittel angemessen.
+
+#### ⚪ niedrig `full-read-no-delta-sync` — Hybrid spiegelt per Voll-Monatsstream statt Delta-Sync; cacheCloudStateLocally laedt alle Eintraege ohne Cursor
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:294`, `lib/providers/work_provider.dart:664`, `lib/providers/schedule_provider.dart:1272`
+- **Skill-Prinzip:** Abschnitt 3 (Delta-Sync, Cursor): 'nur Aenderungen seit letztem Cursor/updated_at ziehen und pushen, nicht Vollabzuege. Stabiler, monotoner Cursor pro Client.'
+- **Problem:** watchWorkEntries liefert pro Monat den vollstaendigen Datensatz; jeder Snapshot ueberschreibt _entries komplett und triggert einen Full-Mirror nach SharedPreferences. cacheCloudStateLocally ruft getAllWorkEntries/getAllShifts – ein kompletter Vollabzug ohne updated_at-Cursor. Es gibt keinen monotonen Sync-Cursor; bei groesserem Datenbestand werden bei jedem Moduswechsel/Login alle Dokumente erneut gelesen (vermeidbare Firestore-Reads, relevant fuer Spark-Free-Tier).
+- **Fix:** Pragmatisch: in cacheCloudStateLocally/syncLocalStateToCloud einen pro Org+User gespeicherten lastSyncedAt-Cursor (SharedPreferences) fuehren und eine neue FirestoreService-Methode getWorkEntriesUpdatedSince(orgId,userId,since) nutzen (where('updatedAt', isGreaterThan: ...) + Index in firestore.indexes.json). Bestehende Monats-Streams fuer die Live-UI koennen bleiben; nur der Voll-Cache-Pfad wird inkrementell. Fuer 2 Laeden niedrige Prioritaet.
+- **Verify-Notiz:** Bestaetigt. firestore_service.dart:294-312 watchWorkEntries filtert nur per userId + date-Monatsfenster, mapped den kompletten Snapshot; getAllWorkEntries (368-380) hat gar kein Datums-/updatedAt-Filter (nur where userId + orderBy date) – echter Vollabzug. work_provider.dart:664 cacheCloudStateLocally ruft getAllWorkEntries + getWorkTemplates und persistiert alles. schedule_provider.dart:1272 cacheCloudStateLocally ruft getAllShifts + getAllAbsenceRequests. Stream-Snapshot setzt _entries = items (work:1419) und triggert _storeHybridWorkEntriesSnapshot (Full-Mirror). Keine where('updatedAt', isGreaterThan)-Query in firestore_service.dart (grep zeigt isGreaterThan nur fuer date-Felder). Kein lastSyncedAt-Cursor. Gap real; severity niedrig korrekt fuer 2-Laeden-Scope. Hinweis: WorkEntry hat kein lesbares updatedAt, der vorgeschlagene Cursor erfordert wie bei blind-lww zuerst ein Modellfeld.
+
+
+### Error Handling & Resilience (12)
+
+#### 🔴 kritisch `hybrid-catch-swallows-blocking-stateerror` — Hybrid-Fallback-catch verschluckt serverseitige Compliance-Blocks (StateError) und schreibt trotzdem lokal
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:410`, `lib/providers/work_provider.dart:468`, `lib/providers/schedule_provider.dart:387`, `lib/services/firestore_service.dart:1499`
+- **Skill-Prinzip:** Abschnitt 1 (Exception vs. Error): StateError signalisiert nicht-transiente Faelle, die nicht abgefangen/umgangen werden duerfen; Abschnitt 4/5: Fallback nur fuer transiente Netzwerkfehler.
+- **Problem:** Die Mutator-Methoden im hybrid-Modus fangen mit `catch (error)` ALLES ab und fallen still auf lokale Persistenz zurueck. `_callCloudFunctionIfAvailable` wandelt eine blockierende serverseitige Compliance-Verletzung in `throw StateError(error.message)` um. Im hybrid-Modus (Default) wird dieser bewusste Block wie ein Netzwerkfehler behandelt: Eintrag/Schicht wird trotz serverseitiger Ablehnung lokal gespeichert.
+- **Fix:** In den hybrid-catch-Bloecken (work_provider addEntry@410, addEntries@468; schedule_provider saveShiftBatch@387 und saveShiftTemplate) `on StateError rethrow;` VOR dem generischen `catch (error)` einsetzen, sodass blockierende Compliance-Verletzungen immer durchgereicht werden und nur FirebaseException/SocketException/TimeoutException den lokalen Fallback ausloesen.
+- **Verify-Notiz:** Bestaetigt. firestore_service.dart:1506-1514 wandelt FirebaseFunctionsException mit Message in `throw StateError(error.message!.trim())` um (nur 'not-found'/'unavailable' geben false zurueck). saveWorkEntry@565, saveWorkEntryBatch@583, saveShiftBatch@1238 rufen `_callCloudFunctionIfAvailable`. work_provider.dart:410-422 und 468-482 fangen mit `catch (error) { if (!usesHybridStorage) rethrow; ... }` - generisch. schedule_provider.dart:387-401 identisch. KORREKTUR: In addEntries wird die *clientseitige* blockierende Validierung bereits VOR dem try (Zeile 443-444) als StateError geworfen und ist NICHT betroffen; nur der *serverseitige* Block aus der Callable landet im catch. Gap-Kern stimmt.
+
+#### 🟠 hoch `no-timeout-on-remote-calls` — Keine Timeouts auf Cloud-Function-Callables und Firestore-Reads
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1489`, `lib/services/firestore_service.dart:1496`, `lib/providers/work_provider.dart:1300`
+- **Skill-Prinzip:** Abschnitt 5 (Netzwerk-Resilienz): Timeouts auf jedem Remote-Call sind Pflicht.
+- **Problem:** `_callCloudFunction` ruft `httpsCallable(name).call(payload)` ohne `HttpsCallableOptions(timeout:)` und ohne `.timeout(...)`. Auch one-shot `.get()`-Reads (z.B. _loadActiveEntryAt, getApprovedVacationsForYear) haben keinen Timeout. Bei schlechter Verbindung kann ein Save-/Publish-Aufruf unbegrenzt haengen; der hybrid-Fallback greift nur bei Exception, nicht bei Haengen.
+- **Fix:** In `_callCloudFunction` `httpsCallable(name, options: HttpsCallableOptions(timeout: Duration(seconds: 30)))` setzen. Fuer one-shot Reads einen Helper `_withTimeout<T>(Future<T> f)` (z.B. 15s) einfuehren und auf die `.get()`-Aufrufe der save/preview/clock-Pfade anwenden; bei TimeoutException greift der bestehende hybrid-Fallback.
+- **Verify-Notiz:** Bestaetigt. firestore_service.dart:1496 `return _firebaseFunctions.httpsCallable(name).call(payload);` ohne HttpsCallableOptions; grep nach `HttpsCallableOptions` und `.timeout(` ergibt keine Treffer. getApprovedVacationsForYear@1464 und _loadActiveEntryAt@1810->_loadUserEntriesForRange `.get()` ohne Timeout.
+
+#### 🟠 hoch `global-handlers-no-crash-reporting` — Globale Fehler-Handler loggen nur per debugPrint statt an ein Crash-Reporting weiterzuleiten
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart:31`, `lib/main.dart:36`, `lib/main.dart:290`
+- **Skill-Prinzip:** Abschnitt 3 (Globale Fehler-Handler) + Abschnitt 8 (Beobachtbarkeit).
+- **Problem:** `FlutterError.onError` und `PlatformDispatcher.instance.onError` rufen nur `debugPrint(...)`. `debugPrint` ist in Release ein No-op — in Produktion gehen unbehandelte Framework-/async-Fehler ins Leere. Kein `runZonedGuarded`-Sicherheitsnetz. `_dispatchProviderUpdate` (main.dart:290) loggt fire-and-forget-Fehler ebenfalls nur per debugPrint.
+- **Fix:** Neue Datei `lib/core/error_reporter.dart` mit statischer `ErrorReporter.report(...)`, die auch in Release via `developer.log` strukturiert loggt und Einhaengepunkt fuer Sentry/Crashlytics bietet. In main.dart die drei Handler darauf umleiten und `runApp` in `runZonedGuarded` wrappen.
+- **Verify-Notiz:** Bestaetigt. main.dart:31-34 FlutterError.onError ruft presentError + debugPrint; 36-39 PlatformDispatcher.onError nur debugPrint+return true; 290-296 _dispatchProviderUpdate catchError->debugPrint. grep `runZonedGuarded` kein Treffer. KORREKTUR: FlutterError.onError ruft zusaetzlich `FlutterError.presentError(details)` (Zeile 32), Fehler also nicht voellig verschluckt, aber kein externer Reporter. Gap-Kern stimmt.
+
+#### 🟡 mittel `no-errorwidget-builder` — Kein angepasster ErrorWidget.builder — roter Fehlerschirm erreicht Endnutzer
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart:27`, `lib/main.dart:160`
+- **Skill-Prinzip:** Abschnitt 4 (Fehler-UI & Graceful Degradation).
+- **Problem:** `ErrorWidget.builder` wird nirgends gesetzt. Wirft ein Widget in `build` eine Exception, sieht der Nutzer in Release den Standard-Fehlerschirm statt einer dezenten deutschen Fallback-UI. Keine Error-Boundary pro Feature/Tab.
+- **Fix:** In `main()` `ErrorWidget.builder = (details) => const _AppErrorFallback(...)` setzen, das in Release eine ruhige Karte mit deutschem Text zeigt und in `kDebugMode` die Standard-Diagnostik. Fallback-Widget als file-private Klasse in main.dart oder lib/widgets/. Additiv.
+- **Verify-Notiz:** Bestaetigt. grep nach `ErrorWidget` in main.dart ergibt keinen Treffer - ErrorWidget.builder nie gesetzt, Default (roter Schirm) aktiv. Keine Error-Boundary.
+
+#### 🟡 mittel `no-retry-backoff-idempotent` — Keine Retry-mit-Backoff fuer idempotente Cloud-Writes; einmaliger transienter Fehler degradiert sofort lokal
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1499`, `lib/providers/work_provider.dart:407`, `lib/providers/schedule_provider.dart:386`
+- **Skill-Prinzip:** Abschnitt 5: Retry mit exponentiellem Backoff + Jitter, nur idempotent, mit Obergrenze, `unavailable` respektieren.
+- **Problem:** Bei einem einzelnen transienten Fehler (z.B. `unavailable`, kurzer Netz-Drop) gibt es keinen Retry. Im hybrid-Modus fuehrt das sofort zum lokalen Fallback, im cloud-Modus zum sofortigen rethrow. Die Callables sind serverseitig idempotent (stabile IDs).
+- **Fix:** Kleiner `lib/core/retry.dart` mit `retryTransient<T>(...)`, nur bei FirebaseException(unavailable/deadline-exceeded) und TimeoutException mit Backoff+Jitter, sonst rethrow. In `_callCloudFunctionIfAvailable` und `_saveWorkEntryBatchDirect`/`_saveShiftBatchDirect` umschliessen. StateError/permission-denied/failed-precondition NICHT wiederholen.
+- **Verify-Notiz:** Bestaetigt. Kein Retry vorhanden. `_callCloudFunctionIfAvailable`@1499 gibt bei 'unavailable' sofort false zurueck. `_saveWorkEntryBatchDirect`@608 und `_saveShiftBatchDirect`@1282 nutzen einfaches batch.commit() ohne Wiederholung. Callables laut CLAUDE.md mit stabilen IDs idempotent. proposedFix konsistent mit hybrid-catch-Gap (StateError ausnehmen).
+
+#### 🟡 mittel `stream-onerror-debugprint-only` — Stammdaten-Stream-Fehler (TeamProvider) werden nur per debugPrint verschluckt, ohne Nutzer-Feedback
+- **Welle:** 2 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/team_provider.dart:255`, `lib/providers/team_provider.dart:287`, `lib/providers/team_provider.dart:305`, `lib/providers/team_provider.dart:366`
+- **Skill-Prinzip:** Abschnitt 4: Fehlerzustaende mit Botschaft statt stiller Leere; Abschnitt 8.
+- **Problem:** Saemtliche `watch...`-Streams im TeamProvider haben `onError: (error) => debugPrint(...)`. Faellt ein Stream dauerhaft aus (fehlender Index, permission-denied), bleibt die UI leer ohne Hinweis; in Release ist der debugPrint weg. TeamProvider hat kein `errorMessage`-Feld.
+- **Fix:** TeamProvider um `String? _errorMessage`/Getter und `_setStreamError(bereich, e)` ergaenzen (analog WorkProvider/InventoryProvider), die _errorMessage setzt, ErrorReporter.report aufruft und _safeNotify(). onError-Callbacks umstellen. UI optional anzeigen; additiv.
+- **Verify-Notiz:** Bestaetigt. team_provider.dart:255-259 (Mitglieder), 270-273 (Einladungen), 287-289 (Teams), 305-307 (Standorte), 318-321 (Qualifikationen), 332-334 (Vertraege), 344-347 (Zuordnungen), 366-368 (Regelwerke), 370+ (Fahrtzeitregeln) - alle onError nur debugPrint. grep `_errorMessage`/`errorMessage` in team_provider.dart KEIN Treffer. WorkProvider hat _errorMessage (120/143), TeamProvider nicht.
+
+#### ⚪ niedrig `work-template-report-stream-silent` — Vorlagen- und Bericht-Stream-Fehler im WorkProvider werden ohne Nutzer-Feedback geschluckt
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/work_provider.dart:1457`, `lib/providers/work_provider.dart:1505`
+- **Skill-Prinzip:** Abschnitt 4 (Loading/Empty/Error/Success unterscheidbar) + Abschnitt 8.
+- **Problem:** Waehrend der Eintraege-Stream einen `_errorMessage` setzt (work_provider.dart:1433), fangen der Vorlagen-Stream (1456) und der Berichts-Stream (1504) ihre Fehler nur mit debugPrint. Schlaegt das Laden der Berichtsdaten dauerhaft fehl, bleibt der Bericht leer ohne Hinweis.
+- **Fix:** In beiden onError-Callbacks zusaetzlich ErrorReporter.report(error, ...) aufrufen und beim Berichts-Stream einen dedizierten _reportErrorMessage (oder _errorMessage) setzen + _safeNotify().
+- **Verify-Notiz:** Bestaetigt. Eintraege-Stream setzt `_errorMessage = 'Fehler beim Laden der Eintraege: $error'` (1433). Vorlagen-Stream onError@1456-1458 nur debugPrint. Berichts-Stream onError@1504-1506 nur debugPrint. Inkonsistenz real.
+
+#### ⚪ niedrig `order-number-fallback-collision` — Bestellnummer-Fallback verschluckt jeden Fehler und kann kollidierende/duplizierte Nummern erzeugen
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1076`
+- **Skill-Prinzip:** Abschnitt 1 (gezielt fangen statt alles schlucken) + Abschnitt 5 (transient vs. dauerhaft, Retry).
+- **Problem:** `_allocateOrderNumber` faengt in `catch (_)` JEDEN Fehler der Zaehler-Transaktion (auch transiente `unavailable`) und erzeugt eine zeitbasierte Nummer `BST-JJJJMMTT-HHMM`. Zwei parallele Bestellungen in derselben Minute bekommen dieselbe Nummer; ein transienter Fehler wird nicht von einem echten Rechte-Problem unterschieden und gar nicht gemeldet.
+- **Fix:** catch typisieren: bei transientem FirebaseException(unavailable/deadline-exceeded) ueber retryTransient erneut versuchen; nur bei permission-denied in den Zeitstempel-Fallback gehen und `-${_uuid.v4().substring(0,4)}` anhaengen, um Kollisionen zu vermeiden; Fallback-Grund via ErrorReporter loggen.
+- **Verify-Notiz:** Bestaetigt. firestore_service.dart:1060-1082. Try fuehrt runTransaction-Counter aus, gibt 'BST-${now.year}-${seq.padLeft(4)}' zurueck. `catch (_)` (1076) faengt ALLES, Fallback `'BST-${year}${month}${day}-${hour}${minute}'` (minutengenau -> Kollision moeglich, kein eindeutiger Suffix). Kein Logging, keine Transient-Unterscheidung. severity 'niedrig' angemessen (Bestellmodul, geringe Parallelitaet).
+
+
+### Observability (14)
+
+#### 🔴 kritisch `no-crash-reporting` — Kein Crash-/Fehler-Reporting in Produktion — App ist im Feld blind
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart:31`, `lib/main.dart:36`, `pubspec.yaml:38`
+- **Skill-Prinzip:** Abschnitt 1 (Crash- & Fehler-Reporting): Firebase Crashlytics oder sentry_flutter als Standard; globale Erfassung via FlutterError.onError + PlatformDispatcher.onError + runZonedGuarded; Crash-free Users >=99,5%. Anti-Pattern: Exceptions still schlucken.
+- **Problem:** Die globale Fehlererfassungskette existiert (FlutterError.onError, PlatformDispatcher.instance.onError), leitet aber NUR an debugPrint weiter. debugPrint ist im Release-Build effektiv ein No-Op. Es gibt keine Crash-Reporting-Dependency (kein firebase_crashlytics, kein sentry_flutter). Abstürze echter Nutzer gehen spurlos verloren.
+- **Fix:** firebase_crashlytics zu pubspec.yaml hinzufügen (passt zum Firebase-Stack, Spark-tauglich). In main.dart die beiden Handler erweitern: FlutterError.onError -> FirebaseCrashlytics.instance.recordFlutterError(details), PlatformDispatcher.instance.onError -> recordError(error, stack, fatal: true). Crashlytics nur aktivieren wenn DefaultFirebaseOptions.isConfigured (analog bestehender Gating-Logik in main.dart:66). debugPrint als Dev-Fallback unter kDebugMode belassen.
+- **Verify-Notiz:** Bestätigt. main.dart:31-34 FlutterError.onError ruft nur FlutterError.presentError + debugPrint. main.dart:36-39 PlatformDispatcher.instance.onError ruft nur debugPrint und gibt true zurück. pubspec.yaml zeigt firebase_core/firebase_auth/cloud_firestore/cloud_functions, aber KEIN firebase_crashlytics/sentry. grep über lib/ findet null Crashlytics-Vorkommen. Severity kritisch korrekt. Gating-Anker DefaultFirebaseOptions.isConfigured existiert real (main.dart:66).
+
+#### 🟠 hoch `no-runzoneguarded` — main() läuft nicht in runZonedGuarded — Zone-Fehler unerfasst
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart:27`, `lib/main.dart:41`
+- **Skill-Prinzip:** Abschnitt 1: 'App in runZonedGuarded (Zone-Fehler)' als dritter Pfeiler der globalen Erfassungskette neben FlutterError.onError und PlatformDispatcher.onError.
+- **Problem:** main() initialisiert die globalen Handler, aber runApp(const AppBootstrap()) läuft nicht in runZonedGuarded. Fehler in async-Callbacks außerhalb des Flutter-Frameworks (z.B. fire-and-forget _dispatchProviderUpdate-Futures) werden von FlutterError.onError nicht gefangen.
+- **Fix:** In main.dart den Body nach validateEnvironment in runZonedGuarded(() { runApp(...); }, (error, stack) { /* -> Crashlytics.recordError + debugPrint */ }) kapseln. Gemeinsame _reportError-Hilfsfunktion mit den anderen Handlern teilen. Hinweis: 'dart:async' ist bereits importiert (main.dart:1).
+- **Verify-Notiz:** Bestätigt. main.dart:27-42 main() ruft WidgetsFlutterBinding.ensureInitialized, validateEnvironment, setzt die zwei Handler und ruft runApp(const AppBootstrap()) bei Zeile 41 — kein runZonedGuarded. _dispatchProviderUpdate (main.dart:290-296) ist fire-and-forget mit catchError->debugPrint, exakt wie beschrieben. PlatformDispatcher.onError fängt zwar viele async-Fehler, aber Zone-Errors außerhalb sind nicht garantiert erfasst; der Skill-Pfeiler runZonedGuarded fehlt real. Effort S korrekt.
+
+#### 🟠 hoch `no-structured-logging` — debugPrint statt strukturiertem Logging mit Leveln (~40 Stellen)
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/team_provider.dart:256`, `lib/providers/work_provider.dart:1457`, `lib/providers/schedule_provider.dart:1440`, `lib/services/auth_service.dart:28`, `lib/providers/auth_provider.dart:264`
+- **Skill-Prinzip:** Abschnitt 2 (Strukturiertes Logging): logger/logging mit klaren Log-Leveln; strukturierte maschinenlesbare Felder; konsistente Korrelations-IDs; Dev-Logs über kDebugMode gaten.
+- **Problem:** Die App protokolliert Fehler/Zustände über ~40 verstreute debugPrint-Aufrufe ohne Log-Levels, ohne strukturierte Felder, ohne Korrelations-IDs; im Release-Build No-Op. Keine zentrale Logging-Abstraktion.
+- **Fix:** Neue Datei lib/core/app_logger.dart mit dünnem AppLogger (debug/info/warning/error(message, {Object? error, StackTrace? stack, Map<String,Object?>? fields})). debug/info nur unter kDebugMode; warning/error zusätzlich an Crashlytics.recordError/log. Bestehende debugPrint-Aufrufe schrittweise umstellen. Additive, test-neutrale Datei.
+- **Verify-Notiz:** Bestätigt. grep zählt exakt 40 debugPrint in lib/ über 6 Dateien (main.dart, auth_provider, work_provider, team_provider, schedule_provider, auth_service). Keine package:logging/dart:developer/app_logger-Abstraktion vorhanden (grep leer). Zitierte Zeilen real: team_provider.dart:256 'Fehler beim Laden der Mitglieder', auth_service.dart:28 'Persistence konnte nicht gesetzt werden', auth_provider.dart:264 'AuthProvider Fehler: ...', schedule_provider.dart:1440 'Fehler beim Laden der Schichtvorlagen', work_provider.dart:1457 'Fehler beim Laden der Vorlagen'. Alle frei-String, kein Level.
+
+#### 🟡 mittel `compliance-issues-swallowed` — Strukturierte Server-Compliance-Signale werden verworfen (blinder Fleck)
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1499`, `lib/services/firestore_service.dart:1510`
+- **Skill-Prinzip:** Abschnitt 1: 'Anti-Pattern: Exceptions still schlucken (catch ohne Report)' und Abschnitt 6: fachliche Kennzahlen wie API-Fehlerquoten pro Endpoint erheben.
+- **Problem:** _callCloudFunctionIfAvailable (firestore_service.dart:1499-1515) wandelt FirebaseFunctionsException bei blockierender Compliance (failed-precondition) in StateError(error.message) um und verwirft die strukturierten {issues}/{validations}-Details (by design laut CLAUDE.md) — ohne jegliches Logging/Reporting. Damit ist unsichtbar, welche Compliance-Regel wie oft greift.
+- **Fix:** In _callCloudFunctionIfAvailable vor der StateError-Umwandlung (firestore_service.dart:1510-1511) AppLogger.warning + Crashlytics.recordError (nicht-fatal) mit Funktionsname + e.code (KEINE Payload) aufrufen. Hinweis: Die im Original genannten work_provider.dart:1334/1357 'catch (_)' sind KEINE Compliance-Catches — Korrektur siehe verifyNote; daher aus files entfernt.
+- **Verify-Notiz:** TEILWEISE bestätigt mit Korrektur. firestore_service.dart:1499-1515 bestätigt: catch FirebaseFunctionsException -> bei not-found/unavailable return false; sonst throw StateError(error.message) ohne Logging — strukturierte issues/validations gehen verloren. ABER der Audit-Claim, work_provider.dart:1334 und :1357 seien stille Compliance-Catches, ist FALSCH: :1334 ist im _startClockTick-Timer (catch(_){timer.cancel()}), :1357 im _ensureClockAvailabilityWatcher-Timer (catch(_){timer.cancel()}). Beide canceln nur den Timer bei Disposal/Fehler, haben nichts mit Compliance/Callables zu tun — bewusst leerer catch ist hier vertretbar. Severity auf mittel reduziert (statt hoch), da nur der firestore_service-Pfad real betroffen ist und der Compliance-Discard ohnehin by-design ist; reines Logging-Defizit. Effort S.
+
+#### 🟡 mittel `no-distributed-tracing` — Keine Trace-Korrelation Client -> Cloud Functions
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:1489`, `lib/services/firestore_service.dart:1496`
+- **Skill-Prinzip:** Abschnitt 5 (Distributed Tracing Client->Backend): bei jedem API-Call eine Korrelations-/Trace-ID senden, in Crashlytics-Breadcrumbs und Server-Logs spiegeln. Anti-Pattern: isolierte Client-/Server-Telemetrie ohne gemeinsame ID.
+- **Problem:** _callCloudFunction (firestore_service.dart:1489-1497) ruft httpsCallable(name).call(payload) ohne Korrelations-/Trace-ID. Kein traceparent-Header, keine requestId/sessionId im Payload. Client-Fehler lassen sich nicht mit Server-Logs verbinden.
+- **Fix:** In _callCloudFunction eine requestId (uuid v4 via vorhandenem _uuid, firestore_service.dart:48) generieren, dem snake_case-Payload als '_request_id' beifügen UND als Crashlytics-Custom-Key setzen. In functions/index.js _request_id in jedem console.log/error mitloggen. Pragmatisch ohne vollen W3C-traceparent. Snake_case-Payload-Kopplung beachten.
+- **Verify-Notiz:** Bestätigt. firestore_service.dart:1489-1497 _callCloudFunction reicht payload unverändert an httpsCallable(name).call(payload) bzw. _cloudFunctionInvoker durch — keine Korrelations-ID. grep über lib/ findet kein traceparent/correlation. _uuid ist als Feld vorhanden (firestore_service.dart:48, import Zeile 7) — proposedFix umsetzbar. Severity mittel angemessen (2-Läden-Skala). Effort M plausibel wegen Client+Functions-Doppeländerung.
+
+#### 🟡 mittel `no-analytics-screen-tracking` — Keine Produkt-Telemetrie / kein Screen-Tracking für Nutzerflüsse
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart:266`, `pubspec.yaml:38`
+- **Skill-Prinzip:** Abschnitt 3 (Analytics & Produkt-Telemetrie): definierte Events mit konsistentem Namensschema, Screen-Tracking via NavigatorObserver; Funnels instrumentieren; Consent/Datensparsamkeit (DSGVO).
+- **Problem:** Keine Analytics-Dependency (kein firebase_analytics) und kein NavigatorObserver an MaterialApp (main.dart:267-285 definiert keine navigatorObservers). Funnels (Onboarding/Admin-Login, Zeiteintrag-Erstellung, Schichtveröffentlichung) sind nicht instrumentiert; Abbruchstellen unsichtbar.
+- **Fix:** firebase_analytics hinzufügen, neue Datei lib/core/analytics_service.dart mit typisierten Event-Methoden + FirebaseAnalyticsObserver. Observer in main.dart als navigatorObservers der MaterialApp registrieren (nur wenn Firebase configured). Strikt datensparsam: KEINE Namen/E-Mails/uids, nur Rolle/Screen/Anzahl. Opt-out-fähig halten.
+- **Verify-Notiz:** Bestätigt. MaterialApp (main.dart:267-284) listet title/theme/localizations/locale/home, aber kein navigatorObservers-Argument. pubspec.yaml hat kein firebase_analytics. grep über lib/ findet kein firebase_analytics/NavigatorObserver/navigatorObservers. Severity mittel korrekt. DSGVO-Hinweis im Fix wichtig: app ist Deutsch/EU, Datensparsamkeit zwingend.
+
+#### 🟡 mittel `pii-in-logs` — Personenbezogene Daten (uid) in Log-Ausgaben
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/team_provider.dart:978`
+- **Skill-Prinzip:** Abschnitt 2: 'Niemals PII, Tokens, Secrets oder vollständige Payloads loggen' und Abschnitt 3: Datensparsamkeit/DSGVO.
+- **Problem:** team_provider.dart:978 loggt die Nutzer-uid: debugPrint('syncLocalStateToCloud: Mitglied ${member.uid} ...'). Sobald Logs an einen Sammelpunkt (Crashlytics) gehen, würde diese uid als PII unkontrolliert exportiert.
+- **Fix:** In team_provider.dart:978 die uid aus der Lognachricht entfernen bzw. durch gehashte/gekürzte ID ersetzen. Im neuen AppLogger Konvention dokumentieren: nur IDs/Codes, nie E-Mail/Name/Token/Payload. Vor Aktivieren von Crashlytics-Forwarding alle Logmeldungen auf PII durchsehen.
+- **Verify-Notiz:** Bestätigt. team_provider.dart:977-979 catch (error) { debugPrint('syncLocalStateToCloud: Mitglied ${member.uid} konnte nicht geschrieben werden: $error'); } — uid wird real interpoliert. Streng genommen ist eine Firebase-Auth-uid ein opaker Identifier (keine direkte E-Mail/Name), aber unter DSGVO als pseudonymes personenbezogenes Datum einzustufen; im Kontext 'PII bevor Reporting scharfgeschaltet wird' valider Vorbehalt. Severity mittel ggf. leicht hoch gegriffen (rein lokaler Dev-No-Op aktuell), aber als Präventivkonvention vor Crashlytics-Aktivierung berechtigt. Effort S korrekt.
+
+#### ⚪ niedrig `no-perf-traces-critical-flows` — Keine RUM-Performance-Signale / Custom Traces um kritische Abläufe
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart:60`, `lib/providers/work_provider.dart:1505`, `lib/services/firestore_service.dart:1489`
+- **Skill-Prinzip:** Abschnitt 4 (Performance-Monitoring/RUM): Firebase Performance Monitoring für App-Startzeit, Netzwerk-Latenzen pro Endpoint, Custom Traces um kritische Abläufe, segmentiert nach Plattform/Gerät.
+- **Problem:** Keine Performance-Instrumentierung im Feld: keine App-Startzeit-Messung (_initializeApp main.dart:60-97 inkl. Firebase-/Auth-Init nicht getraced), keine Trace um Reports-Laden (work_provider.dart loggt nur Fehler), keine Latenz pro Callable (firestore_service.dart:1489). Regressionen Web vs. Android nicht erkennbar.
+- **Fix:** Pragmatisch: firebase_performance hinzufügen und 2-3 Custom Traces: in main.dart um _initializeApp (App-Start), in firestore_service.dart._callCloudFunction Trace/HttpMetric pro Callable, optional um Reports-Ladelogik. Kein volles SLO-Dashboard nötig.
+- **Verify-Notiz:** Bestätigt. firebase_performance fehlt in pubspec.yaml; grep über lib/ findet kein FirebasePerformance/Trace. _initializeApp (main.dart:60-97) führt initializeDateFormatting + Firebase.initializeApp + Firestore-Settings + authProvider.init() aus, ohne jede Zeitmessung. _callCloudFunction (firestore_service.dart:1489) ohne Latenzmessung. work_provider Reports-Sub (Zeile ~1486-1506) loggt nur onError. Severity niedrig angemessen (nice-to-have für 2 Läden). Effort M ok.
+
+
+### Performance (10)
+
+#### 🟠 hoch `planner-board-eager-listview` — Schichtplaner-Board materialisiert das gesamte Wochen-Grid eager statt lazy
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/shift_planner_screen.dart:975`, `lib/screens/shift_planner_screen.dart:1079`, `lib/screens/shift_planner_screen.dart:1095`
+- **Skill-Prinzip:** Abschnitt 3 (Listen & Lazy Rendering): 'Niemals ListView(children:[...]) mit großer, vollständig materialisierter Kinderliste.'
+- **Problem:** Die Board-Wochenansicht wird in ListView(children:[...]) (Zeile 975) gewickelt; innen SingleChildScrollView > SizedBox > Column(children:) mit `for (final row in rows) _buildPlannedRow(...)` (Zeile 1095-1101). Alle Mitarbeiter-/Standort-Zeilen inkl. einer Zelle pro Tag werden bei jedem Build sofort gebaut, keine Lazy-Materialisierung.
+- **Fix:** Vertikale Zeilenliste auf CustomScrollView + SliverList.builder über `rows` umstellen (feste Toolbar/Filter/Header als SliverToBoxAdapter), horizontaler Tages-Scroll bleibt. Hinweis: Wegen des horizontalen SingleChildScrollView + fester SizedBox-Breite ist die vertikale Lazy-Umstellung nicht trivial (Header und Zeilen teilen denselben horizontalen Scrollbereich) -> Effort eher L, wie gemeldet.
+- **Verify-Notiz:** Bestaetigt. Zeile 975 ist ListView(children:[...]); ab 1069 SingleChildScrollView(horizontal) > SizedBox(width: _sideWidth + days.length*_dayWidth) > Column mit `for (final row in rows) _buildPlannedRow(...)` (1095-1101). Alle Zeilen werden eager gebaut. Genaue Zeilen leicht verschoben (Schleife bei 1095, _buildPlannedRow-Aufruf 1096), Substanz korrekt.
+
+#### 🟠 hoch `planner-build-on-on-quadratic-filtering` — Quadratische Synchron-Filterung im Planner-build() pro Frame
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/shift_planner_screen.dart:954`, `lib/screens/shift_planner_screen.dart:2704`, `lib/screens/shift_planner_screen.dart:2722`
+- **Skill-Prinzip:** Abschnitt 2 (Rebuilds minimieren): 'Teure Berechnungen aus build() heraus (memoisieren).' + Abschnitt 5: 'kein schweres CPU-Work in build().'
+- **Problem:** build() (ab 942) filtert/sortiert pro Frame die ganze Schichtliste (filteredShifts via _currentBoardShifts 954, freeShifts 956-959, plannedShifts 960-963 mit sort). _buildPlannedRow filtert je Zeile erneut alle Schichten via `shifts.where((s)=>row.matches(s))..sort` (Zeile 2704-2707) und je Tag-Zelle nochmals `rowShifts.where(isSameDay)` (Zeile 2722-2723) -> O(rows x shifts) + O(rows x days x shifts) Allokationen/Sortierungen direkt im Build-Pfad.
+- **Fix:** Einmal pro Datensatz-/Filter-Aenderung eine Map<rowKey, Map<dayKey, List<Shift>>> vorberechnen (gecacht gegen Hash von visibleShifts+filter+viewMode) statt in _buildPlannedRow/_buildDayCell neu zu filtern; Zeile/Tag liest dann nur den Bucket per Lookup.
+- **Verify-Notiz:** Bestaetigt im Code: build()-Filter bei 954/956/960 (mit sort). _buildPlannedRow Zeile 2704 `shifts.where((shift)=>row.matches(shift)).toList()..sort(...)` pro Zeile; Zeile 2722 `rowShifts.where((shift)=>isSameDay(shift.startTime, day)).toList()` pro Tag in der `for (final day in days)`-Schleife (2717). Quadratisches Muster real vorhanden.
+
+#### 🟠 hoch `home-shell-watches-all-providers` — HomeScreen-Shell rebuildt komplett bei jeder Provider-Aenderung (zu breiter watch)
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:46`, `lib/screens/home_screen.dart:667`, `lib/screens/home_screen.dart:894`
+- **Skill-Prinzip:** Abschnitt 2 (Rebuilds minimieren): 'State-Updates eng scopen: Consumer/context.select nur um den abhaengigen Teilbaum.'
+- **Problem:** _HomeScreenState.build (Zeile 46-49) watcht Auth+Work+Schedule+Storage. Jede Aenderung in EINEM Provider rebuildt die ganze Shell, ruft _buildDestinations (667) auf, das NEUE ShiftPlannerScreen/_TimeTrackingTab-Instanzen erzeugt. _LazyDestinationStack (894) haelt geladene Tabs via Offstage im Baum -> auch der offstage-Planner-Teilbaum wird erneut gebaut.
+- **Fix:** In build nur Notwendiges selektieren: context.select<AuthProvider, AppUserProfile?>((a)=>a.profile) fuer Destinations/Permissions; work nur fuer den FAB (Zeile 176) wirklich benoetigt, schedule nur im Banner. _ShellStatusBanner existiert bereits separat (Zeile 1056) und konsumiert work/schedule selbst per Konstruktor-Property -> stattdessen work/schedule aus dem Shell-build entfernen und _ShellStatusBanner per eigenem context.watch/select holen lassen. Hinweis: schedule wird im Shell-build NUR an den Banner durchgereicht; work zusaetzlich an _buildFab.
+- **Verify-Notiz:** Bestaetigt. Zeile 46-49: vier context.watch (Auth, Work, Schedule, Storage). _buildDestinations(667) erzeugt bei jedem Build neue ShiftPlannerScreen(697)/_TimeTrackingTab(709)-Instanzen. _LazyDestinationStack(894) haelt geladene Tabs via Offstage(911). work wird im build nur an _ShellStatusBanner(87) und _buildFab(176) gereicht, schedule nur an den Banner(88). _ShellStatusBanner nimmt work/schedule als Konstruktor-Property (1059-1065) statt selbst zu watchen -> Refactor wie vorgeschlagen sinnvoll.
+
+#### 🟡 mittel `no-repaintboundary-shift-cards` — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/shift_planner_screen.dart:4419`, `lib/screens/shift_planner_screen.dart:4643`
+- **Skill-Prinzip:** Abschnitt 4 (Render-Kosten): 'RepaintBoundary um haeufig neu zu zeichnende Bereiche.'
+- **Problem:** Jede _PlannerBoardShiftCard rendert via CustomPaint mit _DashedRoundedBorderPainter (Karte ab Zeile 4411/4419, Painter-Klasse ab 4643). Im gesamten lib/ existiert KEINE RepaintBoundary (per grep bestaetigt: 0 Treffer). Beim Scrollen/State-Aenderung repainten die Dashed-Border-Painter zusammen mit dem restlichen Board.
+- **Fix:** _PlannerBoardShiftCard.build (Zeile 4419 CustomPaint) in RepaintBoundary wrappen. Klein, additiv, bricht keine Logik/Tests. Hinweis: _DashedRoundedBorderPainter.shouldRepaint pruefen/auf Farbvergleich setzen, damit der Painter nicht unnoetig neu malt.
+- **Verify-Notiz:** Bestaetigt. grep 'RepaintBoundary' ueber lib/ -> 0 Treffer. _PlannerBoardShiftCard.build returnt CustomPaint(painter: _DashedRoundedBorderPainter(...)) bei Zeile 4419; Painter-Klasse _DashedRoundedBorderPainter ab 4643 (paint() ab 4649 mit per-Frame Pfad-/Metrik-Berechnung). Severity mittel angemessen.
+
+#### 🟡 mittel `schedule-shifts-getter-refilters` — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/schedule_provider.dart:144`
+- **Skill-Prinzip:** Abschnitt 2 (Rebuilds minimieren): 'Teure Berechnungen aus build() heraus (memoisieren).'
+- **Problem:** `List<Shift> get shifts => _filterShifts(_shifts);` (Zeile 144) ruft _filterShifts (1724) auf, das source.where(...).toList(growable:false) bei JEDEM Getter-Zugriff neu allokiert. Da HomeScreen/Planner ScheduleProvider watchen, laeuft die Filterung pro Rebuild erneut statt gegen unveraenderte Eingaben gecacht.
+- **Fix:** Gefilterte Liste memoisieren: Feld _filteredShiftsCache, invalidiert bei _shifts-Aenderung und in setStatusFilter/Team-Filter-Settern; Getter gibt gecachte unmodifiable List zurueck. Hinweis: Der Planner liest die Schichten primaer ueber widget.visibleShifts/_currentBoardShifts, nicht direkt ueber schedule.shifts; pruefen wer den Getter tatsaechlich im Build-Pfad konsumiert -> Wirkung evtl. geringer als beschrieben, aber Getter ist real allokierend. Severity ggf. niedrig.
+- **Verify-Notiz:** Bestaetigt. Zeile 144 `get shifts => _filterShifts(_shifts)`. _filterShifts (1724-1747) baut bei jedem Aufruf eine neue Liste via source.where(...).toList(growable:false). Kein Cache-Feld vorhanden (grep _filteredShiftsCache -> 0). _filterShifts wird auch an 1110 genutzt. Memoisierung sinnvoll. Korrektur: Severity eher niedrig/mittel, da der Hauptfilteraufwand des Planners ueber widget.visibleShifts/_currentBoardShifts laeuft, nicht zwingend ueber diesen Getter.
+
+#### ⚪ niedrig `team-management-eager-member-list` — Team-Management materialisiert Mitarbeiter-/Site-Listen eager in ListView(children:)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/team_management_screen.dart:774`, `lib/screens/team_management_screen.dart:870`, `lib/screens/team_management_screen.dart:1267`
+- **Skill-Prinzip:** Abschnitt 3 (Listen & Lazy Rendering): 'Niemals ListView(children:[...]) mit grosser, vollstaendig materialisierter Kinderliste.'
+- **Problem:** Tab nutzt ListView(children:[...]) (Zeile 774) mit Intro-Card und einem _ResponsiveTeamGrid, dessen children via `for (final member in filteredMembers) _MemberCard(...)` (Zeile 870) bzw. `for (final member in team.members)` (1267) eager gebaut werden. Alle Mitarbeiter-Karten werden sofort materialisiert.
+- **Fix:** Pragmatisch: Member-Liste auf ListView.builder/separated umstellen. WICHTIGE KORREKTUR: Die Member-Karten liegen in _ResponsiveTeamGrid (kein ListView, sondern ein Grid/Wrap-Layout) innerhalb des aeusseren ListView. Eine Lazy-Umstellung erfordert daher Umbau des Grid-Layouts auf SliverGrid o.ae., nicht nur ListView.builder. Severity niedrig korrekt (heute 2 Laeden, kleine Mitarbeiterzahl).
+- **Verify-Notiz:** Teilweise bestaetigt. Zeile 774 ist ListView(children:[...]). Zeile 870 `for (final member in filteredMembers) _MemberCard(...)` und 1267 `for (final member in team.members) _MemberRuleActivationCard(...)` bauen eager. ABER: Diese for-Schleifen sind children eines _ResponsiveTeamGrid (868/1265), nicht direkt des ListView. Der Audit beschrieb es als ListView-Kinder - real ist es ein Grid im ListView, was die vorgeschlagene ListView.builder-Loesung verkompliziert. Substanz (eager Materialisierung) korrekt, Detail im proposedFix korrigiert.
+
+#### ⚪ niedrig `web-renderer-bundle-not-pinned` — Web-Renderer/CanvasKit-Startkosten nicht bewusst konfiguriert
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `web/index.html:67`
+- **Skill-Prinzip:** Abschnitt 6/7 (Startzeit & App-Groesse / Web): 'Initial-Bundle minimieren, deferred import fuer Lazy-Loading, Renderer bewusst waehlen.'
+- **Problem:** web/index.html nutzt nur das Default `<script src="flutter_bootstrap.js" async></script>` (Zeile 67) ohne explizite Renderer-/CanvasKit-Konfiguration. Keine deferred imports im Code (grep 'deferred as'/'loadLibrary' -> 0 Treffer) -> initiales Web-Bundle laedt alle Screens (grosse Planner/Home-Dateien) und CanvasKit sofort.
+- **Fix:** Renderer bewusst setzen (flutterConfiguration/build-Flag) und schwere Feature-Screens (ShiftPlannerScreen, Reports/PDF) via `import '...' deferred as x;` + loadLibrary() lazy laden. Vorab mit `flutter build web --analyze-size` messen. Hinweis: Aktuelle Flutter-Versionen unterstuetzen --web-renderer nur eingeschraenkt (CanvasKit/skwasm Default); Empfehlung pragmatisch und niedrig priorisiert halten.
+- **Verify-Notiz:** Bestaetigt. web/index.html Zeile 67 ist exakt der Default `<script src="flutter_bootstrap.js" async></script>` ohne Renderer-Config. grep 'deferred as|loadLibrary' ueber lib/ -> 0 Treffer. Beobachtung korrekt; Severity niedrig angemessen (Web ist nur eine von drei Plattformen).
+
+
+### UX/UI & Frontend-Architektur (03 · 13)
+
+#### 🟠 hoch `no-medium-window-class` — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:73`, `lib/widgets/responsive_layout.dart:4-13`
+- **Skill-Prinzip:** 03_ux-ui-design Abschnitt 1: kompakt <600 / medium 600-840 / expanded >840; BottomNav -> NavigationRail -> Sidebar.
+- **Problem:** Die Shell wechselt erst bei >=1120dp von NavigationBar auf NavigationRail. Im Bereich 600-1119dp (iPad Portrait, Split-View, kleine Desktopfenster) bekommt der Nutzer das BottomNav-Phone-Layout. MobileBreakpoints kennt nur compact/standard/expanded bis 600 und stoppt dort.
+- **Fix:** In home_screen build(): NavigationRail ab 600dp einblenden (NavigationRailLabelType.selected 600-840, .all ab 840). MobileBreakpoints um medium=600/expanded=840 plus windowClass(context)-Helfer erweitern, damit verstreute Literale (600/680/700/720/860/1080) konsolidiert werden.
+- **Verify-Notiz:** Bestaetigt: home_screen.dart:73 'final useRail = constraints.maxWidth >= 1120;'. responsive_layout.dart MobileBreakpoints definiert nur compact=360/standard=390/expanded=600 und stoppt dort, keine medium/Rail-Schwelle, kein windowClass-Helfer. In home_screen verstreute ad-hoc Schwellen bestaetigt (700, 860, 720, 1080 etc.). Gap korrekt.
+
+#### 🟠 hoch `duplicate-emptystate-widget` — _EmptyState (und weitere Reuse-Widgets) doppelt file-private kopiert statt nach lib/widgets gehoben
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:5708`, `lib/screens/inventory_screen.dart:441`, `lib/screens/team_management_screen.dart:2155`, `lib/screens/shift_planner_screen.dart:5089`
+- **Skill-Prinzip:** 13_frontend-architektur Abschnitt 8: Wiederverwendbare, komponierbare Widgets. CLAUDE.md: Reuse-Widgets nach lib/widgets/ heben statt kopieren.
+- **Problem:** Mehrere parallele file-private Empty-State-Implementierungen: _EmptyState in home_screen.dart:5708, eigenes _EmptyState in inventory_screen.dart:441, _TeamEmptyState in team_management_screen.dart:2155, _PlannerEmptyState in shift_planner_screen.dart:5089. Gleiche UX-Komponente mehrfach kopiert.
+- **Fix:** Neues lib/widgets/empty_state.dart mit oeffentlichem EmptyState({icon, title, message, action}); inventory_screen und neue Screens importieren es. Bestehende file-private Varianten spaeter additiv migrieren.
+- **Verify-Notiz:** Bestaetigt durch grep: class _EmptyState in home_screen.dart:5708 UND in inventory_screen.dart:441 (zwei separate file-private Klassen mit gleichem Namen), class _TeamEmptyState in team_management_screen.dart:2155, class _PlannerEmptyState in shift_planner_screen.dart:5089. Mehrfach genutzt (home ~6x, team ~5x, inventory ~3x). Audit-Zeile fuer shift_planner war 528 (Aufruf), korrekte Klassendefinition 5089 - in files korrigiert. Anti-Pattern real.
+
+#### 🟠 hoch `no-semantics-screenreader` — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
+- **Welle:** 2 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:5187`, `lib/screens/home_screen.dart:5281`
+- **Skill-Prinzip:** 03_ux-ui-design Abschnitt 4: Semantics-Widgets fuer Screenreader, sinnvolle Labels; nicht allein ueber Farbe kommunizieren.
+- **Problem:** Im gesamten lib/ kein einziges Semantics()-Widget (grep: 0 Treffer). _SlideClockAction (home_screen.dart:5187) ist eine custom Drag-Geste (onHorizontalDragUpdate/onHorizontalDragEnd ab 5281) ohne semantische Beschreibung/Button-Rolle und ohne Tap-Alternative — fuer TalkBack/VoiceOver unbedienbar. Status wird teils nur ueber Farbe (appColors.success/warning) kommuniziert.
+- **Fix:** _SlideClockAction in Semantics(button:true, label:'Einstempeln'/'Ausstempeln', enabled:...) huellen und alternativ per Tap bedienbar machen (aktuell nur GestureDetector mit onHorizontalDrag, kein onTap). Status-Pills Text-/Icon-Pendant zur Farbe geben. Additiv.
+- **Verify-Notiz:** Bestaetigt: grep 'Semantics(' ueber lib/ = 0 Treffer. _SlideClockAction (StatefulWidget ab home_screen.dart:5187) nutzt GestureDetector mit ausschliesslich onHorizontalDragUpdate/onHorizontalDragEnd (Zeilen 5282/5292), kein onTap-Fallback, kein Semantics-Wrapper. Audit-Zeilen 5501/5532 fuer LocationStatusBadge nicht exakt verifiziert, aber Kernproblem (0 Semantics, drag-only Stempel-Geste) eindeutig bestaetigt; ungenutzte Audit-Zeilen entfernt/korrigiert.
+
+#### 🟡 mittel `loading-not-adaptive-no-skeletons` — Ladezustände immer Material-CircularProgressIndicator (nicht .adaptive), keine Skeletons
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:3962`, `lib/screens/home_screen.dart:4338`, `lib/screens/auth_screen.dart:521`, `lib/screens/entry_form_screen.dart:416`
+- **Skill-Prinzip:** 03_ux-ui-design Abschnitt 2: .adaptive-Konstruktoren; Abschnitt 8: Loading (Skeletons/Shimmer) plattformkonform.
+- **Problem:** 13 Stellen mit CircularProgressIndicator(), 0 mit .adaptive() — auf iOS/macOS Material-Spinner statt Cupertino. Keine Skeletons/Shimmer.
+- **Fix:** CircularProgressIndicator -> CircularProgressIndicator.adaptive() durchgaengig ersetzen (mechanisch). Optional lib/widgets/loading_indicator.dart als zentraler Wrapper.
+- **Verify-Notiz:** Bestaetigt: grep CircularProgressIndicator = 13 Treffer, CircularProgressIndicator.adaptive = 0. Belegte Stellen: home_screen.dart:3962/4338/6766, auth_screen.dart:521/747, entry_form_screen.dart:416/1026/1345. Keine Shimmer/Skeleton-Treffer. Gap korrekt; effort S realistisch.
+
+#### 🟡 mittel `no-spacing-radii-tokens` — ThemeExtension nur für Farben — Spacing/Radii sind als magische Zahlen verstreut
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/theme/theme_extensions.dart:4`, `lib/theme/app_theme.dart:91`, `lib/screens/inventory_screen.dart`
+- **Skill-Prinzip:** 03_ux-ui-design Abschnitt 3: ThemeExtension fuer Design Tokens (Spacing, Radii) statt magischer Zahlen.
+- **Problem:** theme_extensions.dart enthaelt nur AppThemeColors (semantische Farben). Keine ThemeExtension fuer Spacing/Radii. Allein in app_theme.dart 22 BorderRadius/Radius.circular-Literale (z.B. circular(24) bei :91); inventory_screen.dart hat 36 EdgeInsets/SizedBox-Literale. Keine Single Source of Truth fuer Spacing/Radii-Tokens.
+- **Fix:** ThemeExtension AppSpacing (xs/sm/md/lg/xl) und AppRadii (sm/md/lg/pill) in theme_extensions.dart, in app_theme.dart registrieren, via context.spacing/context.radii nutzen. Additiv, bricht keine Tests.
+- **Verify-Notiz:** Bestaetigt: theme_extensions.dart definiert ausschliesslich AppThemeColors (Farben), keine Spacing/Radii-Extension. app_theme.dart:91 BorderRadius.circular(24), insgesamt 22 BorderRadius/Radius.circular-Literale in app_theme.dart allein. inventory_screen.dart 36 EdgeInsets/SizedBox-Vorkommen. Gap korrekt.
+
+#### 🟡 mittel `web-url-strategy-missing` — Keine PathUrlStrategy — Web-Adressen mit Hash, kein Deeplink/Back-Forward-Support
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/main.dart`, `lib/screens/home_screen.dart:73`
+- **Skill-Prinzip:** 13_frontend-architektur Abschnitt 6: PathUrlStrategy fuer saubere Pfade; 03_ux-ui Abschnitt 6: Deeplink-/Back-Forward-Verhalten.
+- **Problem:** Im gesamten lib/ wird kein usePathUrlStrategy()/setUrlStrategy() gesetzt (grep: 0). Web-URLs mit #-Fragment; Shell-Navigation rein index-basiert (kein go_router), Browser-Adresszeile nicht mit App-State synchronisiert.
+- **Fix:** In main.dart vor runApp usePathUrlStrategy() aus package:flutter_web_plugins/url_strategy.dart. Mittelfristig go_router ShellRoute als separates Vorhaben dokumentieren.
+- **Verify-Notiz:** Bestaetigt: grep UrlStrategy/setUrlStrategy ueber lib/ = 0 Treffer. CLAUDE.md bestaetigt index-basierte Shell-Navigation ohne go_router. home_screen.dart-Zeile war 63 im Audit, relevante useRail-Logik bei 73 - in files korrigiert. Gap korrekt; effort S fuer Minimalfix.
+
+#### 🟡 mittel `no-textscaler-reduce-motion` — Keine Textskalierungs-Robustheit und kein Reduce-Motion-Respekt
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:5187`, `lib/theme/app_theme.dart:125`, `lib/main.dart`
+- **Skill-Prinzip:** 03_ux-ui-design Abschnitt 4: MediaQuery.textScaler respektieren, Layouts bei 200% nicht brechen; Abschnitt 8: disableAnimations/Reduce-Motion respektieren.
+- **Problem:** Im gesamten lib/ wird MediaQuery.textScaler/textScaleFactor nirgends beruecksichtigt (grep: 0) und disableAnimations/accessibleNavigation ebenfalls nicht (grep: 0). Fixe Hoehen wie _SlideClockAction (knobSize, AnimatedContainer height) und NavigationBar (height:74 in app_theme.dart:125) koennen bei 200% Textgroesse ueberlaufen; eigene Animationen (AnimatedContainer 140ms in _SlideClockAction) ignorieren 'Bewegung reduzieren'.
+- **Fix:** Fix-Hoehen-Komponenten mit Text mitwachsen lassen (FittedBox/min-Hoehen) und sehr grosse Skalierung clampen. In Animations-Komponenten MediaQuery.maybeOf(context)?.disableAnimations pruefen und Dauer auf 0. Kleine context-Extension prefersReducedMotion.
+- **Verify-Notiz:** Bestaetigt: grep textScaler/textScaleFactor = 0, grep disableAnimations/accessibleNavigation = 0. NavigationBar height:74 fix in app_theme.dart:125 bestaetigt. _SlideClockAction (home_screen.dart:5187) nutzt fixe knobSize und AnimatedContainer(140ms) ohne Reduce-Motion-Check. Audit-Zeile 1888 nicht verifiziert, durch app_theme.dart:125 (height:74) ersetzt. Kern bestaetigt.
+
+#### ⚪ niedrig `no-desktop-keyboard-shortcuts` — Keine Tastatur-Shortcuts/Hover für Desktop- und Web-Nutzung trotz Rail-Layout ab 1120dp
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:73`, `lib/screens/shift_planner_screen.dart`
+- **Skill-Prinzip:** 03_ux-ui-design Abschnitt 5: Maus-/Tastatur-Idiome: Hover (MouseRegion), Tooltips, Shortcuts/Actions/CallbackShortcuts, Fokus-Indikatoren.
+- **Problem:** App rendert ab 1120dp ein Rail-Layout, bietet aber keine CallbackShortcuts/SingleActivator/Shortcuts-Widget/FocusTraversalGroup (grep: 0 echte Treffer), keine MouseRegion (grep: 0), kein Rechtsklick-Kontextmenue (showMenu/onSecondaryTap: 0). Keyboard-Navigation und Hover-States fehlen.
+- **Fix:** Im Rail-Zweig CallbackShortcuts (Strg+1..4) + FocusTraversalGroup. Im shift_planner MouseRegion-Hover und showMenu-Kontextmenue fuer Schichtzellen. Pragmatisch nur Desktop-Hauptflows.
+- **Verify-Notiz:** Teilweise bestaetigt mit Korrektur: CallbackShortcuts/SingleActivator/FocusTraversalGroup = 0 echte Treffer (die 4 grep-Hits waren false positives: onPressed/_showPlannerQuickActions matchten 'Actions('). MouseRegion = 0, showMenu/onSecondaryTap = 0 — alle bestaetigt. ABER: Audit-Behauptung 'nur 2 Tooltip-Treffer in allen Screens' ist FALSCH/untertrieben — Tooltips werden breit genutzt (home_screen 8, shift_planner 12, statistics 8 etc.). Tooltips sind also NICHT das Problem, sondern Shortcuts/Hover/Kontextmenue. proposedFix entsprechend praezisiert (Icon-Button-Tooltips sind bereits weitgehend vorhanden). Severity niedrig korrekt.
+
+
+### Clean Code & Refactoring (07 · 11)
+
+#### 🔴 kritisch `split-shift-planner-god-file` — shift_planner_screen.dart ist ein God-File (8041 LOC) mit zwei Mega-State-Klassen
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/shift_planner_screen.dart:920`, `lib/screens/shift_planner_screen.dart:5344`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 7 (God-Widgets) und Abschnitt 6 (SRP); 11_refactoring-techdebt.md Abschnitt 3 (God-Widget extrahieren)
+- **Problem:** Eine Datei mit 8041 Zeilen und 37 Top-Level-Klassen. _AdminShiftPlannerBoardState ab Zeile 920 (~2671 LOC) mit 15+ _build-Methoden, Filter-Logik, Layout-Berechnung und Persistenz vermischt. _ShiftEditorSheetState umfasst 5344-7077 (~1733 LOC). Klassisches God-Widget.
+- **Fix:** Strangler-Fig: (1) Eigenstaendige StatelessWidget-Klassen (_PlannerDayHeaderCell:3667, _PlannerMonthDayCell:4019, _PlannerBoardShiftCard:4395, _ShiftCard:4725, _AbsenceCard:4931) nach lib/screens/shift_planner/planner_board_cells.dart. (2) _ShiftEditorSheet-Block (5313-7077) nach lib/screens/shift_planner/shift_editor_sheet.dart. (3) Reine Berechnungshelfer (_applyBoardFilters, _calendarMonthGridDays, _chunkDays, _rangeDays) ohne BuildContext in testbare planner_board_logic.dart. Jeder Schritt eigener Commit, Tests gruen.
+- **Verify-Notiz:** Bestaetigt: wc -l = 8041 Zeilen, 37 Top-Level-Klassen (Audit sagte 40+, leicht uebertrieben aber Groessenordnung stimmt). _AdminShiftPlannerBoardState ab Z.920 verifiziert; main build() Z.942-1152 = 211 Zeilen. _ShiftEditorSheetState ab 5344, naechste Klasse ab 7078 -> ~1733 LOC (Audit: 1734, korrekt). Cell-Klassen an 3667/4019/4395/4725/4931 vorhanden. Severity kritisch angemessen.
+
+#### 🟠 hoch `analyze-not-zero-warnings` — flutter analyze ist nicht warnungsfrei und mehrere Dateien sind nicht dart-format-konform
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/providers/schedule_provider.dart:158`, `lib/screens/settings_screen.dart:589`, `test/schedule_provider_test.dart:551`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 1.1 (dart format als nicht verhandelbarer Standard) und 1.2 (dart analyze mit null Warnungen als Merge-Gate)
+- **Problem:** flutter analyze meldet 14 Issues (unused_element _schedulesUseLocalStorage in schedule_provider.dart:158, 6x deprecated RadioListTile groupValue/onChanged in settings_screen.dart:589-608, 4x unused_local_variable updatedStart/updatedEnd in schedule_provider_test.dart:551/552/586/587, 3x prefer_const_constructors in inventory_models_test.dart). Zusaetzlich aendert `dart format --set-exit-if-changed` Dateien (employment_contract.dart, inventory_provider.dart, entry_form_screen.dart, inventory_screen.dart, purchase_order_screens.dart, compliance_service.dart, firestore_service.dart, responsive_layout.dart + 2 Testdateien). Keine CI; das Merge-Gate wird nicht erzwungen.
+- **Fix:** 1) `dart format lib/ test/` ausfuehren und committen. 2) Ungenutztes Getter `_schedulesUseLocalStorage` in schedule_provider.dart:158 entfernen. 3) Ungenutzte Locals in test/schedule_provider_test.dart entfernen. 4) Deprecated Radio-API in settings_screen.dart auf RadioGroup migrieren (separater Commit). 5) prefer_const in inventory_models_test.dart. Ziel: flutter analyze == 0 Issues, dart format exit 0.
+- **Verify-Notiz:** Real bestaetigt. `flutter analyze` -> exakt 14 Issues, identisch zur Audit-Aufzaehlung: 1x unused_element _schedulesUseLocalStorage (schedule_provider.dart:158:12 - Getter `bool get _schedulesUseLocalStorage => usesLocalStorage || usesHybridStorage;`), 6x deprecated groupValue/onChanged (settings_screen.dart:589-608), 4x unused_local_variable (schedule_provider_test.dart:551/552/586/587), 3x prefer_const_constructors (inventory_models_test.dart). KORREKTUR: dart format aendert 10 Dateien (8 lib + 2 test: inventory_models_test.dart, inventory_service_test.dart), nicht 8. Ansonsten exakt.
+
+#### 🟠 hoch `split-home-screen-god-file` — home_screen.dart ist ein God-File (7065 LOC) mit vermischten Tab-Implementierungen
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:2797`, `lib/screens/home_screen.dart:3933`, `lib/screens/home_screen.dart:4325`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 5/7 (kleine fokussierte Widgets, God-Widget); 11_refactoring-techdebt.md Abschnitt 3 und 6 (Strangler Fig)
+- **Problem:** 7065 Zeilen, 67 Klassen in einer Datei: Shell (_HomeScreenState), komplette Tab-Inhalte (_EmployeeDashboardTab:1697, _AdminDashboardTab:2559, _TimeTrackingTabState:3933, _ProfileHubTab:6029), eine grosse _TeamCalendarWidgetState (ab 2797) und der Punch-Clock-Stack (_PunchClockSheet:4325, _PunchClockHero:4506, _SlideClockAction:5187) liegen gemeinsam. CLAUDE.md bezeichnet die Datei selbst als 'riesig'.
+- **Fix:** Strangler-Fig, ein Block pro Commit: (1) Punch-Clock-Stack (_PunchClockSheet:4325 bis _SlideClockAction-Ende) nach lib/screens/home/punch_clock_sheet.dart. (2) _TeamCalendarWidget (ab 2797) nach lib/screens/home/team_calendar_widget.dart. (3) file-private Reuse-Widgets (_SectionCard/_EmptyState/_HeaderSection/_InfoChip) gemaess Gap extract-shared-empty-section-widgets nach lib/widgets/ heben. Shell-Datei behaelt _HomeScreenState + Destinations.
+- **Verify-Notiz:** Bestaetigt: wc -l = 7065, 67 Top-Level-Klassen (Audit: 60+, stimmt). Genannte Klassen verifiziert: _EmployeeDashboardTab:1697, _AdminDashboardTab:2559, _TeamCalendarWidgetState:2797, _TimeTrackingTabState:3933, _PunchClockSheet:4325, _PunchClockHero:4506, _SlideClockAction:5187, _ProfileHubTab:6029. CLAUDE.md sagt explizit 'home_screen.dart ist die Shell, riesig'. Severity hoch angemessen.
+
+#### 🟡 mittel `strengthen-lint-ruleset` — analysis_options.yaml hat leeren rules-Block (nur flutter_lints, keine Verschaerfung)
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `analysis_options.yaml`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 2 (strikter Regelsatz, strict-casts/strict-raw-types/strict-inference); 11_refactoring-techdebt.md Abschnitt 8 (Lint-Strenge schrittweise erhoehen = Ratchet)
+- **Problem:** analysis_options.yaml inkludiert nur package:flutter_lints/flutter.yaml; der linter.rules-Block enthaelt ausschliesslich auskommentierte Beispiele. Kein analyzer.language strict-Block, keine zusaetzlichen Regeln. Zentrale Effective-Dart-Verstoesse (prefer_const_constructors, unawaited_futures, use_build_context_synchronously) werden nicht durchgesetzt.
+- **Fix:** In analysis_options.yaml analyzer.language: {strict-casts, strict-inference, strict-raw-types} aktivieren und im linter.rules-Block kuratierte Regeln ergaenzen (prefer_const_constructors, unawaited_futures, use_build_context_synchronously, avoid_redundant_argument_values). ACHTUNG: CLAUDE.md sagt explizit 'NICHT ohne Auftrag erweitern' (Quality-Gates-Abschnitt) - diese Massnahme braucht ausdrueckliche Freigabe und sollte erst nach Behebung der bestehenden 14 Issues dosiert eingefuehrt werden.
+- **Verify-Notiz:** Bestaetigt: analysis_options.yaml (29 Zeilen) hat nur `include: package:flutter_lints/flutter.yaml` (Z.10) und einen rules-Block (Z.23) mit ausschliesslich auskommentierten Beispielen (Z.24-25). Kein analyzer.language-Block. WICHTIG: CLAUDE.md warnt 2x explizit 'rules leer - NICHT ohne Auftrag erweitern'. Der Gap ist faktisch korrekt, aber die Umsetzung steht im direkten Konflikt mit projektweisen Instruktionen -> nur mit ausdruecklichem Auftrag umsetzen. Severity mittel angemessen.
+
+#### 🟡 mittel `extract-shared-empty-section-widgets` — Aehnliche file-private Widgets (_EmptyState, _SectionCard, _HeaderSection) ueber mehrere Screens dupliziert
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/home_screen.dart:5666`, `lib/screens/home_screen.dart:5708`, `lib/screens/home_screen.dart:4461`, `lib/screens/inventory_screen.dart:441`, `lib/screens/statistics_screen.dart:182`, `lib/screens/statistics_screen.dart:214`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 6 (DRY) und Abschnitt 5 (kleine fokussierte Widgets); 11_refactoring-techdebt.md Abschnitt 4 (Extract Class / Move Method)
+- **Problem:** _EmptyState existiert in home_screen.dart:5708 und inventory_screen.dart:441 (abweichende API: text vs message, und abweichende Implementierung - andere Groessen/Layout). _SectionCard in home_screen.dart:5666 und statistics_screen.dart:214. _HeaderSection in home_screen.dart:4461 und statistics_screen.dart:182. Alle file-private (_-Praefix), nicht importierbar. CLAUDE.md weist das explizit aus ('file-private -> ggf. nach lib/widgets/ heben statt kopieren').
+- **Fix:** Neue Datei lib/widgets/section_widgets.dart mit public EmptyState, SectionCard, HeaderSection. WICHTIG: APIs sind nicht identisch (EmptyState: text vs message; auch unterschiedliche Visuals) - vor Konsolidierung vereinheitlichte API definieren und Aufrufer anpassen, kein reines Copy-Move. Schrittweise je Screen ein Commit. Visuelle Regression pruefen, da Implementierungen divergieren.
+- **Verify-Notiz:** Bestaetigt mit Korrektur: Klassen existieren an genannten Stellen (grep verifiziert: home _SectionCard:5666, _EmptyState:5708, _HeaderSection:4461, _InfoChip:6277; inventory _EmptyState:441; statistics _HeaderSection:182, _SectionCard:214). ABER: die beiden _EmptyState sind NICHT 'wortgleich/identisch' wie behauptet - home nutzt Param `text`, 68x68 Circle-Container, vertical:24 Padding; inventory nutzt Param `message`, 56px Icon, Center+32 Padding, bodyLarge-Style. Es ist konzeptionelle Duplikation mit divergierender API/Optik, nicht Copy-Paste. Severity von 'hoch' auf 'mittel' reduziert (kein 1:1-Dup, Aufwand hoeher durch API-Vereinheitlichung). Gap-Kern (DRY-Konsolidierung sinnvoll) bleibt gueltig.
+
+#### 🟡 mittel `build-helper-methods-to-widget-classes` — 15+ Widget _buildXxx Helper-Methoden statt const-faehiger Widget-Klassen
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/shift_planner_screen.dart:1153`, `lib/screens/shift_planner_screen.dart:1737`, `lib/screens/shift_planner_screen.dart:2357`, `lib/screens/home_screen.dart`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 5 (Widget-Klasse extrahieren statt Helper-Methode) und Abschnitt 7 (Logik in build); 11_refactoring-techdebt.md Abschnitt 3
+- **Problem:** shift_planner_screen.dart hat 15+ Widget _build...-Methoden (_buildToolbar:1153, _buildMonthLayout:1737, _buildMonthSidebar:1776, _buildMiniCalendarDay:2045, _buildFilters:2357, _buildHeaderRow:2584, _buildDayCell:2825 etc.), home_screen.dart hat 5. Diese Helper rebuilden mit dem Parent-State und sind nicht const-faehig. Haupt-build() bei Zeile 942 ist 211 Zeilen lang.
+- **Fix:** Pro Helper eigene StatelessWidget-Klasse extrahieren, beginnend mit blattnahen parameterarmen (_buildSectionLabel:2643, _buildMiniCalendarDay:2045). Callbacks per Parameter durchreichen. Inkrementell je 2-3 Helper pro Commit, kein Verhaltenswechsel.
+- **Verify-Notiz:** Bestaetigt mit Korrektur der Zeilennummern: 15+ `Widget _build`-Methoden im shift_planner verifiziert, ABER die Audit-Zeilen waren falsch. Tatsaechlich: _buildToolbar:1153 (nicht 234), _buildMonthLayout:1737 (nicht 818), _buildFilters:2357 (nicht 1438). home_screen hat genau 5 `Widget _build` (verifiziert: grep -c = 5). main build() = 211 Zeilen (942-1152) bestaetigt. Smell real, Zeilennummern korrigiert.
+
+#### ⚪ niedrig `dedupe-absence-sort-comparator` — Identischer Sort-Comparator fuer AbsenceRequest dupliziert (watchAll/getAll)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart:526`, `lib/services/firestore_service.dart:552`
+- **Skill-Prinzip:** 07_clean-code.md Abschnitt 6 (DRY); 11_refactoring-techdebt.md Abschnitt 4 (Extract Function)
+- **Problem:** Der mehrzeilige Vergleichsblock (startDate; bei Gleichstand updatedAt ?? createdAt ?? startDate, descending) ist in watchAllAbsenceRequests (Z.526-534) und getAllAbsenceRequests (Z.552-560) wortgleich kopiert. Aenderung an der Sortierregel muss an zwei Stellen nachgezogen werden.
+- **Fix:** Private statische Funktion `int _compareAbsenceRequests(AbsenceRequest a, AbsenceRequest b)` in firestore_service.dart anlegen, beide ..sort(...)-Aufrufe darauf umstellen. Rein additiv, verhaltenserhaltend.
+- **Verify-Notiz:** Bestaetigt: Der Comparator ist byte-identisch in watchAllAbsenceRequests (Z.526-534) und getAllAbsenceRequests (Z.552-560): byStart = a.startDate.compareTo(b.startDate); if(byStart!=0) return byStart; aUpdated = a.updatedAt ?? a.createdAt ?? a.startDate; ... return bUpdated.compareTo(aUpdated). KORREKTUR Zeilennummern (Audit sagte 511/539, tatsaechlich 526/552). Echtes DRY-Problem, severity niedrig korrekt.
+
+
+### Testing & QA (08)
+
+#### 🔴 kritisch `inventory-provider-untested` — InventoryProvider hat keinerlei Unit-Tests (kritischster Coverage-Gap)
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** ja
+- **Dateien:** `lib/providers/inventory_provider.dart`, `test/inventory_service_test.dart`
+- **Skill-Prinzip:** Abschnitt 1 (Testpyramide: viele Unit-Tests, Logik so tief wie moeglich) und Abschnitt 2 (Notifier/ChangeNotifier-Logik per Unit-Test, Arrange-Act-Assert)
+- **Problem:** Der gesamte 601-Zeilen-InventoryProvider hat KEINE Tests. Ungetestet sind die lokalen Mutator-Pfade (_applyLocalStockChange, _applyLocalReceipt mit clamp-auf-outstanding), lokale Bestellnummern-Generierung in savePurchaseOrder, abgeleitete Sichten (lowStockProducts, openOrders, buildReorderItems, categories), Demo-Seeding (_maybeSeedLocalDemo) und Session-Dedup-Key (_storageModeKey/updateSession). Diese lokalen Pfade laufen im Default-Dev-Modus APP_DISABLE_AUTH=true und werden vom Service-Test NICHT abgedeckt.
+- **Fix:** Neue Datei test/inventory_provider_test.dart anlegen. Provider mit disableAuthentication:true konstruieren (forciert usesLocalStorage via _forceLocalStorage), updateSession mit einem Demo-Profil aus LocalDemoData (LocalDemoData.isDemoUser muss true sein, sonst greift _maybeSeedLocalDemo nicht). Testen: (1) saveProduct/saveSupplier/savePurchaseOrder ohne id -> lokale id + Sortierung; (2) adjustStock erzeugt StockMovement mit korrektem balanceAfter; (3) receiveOrder mit Map{0:999} clamped auf outstandingQuantity und setzt Status received; (4) lowStockProducts/buildReorderItems/openOrders Filterlogik; (5) updateSession(null) reset. SharedPreferences.setMockInitialValues({}) + DatabaseService.resetCachedPrefs() in setUp.
+- **Verify-Notiz:** Bestaetigt. grep 'InventoryProvider' in test/ -> NONE. inventory_service_test.dart testet ausschliesslich FirestoreService-Pfad, nie den Provider. Alle genannten lokalen Pfade existieren real: _applyLocalStockChange (Z.508), _applyLocalReceipt mit clamp(0, item.outstandingQuantity) (Z.542/551), lokale orderNumber 'BST-...padLeft(4)' (Z.430-434), lowStockProducts/openOrders/buildReorderItems/categories (Z.76-142), _maybeSeedLocalDemo (Z.204), _storageModeKey/updateSession-Dedup (Z.164-199). _forceLocalStorage via disableAuthentication-Konstruktorarg (Z.24-27), Seam sauber injizierbar. Hinweis: _maybeSeedLocalDemo seedet NUR wenn LocalDemoData.isDemoUser(user) true (Z.205) -> Test muss Demo-Profil verwenden oder Daten via save* aufbauen. Severity kritisch korrekt.
+
+#### 🟠 hoch `inventory-screens-no-widget-tests` — Inventory- und Bestell-Screens (2400+ Zeilen UI) komplett ohne Widget-Tests
+- **Welle:** 1 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/screens/inventory_screen.dart`, `lib/screens/purchase_order_screens.dart`
+- **Skill-Prinzip:** Abschnitt 3 (Widget-Tests mit testWidgets/WidgetTester, Abhaengigkeiten ueberschreiben, auf Verhalten testen) und Abschnitt 1 (wenige gezielte Widget-Tests fuer Screens)
+- **Problem:** inventory_screen.dart (1539 Zeilen) und purchase_order_screens.dart (877 Zeilen) haben keinen einzigen Widget-Test. Diese Screens enthalten kritische Workflows des neuen Warenwirtschaft-Moduls: Wareneingang buchen, Bestellvorschlag, Inventur. Das etablierte Muster (ChangeNotifierProvider.value + pumpWidget) ist in shift_planner_screen_test.dart vorhanden, fehlt aber fuer Inventory.
+- **Fix:** Neue Datei test/inventory_screen_test.dart nach dem Muster aus shift_planner_screen_test.dart: InventoryProvider(disableAuthentication:true) mit Demo-Daten seeden, in ChangeNotifierProvider.value + MaterialApp(home: InventoryScreen) pumpen. Mindestens: (1) Niedrigbestand-Artikel werden gelistet, (2) Tap auf Inventur-Button oeffnet Sheet, (3) Wareneingang bucht Menge und recentMovements waechst. ValueKey an zentrale Buttons vergeben (kleiner Edit am Screen).
+- **Verify-Notiz:** Bestaetigt. wc -l: inventory_screen.dart=1539, purchase_order_screens.dart=877 (zusammen 2416). grep nach InventoryScreen/purchase_order_screens/inventory_screen in test/ -> NONE. Etabliertes Widget-Test-Muster existiert: shift_planner_screen_test.dart hat testWidgets (Z.24..) und pumpWidget (Z.382). Severity hoch vertretbar fuer ungetestete Kern-Workflows; Anmerkung: Widget-Tests fangen primaer Verdrahtung, nicht Logik -> der Provider-Unit-Test (Gap 1) ist wertvoller. createsNewFilesOnly korrekt false, da ValueKeys an Screen-Buttons gesetzt werden muessen.
+
+#### 🟡 mittel `csv-escaping-bom-undertested` — CSV-Export: Escaping-Sonderfaelle (Semikolon, Anfuehrungszeichen, Zeilenumbruch) ungetestet
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/export_service.dart`, `test/pdf_service_test.dart`
+- **Skill-Prinzip:** Abschnitt 7 (Testqualitaet ueber Coverage; Mutation Testing deckt auf ob Tests Fehler fangen) und Abschnitt 2 (ein Konzept pro Test)
+- **Problem:** _escapeCsv (export_service.dart:140) quotet fuer das deutsche Excel-Format (;-Delimiter, UTF-8-BOM) Felder mit ; oder " oder Zeilenumbruch. Der einzige CSV-Test (pdf_service_test.dart:83) prueft nur Felder OHNE Sonderzeichen und das BOM-Praefix. Ein Mitarbeitername/Notiz mit Semikolon wuerde unbemerkt die Spaltenstruktur zerstoeren falls _escapeCsv brechen wuerde.
+- **Fix:** In test/pdf_service_test.dart einen Test ergaenzen: Shift mit notes mit Semikolon und doppeltem Anfuehrungszeichen durch buildShiftPlanCsv schicken und asserten, dass das Feld in Anfuehrungszeichen eingeschlossen und interne Quotes verdoppelt sind (RFC-4180), sodass die Spaltenzahl pro Zeile konstant bleibt. BOM beibehalten.
+- **Verify-Notiz:** Bestaetigt. _escapeCsv existiert export_service.dart Z.140-148: replaceAll('"','""') und quotet bei ; / " / Zeilenumbruch -> korrekte RFC-4180-aehnliche Logik. Der einzige CSV-Test pdf_service_test.dart Z.83-110 nutzt nur harmlose Felder (notes:'Kasse', employeeName:'Anna') und assertet nur startsWith BOM + contains-Substrings, KEIN Sonderzeichen-Feld. Escaping-Logik derzeit ungetestet. Severity mittel angemessen. Nebenbefund (nicht im Scope dieses Gaps): buildShiftPlanCsv ruft DateFormat('dd.MM.yyyy') OHNE 'de_DE'-Locale-Arg auf (Z.108/110/111/130/132), was CLAUDE.md verletzt — separater Befund.
+
+#### ⚪ niedrig `no-golden-tests` — Keine Golden-Tests fuer die Multiplattform-UI (Web/iOS/Android)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** ja
+- **Dateien:** `test/`, `lib/widgets/app_logo.dart`, `lib/theme/`
+- **Skill-Prinzip:** Abschnitt 5 (Golden-Tests fuer stabile, designkritische Komponenten bei Multiplattform-UI; matchesGoldenFile bzw. golden_toolkit)
+- **Problem:** Es existiert kein test/golden(s)-Verzeichnis und kein matchesGoldenFile. Die App ist Multiplattform und hat designkritische Komponenten: Theme mit ueberschriebenem ColorScheme + AppThemeColors-ThemeExtension, AppLogo das im Dark Mode Markenfarben per ARGB remappt. Visuelle Regressionen werden von keinem Test gefangen.
+- **Fix:** Neue Datei test/golden/app_logo_golden_test.dart anlegen, die AppLogo in Light- und Dark-Theme rendert und via matchesGoldenFile vergleicht — gezielt fuer das ARGB-Remapping (_brandBlue/_brandOrange Remap nur wenn _isDark). Goldens via 'flutter test --update-goldens' erzeugen. Nur stabile Komponenten waehlen (Logo). Hinweis: Goldens sind plattform-/font-rendering-abhaengig und ohne CI-Referenzplattform fragil; Nutzen fuer 2-Laeden-App begrenzt -> Severity niedrig.
+- **Verify-Notiz:** Faktenlage bestaetigt: kein goldens-Verzeichnis, grep matchesGoldenFile -> NONE. AppLogo hat Dark-Mode-ARGB-Remap: lib/widgets/app_logo.dart Z.52 'bool get _isDark', Z.61 'if (!_isDark) return color;', Z.65/68 'if (color.toARGB32() == _brandBlue.toARGB32())' bzw. _brandOrange. AppThemeColors-Extension in lib/theme/theme_extensions.dart + app_theme.dart. KORREKTUR: Audit gab severity 'mittel' -> herabgestuft auf 'niedrig', da Golden-Tests ohne festgelegte CI-Referenzplattform notorisch flaky sind (CLAUDE.md sagt explizit 'keine CI'). KORREKTUR: korrekter Pfad ist lib/widgets/app_logo.dart, nicht das vom Audit genannte lib/screens/inventory_screen.dart.
+
+#### ⚪ niedrig `order-number-determinism` — Bestellnummern-Allokation: Transaktions-Counter und Fallback-Pfad nicht deterministisch getestet
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `lib/services/firestore_service.dart`, `test/inventory_service_test.dart`
+- **Skill-Prinzip:** Abschnitt 2 (Determinismus, keine echten Uhren) und Abschnitt 7 (Qualitaet ueber Coverage: Eindeutigkeit der Sequenz explizit asserten)
+- **Problem:** _allocateOrderNumber (firestore_service.dart:1060) nutzt eine runTransaction auf counters/purchaseOrders und einen zeitbasierten catch-Fallback (Z.1076-1081) bei eingeschraenkten Rechten. Der bestehende Test (inventory_service_test.dart:85) prueft nur das Vorkommen von Suffix 0001 und 0002, nicht die monotone Eindeutigkeit ueber 3+ Allokationen und nicht den Fallback-Pfad.
+- **Fix:** In test/inventory_service_test.dart einen Test ergaenzen, der 3+ savePurchaseOrder hintereinander ausfuehrt und asserted, dass alle orderNumber-Suffixe paarweise verschieden und monoton (0001<0002<0003) sind. Das Jahr nicht hart gegen 2026, sondern gegen DateTime.now().year asserten. Fallback-Pfad ist mit FakeFirebaseFirestore nicht ausloesbar -> als Emulator-only dokumentieren.
+- **Verify-Notiz:** Code-Behauptungen exakt bestaetigt: _allocateOrderNumber Z.1060, runTransaction Z.1065-1074 mit counterRef counters/purchaseOrders, return 'BST-${now.year}-${seq.padLeft(4)}' Z.1075, catch-Fallback zeitbasiert 'BST-$stamp' Z.1076-1081. Bestehender Test (Z.85-112) assertet nur first!=second und 'any endsWith 0001/0002', also KEINE Monotonie ueber >2. KORREKTUR: Audit-Sorge zum Jahreswechsel-Flaky ist mild, da der Test das Jahr gar nicht hart assertet (nur Suffix). KORREKTUR: Severity vom Audit 'mittel' -> 'niedrig', da gegen FakeFirebaseFirestore kein echter Race besteht (sequenziell), Mehrwert ist Regressionsschutz statt realer Bug. Fallback per Fake nicht testbar (vom Audit korrekt erkannt).
+
+#### ⚪ niedrig `inventory-firestore-fallback-untested` — Inventory-Firestore-Pfad: kein Stream-onError-Test (KEIN Hybrid-Fallback im Provider)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** ja
+- **Dateien:** `lib/providers/inventory_provider.dart`, `test/inventory_service_test.dart`
+- **Skill-Prinzip:** Abschnitt 6 (Fakes/Test-Doubles, In-Memory-Repository, Backend mocken) und Abschnitt 3 (Provider ohne echtes Backend lauffaehig)
+- **Problem:** Der InventoryProvider-Stream-onError-Pfad (_setError via watch*.listen onError, Z.240/246/252/258) ist ungetestet: ein fehlerhafter Stream soll errorMessage setzen, nicht crashen. Es gibt keinen Test der einen werfenden Stream simuliert.
+- **Fix:** In test/inventory_provider_test.dart einen Cloud-Modus-Test ergaenzen: InventoryProvider(disableAuthentication:false) mit einer FirestoreService-Subklasse als Seam (KEIN Mockito), deren watchSuppliers einen Stream.error(...) liefert. updateSession(user, localStorageOnly:false). Asserten, dass provider.errorMessage gesetzt wird und kein Crash auftritt.
+- **Verify-Notiz:** TEILWEISE bestaetigt mit KORREKTUR der Praemisse. Audit behauptet, Write-Pfade (saveSupplier:288, saveProduct:333, savePurchaseOrder:427, receiveOrder:493) haetten 'keinen lokalen catch-Fallback anders als WorkProvider'. Code: InventoryProvider hat in Write-Pfaden tatsaechlich KEIN try/catch-Hybrid-Fallback (Z.288-291 rufen einfach _firestoreService.X). Das ist aber KEIN getesteter Gap, sondern bewusste Design-Abweichung: Inventory hat schlicht kein Hybrid-Fallback-Muster, daher nichts 'wie bei WorkProvider' zu testen. Real sinnvoll/testbar ist der Stream-onError-Pfad: onError:_setError ist verdrahtet (Z.240,246,252,258), _setError setzt _errorMessage+_safeNotify (Z.150-153), ungetestet, per FirestoreService-Subklassen-Seam testbar. KORREKTUR: Severity vom Audit 'mittel' -> 'niedrig', da kein verstecktes Hybrid-Fallback-Verhalten existiert (entgegen Problembeschreibung), nur der onError-Reportingpfad fehlt im Test.
+
+#### ⚪ niedrig `no-coverage-gate-doc` — Keine reproduzierbare Coverage-Messung dokumentiert (kein --coverage-Workflow)
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** nein
+- **Dateien:** `CLAUDE.md`, `test/`
+- **Skill-Prinzip:** Abschnitt 7 (Coverage messen via flutter test --coverage + lcov, kritische Logik hoeher) und Abschnitt 8 (Coverage-Gate)
+- **Problem:** CLAUDE.md Quality Gates nennt nur 'flutter analyze' + 'flutter test', kein 'flutter test --coverage'. Keine lokal dokumentierte Coverage-Baseline. Dadurch bleibt unsichtbar, dass das gesamte Warenwirtschaft-Modul (InventoryProvider, Screens) nahezu uncovered ist.
+- **Fix:** In CLAUDE.md den Quality-Gates-Block um 'flutter test --coverage' (erzeugt coverage/lcov.info) ergaenzen und als pragmatisches Ziel festhalten: kritische Provider/Services >=70%. Kein Merge-Gate noetig (Self-Hosted), nur Sichtbarkeit.
+- **Verify-Notiz:** Bestaetigt: grep 'coverage' in CLAUDE.md -> NO match. Die Quality-Gates-Sektion nennt nur 'flutter analyze' und 'flutter test'. Severity niedrig korrekt — reines Doku-/Sichtbarkeits-Thema, kein funktionaler Gap. Wert entsteht erst zusammen mit den fehlenden Tests aus Gap 1/3.
+
+
+### CI/CD & DevOps (09)
+
+#### 🔴 kritisch `no-ci-quality-gate-workflow` — Keine CI: flutter analyze/test laufen nirgends automatisiert
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** ja
+- **Dateien:** `.github/workflows/ci.yml`, `CLAUDE.md`, `pubspec.yaml`
+- **Skill-Prinzip:** Abschnitt 1 (CI-Plattform & Pipeline-Grundlagen): flutter pub get -> dart analyze (Lint-Gate) -> flutter test. Bei jedem PR: schnelle Checks (Analyze/Test).
+- **Problem:** Es existiert kein .github/-Verzeichnis. CLAUDE.md sagt explizit 'Es gibt keine CI, kein Makefile. Vor jedem Commit selbst ausfuehren: flutter analyze / flutter test'. Die Test-Files und das Lint-Gate haengen damit komplett an manueller Disziplin; ein PR kann gemergt werden, ohne dass analyze oder test je liefen.
+- **Fix:** Neue Datei .github/workflows/ci.yml: Job 'analyze-test' auf ubuntu-latest, getriggert bei push/pull_request auf main. Schritte: actions/checkout, subosito/flutter-action@v2 (channel stable, flutter-version 3.38.4), pub-cache; dann flutter pub get, flutter analyze, flutter test. Zusaetzlicher Job 'functions-lint' der in functions/ 'npm ci' + 'node --check index.js' (Node 20) ausfuehrt. Reines Hinzufuegen.
+- **Verify-Notiz:** Bestaetigt: 'ls .github' = No such file or directory. CLAUDE.md (Abschnitt Quality Gates) sagt woertlich 'Es gibt keine CI, kein Makefile.' test/-Verzeichnis enthaelt 18 .dart-Files (CLAUDE.md nennt 16; Audit nannte 18 — beides nahe, kein Widerspruch zum Kern). functions/package.json engines.node = '20' bestaetigt. Korrektur: 'flutter analyze --fatal-infos' ist riskant, weil flutter_lints/flutter.yaml mit leeren rules viele infos liefern kann; reines 'flutter analyze' (das bei jeder Diagnose >info bereits failt) ist sicherer und entspricht CLAUDE.md-Befehl. Gap real und kritisch.
+
+#### 🟠 hoch `android-release-debug-signing` — Android-Release-Build signiert mit dem Debug-Keystore
+- **Welle:** 2 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `android/app/build.gradle.kts:34-39`
+- **Skill-Prinzip:** Abschnitt 3 (Code-Signing & Credentials-Management): Android: Upload-Keystore + Play App Signing. Signing-Secrets niemals im Repo, nur ueber CI-Secret-Store.
+- **Problem:** In android/app/build.gradle.kts ist der release-buildType auf signingConfig = signingConfigs.getByName("debug") gesetzt, mit TODO-Kommentar 'Signing with the debug keys for now'. Ein so erzeugtes AAB/APK kann nicht im Play Store veroeffentlicht werden. Es gibt keinen Upload-Keystore-Mechanismus.
+- **Fix:** In android/app/build.gradle.kts einen Upload-Keystore-signingConfig 'release' ergaenzen, der Werte aus android/key.properties liest (key.properties ist bereits in android/.gitignore!). release-buildType auf signingConfig 'release' umstellen, mit Fallback auf debug nur wenn key.properties fehlt. Keystore-Base64 + Passwoerter als GitHub-Actions-Secrets, im Build-Job in key.properties materialisiert.
+- **Verify-Notiz:** Bestaetigt woertlich in android/app/build.gradle.kts Zeile 34-39: buildTypes { release { // TODO: Add your own signing config ... // Signing with the debug keys for now ... signingConfig = signingConfigs.getByName("debug") } }. Audit nannte Zeile 36-38, exakt ist es 34-39. Zusatzbefund (verbessert proposedFix): android/.gitignore enthaelt bereits 'key.properties' und '**/*.keystore', d.h. der vom Audit vorgeschlagene .gitignore-Eintrag existiert schon — der proposedFix muss key.properties NICHT neu ignorieren. Gap real.
+
+#### 🟠 hoch `no-release-build-pipeline` — Keine automatisierte Build-/Release-Pipeline fuer Web/Android/iOS
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** M · **nur neue Dateien:** ja
+- **Dateien:** `.github/workflows/release.yml`, `firebase.json`, `android/ ios/ web/`
+- **Skill-Prinzip:** Abschnitt 2 (Plattformspezifische Builds) + Abschnitt 4: Web ueber Firebase Hosting deployen; Release-Builds mit --obfuscate --split-debug-info.
+- **Problem:** Es gibt nur die Targets android/ios/web (kein macos/windows/linux), aber keinerlei automatisierten Build- oder Deploy-Pfad: Web wird laut firebase.json aus build/web gehostet, manuell erzeugt. Kein Release-Build nutzt --obfuscate/--split-debug-info, dadurch kein lesbares Crash-Symbol-Mapping.
+- **Fix:** Neue Datei .github/workflows/release.yml, getriggert bei Git-Tag 'v*'. Job 'web-deploy' (ubuntu): flutter build web --release + FirebaseExtended/action-hosting-deploy. Job 'android-aab' (ubuntu): flutter build appbundle --release --obfuscate --split-debug-info=build/symbols, AAB + symbols als artifact. Job 'ios-ipa' MUSS macos-latest nutzen: flutter build ipa. Nur neue Datei.
+- **Verify-Notiz:** Bestaetigt: firebase.json hosting.public = 'build/web' (Zeile 3) mit SPA-Rewrite + no-cache Header — Verzeichnis muss manuell gebaut werden. Nur die Plattform-Ordner android/ios/web vorhanden (kein macos/windows/linux). 'ls .github' fehlt → kein Build/Deploy-Workflow. grep nach 'obfuscate'/'split-debug' in *.yml/*.yaml/*.sh = leer → kein Symbol-Mapping. Gap real. Hinweis: android-aab haengt funktional an Gap 'android-release-debug-signing' (ohne echten Keystore baut der AAB nur debug-signiert).
+
+#### 🟡 mittel `no-feature-flags-force-update` — Kein Feature-Flag-/Force-Update-/Minimum-Version-Mechanismus
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** L · **nur neue Dateien:** nein
+- **Dateien:** `lib/core/app_config.dart:1-44`, `pubspec.yaml:38-46`
+- **Skill-Prinzip:** Abschnitt 6 (Update-Realitaet mobiler Apps) + Abschnitt 7: Force-Update/Minimum-Version (serverseitig) und Feature Flags (Firebase Remote Config) entkoppeln Deploy von Release.
+- **Problem:** AppConfig kennt nur Compile-Time-Konstanten via bool.fromEnvironment/String.fromEnvironment. Es gibt keinerlei Laufzeit-Feature-Flags und kein Force-Update/Minimum-Version-Signal; firebase_remote_config ist in pubspec.yaml nicht enthalten. Ohne Server-Toggle kann ein fehlerhaftes Feature nicht ausserhalb des Store-Roundtrips deaktiviert werden.
+- **Fix:** Pragmatisch (Spark-Free-Tier): Lese-Pfad fuer ein Firestore-Doc organizations/{orgId}/config/appFlags (lib/services/feature_flag_service.dart + lib/providers/feature_flag_provider.dart) mit minimumBuildNumber + Map<String,bool> featureFlags. Provider nach StorageModeProvider in lib/main.dart einfuegen (Kopplung Nr. 4). In _AuthGate Force-Update-Screen wenn aktuelle Build-Nummer < minimumBuildNumber. package_info_plus noetig fuer Build-Nummer.
+- **Verify-Notiz:** Bestaetigt: lib/core/app_config.dart enthaelt ausschliesslich const bool.fromEnvironment / String.fromEnvironment (Compile-Time), kein Laufzeit-Flag. grep -ri 'RemoteConfig|featureFlag|minimumVersion|forceUpdate|minimumBuild' lib/ = leer. pubspec.yaml dependencies (Zeile 38-46) listen firebase_core/auth/firestore/functions, aber kein firebase_remote_config und kein package_info_plus. Gap real. Korrektur: proposedFix muss package_info_plus als neues Paket nennen (aktuell nicht in pubspec) — Aufwand L korrekt. Severity mittel angemessen fuer eine 2-Laden-Self-Hosted-App.
+
+#### 🟡 mittel `no-flutter-version-pin` — Flutter-/Dart-SDK-Version nicht gepinnt — Builds nicht reproduzierbar
+- **Welle:** 1 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** ja
+- **Dateien:** `.fvmrc`, `.tool-versions`, `pubspec.yaml:8-9`, `pubspec.lock`
+- **Skill-Prinzip:** Abschnitt 8 (Pipeline-Observability): Reproduzierbare Builds (gepinnte Flutter-/Dependency-Versionen, Lockfiles).
+- **Problem:** pubspec.yaml gibt nur sdk: '>=3.0.0 <4.0.0' an; es existiert keine Pinning-Datei (.fvmrc, .tool-versions, .flutter-version — alle nicht vorhanden). pubspec.lock verweist auf flutter '>=3.38.4'/dart '>=3.10.3'. CI und lokale Builds koennen auf unterschiedlichen Flutter-Versionen laufen.
+- **Fix:** Neue Datei .fvmrc mit {"flutter": "3.38.4"} oder .tool-versions mit 'flutter 3.38.4' (passend zu pubspec.lock sdks.flutter '>=3.38.4'). Gleiche Version in subosito/flutter-action flutter-version referenzieren. pubspec.lock ist bereits committet — beibehalten.
+- **Verify-Notiz:** Bestaetigt: 'ls .fvmrc .tool-versions .flutter-version' → alle 'No such file or directory'. pubspec.yaml Zeile 9: sdk: '>=3.0.0 <4.0.0' (weiter Constraint). pubspec.lock sdks: dart '>=3.10.3 <4.0.0', flutter '>=3.38.4' — exakt wie Audit behauptet. CLAUDE.md bestaetigt 'plain flutter (kein fvm)'. Gap real. Hinweis: .fvmrc impliziert fvm-Nutzung (CLAUDE.md sagt kein fvm) — .tool-versions (asdf) oder ein simples flutter-version-Pin im CI-Workflow ist konsistenter mit dem Projekt-Setup.
+
+#### 🟡 mittel `no-build-number-automation` — Statische Versionsnummer ohne automatisches Build-Counter-Hochzaehlen
+- **Welle:** 3 · **Risiko:** niedrig · **Aufwand:** S · **nur neue Dateien:** ja
+- **Dateien:** `pubspec.yaml:6`
+- **Skill-Prinzip:** Abschnitt 6 (Versionierung & Release-Strategie): Build-Nummern pro Plattform automatisch hochzaehlen (CI-Build-Counter).
+- **Problem:** pubspec.yaml haelt fix version: 1.0.0+1; es gibt keine Git-Tags und keine Automation, die die Build-Nummer (+1) pro Release hochzaehlt. Play Store und App Store verlangen monoton steigende Build-Nummern.
+- **Fix:** Im release.yml-Workflow vor den Build-Schritten die Build-Nummer aus github.run_number ableiten und via 'flutter build ... --build-number=${{ github.run_number }} --build-name=<aus-tag>' setzen. Tag-Format vX.Y.Z liefert den build-name. Reine Workflow-Logik.
+- **Verify-Notiz:** Bestaetigt: pubspec.yaml Zeile 6 = 'version: 1.0.0+1'. 'git tag -l' = leer (keine Tags). Kein Build-Counter-Mechanismus vorhanden (kein .github, kein Skript). Gap real. Haengt logisch an Gap 'no-release-build-pipeline' (release.yml muss erst existieren). Severity mittel evtl. leicht hoch fuer 2-Laden-App, aber technisch korrekt da Stores monoton steigende Codes verlangen.
+
+#### ⚪ niedrig `no-flavors-dev-prod` — Keine Flavors/Build-Varianten fuer dev/prod — Demo-Build und Prod teilen Bundle-ID
+- **Welle:** 3 · **Risiko:** mittel · **Aufwand:** M · **nur neue Dateien:** nein
+- **Dateien:** `android/app/build.gradle.kts:25`, `lib/core/app_config.dart:6-9`
+- **Skill-Prinzip:** Abschnitt 5 (Flavors, Umgebungen & Konfiguration): Flavors fuer dev/staging/prod mit getrennten Bundle-IDs ueber flutter build --flavor + --dart-define.
+- **Problem:** applicationId ist fest 'com.app.timework' (build.gradle.kts:25), es gibt keine flavorDimensions/productFlavors. Der Offline-Demo-Modus laeuft nur ueber das Compile-Flag APP_DISABLE_AUTH (app_config.dart) auf derselben Bundle-ID wie Produktion. Dev/Demo- und Prod-Build koennen nicht parallel auf einem Geraet koexistieren.
+- **Fix:** In android/app/build.gradle.kts flavorDimensions("env") + productFlavors 'dev' (applicationIdSuffix '.dev', versionNameSuffix '-dev') und 'prod' ergaenzen; bestehende dart-define-Config je Flavor ueber --dart-define-from-file setzen. dev + prod genuegen. Risiko: aendert build.gradle.kts und kann lokale 'flutter run'-Aufrufe brechen wenn kein --flavor angegeben.
+- **Verify-Notiz:** Bestaetigt: android/app/build.gradle.kts Zeile 10 (namespace) und Zeile 25 (applicationId) = beide 'com.app.timework', keine flavorDimensions/productFlavors im File. app_config.dart Zeile 6-9: disableAuthentication via bool.fromEnvironment('APP_DISABLE_AUTH') (Compile-Flag, keine Bundle-ID-Trennung). Gap real. Severity niedrig korrekt: bei nur zwei Laeden ist Koexistenz mehrerer Builds auf einem Geraet ein Komfort-/Nice-to-have, kein Blocker. Risiko mittel berechtigt, da iOS-Seite (ios/) zusaetzlich Xcode-Schemes braeuchte, was der Audit gar nicht erwaehnt — proposedFix deckt nur Android ab.
+
+
+---
+
+## Widerlegte Befunde (vom Verify-Agent verworfen)
+
+- **extract-clockin-long-method** (clean-code): WIDERLEGT in der Kernbehauptung. clockIn() beginnt Z.746, endet Z.805 - die naechste Methode clockOut() startet Z.807. Das sind ~60 Zeilen, NICHT 229. Die Audit-Range 746-975 umfasst faelschlich auch clockOut() (807), correctClockEntry() (925) und validateEntry() (975). Die Methode ist gut strukturiert mit fruehen Guard-Clauses (if return / throw StateError) und linearer Logik. Severity von 'hoch' auf 'niedrig', confirmed=false: das beschriebene Problem (229-Zeilen-God-Method) existiert nicht.

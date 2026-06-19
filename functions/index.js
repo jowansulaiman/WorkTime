@@ -177,6 +177,10 @@ exports.previewCompliance = onCall({region: REGION}, async (request) => {
   assertSameOrg(caller, orgId);
 
   if (Array.isArray(request.data?.shifts) && request.data.shifts.length > 0) {
+    // Gleiches Rollen-Gate wie der Schreibpfad upsertShiftBatch, damit die
+    // Preview keine Personaldaten an Nicht-Planer preisgibt (Information
+    // Disclosure / API05 Function-Level-Authorization).
+    assertScheduler(caller);
     const shifts = request.data.shifts.map((item, index) =>
       parseShift(item, index, orgId),
     );
@@ -185,7 +189,15 @@ exports.previewCompliance = onCall({region: REGION}, async (request) => {
   }
 
   if (request.data?.entry != null) {
+    assertTimeEntryEditor(caller);
     const entry = parseWorkEntry(request.data.entry);
+    assertSameOrg(caller, entry.orgId);
+    if (caller.uid !== entry.userId && !caller.isAdmin) {
+      throw new HttpsError(
+        "permission-denied",
+        "Nur Admins duerfen Compliance fuer fremde Zeiteintraege pruefen.",
+      );
+    }
     const validation = await validateWorkEntry({callerUid: caller.uid, entry});
     return validation;
   }

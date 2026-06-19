@@ -19,6 +19,7 @@ import '../widgets/app_logo.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/responsive_layout.dart';
 import 'entry_form_screen.dart';
+import 'inventory_screen.dart';
 import 'month_report_screen.dart';
 import 'notification_screen.dart';
 import 'settings_screen.dart';
@@ -6177,6 +6178,20 @@ class _ProfileHubTab extends StatelessWidget {
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => const TeamManagementScreen(
+                            parentLabel: 'Profil',
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (currentUser?.canViewInventory ?? false)
+                    _QuickActionCard(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'Warenwirtschaft',
+                      subtitle:
+                          'Bestand, Lieferanten und Bestellungen verwalten',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const InventoryScreen(
                             parentLabel: 'Profil',
                           ),
                         ),

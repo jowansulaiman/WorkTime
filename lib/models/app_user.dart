@@ -320,6 +320,13 @@ class AppUserProfile {
       isAdmin || effectivePermissions.canEditTimeEntries;
   bool get canViewReports => isAdmin || effectivePermissions.canViewReports;
 
+  /// Warenwirtschaft ansehen darf jedes aktive Mitglied.
+  bool get canViewInventory => isActive;
+
+  /// Warenwirtschaft verwalten duerfen Admins und Schichtleiter
+  /// (Mitarbeiter mit Schicht-Bearbeitungsrecht).
+  bool get canManageInventory => isActive && (isAdmin || canManageShifts);
+
   bool canReviewAbsenceRequestFor(AppUserProfile requester) {
     if (!canManageShifts || !isActive) {
       return false;

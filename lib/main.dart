@@ -9,8 +9,11 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 
 import 'core/app_config.dart';
+import 'core/app_logger.dart';
+import 'core/error_reporter.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
+import 'providers/inventory_provider.dart';
 import 'providers/schedule_provider.dart';
 import 'providers/storage_mode_provider.dart';
 import 'providers/team_provider.dart';
@@ -24,20 +27,42 @@ import 'theme/app_theme.dart';
 import 'widgets/app_logo.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  AppConfig.validateEnvironment();
+  // Alles in einer einzigen bewachten Zone starten, damit auch Fehler aus
+  // fire-and-forget-Futures (z. B. _dispatchProviderUpdate) erfasst werden.
+  // ensureInitialized() und runApp() MÜSSEN in derselben Zone laufen.
+  runZonedGuarded<Future<void>>(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      AppConfig.validateEnvironment();
 
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('FlutterError: ${details.exception}\n${details.stack}');
-  };
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+        ErrorReporter.report(
+          details.exception,
+          details.stack,
+          context: 'FlutterError (${details.library ?? 'flutter'})',
+        );
+      };
 
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Unbehandelter Fehler: $error\n$stack');
-    return true;
-  };
+      PlatformDispatcher.instance.onError = (error, stack) {
+        ErrorReporter.report(error, stack,
+            context: 'PlatformDispatcher', fatal: true);
+        return true;
+      };
 
-  runApp(const AppBootstrap());
+      // Im Release-Build statt des roten Default-ErrorWidget einen ruhigen,
+      // deutschen Fehlerschirm zeigen; im Debug bleibt das informative Default.
+      if (!kDebugMode) {
+        ErrorWidget.builder = (details) => const _FriendlyErrorWidget();
+      }
+
+      runApp(const AppBootstrap());
+    },
+    (error, stack) {
+      ErrorReporter.report(error, stack,
+          context: 'Zone (unbehandelter async-Fehler)', fatal: true);
+    },
+  );
 }
 
 class AppBootstrap extends StatefulWidget {
@@ -74,23 +99,21 @@ class _AppBootstrapState extends State<AppBootstrap> {
         }
       } on FirebaseException catch (error, stackTrace) {
         if (error.code != 'duplicate-app') {
-          debugPrint(
-            'Firebase-Initialisierung fehlgeschlagen: $error\n$stackTrace',
-          );
+          AppLogger.error('Firebase-Initialisierung fehlgeschlagen',
+              error: error, stackTrace: stackTrace);
           Error.throwWithStackTrace(error, stackTrace);
         }
       } catch (error, stackTrace) {
-        debugPrint(
-          'Firebase-Initialisierung fehlgeschlagen: $error\n$stackTrace',
-        );
+        AppLogger.error('Firebase-Initialisierung fehlgeschlagen',
+            error: error, stackTrace: stackTrace);
         Error.throwWithStackTrace(error, stackTrace);
       }
-    }
 
-    // Firestore Offline-Persistence aktivieren: Daten werden lokal gecacht,
-    // sodass Reads auch offline bedient werden und beim Reconnect automatisch
-    // synchronisiert werden. Reduziert Cloud-Reads erheblich.
-    FirebaseFirestore.instance.settings = _buildFirestoreSettings();
+      // Firestore Offline-Persistence aktivieren: Daten werden lokal gecacht,
+      // sodass Reads auch offline bedient werden und beim Reconnect automatisch
+      // synchronisiert werden. Reduziert Cloud-Reads erheblich.
+      FirebaseFirestore.instance.settings = _buildFirestoreSettings();
+    }
 
     await _authProvider.init();
   }
@@ -216,6 +239,24 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
+        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
+            InventoryProvider>(
+          create: (_) => InventoryProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, provider) {
+            provider ??= InventoryProvider(firestoreService: firestoreService);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'InventoryProvider.updateSession',
+            );
+            return provider;
+          },
+        ),
         ChangeNotifierProxyProvider4<AuthProvider, TeamProvider,
             StorageModeProvider, ScheduleProvider, WorkProvider>(
           create: (_) => WorkProvider(
@@ -271,9 +312,32 @@ class WorkTimeApp extends StatelessWidget {
 void _dispatchProviderUpdate(Future<void> future, String label) {
   unawaited(
     future.catchError((Object error, StackTrace stackTrace) {
-      debugPrint('$label failed: $error\n$stackTrace');
+      ErrorReporter.report(error, stackTrace, context: label);
     }),
   );
+}
+
+/// Ruhiger Ersatz für das rote Default-[ErrorWidget] im Release-Build.
+class _FriendlyErrorWidget extends StatelessWidget {
+  const _FriendlyErrorWidget();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Material(
+      color: Color(0xFFF7F7F7),
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'Es ist ein unerwarteter Fehler aufgetreten.\n'
+            'Bitte den Bereich erneut öffnen oder die App neu starten.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xFF444444)),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _BootstrapShell extends StatelessWidget {

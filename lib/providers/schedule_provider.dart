@@ -15,7 +15,9 @@ import '../models/shift_template.dart';
 import '../models/travel_time_rule.dart';
 import '../services/database_service.dart';
 import '../services/compliance_service.dart';
+import '../services/compliance_rejected_exception.dart';
 import '../services/firestore_service.dart';
+import '../core/app_logger.dart';
 
 enum ScheduleViewMode { day, week, month }
 
@@ -151,11 +153,6 @@ class ScheduleProvider extends ChangeNotifier {
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
-
-  /// Im Hybrid-Modus werden Schichten, Vorlagen und Abwesenheiten lokal
-  /// gespeichert, da Firestore-Schichtoperationen das Pay-as-you-go-Abo
-  /// erfordern. Diese Property fasst local und hybrid zusammen.
-  bool get _schedulesUseLocalStorage => usesLocalStorage || usesHybridStorage;
 
   void updateReferenceData({
     required List<AppUserProfile> members,
@@ -384,6 +381,10 @@ class ScheduleProvider extends ChangeNotifier {
         .toList(growable: false);
     try {
       await _firestoreService.saveShiftBatch(occurrences);
+    } on ComplianceRejectedException {
+      // Bewusste serverseitige Compliance-Ablehnung – nie lokal überschreiben,
+      // auch nicht im Hybrid-Modus.
+      rethrow;
     } catch (error) {
       if (!usesHybridStorage) {
         rethrow;
@@ -1324,7 +1325,7 @@ class ScheduleProvider extends ChangeNotifier {
         try {
           await _firestoreService.saveShiftBatch(shifts);
         } catch (error) {
-          debugPrint('syncLocalStateToCloud(schedule): Schichten konnten '
+          AppLogger.warning('syncLocalStateToCloud(schedule): Schichten konnten '
               'nicht geschrieben werden: $error');
         }
       }
@@ -1335,7 +1336,7 @@ class ScheduleProvider extends ChangeNotifier {
         try {
           await _firestoreService.saveShiftTemplate(template);
         } catch (error) {
-          debugPrint('syncLocalStateToCloud(schedule): Schichtvorlage '
+          AppLogger.warning('syncLocalStateToCloud(schedule): Schichtvorlage '
               'konnte nicht geschrieben werden: $error');
         }
       }
@@ -1348,7 +1349,7 @@ class ScheduleProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveAbsenceRequest(request);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud(schedule): Abwesenheitsantrag '
+        AppLogger.warning('syncLocalStateToCloud(schedule): Abwesenheitsantrag '
             'konnte nicht geschrieben werden: $error');
       }
     }
@@ -1437,7 +1438,7 @@ class ScheduleProvider extends ChangeNotifier {
         _safeNotify();
       }, onError: (Object error) {
         oldTemplatesSub?.cancel();
-        debugPrint(
+        AppLogger.warning(
           'ScheduleProvider: Fehler beim Laden der Schichtvorlagen: $error',
         );
       });
@@ -1459,7 +1460,7 @@ class ScheduleProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: (Object error) {
       oldAllAbsenceSub?.cancel();
-      debugPrint(
+      AppLogger.warning(
           'ScheduleProvider: Fehler beim Laden der kompletten Abwesenheiten: $error');
     });
 
@@ -1476,7 +1477,7 @@ class ScheduleProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: (Object error) {
       oldAbsenceSub?.cancel();
-      debugPrint(
+      AppLogger.warning(
           'ScheduleProvider: Fehler beim Laden der Abwesenheiten: $error');
       _absenceRequests = [];
       _safeNotify();
@@ -1601,6 +1602,7 @@ class ScheduleProvider extends ChangeNotifier {
         (shift) => shift.id?.trim().isNotEmpty == true
             ? 'id:${shift.id}'
             : 'shift:${shift.userId}:${shift.startTime.toIso8601String()}:${shift.endTime.toIso8601String()}',
+        updatedAtOf: (shift) => shift.updatedAt,
       ),
     ]..sort((a, b) => a.startTime.compareTo(b.startTime));
 
@@ -1704,8 +1706,9 @@ class ScheduleProvider extends ChangeNotifier {
   List<T> _mergeByKey<T>(
     Iterable<T> localItems,
     Iterable<T> remoteItems,
-    String Function(T item) keyOf,
-  ) {
+    String Function(T item) keyOf, {
+    DateTime? Function(T item)? updatedAtOf,
+  }) {
     final merged = <String, T>{};
     var index = 0;
     for (final item in localItems) {
@@ -1715,8 +1718,19 @@ class ScheduleProvider extends ChangeNotifier {
     }
     for (final item in remoteItems) {
       final key = keyOf(item).trim();
-      merged[key.isEmpty ? 'remote:$index' : key] = item;
+      final resolvedKey = key.isEmpty ? 'remote:$index' : key;
       index++;
+      final existing = merged[resolvedKey];
+      if (existing != null && updatedAtOf != null) {
+        final localTs = updatedAtOf(existing);
+        final remoteTs = updatedAtOf(item);
+        // Last-Write-Wins: eine lokal neuere (noch nicht synchronisierte)
+        // Version nicht durch einen aelteren Server-Snapshot ueberschreiben.
+        if (localTs != null && remoteTs != null && localTs.isAfter(remoteTs)) {
+          continue;
+        }
+      }
+      merged[resolvedKey] = item;
     }
     return merged.values.toList(growable: true);
   }

@@ -1,6 +1,8 @@
 import '../models/app_user.dart';
 import '../models/employee_site_assignment.dart';
+import '../models/product.dart';
 import '../models/site_definition.dart';
+import '../models/supplier.dart';
 import '../models/user_settings.dart';
 
 class LocalDemoAccount {
@@ -177,6 +179,134 @@ class LocalDemoData {
         latitude: 53.5511,
         longitude: 9.9937,
         description: 'Zweiter Dummy-Standort fuer Schicht- und Standorttests.',
+        createdByUid: createdByUid,
+      ),
+    ];
+  }
+
+  static String berlinSiteId(String orgId) => 'demo-site-$orgId-berlin';
+  static String hamburgSiteId(String orgId) => 'demo-site-$orgId-hamburg';
+
+  /// Demo-Lieferanten fuer den lokalen Modus (Warenwirtschaft).
+  static List<Supplier> suppliersForOrg({
+    required String orgId,
+    required String createdByUid,
+  }) {
+    return [
+      Supplier(
+        id: 'demo-supplier-$orgId-tabak',
+        orgId: orgId,
+        name: 'Nord Tabakwaren GmbH',
+        contactPerson: 'Frau Petersen',
+        email: 'service@nord-tabak.de',
+        orderEmail: 'bestellung@nord-tabak.de',
+        phone: '0431 555100',
+        customerNumber: 'KD-4711',
+        leadTimeDays: 2,
+        createdByUid: createdByUid,
+      ),
+      Supplier(
+        id: 'demo-supplier-$orgId-getraenke',
+        orgId: orgId,
+        name: 'Getraenke Service Kiel',
+        contactPerson: 'Herr Voss',
+        email: 'info@getraenke-kiel.de',
+        phone: '0431 555200',
+        customerNumber: 'GSK-208',
+        leadTimeDays: 1,
+        createdByUid: createdByUid,
+      ),
+    ];
+  }
+
+  /// Demo-Artikel fuer den lokalen Modus. Einige liegen bewusst unter dem
+  /// Mindestbestand, damit die Nachbestell-Warnung sichtbar ist.
+  static List<Product> productsForOrg({
+    required String orgId,
+    required String createdByUid,
+  }) {
+    final tabakSupplier = 'demo-supplier-$orgId-tabak';
+    final getraenkeSupplier = 'demo-supplier-$orgId-getraenke';
+    final berlin = berlinSiteId(orgId);
+    final hamburg = hamburgSiteId(orgId);
+    return [
+      Product(
+        id: 'demo-product-$orgId-1',
+        orgId: orgId,
+        siteId: berlin,
+        siteName: 'Hauptstandort Berlin',
+        name: 'Marlboro Rot (Stange)',
+        category: 'Zigaretten',
+        unit: 'Stange',
+        barcode: '4033100112233',
+        supplierId: tabakSupplier,
+        supplierName: 'Nord Tabakwaren GmbH',
+        purchasePriceCents: 7800,
+        sellingPriceCents: 8500,
+        currentStock: 4,
+        minStock: 6,
+        reorderQuantity: 10,
+        createdByUid: createdByUid,
+      ),
+      Product(
+        id: 'demo-product-$orgId-2',
+        orgId: orgId,
+        siteId: berlin,
+        siteName: 'Hauptstandort Berlin',
+        name: 'Feuerzeug Clipper',
+        category: 'Raucherbedarf',
+        unit: 'Stück',
+        supplierId: tabakSupplier,
+        supplierName: 'Nord Tabakwaren GmbH',
+        purchasePriceCents: 65,
+        sellingPriceCents: 150,
+        currentStock: 38,
+        minStock: 20,
+        createdByUid: createdByUid,
+      ),
+      Product(
+        id: 'demo-product-$orgId-3',
+        orgId: orgId,
+        siteId: berlin,
+        siteName: 'Hauptstandort Berlin',
+        name: 'Cola 0,5 l',
+        category: 'Getraenke',
+        unit: 'Flasche',
+        supplierId: getraenkeSupplier,
+        supplierName: 'Getraenke Service Kiel',
+        purchasePriceCents: 60,
+        sellingPriceCents: 200,
+        currentStock: 9,
+        minStock: 24,
+        reorderQuantity: 48,
+        createdByUid: createdByUid,
+      ),
+      Product(
+        id: 'demo-product-$orgId-4',
+        orgId: orgId,
+        siteId: hamburg,
+        siteName: 'Filiale Hamburg',
+        name: 'Pueblo Tabak 30g',
+        category: 'Drehtabak',
+        unit: 'Beutel',
+        supplierId: tabakSupplier,
+        supplierName: 'Nord Tabakwaren GmbH',
+        purchasePriceCents: 480,
+        sellingPriceCents: 650,
+        currentStock: 12,
+        minStock: 8,
+        createdByUid: createdByUid,
+      ),
+      Product(
+        id: 'demo-product-$orgId-5',
+        orgId: orgId,
+        siteId: hamburg,
+        siteName: 'Filiale Hamburg',
+        name: 'Zeitschrift Der Spiegel',
+        category: 'Presse',
+        unit: 'Stück',
+        currentStock: 3,
+        minStock: 5,
         createdByUid: createdByUid,
       ),
     ];

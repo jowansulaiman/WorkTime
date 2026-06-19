@@ -15,6 +15,7 @@ import '../models/travel_time_rule.dart';
 import '../models/user_invite.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
+import '../core/app_logger.dart';
 
 class TeamProvider extends ChangeNotifier {
   TeamProvider({
@@ -253,7 +254,7 @@ class TeamProvider extends ChangeNotifier {
           _loading = false;
           _safeNotify();
         }, onError: (Object error) {
-          debugPrint('TeamProvider: Fehler beim Laden der Mitglieder: $error');
+          AppLogger.warning('TeamProvider: Fehler beim Laden der Mitglieder: $error');
           _loading = false;
           _safeNotify();
         });
@@ -268,7 +269,7 @@ class TeamProvider extends ChangeNotifier {
             _invites = items;
             _safeNotify();
           }, onError: (Object error) {
-            debugPrint(
+            AppLogger.warning(
                 'TeamProvider: Fehler beim Laden der Einladungen: $error');
           });
         } else {
@@ -285,7 +286,7 @@ class TeamProvider extends ChangeNotifier {
           _teams = items;
           _safeNotify();
         }, onError: (Object error) {
-          debugPrint('TeamProvider: Fehler beim Laden der Teams: $error');
+          AppLogger.warning('TeamProvider: Fehler beim Laden der Teams: $error');
         });
       } else {
         _members = [user];
@@ -303,7 +304,7 @@ class TeamProvider extends ChangeNotifier {
           _safeNotify();
         },
         onError: (Object error) {
-          debugPrint('TeamProvider: Fehler beim Laden der Standorte: $error');
+          AppLogger.warning('TeamProvider: Fehler beim Laden der Standorte: $error');
         },
       );
 
@@ -316,7 +317,7 @@ class TeamProvider extends ChangeNotifier {
         _qualifications = items;
         _safeNotify();
       }, onError: (Object error) {
-        debugPrint(
+        AppLogger.warning(
             'TeamProvider: Fehler beim Laden der Qualifikationen: $error');
       });
 
@@ -330,7 +331,7 @@ class TeamProvider extends ChangeNotifier {
         _contracts = items;
         _safeNotify();
       }, onError: (Object error) {
-        debugPrint('TeamProvider: Fehler beim Laden der Vertraege: $error');
+        AppLogger.warning('TeamProvider: Fehler beim Laden der Vertraege: $error');
       });
 
       _siteAssignmentsSubscription =
@@ -342,7 +343,7 @@ class TeamProvider extends ChangeNotifier {
         _siteAssignments = items;
         _safeNotify();
       }, onError: (Object error) {
-        debugPrint(
+        AppLogger.warning(
             'TeamProvider: Fehler beim Laden der Standortzuordnungen: $error');
       });
 
@@ -364,7 +365,7 @@ class TeamProvider extends ChangeNotifier {
         _ruleSets = items;
         _safeNotify();
       }, onError: (Object error) {
-        debugPrint('TeamProvider: Fehler beim Laden der Regelwerke: $error');
+        AppLogger.warning('TeamProvider: Fehler beim Laden der Regelwerke: $error');
       });
 
       _travelTimeRulesSubscription =
@@ -376,7 +377,7 @@ class TeamProvider extends ChangeNotifier {
         _travelTimeRules = items;
         _safeNotify();
       }, onError: (Object error) {
-        debugPrint(
+        AppLogger.warning(
             'TeamProvider: Fehler beim Laden der Fahrtzeitregeln: $error');
       });
     }
@@ -963,7 +964,7 @@ class TeamProvider extends ChangeNotifier {
     try {
       await _firestoreService.upsertUserProfile(currentUser);
     } catch (error) {
-      debugPrint('syncLocalStateToCloud: eigenes Profil konnte nicht '
+      AppLogger.warning('syncLocalStateToCloud: eigenes Profil konnte nicht '
           'geschrieben werden: $error');
     }
 
@@ -975,7 +976,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.upsertUserProfile(member);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Mitglied ${member.uid} '
+        AppLogger.warning('syncLocalStateToCloud: Mitglied ${member.uid} '
             'konnte nicht geschrieben werden: $error');
       }
     }
@@ -983,7 +984,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.createOrUpdateInvite(invite);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Einladung konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Einladung konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -991,7 +992,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveTeam(team);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Team konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Team konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -999,7 +1000,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveSite(site);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Standort konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Standort konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -1007,7 +1008,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveQualification(qualification);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Qualifikation konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Qualifikation konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -1015,7 +1016,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveEmploymentContract(contract);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Vertrag konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Vertrag konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -1034,7 +1035,7 @@ class TeamProvider extends ChangeNotifier {
           assignments: entry.value,
         );
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Standortzuweisungen konnten '
+        AppLogger.warning('syncLocalStateToCloud: Standortzuweisungen konnten '
             'nicht geschrieben werden: $error');
       }
     }
@@ -1043,7 +1044,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveRuleSet(ruleSet);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Regelwerk konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Regelwerk konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -1051,7 +1052,7 @@ class TeamProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveTravelTimeRule(rule);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud: Fahrtzeitregel konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud: Fahrtzeitregel konnte nicht '
             'geschrieben werden: $error');
       }
     }

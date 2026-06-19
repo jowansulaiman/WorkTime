@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import '../core/app_logger.dart';
 
 class AuthService {
   AuthService({FirebaseAuth? firebaseAuth})
@@ -25,7 +26,7 @@ class AuthService {
     try {
       await _firebaseAuth.setPersistence(Persistence.LOCAL);
     } catch (error) {
-      debugPrint(
+      AppLogger.warning(
           'AuthService: Persistence konnte nicht gesetzt werden: $error');
     }
   }
@@ -37,7 +38,7 @@ class AuthService {
     try {
       await _firebaseAuth.getRedirectResult();
     } catch (error) {
-      debugPrint(
+      AppLogger.warning(
           'AuthService: Redirect-Ergebnis konnte nicht gelesen werden: $error');
     }
   }

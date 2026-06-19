@@ -582,41 +582,42 @@ class _StorageLocationCard extends StatelessWidget {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(8),
-        child: Column(
-          children: [
-            RadioListTile<DataStorageLocation>(
-              value: DataStorageLocation.hybrid,
-              groupValue: location,
-              onChanged: busy ? null : (value) => onChanged(value!),
-              title: const Text('Hybrid-Speicher'),
-              subtitle: const Text(
-                'Cloud faehige Daten werden mit Firebase gespeichert und lokal als Cache vorgehalten. Lokale App-Zustaende bleiben auf dem Geraet.',
+        child: RadioGroup<DataStorageLocation>(
+          groupValue: location,
+          onChanged: (value) {
+            if (busy || value == null) return;
+            onChanged(value);
+          },
+          child: Column(
+            children: [
+              const RadioListTile<DataStorageLocation>(
+                value: DataStorageLocation.hybrid,
+                title: Text('Hybrid-Speicher'),
+                subtitle: Text(
+                  'Cloud faehige Daten werden mit Firebase gespeichert und lokal als Cache vorgehalten. Lokale App-Zustaende bleiben auf dem Geraet.',
+                ),
               ),
-            ),
-            RadioListTile<DataStorageLocation>(
-              value: DataStorageLocation.cloud,
-              groupValue: location,
-              onChanged: busy ? null : (value) => onChanged(value!),
-              title: const Text('Cloud-Speicher'),
-              subtitle: const Text(
-                'Daten werden direkt aus Firebase geladen. Lokale Cache-Kopien werden nicht als primaerer Speicher verwendet.',
+              const RadioListTile<DataStorageLocation>(
+                value: DataStorageLocation.cloud,
+                title: Text('Cloud-Speicher'),
+                subtitle: Text(
+                  'Daten werden direkt aus Firebase geladen. Lokale Cache-Kopien werden nicht als primaerer Speicher verwendet.',
+                ),
               ),
-            ),
-            RadioListTile<DataStorageLocation>(
-              value: DataStorageLocation.local,
-              groupValue: location,
-              onChanged: busy ? null : (value) => onChanged(value!),
-              title: const Text('Nur lokal speichern'),
-              subtitle: const Text(
-                'Daten bleiben auf diesem Geraet. Beim Zurueckwechsel werden lokale Daten in die Cloud uebertragen.',
+              const RadioListTile<DataStorageLocation>(
+                value: DataStorageLocation.local,
+                title: Text('Nur lokal speichern'),
+                subtitle: Text(
+                  'Daten bleiben auf diesem Geraet. Beim Zurueckwechsel werden lokale Daten in die Cloud uebertragen.',
+                ),
               ),
-            ),
-            if (busy)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: LinearProgressIndicator(),
-              ),
-          ],
+              if (busy)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: LinearProgressIndicator(),
+                ),
+            ],
+          ),
         ),
       ),
     );

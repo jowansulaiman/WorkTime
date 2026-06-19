@@ -10,6 +10,7 @@ import 'package:worktime_app/models/travel_time_rule.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_entry.dart';
 import 'package:worktime_app/providers/work_provider.dart';
+import 'package:worktime_app/services/compliance_rejected_exception.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
 
@@ -598,6 +599,129 @@ void main() {
       );
       expect(persistedEntries, hasLength(1));
       expect(persistedEntries.single.siteName, 'Berlin');
+    });
+
+    test(
+        'does NOT persist locally when the server rejects with a blocking '
+        'compliance violation (failed-precondition) in hybrid mode', () async {
+      // Regression: Eine bewusste serverseitige Compliance-Ablehnung darf im
+      // Hybrid-Modus NICHT lokal überschrieben werden (Plan-Gap
+      // hybrid-catch-swallows-blocking-stateerror). Die strukturierten
+      // Verstöße müssen erhalten bleiben (blocking-violations-discarded-client).
+      final rejectingService = FirestoreService(
+        firestore: firestore,
+        cloudFunctionInvoker: (_, __) async {
+          throw FirebaseFunctionsException(
+            code: 'failed-precondition',
+            message: 'Tagesarbeitszeit überschritten',
+            details: const {
+              'validations': [
+                {
+                  'violations': [
+                    {
+                      'code': 'max_daily_minutes',
+                      'severity': 'blocking',
+                      'message': 'Tagesarbeitszeit überschritten',
+                    },
+                  ],
+                },
+              ],
+            },
+          );
+        },
+      );
+      final provider = WorkProvider(firestoreService: rejectingService);
+      await provider.updateSession(user, hybridStorageEnabled: true);
+      provider.updateReferenceData(
+        sites: const [],
+        contracts: const [],
+        siteAssignments: const [
+          EmployeeSiteAssignment(
+            id: 'assign-1',
+            orgId: 'org-1',
+            userId: 'employee-1',
+            siteId: 'site-1',
+            siteName: 'Berlin',
+            isPrimary: true,
+          ),
+        ],
+        ruleSets: [ComplianceRuleSet.defaultRetail('org-1')],
+        travelTimeRules: const <TravelTimeRule>[],
+      );
+      await seedCurrentShift();
+
+      final now = DateTime.now();
+      await expectLater(
+        provider.addEntry(
+          WorkEntry(
+            orgId: user.orgId,
+            userId: user.uid,
+            date: now,
+            startTime: now.subtract(const Duration(minutes: 30)),
+            endTime: now.subtract(const Duration(minutes: 5)),
+            breakMinutes: 0,
+            siteId: 'site-1',
+            siteName: 'Berlin',
+            sourceShiftId: 'shift-1',
+          ),
+        ),
+        throwsA(
+          isA<ComplianceRejectedException>().having(
+            (error) => error.violations.map((violation) => violation.code),
+            'violations',
+            contains('max_daily_minutes'),
+          ),
+        ),
+      );
+
+      // Kein lokaler Fallback: weder im Speicher noch persistiert.
+      expect(provider.entries, isEmpty);
+      final persistedEntries = await DatabaseService.loadLocalEntries(
+        scope: LocalStorageScope.fromUser(user),
+      );
+      expect(persistedEntries, isEmpty);
+    });
+
+    test(
+        'tombstone: ein lokal geloeschter Eintrag taucht nach Wechsel in den '
+        'Cloud-Modus nicht wieder auf', () async {
+      final now = DateTime.now();
+      final entry = WorkEntry(
+        id: 'entry-tomb',
+        orgId: user.orgId,
+        userId: user.uid,
+        date: now,
+        startTime: now.subtract(const Duration(hours: 3)),
+        endTime: now.subtract(const Duration(hours: 1)),
+        breakMinutes: 0,
+        siteId: 'site-1',
+        siteName: 'Berlin',
+      );
+      // Eintrag existiert in Firestore (Cloud-Wahrheit).
+      await firestore
+          .collection('organizations')
+          .doc(user.orgId)
+          .collection('workEntries')
+          .doc(entry.id)
+          .set(entry.toFirestoreMap());
+
+      final provider = WorkProvider(firestoreService: firestoreService);
+
+      // Im local-Modus loeschen -> Tombstone, Firestore-Doc bleibt bestehen.
+      await provider.updateSession(user, localStorageOnly: true);
+      await provider.deleteEntry('entry-tomb');
+
+      // Wechsel in den Cloud-Modus: der Live-Stream liefert den Doc weiterhin.
+      await provider.updateSession(user);
+      for (var i = 0; i < 6; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(
+        provider.entries.any((item) => item.id == 'entry-tomb'),
+        isFalse,
+        reason: 'Tombstone muss das Wiederauferstehen verhindern',
+      );
     });
 
     test('blocks clock in when an overlapping work entry already exists',

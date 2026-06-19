@@ -12,6 +12,7 @@ import '../models/app_user.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
+import '../core/app_logger.dart';
 
 class AuthProvider extends ChangeNotifier {
   AuthProvider({
@@ -261,7 +262,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   String _mapError(Object error) {
-    debugPrint('AuthProvider Fehler: ${error.runtimeType}: $error');
+    AppLogger.warning('AuthProvider Fehler: ${error.runtimeType}: $error');
 
     if (error is FirebaseAuthException) {
       return switch (error.code) {
@@ -305,7 +306,7 @@ class AuthProvider extends ChangeNotifier {
       };
     }
     if (error is PlatformException) {
-      debugPrint(
+      AppLogger.warning(
           'PlatformException code: ${error.code}, message: ${error.message}');
       if (error.code == 'sign_in_canceled') {
         return 'Die Google-Anmeldung wurde abgebrochen.';

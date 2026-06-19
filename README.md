@@ -53,6 +53,17 @@ Die aktuelle Software ist keine reine lokale Zeiterfassungs-App mehr. Der Stand 
 - Regelwerke fuer Compliance-Pruefungen
 - Fahrtzeitregeln zwischen Standorten
 
+### Warenwirtschaft (Bestellungen und Lager)
+
+- Lieferantenverwaltung mit Kontakt, Bestell-E-Mail, Kundennummer und Lieferzeit
+- Artikel je Standort mit Bestand, Mindestbestand, EK/VK-Preis, Barcode und Warengruppe
+- automatische Nachbestell-Warnung bei Erreichen des Mindestbestands
+- Bestellvorschlag aus unterschrittenen Artikeln pro Lieferant
+- Bestellungen mit Status (Entwurf, bestellt, Teillieferung, geliefert, storniert)
+- atomarer Wareneingang: Bestaende und Bestellpositionen werden in einer Transaktion fortgeschrieben
+- Bestandskorrekturen und Inventur mit Bestandshistorie (Bestandsbewegungen)
+- Bestelltext zum Kopieren fuer den Versand an den Lieferanten
+
 ### Compliance, Reporting und Export
 
 - Validierung von Zeiteintraegen und Schichten gegen Regelwerke
@@ -191,6 +202,11 @@ Wichtige Collections:
 - `organizations/{orgId}/employeeSiteAssignments`
 - `organizations/{orgId}/ruleSets`
 - `organizations/{orgId}/travelTimeRules`
+- `organizations/{orgId}/suppliers`
+- `organizations/{orgId}/products`
+- `organizations/{orgId}/purchaseOrders`
+- `organizations/{orgId}/stockMovements`
+- `organizations/{orgId}/counters`
 
 ### Cloud Functions
 

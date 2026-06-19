@@ -23,6 +23,12 @@ class WorkEntry {
   final String? note;
   final String? category;
 
+  /// Letzte Aenderung. Server-autoritativ (serverTimestamp) in Firestore; lokal
+  /// beim Speichern auf die Geraetezeit gesetzt. Dient als Last-Write-Wins-
+  /// Tie-Breaker beim Hybrid-Merge, damit eine lokal neuere Version nicht von
+  /// einem aelteren Server-Snapshot ueberschrieben wird.
+  final DateTime? updatedAt;
+
   WorkEntry({
     this.id,
     this.orgId = '',
@@ -39,6 +45,7 @@ class WorkEntry {
     this.correctedAt,
     this.note,
     this.category,
+    this.updatedAt,
   })  : date = normalizeDate(date),
         startTime = normalizeDateTime(startTime),
         endTime = normalizeDateTime(endTime),
@@ -106,6 +113,7 @@ class WorkEntry {
       'corrected_at': correctedAt?.toIso8601String(),
       'note': note,
       'category': category,
+      'updated_at': updatedAt?.toIso8601String(),
     };
   }
 
@@ -126,6 +134,7 @@ class WorkEntry {
       correctedAt: _parseNullableFirestoreDate(map['corrected_at']),
       note: map['note'],
       category: map['category'],
+      updatedAt: _parseNullableFirestoreDate(map['updated_at']),
     );
   }
 
@@ -149,6 +158,7 @@ class WorkEntry {
       correctedAt: _parseNullableFirestoreDate(map['correctedAt']),
       note: map['note'] as String?,
       category: map['category'] as String?,
+      updatedAt: _parseNullableFirestoreDate(map['updatedAt']),
     );
   }
 
@@ -219,6 +229,7 @@ class WorkEntry {
     bool clearCorrectedAt = false,
     String? note,
     String? category,
+    DateTime? updatedAt,
   }) {
     return WorkEntry(
       id: id ?? this.id,
@@ -240,6 +251,7 @@ class WorkEntry {
       correctedAt: clearCorrectedAt ? null : (correctedAt ?? this.correctedAt),
       note: note ?? this.note,
       category: category ?? this.category,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 }

@@ -277,6 +277,13 @@ service cloud.firestore {
       return isActiveUser() && canEditSchedule();
     }
 
+    // Warenwirtschaft: verwalten duerfen Admins und Schichtleiter
+    // (Mitarbeiter mit Schicht-Bearbeitungsrecht). Ansehen darf jedes
+    // aktive Mitglied der Organisation.
+    function canManageInventory() {
+      return isAdmin() || canManageShifts();
+    }
+
     function canReviewAbsenceRequestData(data) {
       return sameOrg(dataOrgId(data))
           && canManageShifts()
@@ -652,6 +659,48 @@ service cloud.firestore {
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
         allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // --- Warenwirtschaft ------------------------------------------------
+
+      match /suppliers/{supplierId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      match /products/{productId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      match /purchaseOrders/{orderId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Bestandsbewegungen sind ein Audit-Log: anlegen ja, aendern/loeschen nein.
+      match /stockMovements/{movementId} {
+        allow read: if sameOrg(orgId);
+        allow create: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId;
+        allow update, delete: if false;
+      }
+
+      // Fortlaufende Zaehler (z.B. Bestellnummern).
+      match /counters/{counterId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId) && canManageInventory();
+        allow delete: if false;
       }
     }
   }

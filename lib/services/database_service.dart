@@ -8,10 +8,14 @@ import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/product.dart';
+import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
 import '../models/shift.dart';
 import '../models/shift_template.dart';
 import '../models/site_definition.dart';
+import '../models/stock_movement.dart';
+import '../models/supplier.dart';
 import '../models/team_definition.dart';
 import '../models/travel_time_rule.dart';
 import '../models/user_settings.dart';
@@ -59,6 +63,10 @@ class DatabaseService {
   static const _siteAssignmentsKey = 'employee_site_assignments';
   static const _ruleSetsKey = 'compliance_rule_sets';
   static const _travelTimeRulesKey = 'travel_time_rules';
+  static const _suppliersKey = 'suppliers';
+  static const _productsKey = 'products';
+  static const _purchaseOrdersKey = 'purchase_orders';
+  static const _stockMovementsKey = 'stock_movements';
   static const _localAuthUserIdKey = 'local_auth_user_id';
   static const _settingsPrefix = 'setting_';
   static const _dataStorageLocationKey = 'data_storage_location';
@@ -79,6 +87,12 @@ class DatabaseService {
     _siteAssignmentsKey,
     _ruleSetsKey,
     _travelTimeRulesKey,
+    // Warenwirtschaft: org-skopiert, bewusst NICHT in der Legacy-Migration
+    // (neue Collections ohne Altbestand).
+    _suppliersKey,
+    _productsKey,
+    _purchaseOrdersKey,
+    _stockMovementsKey,
   };
   static const _legacyWorkSettingKeys = <String>[
     'name',
@@ -91,6 +105,11 @@ class DatabaseService {
     'clock_in_site_id',
     'clock_in_site_name',
   ];
+
+  /// Öffentliche Collection-Namen für die Tombstone-API (Soft-Delete).
+  static const workEntriesCollection = _entriesKey;
+  static const shiftsCollection = _shiftsKey;
+  static const absenceRequestsCollection = _absenceRequestsKey;
 
   static SharedPreferences? _cachedPrefs;
 
@@ -447,6 +466,101 @@ class DatabaseService {
     );
   }
 
+  // --- Warenwirtschaft (lokale Persistenz) -------------------------------
+
+  static Future<List<Supplier>> loadLocalSuppliers({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _suppliersKey,
+      scope: scope,
+      fromMap: Supplier.fromMap,
+      compare: (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+  }
+
+  static Future<void> saveLocalSuppliers(
+    List<Supplier> suppliers, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _suppliersKey,
+      scope: scope,
+      items: suppliers,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<Product>> loadLocalProducts({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _productsKey,
+      scope: scope,
+      fromMap: Product.fromMap,
+      compare: (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+  }
+
+  static Future<void> saveLocalProducts(
+    List<Product> products, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _productsKey,
+      scope: scope,
+      items: products,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<PurchaseOrder>> loadLocalPurchaseOrders({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _purchaseOrdersKey,
+      scope: scope,
+      fromMap: PurchaseOrder.fromMap,
+      compare: (a, b) => (b.orderNumber ?? '').compareTo(a.orderNumber ?? ''),
+    );
+  }
+
+  static Future<void> saveLocalPurchaseOrders(
+    List<PurchaseOrder> orders, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _purchaseOrdersKey,
+      scope: scope,
+      items: orders,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<StockMovement>> loadLocalStockMovements({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _stockMovementsKey,
+      scope: scope,
+      fromMap: StockMovement.fromMap,
+      compare: (a, b) => (b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+          .compareTo(a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0)),
+    );
+  }
+
+  static Future<void> saveLocalStockMovements(
+    List<StockMovement> movements, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _stockMovementsKey,
+      scope: scope,
+      items: movements,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<String?> loadLocalAuthUserId() async {
     final prefs = await _prefs;
     return prefs.getString(_localAuthUserIdKey);
@@ -600,6 +714,45 @@ class DatabaseService {
       await _ensureScopedStorageInitialized(prefs, scope);
     }
     await prefs.remove(_resolveSettingKey(key, scope));
+  }
+
+  // --- Tombstones (Soft-Delete gegen Wiederauferstehen beim Mode-Switch) ---
+  //
+  // Wird ein Datensatz im local-Modus geloescht, bleibt der Firestore-Doc evtl.
+  // bestehen und wuerde beim Wechsel in hybrid/cloud erneut eingespielt. Eine
+  // persistierte Menge geloeschter IDs unterdrueckt das Re-Adden, bis die
+  // Loeschung in die Cloud propagiert wurde.
+
+  static String _tombstoneKey(String collectionKey, LocalStorageScope? scope) {
+    return '${_resolveCollectionKey(collectionKey, scope)}.__tombstones';
+  }
+
+  static Future<Set<String>> loadTombstones(
+    String collectionKey, {
+    LocalStorageScope? scope,
+  }) async {
+    final prefs = await _prefs;
+    if (scope != null) {
+      await _ensureScopedStorageInitialized(prefs, scope);
+    }
+    final raw = prefs.getStringList(_tombstoneKey(collectionKey, scope)) ??
+        const <String>[];
+    return raw.toSet();
+  }
+
+  static Future<void> saveTombstones(
+    String collectionKey,
+    Set<String> ids, {
+    LocalStorageScope? scope,
+  }) async {
+    final prefs = await _prefs;
+    if (scope != null) {
+      await _ensureScopedStorageInitialized(prefs, scope);
+    }
+    await prefs.setStringList(
+      _tombstoneKey(collectionKey, scope),
+      ids.toList(growable: false),
+    );
   }
 
   static Future<List<T>> _loadCollection<T>({

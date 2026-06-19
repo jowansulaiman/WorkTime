@@ -47,5 +47,21 @@ void main() {
       expect(restored.date.day, legacyDate.day);
       expect(restored.date.hour, 12);
     });
+
+    test('roundtrips updatedAt through the local map (LWW-Tie-Breaker)', () {
+      final entry = WorkEntry(
+        id: 'e1',
+        date: DateTime(2026, 3, 29),
+        startTime: DateTime(2026, 3, 29, 8),
+        endTime: DateTime(2026, 3, 29, 17),
+        updatedAt: DateTime(2026, 3, 29, 18, 30),
+      );
+
+      final restored = WorkEntry.fromMap(entry.toMap());
+
+      expect(restored.updatedAt, isNotNull);
+      expect(restored.updatedAt!.toIso8601String(),
+          entry.updatedAt!.toIso8601String());
+    });
   });
 }

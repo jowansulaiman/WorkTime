@@ -18,8 +18,10 @@ import '../models/work_entry.dart';
 import '../models/work_template.dart';
 import '../services/compliance_service.dart';
 import '../services/database_service.dart';
+import '../services/compliance_rejected_exception.dart';
 import '../services/firestore_service.dart';
 import 'schedule_provider.dart';
+import '../core/app_logger.dart';
 
 const _clockInKey = 'clock_in_time';
 const _clockInSiteIdKey = 'clock_in_site_id';
@@ -110,6 +112,9 @@ class WorkProvider extends ChangeNotifier {
   List<WorkEntry> _reportEntries = [];
   List<WorkEntry> _localEntries = [];
   List<WorkTemplate> _localTemplates = [];
+  // Lokal geloeschte Eintrags-IDs (Tombstones), die ein Wieder-Einspielen aus
+  // der Cloud unterdruecken, bis die Loeschung propagiert wurde.
+  Set<String> _deletedEntryIds = <String>{};
   List<SiteDefinition> _sites = [];
   List<AppUserProfile> _members = [];
   List<EmploymentContract> _contracts = [];
@@ -407,6 +412,11 @@ class WorkProvider extends ChangeNotifier {
       await _firestoreService.saveWorkEntry(
         preparedEntry,
       );
+    } on ComplianceRejectedException {
+      // Bewusste serverseitige Compliance-Ablehnung – nie lokal überschreiben,
+      // auch nicht im Hybrid-Modus. Nur transiente Infrastrukturfehler fallen
+      // unten lokal zurück.
+      rethrow;
     } catch (error) {
       if (!usesHybridStorage) {
         rethrow;
@@ -465,6 +475,9 @@ class WorkProvider extends ChangeNotifier {
 
     try {
       await _firestoreService.saveWorkEntryBatch(preparedEntries);
+    } on ComplianceRejectedException {
+      // Bewusste serverseitige Compliance-Ablehnung – nie lokal überschreiben.
+      rethrow;
     } catch (error) {
       if (!usesHybridStorage) {
         rethrow;
@@ -538,6 +551,9 @@ class WorkProvider extends ChangeNotifier {
         _localEntries,
         scope: _localScope,
       );
+      // Tombstone setzen: der Eintrag kann noch in Firestore liegen und beim
+      // Wechsel in hybrid/cloud sonst wieder eingespielt werden.
+      await _recordEntryTombstone(id);
       _applyLocalState();
       await refreshCurrentShiftStatus();
       notifyListeners();
@@ -547,6 +563,16 @@ class WorkProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       entryId: id,
     );
+    // Im Cloud-/Hybrid-Modus ist der Doc geloescht -> evtl. vorhandenen
+    // Tombstone aufloesen (Loeschung ist propagiert).
+    if (_deletedEntryIds.remove(id)) {
+      await DatabaseService.saveTombstones(
+        DatabaseService.workEntriesCollection,
+        _deletedEntryIds,
+        scope: _localScope,
+      );
+    }
+    _localEntries.removeWhere((entry) => entry.id == id);
     await refreshCurrentShiftStatus();
   }
 
@@ -668,9 +694,11 @@ class WorkProvider extends ChangeNotifier {
     }
 
     _localEntries = [
-      ...await _firestoreService.getAllWorkEntries(
-        orgId: currentUser.orgId,
-        userId: currentUser.uid,
+      ..._withoutTombstonedEntries(
+        await _firestoreService.getAllWorkEntries(
+          orgId: currentUser.orgId,
+          userId: currentUser.uid,
+        ),
       ),
     ];
     _localTemplates = [
@@ -702,7 +730,7 @@ class WorkProvider extends ChangeNotifier {
     try {
       await _firestoreService.upsertUserProfile(currentUser);
     } catch (error) {
-      debugPrint('syncLocalStateToCloud(work): eigenes Profil konnte nicht '
+      AppLogger.warning('syncLocalStateToCloud(work): eigenes Profil konnte nicht '
           'geschrieben werden: $error');
     }
 
@@ -719,8 +747,34 @@ class WorkProvider extends ChangeNotifier {
       try {
         await _firestoreService.saveWorkEntryBatch(entries);
       } catch (error) {
-        debugPrint('syncLocalStateToCloud(work): Eintraege konnten nicht '
+        AppLogger.warning('syncLocalStateToCloud(work): Eintraege konnten nicht '
             'geschrieben werden: $error');
+      }
+    }
+
+    // Lokal geloeschte Eintraege in die Cloud propagieren und Tombstones danach
+    // aufloesen, damit sie kuenftige Eintraege mit derselben ID nicht blockieren.
+    if (_deletedEntryIds.isNotEmpty) {
+      final propagated = <String>{};
+      for (final id in _deletedEntryIds) {
+        try {
+          await _firestoreService.deleteWorkEntry(
+            orgId: currentUser.orgId,
+            entryId: id,
+          );
+          propagated.add(id);
+        } catch (error) {
+          AppLogger.warning('syncLocalStateToCloud(work): Loeschung von $id '
+              'konnte nicht propagiert werden: $error');
+        }
+      }
+      if (propagated.isNotEmpty) {
+        _deletedEntryIds.removeAll(propagated);
+        await DatabaseService.saveTombstones(
+          DatabaseService.workEntriesCollection,
+          _deletedEntryIds,
+          scope: _localScope,
+        );
       }
     }
 
@@ -737,7 +791,7 @@ class WorkProvider extends ChangeNotifier {
           ),
         );
       } catch (error) {
-        debugPrint('syncLocalStateToCloud(work): Template konnte nicht '
+        AppLogger.warning('syncLocalStateToCloud(work): Template konnte nicht '
             'geschrieben werden: $error');
       }
     }
@@ -1314,7 +1368,7 @@ class WorkProvider extends ChangeNotifier {
       }
       _activeShiftNow = null;
       _activeEntrySnapshot = null;
-      debugPrint(
+      AppLogger.warning(
           'WorkProvider: Fehler beim Pruefen der aktiven Schicht: $error');
     } finally {
       if (requestId == _clockAvailabilityRequestId) {
@@ -1416,13 +1470,17 @@ class WorkProvider extends ChangeNotifier {
         month: _selectedMonth,
       )
           .listen((items) {
-        _entries = items;
+        // Lokal als geloescht markierte Eintraege auch in der Live-Anzeige
+        // unterdruecken, bis die Loeschung in die Cloud propagiert wurde.
+        final visible =
+            _withoutTombstonedEntries(items).toList(growable: false);
+        _entries = visible;
         _loading = false;
         _errorMessage = null;
         if (usesHybridStorage) {
           unawaited(
             _storeHybridWorkEntriesSnapshot(
-              items,
+              visible,
               userId: currentUser.uid,
               month: month,
             ),
@@ -1454,7 +1512,7 @@ class WorkProvider extends ChangeNotifier {
         }
         _safeNotify();
       }, onError: (Object error) {
-        debugPrint('WorkProvider: Fehler beim Laden der Vorlagen: $error');
+        AppLogger.warning('WorkProvider: Fehler beim Laden der Vorlagen: $error');
       });
     } else {
       _templatesSubscription = null;
@@ -1502,7 +1560,7 @@ class WorkProvider extends ChangeNotifier {
       }
       _safeNotify();
     }, onError: (Object error) {
-      debugPrint('WorkProvider: Fehler beim Laden der Berichtsdaten: $error');
+      AppLogger.warning('WorkProvider: Fehler beim Laden der Berichtsdaten: $error');
     });
   }
 
@@ -1515,6 +1573,10 @@ class WorkProvider extends ChangeNotifier {
     final scope = LocalStorageScope.fromUser(user);
     _localEntries = await DatabaseService.loadLocalEntries(scope: scope);
     _localTemplates = await DatabaseService.loadLocalTemplates(scope: scope);
+    _deletedEntryIds = await DatabaseService.loadTombstones(
+      DatabaseService.workEntriesCollection,
+      scope: scope,
+    );
     if (overrideUserSettings) {
       final localSettings =
           await DatabaseService.loadLocalUserSettings(scope: scope);
@@ -1633,10 +1695,11 @@ class WorkProvider extends ChangeNotifier {
       ...unaffectedEntries,
       ..._mergeByKey(
         scopedLocalEntries,
-        items,
+        _withoutTombstonedEntries(items),
         (entry) => entry.id?.trim().isNotEmpty == true
             ? 'id:${entry.id}'
             : 'entry:${entry.userId}:${entry.startTime.toIso8601String()}:${entry.endTime.toIso8601String()}',
+        updatedAtOf: (entry) => entry.updatedAt,
       ),
     ]..sort((a, b) => a.date.compareTo(b.date));
 
@@ -1664,12 +1727,36 @@ class WorkProvider extends ChangeNotifier {
   }
 
   void _upsertLocalEntry(WorkEntry entry) {
-    final index = _localEntries.indexWhere((item) => item.id == entry.id);
+    // Lokale Schreibvorgaenge mit frischem updatedAt versehen, damit sie beim
+    // Hybrid-Merge eine aeltere Server-Version gewinnen (Last-Write-Wins).
+    final stamped = entry.copyWith(updatedAt: DateTime.now());
+    final index = _localEntries.indexWhere((item) => item.id == stamped.id);
     if (index == -1) {
-      _localEntries.add(entry);
+      _localEntries.add(stamped);
       return;
     }
-    _localEntries[index] = entry;
+    _localEntries[index] = stamped;
+  }
+
+  /// Filtert aus der Cloud kommende Eintraege heraus, die lokal als geloescht
+  /// markiert sind (Tombstone) – verhindert Wiederauferstehen beim Mode-Switch.
+  Iterable<WorkEntry> _withoutTombstonedEntries(Iterable<WorkEntry> entries) {
+    if (_deletedEntryIds.isEmpty) {
+      return entries;
+    }
+    return entries.where((entry) {
+      final id = entry.id?.trim();
+      return id == null || id.isEmpty || !_deletedEntryIds.contains(id);
+    });
+  }
+
+  Future<void> _recordEntryTombstone(String id) async {
+    _deletedEntryIds.add(id);
+    await DatabaseService.saveTombstones(
+      DatabaseService.workEntriesCollection,
+      _deletedEntryIds,
+      scope: _localScope,
+    );
   }
 
   void _upsertLocalTemplate(WorkTemplate template) {
@@ -1698,8 +1785,9 @@ class WorkProvider extends ChangeNotifier {
   List<T> _mergeByKey<T>(
     Iterable<T> localItems,
     Iterable<T> remoteItems,
-    String Function(T item) keyOf,
-  ) {
+    String Function(T item) keyOf, {
+    DateTime? Function(T item)? updatedAtOf,
+  }) {
     final merged = <String, T>{};
     var index = 0;
     for (final item in localItems) {
@@ -1709,8 +1797,19 @@ class WorkProvider extends ChangeNotifier {
     }
     for (final item in remoteItems) {
       final key = keyOf(item).trim();
-      merged[key.isEmpty ? 'remote:$index' : key] = item;
+      final resolvedKey = key.isEmpty ? 'remote:$index' : key;
       index++;
+      final existing = merged[resolvedKey];
+      if (existing != null && updatedAtOf != null) {
+        final localTs = updatedAtOf(existing);
+        final remoteTs = updatedAtOf(item);
+        // Last-Write-Wins: eine lokal neuere (noch nicht synchronisierte)
+        // Version nicht durch einen aelteren Server-Snapshot ueberschreiben.
+        if (localTs != null && remoteTs != null && localTs.isAfter(remoteTs)) {
+          continue;
+        }
+      }
+      merged[resolvedKey] = item;
     }
     return merged.values.toList(growable: true);
   }
