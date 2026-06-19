@@ -66,7 +66,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **15
 **Architektur (Inventory-Pilot):**
 - **`firestore-service-god-object` + `missing-repository-layer` + `no-domain-repository-interfaces-dip` (erledigt für Inventory):** Neue `lib/repositories/inventory_repository.dart` (`abstract interface class InventoryRepository`) + `firestore_inventory_repository.dart` (gesamte Warenwirtschafts-Datenzugriffslogik aus FirestoreService extrahiert, **1846→1643 Zeilen**). FirestoreService delegiert nur noch (API unverändert → Service-Tests grün). InventoryProvider hängt an der Abstraktion (DIP), Repo injizierbar; Test-Seam von Subklasse auf handgeschriebenen Fake-Repo umgestellt. **Folgeschritt:** dasselbe Muster auf work/schedule/team ausrollen und die Storage-Strategie (cloud/hybrid/local) vollständig in die Repos heben (heute noch im Provider).
 
-**Noch offen in Welle 2 (außerhalb der 4 gewählten Stränge):** `no-medium-window-class` (ux-ui), `android-release-debug-signing` (cicd), `build-helper-methods-to-widget-classes` (clean-code), `no-secure-storage-for-sensitive` (daten-persistenz), `no-outbox-retry-queue` (bewusst zurückgestellt, s.o.).
+**Nachgezogene Welle-2-Items (separater Durchlauf):** `android-release-debug-signing` (erledigt — Upload-Keystore-signingConfig + Debug-Fallback), `no-medium-window-class` (erledigt — Rail ab 600dp, Labels ab 840dp, Höhen-Guard, +Breakpoint-Tests), `build-helper-methods-to-widget-classes` (begonnen — 3 Blatt-Widgets extrahiert, Rest inkrementell), `no-secure-storage-for-sensitive` (dokumentiert + zurückgestellt mit Begründung). **Weiterhin offen:** `no-outbox-retry-queue` (bewusst zurückgestellt, s.o.), Architektur-Roll-out des Repository-Musters auf work/schedule/team, Welle 3.
 
 ## Leitplanken
 
@@ -116,17 +116,17 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **15
 - [x] **firestore-service-god-object** (🟠 hoch, architektur) — FirestoreService ist ein 1791-Zeilen-God-Object mit 88 Public-Methoden über alle Domänen + Cloud-Functions-Aufrufe *(Inventar in FirestoreInventoryRepository extrahiert, 1846→1643 Zeilen; weitere Domänen folgen demselben Muster)*
 - [x] **no-domain-repository-interfaces-dip** (🟠 hoch, architektur) — Kein einziges Repository-/Service-Interface — Provider hängen an konkreter FirestoreService-Klasse (DIP verletzt) *(InventoryRepository-Interface; Pattern etabliert)*
 - [x] **no-idempotency-key** (🟠 hoch, backend-api) — Schreib-Callables haben keinen Idempotency-Key gegen Retry-Duplikate aus instabilen Mobilnetzen
-- [ ] **android-release-debug-signing** (🟠 hoch, cicd) — Android-Release-Build signiert mit dem Debug-Keystore
+- [x] **android-release-debug-signing** (🟠 hoch, cicd) — Android-Release-Build signiert mit dem Debug-Keystore *(Upload-Keystore aus key.properties, Fallback auf Debug; vor Release per `flutter build appbundle` verifizieren)*
 - [x] **planner-build-on-on-quadratic-filtering** (🟠 hoch, performance) — Quadratische Synchron-Filterung im Planner-build() pro Frame
 - [x] **home-shell-watches-all-providers** (🟠 hoch, performance) — HomeScreen-Shell rebuildt komplett bei jeder Provider-Aenderung (zu breiter watch)
 - [x] **blind-lww-merge-no-version** (🟠 hoch, sync) — _mergeByKey ist blindes Last-Write-Wins ohne Versions-/Zeitstempelvergleich – Offline-Edits werden still ueberschrieben
 - [ ] **no-outbox-retry-queue** (🟠 hoch, sync) — Kein Outbox/Retry – lokal gepufferte hybrid-Writes werden nie automatisch zur Cloud nachgepusht
 - [ ] **inventory-no-offline-support** (🟠 hoch, sync) — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
-- [ ] **no-medium-window-class** (🟠 hoch, ux-ui) — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett
+- [x] **no-medium-window-class** (🟠 hoch, ux-ui) — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett *(Rail ab 600dp mit Höhen-Guard; selected/all-Labels ab 840dp)*
 - [x] **no-semantics-screenreader** (🟠 hoch, ux-ui) — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
 - [x] **fire-and-forget-updatesession** (🟡 mittel, architektur) — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
-- [ ] **build-helper-methods-to-widget-classes** (🟡 mittel, clean-code) — 15+ Widget _buildXxx Helper-Methoden statt const-faehiger Widget-Klassen
-- [ ] **no-secure-storage-for-sensitive** (🟡 mittel, daten-persistenz) — Sensible Geschaefts-/Personaldaten liegen unverschluesselt im Klartext in SharedPreferences
+- [~] **build-helper-methods-to-widget-classes** (🟡 mittel, clean-code) — 15+ Widget _buildXxx Helper-Methoden statt const-faehiger Widget-Klassen *(Start: 3 Blatt-Helfer extrahiert — _PlannerSectionLabel/_PlannerEmptyBoardState/_PlannerQuickAddButton; restliche Helfer inkrementell offen)*
+- [~] **no-secure-storage-for-sensitive** (🟡 mittel, daten-persistenz) — Sensible Geschaefts-/Personaldaten liegen unverschluesselt im Klartext in SharedPreferences *(präzise dokumentiert inkl. Korrektur, dass hybrid Stammdaten doch spiegelt; flutter_secure_storage-Remediation bewusst zurückgestellt)*
 - [x] **no-idempotency-on-stock-mutations** (🟡 mittel, daten-persistenz) — Stock-Adjust/Wareneingang haben keinen Idempotency-Schluessel - Client-Retry kann Bestand doppelt buchen
 - [x] **no-retry-backoff-idempotent** (🟡 mittel, error-handling) — Keine Retry-mit-Backoff fuer idempotente Cloud-Writes; einmaliger transienter Fehler degradiert sofort lokal
 - [x] **stream-onerror-debugprint-only** (🟡 mittel, error-handling) — Stammdaten-Stream-Fehler (TeamProvider) werden nur per debugPrint verschluckt, ohne Nutzer-Feedback
