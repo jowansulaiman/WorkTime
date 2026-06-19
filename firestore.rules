@@ -688,18 +688,38 @@ service cloud.firestore {
       }
 
       // Bestandsbewegungen sind ein Audit-Log: anlegen ja, aendern/loeschen nein.
+      // Feld-Allowlist + Typ-/Wertpruefung gegen Mass Assignment (BOPLA) und
+      // Manipulation des Audit-Logs (counters-bopla-no-monotonic-check).
       match /stockMovements/{movementId} {
         allow read: if sameOrg(orgId);
         allow create: if sameOrg(orgId)
             && canManageInventory()
-            && request.resource.data.orgId == orgId;
+            && request.resource.data.orgId == orgId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'productId', 'productName', 'type',
+                 'quantityDelta', 'balanceAfter', 'reason', 'relatedOrderId',
+                 'createdByUid', 'createdAt'
+               ])
+            && request.resource.data.type in
+                 ['receipt', 'issue', 'adjustment', 'stocktake']
+            && request.resource.data.quantityDelta is number
+            && request.resource.data.balanceAfter is number
+            && (!('createdByUid' in request.resource.data)
+                 || request.resource.data.createdByUid == null
+                 || request.resource.data.createdByUid == request.auth.uid);
         allow update, delete: if false;
       }
 
-      // Fortlaufende Zaehler (z.B. Bestellnummern).
+      // Fortlaufende Zaehler (z.B. Bestellnummern): seq muss ganzzahlig sein und
+      // darf bei Updates nie sinken (sonst Bestellnummern-Kollisionen).
       match /counters/{counterId} {
         allow read: if sameOrg(orgId);
-        allow create, update: if sameOrg(orgId) && canManageInventory();
+        allow create: if sameOrg(orgId) && canManageInventory()
+            && request.resource.data.seq is int
+            && request.resource.data.seq >= 0;
+        allow update: if sameOrg(orgId) && canManageInventory()
+            && request.resource.data.seq is int
+            && request.resource.data.seq >= resource.data.seq;
         allow delete: if false;
       }
     }
