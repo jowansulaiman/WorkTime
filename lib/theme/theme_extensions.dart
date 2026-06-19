@@ -1,3 +1,5 @@
+import 'dart:ui' show lerpDouble;
+
 import 'package:flutter/material.dart';
 
 @immutable
@@ -130,4 +132,119 @@ class AppThemeColors extends ThemeExtension<AppThemeColors> {
 extension AppThemeDataExtension on ThemeData {
   AppThemeColors get appColors =>
       extension<AppThemeColors>() ?? AppThemeColors.fallback(brightness);
+}
+
+/// Spacing-Tokens (Single Source of Truth statt verstreuter EdgeInsets-/
+/// SizedBox-Zahlen). Zugriff bevorzugt über `context.spacing`.
+@immutable
+class AppSpacing extends ThemeExtension<AppSpacing> {
+  const AppSpacing({
+    this.xs = 4,
+    this.sm = 8,
+    this.md = 16,
+    this.lg = 24,
+    this.xl = 32,
+  });
+
+  final double xs;
+  final double sm;
+  final double md;
+  final double lg;
+  final double xl;
+
+  @override
+  AppSpacing copyWith({
+    double? xs,
+    double? sm,
+    double? md,
+    double? lg,
+    double? xl,
+  }) {
+    return AppSpacing(
+      xs: xs ?? this.xs,
+      sm: sm ?? this.sm,
+      md: md ?? this.md,
+      lg: lg ?? this.lg,
+      xl: xl ?? this.xl,
+    );
+  }
+
+  @override
+  AppSpacing lerp(ThemeExtension<AppSpacing>? other, double t) {
+    if (other is! AppSpacing) {
+      return this;
+    }
+    return AppSpacing(
+      xs: lerpDouble(xs, other.xs, t) ?? xs,
+      sm: lerpDouble(sm, other.sm, t) ?? sm,
+      md: lerpDouble(md, other.md, t) ?? md,
+      lg: lerpDouble(lg, other.lg, t) ?? lg,
+      xl: lerpDouble(xl, other.xl, t) ?? xl,
+    );
+  }
+}
+
+/// Radius-Tokens passend zu den im Theme genutzten Eckenradien. Zugriff
+/// bevorzugt über `context.radii`.
+@immutable
+class AppRadii extends ThemeExtension<AppRadii> {
+  const AppRadii({
+    this.sm = 8,
+    this.md = 14,
+    this.lg = 18,
+    this.xl = 24,
+    this.pill = 999,
+  });
+
+  final double sm;
+  final double md;
+  final double lg;
+  final double xl;
+  final double pill;
+
+  Radius get smRadius => Radius.circular(sm);
+  Radius get mdRadius => Radius.circular(md);
+  Radius get lgRadius => Radius.circular(lg);
+  Radius get xlRadius => Radius.circular(xl);
+  Radius get pillRadius => Radius.circular(pill);
+
+  @override
+  AppRadii copyWith({
+    double? sm,
+    double? md,
+    double? lg,
+    double? xl,
+    double? pill,
+  }) {
+    return AppRadii(
+      sm: sm ?? this.sm,
+      md: md ?? this.md,
+      lg: lg ?? this.lg,
+      xl: xl ?? this.xl,
+      pill: pill ?? this.pill,
+    );
+  }
+
+  @override
+  AppRadii lerp(ThemeExtension<AppRadii>? other, double t) {
+    if (other is! AppRadii) {
+      return this;
+    }
+    return AppRadii(
+      sm: lerpDouble(sm, other.sm, t) ?? sm,
+      md: lerpDouble(md, other.md, t) ?? md,
+      lg: lerpDouble(lg, other.lg, t) ?? lg,
+      xl: lerpDouble(xl, other.xl, t) ?? xl,
+      pill: lerpDouble(pill, other.pill, t) ?? pill,
+    );
+  }
+}
+
+extension AppDesignTokensX on BuildContext {
+  /// Spacing-Tokens des aktiven Themes (Fallback: Default-[AppSpacing]).
+  AppSpacing get spacing =>
+      Theme.of(this).extension<AppSpacing>() ?? const AppSpacing();
+
+  /// Radius-Tokens des aktiven Themes (Fallback: Default-[AppRadii]).
+  AppRadii get radii => Theme.of(this).extension<AppRadii>() ?? const AppRadii();
 }

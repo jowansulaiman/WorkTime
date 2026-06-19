@@ -70,7 +70,11 @@ abstract final class AppTheme {
       scaffoldBackgroundColor: colorScheme.surface,
       canvasColor: colorScheme.surface,
       splashFactory: InkRipple.splashFactory,
-      extensions: <ThemeExtension<dynamic>>[appColors],
+      extensions: <ThemeExtension<dynamic>>[
+        appColors,
+        const AppSpacing(),
+        const AppRadii(),
+      ],
       appBarTheme: AppBarTheme(
         backgroundColor: colorScheme.surface,
         foregroundColor: colorScheme.onSurface,
