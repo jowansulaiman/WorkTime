@@ -29,11 +29,11 @@
   -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'self';
-    script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com;
+    script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com;
     style-src 'self' 'unsafe-inline';
     img-src 'self' data: https:;
     font-src 'self' data:;
-    connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://*.firebaseio.com wss://*.firebaseio.com https://www.googleapis.com;
+    connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://*.firebaseio.com wss://*.firebaseio.com https://www.googleapis.com https://www.gstatic.com;
     frame-src 'self' https://*.firebaseapp.com https://accounts.google.com;
     object-src 'none';
     base-uri 'self'">
@@ -76,10 +76,16 @@
 </head>
 <body>
   <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+    Bewusste Entscheidung (web-renderer-bundle-not-pinned): Es bleibt beim
+    Flutter-Default-Bootstrap/-Renderer (CanvasKit/skwasm). Web ist nur eine von
+    drei Plattformen und nicht der Haupt-Auslieferungsweg der 2-Läden-App; die
+    --web-renderer-Wahl ist in aktuellen Flutter-Versionen ohnehin eingeschränkt.
+    Nächster sinnvoller Schritt (erst bei spürbarer Startzeit): schwere
+    Feature-Screens (ShiftPlanner, Reports/PDF) via `import '...' deferred as x;`
+    + loadLibrary() lazy laden und vorab mit `flutter build web --analyze-size`
+    messen — nicht ohne echte Messung überdimensionieren.
 
+    You can customize the "flutter_bootstrap.js" script.
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
