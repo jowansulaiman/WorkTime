@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
@@ -24,11 +25,14 @@ class InventoryProvider extends ChangeNotifier {
   InventoryProvider({
     required FirestoreService firestoreService,
     bool? disableAuthentication,
+    Uuid? uuid,
   })  : _firestoreService = firestoreService,
+        _uuid = uuid ?? const Uuid(),
         _forceLocalStorage =
             disableAuthentication ?? AppConfig.disableAuthentication;
 
   final FirestoreService _firestoreService;
+  final Uuid _uuid;
   final bool _forceLocalStorage;
   bool _localStorageOnly = false;
   bool _hybridStorageEnabled = false;
@@ -461,6 +465,9 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null || delta == 0) {
       return;
     }
+    // Stabile ID pro Buchung -> ein (kuenftiger) Retry bucht den Bestand nicht
+    // doppelt (no-idempotency-on-stock-mutations).
+    final mutationId = _uuid.v4();
     if (_usesFirestore &&
         await _tryFirestore(
           'adjustStock',
@@ -471,6 +478,7 @@ class InventoryProvider extends ChangeNotifier {
             type: type,
             reason: reason,
             createdByUid: _currentUser?.uid,
+            clientMutationId: mutationId,
           ),
         )) {
       return;
@@ -596,6 +604,7 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
+    final mutationId = _uuid.v4();
     if (_usesFirestore &&
         await _tryFirestore(
           'receiveOrder',
@@ -604,6 +613,7 @@ class InventoryProvider extends ChangeNotifier {
             orderId: orderId,
             receivedByItemIndex: receivedByItemIndex,
             createdByUid: _currentUser?.uid,
+            clientMutationId: mutationId,
           ),
         )) {
       return;

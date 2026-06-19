@@ -2,7 +2,9 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:worktime_app/models/absence_request.dart';
+import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/shift.dart';
+import 'package:worktime_app/models/stock_movement.dart';
 import 'package:worktime_app/models/shift_template.dart';
 import 'package:worktime_app/models/work_entry.dart';
 import 'package:worktime_app/models/work_template.dart';
@@ -365,6 +367,59 @@ void main() {
         expect(snapshot.docs, hasLength(1));
         expect(snapshot.docs.single.data()['userId'], 'employee-1');
         expect(snapshot.docs.single.data()['breakMinutes'], 30.0);
+      },
+    );
+
+    test(
+      'adjustProductStock mit gleicher clientMutationId bucht nur einmal '
+      '(no-idempotency-on-stock-mutations)',
+      () async {
+        final products = firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('products');
+        await products.doc('prod-1').set(
+              const Product(
+                id: 'prod-1',
+                orgId: 'org-1',
+                siteId: 'site-1',
+                name: 'Tabak',
+                currentStock: 10,
+              ).toFirestoreMap(),
+            );
+
+        const mutationId = 'mut-123';
+        final first = await service.adjustProductStock(
+          orgId: 'org-1',
+          productId: 'prod-1',
+          delta: 5,
+          type: StockMovementType.adjustment,
+          clientMutationId: mutationId,
+        );
+        // Identischer Retry derselben logischen Buchung.
+        final second = await service.adjustProductStock(
+          orgId: 'org-1',
+          productId: 'prod-1',
+          delta: 5,
+          type: StockMovementType.adjustment,
+          clientMutationId: mutationId,
+        );
+
+        expect(first, 15);
+        expect(second, 15,
+            reason: 'Zweiter Aufruf darf den Bestand nicht erneut erhoehen');
+
+        final productSnap = await products.doc('prod-1').get();
+        expect((productSnap.data()!['currentStock'] as num).toInt(), 15);
+
+        final movements = await firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('stockMovements')
+            .get();
+        expect(movements.docs, hasLength(1),
+            reason: 'Es darf nur eine Bestandsbewegung entstehen');
+        expect(movements.docs.single.id, mutationId);
       },
     );
   });

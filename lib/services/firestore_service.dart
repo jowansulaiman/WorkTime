@@ -896,9 +896,15 @@ class FirestoreService {
     String? reason,
     String? relatedOrderId,
     String? createdByUid,
+    String? clientMutationId,
   }) async {
     final productRef = _productCollection(orgId).doc(productId);
-    final movementRef = _stockMovementCollection(orgId).doc();
+    // Bei vorhandener clientMutationId wird die Bewegung deterministisch
+    // adressiert, damit ein App-Level-Retry nach Timeout den Bestand nicht
+    // doppelt bucht (no-idempotency-on-stock-mutations).
+    final movementRef = clientMutationId == null
+        ? _stockMovementCollection(orgId).doc()
+        : _stockMovementCollection(orgId).doc(clientMutationId);
 
     return _firestore.runTransaction<int>((transaction) async {
       final snapshot = await transaction.get(productRef);
@@ -906,6 +912,17 @@ class FirestoreService {
         throw StateError('Artikel wurde nicht gefunden.');
       }
       final product = Product.fromFirestore(snapshot.id, snapshot.data()!);
+
+      // Idempotenz: existiert die Bewegung mit dieser ID bereits, wurde die
+      // Buchung schon angewendet -> kein erneutes Inkrement (no-op). Alle Reads
+      // muessen vor allen Writes der Transaktion liegen.
+      if (clientMutationId != null) {
+        final existing = await transaction.get(movementRef);
+        if (existing.exists) {
+          return product.currentStock;
+        }
+      }
+
       final newStock = product.currentStock + delta;
 
       transaction.set(productRef, {
@@ -969,6 +986,7 @@ class FirestoreService {
     required String orderId,
     required Map<int, int> receivedByItemIndex,
     String? createdByUid,
+    String? clientMutationId,
   }) async {
     final orderRef = _purchaseOrderCollection(orgId).doc(orderId);
 
@@ -1008,6 +1026,24 @@ class FirestoreService {
         return;
       }
 
+      // Idempotenz: deterministische Movement-IDs je Position aus der
+      // clientMutationId ableiten. Existiert eine davon bereits, wurde dieser
+      // Wareneingang schon gebucht -> komplette Transaktion als no-op abbrechen
+      // (no-idempotency-on-stock-mutations). Reads vor Writes.
+      final movementRefs = <int, DocumentReference<Map<String, dynamic>>>{};
+      if (clientMutationId != null) {
+        for (final index in effective.keys) {
+          movementRefs[index] =
+              _stockMovementCollection(orgId).doc('$clientMutationId-$index');
+        }
+        for (final ref in movementRefs.values) {
+          final existing = await transaction.get(ref);
+          if (existing.exists) {
+            return;
+          }
+        }
+      }
+
       // Bestaende erhoehen und Bewegungen schreiben.
       final newStockByProduct = <String, int>{};
       for (final entry in effective.entries) {
@@ -1035,7 +1071,7 @@ class FirestoreService {
         );
 
         transaction.set(
-          _stockMovementCollection(orgId).doc(),
+          movementRefs[entry.key] ?? _stockMovementCollection(orgId).doc(),
           StockMovement(
             orgId: orgId,
             siteId: product.siteId,
