@@ -502,15 +502,7 @@ class FirestoreService {
       final requests = snapshot.docs
           .map((doc) => AbsenceRequest.fromFirestore(doc.id, doc.data()))
           .toList(growable: false);
-      return [...requests]..sort((a, b) {
-          final byStart = a.startDate.compareTo(b.startDate);
-          if (byStart != 0) {
-            return byStart;
-          }
-          final aUpdated = a.updatedAt ?? a.createdAt ?? a.startDate;
-          final bUpdated = b.updatedAt ?? b.createdAt ?? b.startDate;
-          return bUpdated.compareTo(aUpdated);
-        });
+      return [...requests]..sort(_compareAbsenceRequests);
     });
   }
 
@@ -528,15 +520,21 @@ class FirestoreService {
     final requests = snapshot.docs
         .map((doc) => AbsenceRequest.fromFirestore(doc.id, doc.data()))
         .toList(growable: false);
-    return [...requests]..sort((a, b) {
-        final byStart = a.startDate.compareTo(b.startDate);
-        if (byStart != 0) {
-          return byStart;
-        }
-        final aUpdated = a.updatedAt ?? a.createdAt ?? a.startDate;
-        final bUpdated = b.updatedAt ?? b.createdAt ?? b.startDate;
-        return bUpdated.compareTo(aUpdated);
-      });
+    return [...requests]..sort(_compareAbsenceRequests);
+  }
+
+  /// Gemeinsamer Sortiervergleich fuer Abwesenheitsantraege:
+  /// aufsteigend nach Startdatum, bei Gleichstand absteigend nach
+  /// updatedAt (Fallback createdAt, dann startDate). Wird von
+  /// [watchAllAbsenceRequests] und [getAllAbsenceRequests] genutzt.
+  static int _compareAbsenceRequests(AbsenceRequest a, AbsenceRequest b) {
+    final byStart = a.startDate.compareTo(b.startDate);
+    if (byStart != 0) {
+      return byStart;
+    }
+    final aUpdated = a.updatedAt ?? a.createdAt ?? a.startDate;
+    final bUpdated = b.updatedAt ?? b.createdAt ?? b.startDate;
+    return bUpdated.compareTo(aUpdated);
   }
 
   Future<void> saveWorkEntry(WorkEntry entry) async {
