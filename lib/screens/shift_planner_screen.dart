@@ -4388,11 +4388,14 @@ class _PlannerBoardShiftCard extends StatelessWidget {
       fontWeight: FontWeight.w700,
     );
     final timeFmt = DateFormat('h a', 'en_US');
-    return CustomPaint(
-      painter: _DashedRoundedBorderPainter(
-        color: baseColor.withValues(alpha: 0.38),
-      ),
-      child: InkWell(
+    // RepaintBoundary isoliert den per-Frame neu malenden Strichrahmen-Painter
+    // (no-repaintboundary-shift-cards) vom restlichen Board beim Scrollen.
+    return RepaintBoundary(
+      child: CustomPaint(
+        painter: _DashedRoundedBorderPainter(
+          color: baseColor.withValues(alpha: 0.38),
+        ),
+        child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: onTap,
         child: Container(
@@ -4495,6 +4498,7 @@ class _PlannerBoardShiftCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
       ),
     );
   }
