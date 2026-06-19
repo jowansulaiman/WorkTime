@@ -743,10 +743,24 @@ class ScheduleProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.deleteShift(
-      orgId: currentUser.orgId,
-      shiftId: shiftId,
-    );
+    try {
+      await _firestoreService.deleteShift(
+        orgId: currentUser.orgId,
+        shiftId: shiftId,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      // Hybrid offline: nicht hart werfen (CLAUDE.md-Mutator-Muster), sondern
+      // lokal entfernen + Tombstone setzen; propagiert via syncLocalStateToCloud.
+      _localShifts.removeWhere((shift) => shift.id == shiftId);
+      await DatabaseService.saveLocalShifts(_localShifts, scope: _localScope);
+      await _recordShiftTombstone(shiftId);
+      _applyLocalState();
+      _safeNotify();
+      return;
+    }
     if (_deletedShiftIds.remove(shiftId)) {
       await DatabaseService.saveTombstones(
         DatabaseService.shiftsCollection,
@@ -828,10 +842,29 @@ class ScheduleProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.deleteShiftSeries(
-      orgId: currentUser.orgId,
-      seriesId: seriesId,
-    );
+    try {
+      await _firestoreService.deleteShiftSeries(
+        orgId: currentUser.orgId,
+        seriesId: seriesId,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      // Hybrid offline: ganze Serie lokal entfernen + je Schicht Tombstone.
+      final removedIds = _localShifts
+          .where((shift) => shift.seriesId == seriesId)
+          .map((shift) => shift.id)
+          .whereType<String>()
+          .toList(growable: false);
+      _localShifts.removeWhere((shift) => shift.seriesId == seriesId);
+      await DatabaseService.saveLocalShifts(_localShifts, scope: _localScope);
+      for (final id in removedIds) {
+        await _recordShiftTombstone(id);
+      }
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   Future<void> submitAbsenceRequest(AbsenceRequest request) async {
@@ -932,10 +965,26 @@ class ScheduleProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.deleteAbsenceRequest(
-      orgId: currentUser.orgId,
-      requestId: requestId,
-    );
+    try {
+      await _firestoreService.deleteAbsenceRequest(
+        orgId: currentUser.orgId,
+        requestId: requestId,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      // Hybrid offline: lokal entfernen + Tombstone statt hart zu werfen.
+      _localAbsenceRequests.removeWhere((item) => item.id == requestId);
+      await DatabaseService.saveLocalAbsenceRequests(
+        _localAbsenceRequests,
+        scope: _localScope,
+      );
+      await _recordAbsenceTombstone(requestId);
+      _applyLocalState();
+      _safeNotify();
+      return;
+    }
     if (_deletedAbsenceIds.remove(requestId)) {
       await DatabaseService.saveTombstones(
         DatabaseService.absenceRequestsCollection,

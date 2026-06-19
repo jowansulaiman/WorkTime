@@ -15,8 +15,70 @@ import 'package:worktime_app/providers/schedule_provider.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
 
+/// Wirft beim Loeschen, um den hybrid-Fallback (CLAUDE.md-Mutator-Muster:
+/// bei hybrid lokal fallbacken statt rethrow) zu testen (hybrid-delete-rethrows).
+class _DeleteFailingFirestoreService extends FirestoreService {
+  _DeleteFailingFirestoreService({required super.firestore});
+
+  @override
+  Future<void> deleteShift({
+    required String orgId,
+    required String shiftId,
+  }) async =>
+      throw Exception('offline');
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('ScheduleProvider hybrid-Delete-Fallback', () {
+    late AppUserProfile adminUser;
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      DatabaseService.resetCachedPrefs();
+      adminUser = const AppUserProfile(
+        uid: 'admin-1',
+        orgId: 'org-1',
+        email: 'admin@example.com',
+        role: UserRole.admin,
+        isActive: true,
+        settings: UserSettings(name: 'Admin'),
+      );
+    });
+
+    test(
+        'deleteShift faellt im hybrid-Modus lokal zurueck (kein rethrow) und '
+        'setzt einen Tombstone', () async {
+      final provider = ScheduleProvider(
+        firestoreService:
+            _DeleteFailingFirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(adminUser, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      await provider.deleteShift('shift-x'); // darf NICHT werfen
+
+      final tombstones = await DatabaseService.loadTombstones(
+        DatabaseService.shiftsCollection,
+        scope: LocalStorageScope.fromUser(adminUser),
+      );
+      expect(tombstones, contains('shift-x'));
+    });
+
+    test('deleteShift wirft im cloud-only-Modus weiter', () async {
+      final provider = ScheduleProvider(
+        firestoreService:
+            _DeleteFailingFirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(adminUser); // cloud-only (hybrid=false)
+      await Future<void>.delayed(Duration.zero);
+
+      expect(() => provider.deleteShift('shift-x'), throwsException);
+    });
+  });
 
   group('ScheduleProvider local mode', () {
     late FirestoreService firestoreService;

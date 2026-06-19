@@ -57,6 +57,19 @@ class _ErroringTemplatesFirestoreService extends FirestoreService {
       Stream<List<WorkTemplate>>.error(StateError('permission-denied'));
 }
 
+/// Wirft beim Loeschen, um den hybrid-Fallback (CLAUDE.md-Mutator-Muster)
+/// zu testen (hybrid-delete-rethrows).
+class _DeleteFailingFirestoreService extends FirestoreService {
+  _DeleteFailingFirestoreService({required super.firestore});
+
+  @override
+  Future<void> deleteWorkEntry({
+    required String orgId,
+    required String entryId,
+  }) async =>
+      throw Exception('offline');
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -91,6 +104,54 @@ void main() {
       expect(provider.errorMessage, isNotNull,
           reason: 'ein dauerhafter Stream-Fehler darf nicht still verschwinden');
       expect(provider.errorMessage, contains('Vorlagen'));
+    });
+  });
+
+  group('WorkProvider hybrid-Delete-Fallback', () {
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      DatabaseService.resetCachedPrefs();
+    });
+
+    const admin = AppUserProfile(
+      uid: 'admin-1',
+      orgId: 'org-1',
+      email: 'admin@example.com',
+      role: UserRole.admin,
+      isActive: true,
+      settings: UserSettings(name: 'Admin'),
+    );
+
+    test(
+        'deleteEntry faellt im hybrid-Modus lokal zurueck (kein rethrow) und '
+        'setzt einen Tombstone', () async {
+      final provider = WorkProvider(
+        firestoreService:
+            _DeleteFailingFirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      await provider.deleteEntry('entry-x'); // darf NICHT werfen
+
+      final tombstones = await DatabaseService.loadTombstones(
+        DatabaseService.workEntriesCollection,
+        scope: LocalStorageScope.fromUser(admin),
+      );
+      expect(tombstones, contains('entry-x'));
+    });
+
+    test('deleteEntry wirft im cloud-only-Modus weiter', () async {
+      final provider = WorkProvider(
+        firestoreService:
+            _DeleteFailingFirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(admin); // cloud-only (hybrid=false)
+      await Future<void>.delayed(Duration.zero);
+
+      expect(() => provider.deleteEntry('entry-x'), throwsException);
     });
   });
 

@@ -594,10 +594,26 @@ class WorkProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _firestoreService.deleteWorkEntry(
-      orgId: currentUser.orgId,
-      entryId: id,
-    );
+    try {
+      await _firestoreService.deleteWorkEntry(
+        orgId: currentUser.orgId,
+        entryId: id,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      // Hybrid offline: nicht hart werfen (CLAUDE.md-Mutator-Muster), sondern
+      // lokal als geloescht vormerken + persistieren. Der Tombstone propagiert
+      // die Loeschung spaeter via syncLocalStateToCloud.
+      _localEntries.removeWhere((entry) => entry.id == id);
+      await DatabaseService.saveLocalEntries(_localEntries, scope: _localScope);
+      await _recordEntryTombstone(id);
+      _applyLocalState();
+      await refreshCurrentShiftStatus();
+      _safeNotify();
+      return;
+    }
     // Im Cloud-/Hybrid-Modus ist der Doc geloescht -> evtl. vorhandenen
     // Tombstone aufloesen (Loeschung ist propagiert).
     if (_deletedEntryIds.remove(id)) {
@@ -668,10 +684,24 @@ class WorkProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _firestoreService.deleteWorkTemplate(
-      orgId: currentUser.orgId,
-      templateId: id,
-    );
+    try {
+      await _firestoreService.deleteWorkTemplate(
+        orgId: currentUser.orgId,
+        templateId: id,
+      );
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      // Hybrid offline: lokal entfernen + persistieren statt hart zu werfen.
+      _localTemplates.removeWhere((template) => template.id == id);
+      await DatabaseService.saveLocalTemplates(
+        _localTemplates,
+        scope: _localScope,
+      );
+      _applyLocalState();
+      _safeNotify();
+    }
   }
 
   Future<void> updateSettings(UserSettings settings) async {
