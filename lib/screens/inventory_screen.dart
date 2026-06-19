@@ -462,6 +462,13 @@ class _StockTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final inventory = context.watch<InventoryProvider>();
     final query = search.trim().toLowerCase();
+    // Bewusste Entscheidung (barcode-no-index-clientside-scan): Die Produktsuche
+    // ist ein Volltext-Substring-Filter (contains) ueber die bereits gestreamte
+    // Produktliste. Firestore kann Substring-Suche serverseitig ohnehin nicht.
+    // Eine indizierte where('barcode', isEqualTo:)-Query lohnt sich erst, wenn ein
+    // echter POS-Barcode-Scan kommt (Exact-Match) -> dann findProductByBarcode im
+    // Repository + (siteId, barcode)-Index ergaenzen. Fuer die heutige Datenmenge
+    // (2 Laeden) ist die clientseitige Filterung ausreichend.
     final products = inventory.productsForSite(siteId).where((product) {
       if (query.isEmpty) {
         return true;
