@@ -102,6 +102,17 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 168 → **16
 
 **Vor Deploy zu prüfen:** der geänderte absenceRequests-Server-Query (`userId in` + `status` + `startDate`) gegen den vorhandenen Composite-Index im Emulator/Rules-Playground; `release.yml` benötigt die dokumentierten Repo-Secrets (Keystore, Hosting-Service-Account, dart-define-Konfig).
 
+## Umsetzungsstand Welle 3 — Batch 3 (Feature-Flags/Force-Update + Observability + Desktop)
+
+Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 169 → **173** (+4 FeatureFlagProvider-Tests). Jedes Item eigener Commit. Diese vier Gaps standen in Batch 2 noch als „bewusst zurückgestellt" (dependency-schwer) — sie wurden **dependency-frei** umgesetzt, indem dem in Welle 1 etablierten Crashlytics-Muster (Einhängepunkt statt Paket) gefolgt wurde.
+
+- **`no-feature-flags-force-update` (erledigt, dependency-frei):** `AppConfig.buildNumber` aus `--dart-define=APP_BUILD_NUMBER` (von `release.yml` aus `github.run_number` gesetzt) statt `package_info_plus`. Neuer `FeatureFlagProvider` liest `organizations/{orgId}/config/appFlags` (`minimumBuildNumber`, `featureFlags`, `updateMessage`) via `FirestoreService.fetchAppConfig`; `_AuthGate` zeigt `ForceUpdateScreen`, wenn ein **echter** Release-Build (`buildNumber>0`) unter der Server-Mindestversion liegt. **Fail-open:** fehlendes Doc / Read-Fehler / Local-/Demo-Modus blockieren nie. Komplettiert das serverseitige `APP_UPDATE_REQUIRED`-Signal aus `no-api-contract-versioning`. `firestore.rules`: `config/{configId}` org-lesbar, admin-schreibbar. Provider als `Proxy2<Auth,Storage>` **vor** TeamProvider in die Kette eingefügt (Kopplung Nr. 4). Nebenbei `release.yml` gehärtet (Secrets nicht in `if` → Job-`env`-Spiegelung). +4 Tests.
+- **`no-analytics-screen-tracking` (erledigt, dependency-frei):** Neue `core/analytics_service.dart` (datensparsam/DSGVO: nur Screen/Rolle/Anzahl, **nie** Name/E-Mail/uid), einhängbare `externalSink` (firebase_analytics folgt analog), `enabled`-Opt-out. `NavigatorObserver` an `MaterialApp` für Detail-Routen; die index-basierten Shell-Tabs melden in `_activateDestination` `screen_view` mit Tab-Name + Rolle.
+- **`no-desktop-keyboard-shortcuts` (erledigt):** Shell in `CallbackShortcuts` + `FocusTraversalGroup`; `Strg/Ctrl + 1..9` springt auf die n-te Rail-Destination (gleicher Pfad wie ein Rail-Tap). Maus-/Touch-Navigation unverändert.
+- **`web-renderer-bundle-not-pinned` (erledigt, Doku):** Default-Renderer als bewusste Entscheidung in `web/index.html` kommentiert; nächster Schritt (deferred imports schwerer Screens, `--analyze-size`) festgehalten, erst bei messbarer Startzeit.
+
+**Noch offen (13):** die großen Refactors (`split-shift-planner-god-file` 🔴, `split-home-screen-god-file`, `planner-board-eager-listview`, `timestamp-leaks-into-domain`) als eigene Strangler-Fig-Wellen; die Sync-Redesigns (`no-outbox-retry-queue`, `no-connectivity-no-sync-status-ux`, `no-delta-sync-endpoint`, `full-read-no-delta-sync`); `no-flavors-dev-prod` (Bruchrisiko lokales `flutter run`); `no-perf-traces-critical-flows` (firebase_performance-Dep); `team-management-eager-member-list` (SliverGrid-Umbau); `layer-first-structure` (Repo-Konsistenz höher gewichtet); `no-golden-tests` (auf macOS erzeugte Goldens würden die Ubuntu-CI rot färben). Jeweils mit Begründung in den Batch-1/2-Abschnitten und im Gap-Katalog.
+
 ## Leitplanken
 
 - **Die App funktioniert; nichts brechen.** Bevorzugt werden additive Änderungen (neue Dateien, neue optionale Felder). Nach jeder Gruppe `flutter analyze` + `flutter test`.
@@ -178,11 +189,11 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 168 → **16
 - [x] **no-architecture-fitness-lint** (🟡 mittel, architektur) — Keine automatisierte Layering-/Import-Grenzprüfung — Schichtverstöße brechen den Build nicht
 - [ ] **no-delta-sync-endpoint** (🟡 mittel, backend-api) — Kein Delta-/since-Sync-Endpunkt und keine Tombstones - jeder Read ist Vollabzug
 - [x] **no-api-contract-versioning** (🟡 mittel, backend-api) — Callable-Payload-Vertrag ist unversioniert - alte App-Versionen koennen still brechen
-- [ ] **no-feature-flags-force-update** (🟡 mittel, cicd) — Kein Feature-Flag-/Force-Update-/Minimum-Version-Mechanismus
+- [x] **no-feature-flags-force-update** (🟡 mittel, cicd) — Kein Feature-Flag-/Force-Update-/Minimum-Version-Mechanismus
 - [x] **no-build-number-automation** (🟡 mittel, cicd) — Statische Versionsnummer ohne automatisches Build-Counter-Hochzaehlen
 - [x] **no-local-schema-version** (🟡 mittel, daten-persistenz) — Lokale Persistenz hat keine echte Schema-Versionierung (nur ein Prefix-Konstante)
 - [x] **no-distributed-tracing** (🟡 mittel, observability) — Keine Trace-Korrelation Client -> Cloud Functions
-- [ ] **no-analytics-screen-tracking** (🟡 mittel, observability) — Keine Produkt-Telemetrie / kein Screen-Tracking für Nutzerflüsse
+- [x] **no-analytics-screen-tracking** (🟡 mittel, observability) — Keine Produkt-Telemetrie / kein Screen-Tracking für Nutzerflüsse
 - [x] **no-repaintboundary-shift-cards** (🟡 mittel, performance) — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
 - [x] **schedule-shifts-getter-refilters** (🟡 mittel, performance) — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff *(in Welle-2-Performance-Strang vorgezogen)*
 - [ ] **no-connectivity-no-sync-status-ux** (🟡 mittel, sync) — Keine Konnektivitaetserkennung und keine Sync-Status-UX – Eventual Consistency ist fuer den Nutzer unsichtbar
@@ -203,7 +214,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 168 → **16
 - [x] **order-number-fallback-collision** (⚪ niedrig, error-handling) — Bestellnummer-Fallback verschluckt jeden Fehler und kann kollidierende/duplizierte Nummern erzeugen *(retryTransient + ErrorReporter + UUID-Suffix im Fallback)*
 - [ ] **no-perf-traces-critical-flows** (⚪ niedrig, observability) — Keine RUM-Performance-Signale / Custom Traces um kritische Abläufe
 - [ ] **team-management-eager-member-list** (⚪ niedrig, performance) — Team-Management materialisiert Mitarbeiter-/Site-Listen eager in ListView(children:)
-- [ ] **web-renderer-bundle-not-pinned** (⚪ niedrig, performance) — Web-Renderer/CanvasKit-Startkosten nicht bewusst konfiguriert
+- [x] **web-renderer-bundle-not-pinned** (⚪ niedrig, performance) — Web-Renderer/CanvasKit-Startkosten nicht bewusst konfiguriert
 - [x] **no-obfuscation-build-guidance** (⚪ niedrig, sicherheit) — Release-Builds ohne dokumentiertes --obfuscate/--split-debug-info
 - [x] **web-token-storage-not-documented** (⚪ niedrig, sicherheit) — Auth-Token-Speicherung auf Web (localStorage-Persistenz) ohne dokumentierte Risikoabwägung
 - [ ] **full-read-no-delta-sync** (⚪ niedrig, sync) — Hybrid spiegelt per Voll-Monatsstream statt Delta-Sync; cacheCloudStateLocally laedt alle Eintraege ohne Cursor
@@ -211,7 +222,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 168 → **16
 - [x] **order-number-determinism** (⚪ niedrig, testing) — Bestellnummern-Allokation: Transaktions-Counter und Fallback-Pfad nicht deterministisch getestet *(Monotonie über 3 Bestellungen + Fallback-Pfad via Fake-runTransaction getestet)*
 - [x] **inventory-firestore-fallback-untested** (⚪ niedrig, testing) — Inventory-Firestore-Pfad: kein Stream-onError-Test (KEIN Hybrid-Fallback im Provider)
 - [x] **no-coverage-gate-doc** (⚪ niedrig, testing) — Keine reproduzierbare Coverage-Messung dokumentiert (kein --coverage-Workflow)
-- [ ] **no-desktop-keyboard-shortcuts** (⚪ niedrig, ux-ui) — Keine Tastatur-Shortcuts/Hover für Desktop- und Web-Nutzung trotz Rail-Layout ab 1120dp
+- [x] **no-desktop-keyboard-shortcuts** (⚪ niedrig, ux-ui) — Keine Tastatur-Shortcuts/Hover für Desktop- und Web-Nutzung trotz Rail-Layout ab 1120dp
 
 ---
 
