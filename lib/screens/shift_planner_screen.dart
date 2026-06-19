@@ -18,6 +18,7 @@ import '../theme/app_theme.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/responsive_layout.dart';
 import 'notification_screen.dart';
+import 'shift_planner/planner_logic.dart';
 
 enum ShiftPlanExportFormat { pdf, csv }
 
@@ -989,7 +990,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         : const EdgeInsets.symmetric(horizontal: 18);
     final range =
         _currentScheduleRange(schedule.visibleDate, schedule.viewMode);
-    final days = _rangeDays(range.start, range.end);
+    final days = rangeDays(range.start, range.end);
     final filteredShifts = _currentBoardShifts();
     final filteredAbsenceRequests = _filteredAbsenceRequests(schedule);
     final freeShifts = filteredShifts
@@ -1828,8 +1829,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     final colorScheme = theme.colorScheme;
     final visibleDate = schedule.visibleDate;
     final firstOfMonth = DateTime(visibleDate.year, visibleDate.month, 1);
-    final miniDays = _calendarMonthGridDays(visibleDate);
-    final miniWeeks = _chunkDays(miniDays, 7);
+    final miniDays = calendarMonthGridDays(visibleDate);
+    final miniWeeks = chunkDays(miniDays, 7);
 
     final locations = widget.visibleShifts
         .map((shift) => shift.effectiveSiteLabel?.trim() ?? '')
@@ -2180,10 +2181,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     required bool isCompact,
   }) {
     final theme = Theme.of(context);
-    final monthDays = _calendarMonthGridDays(visibleDate);
-    final weekChunks = _chunkDays(monthDays, 7);
+    final monthDays = calendarMonthGridDays(visibleDate);
+    final weekChunks = chunkDays(monthDays, 7);
     final daysByKey = {
-      for (final day in monthDays) _dayKey(day): day,
+      for (final day in monthDays) dayKey(day): day,
     };
     final shiftsByDay = <int, List<Shift>>{};
     for (final shift in shifts) {
@@ -2192,7 +2193,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         shift.startTime.month,
         shift.startTime.day,
       );
-      final key = _dayKey(day);
+      final key = dayKey(day);
       if (!daysByKey.containsKey(key)) {
         continue;
       }
@@ -2267,7 +2268,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                       _PlannerMonthWeekNumberCell(
                         width: weekNumberWidth,
                         height: dayCellHeight,
-                        weekNumber: _isoWeekNumber(weekChunks[weekIndex].first),
+                        weekNumber: isoWeekNumber(weekChunks[weekIndex].first),
                       ),
                       for (final day in weekChunks[weekIndex])
                         Expanded(
@@ -2276,7 +2277,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                             day: day,
                             visibleMonth: visibleDate.month,
                             visibleYear: visibleDate.year,
-                            shifts: shiftsByDay[_dayKey(day)] ?? const [],
+                            shifts: shiftsByDay[dayKey(day)] ?? const [],
                             absenceCount: _dayAbsenceCount(day),
                             onAddShift: () => widget.onOpenShiftEditor(
                               initialDate: day,
@@ -2292,7 +2293,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                             onShowMore: () => _showMonthDayDetails(
                               context,
                               day,
-                              shiftsByDay[_dayKey(day)] ?? const [],
+                              shiftsByDay[dayKey(day)] ?? const [],
                             ),
                           ),
                         ),
@@ -2355,12 +2356,12 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                           day: day,
                           visibleMonth: visibleDate.month,
                           visibleYear: visibleDate.year,
-                          shifts: shiftsByDay[_dayKey(day)] ?? const [],
+                          shifts: shiftsByDay[dayKey(day)] ?? const [],
                           absenceCount: _dayAbsenceCount(day),
                           onTapDay: () => _showMonthDayDetails(
                             context,
                             day,
-                            shiftsByDay[_dayKey(day)] ?? const [],
+                            shiftsByDay[dayKey(day)] ?? const [],
                           ),
                           onOpenShift: (shift) =>
                               widget.onOpenShiftEditor(shift: shift),
@@ -3019,31 +3020,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     );
   }
 
-  List<List<DateTime>> _chunkDays(List<DateTime> days, int size) {
-    final chunks = <List<DateTime>>[];
-    for (var index = 0; index < days.length; index += size) {
-      final end = (index + size < days.length) ? index + size : days.length;
-      chunks.add(days.sublist(index, end));
-    }
-    return chunks;
-  }
-
-  List<DateTime> _calendarMonthGridDays(DateTime visibleDate) {
-    final firstOfMonth = DateTime(visibleDate.year, visibleDate.month, 1);
-    final leadingDays = firstOfMonth.weekday - DateTime.monday;
-    final gridStart = firstOfMonth.subtract(Duration(days: leadingDays));
-    final lastOfMonth = DateTime(visibleDate.year, visibleDate.month + 1, 0);
-    final trailingDays = DateTime.daysPerWeek - lastOfMonth.weekday;
-    final gridEndExclusive = DateTime(
-      lastOfMonth.year,
-      lastOfMonth.month,
-      lastOfMonth.day + 1,
-    ).add(Duration(days: trailingDays));
-    return _rangeDays(gridStart, gridEndExclusive);
-  }
-
-  int _dayKey(DateTime day) => day.year * 10000 + day.month * 100 + day.day;
-
   Future<void> _showMonthDayDetails(
     BuildContext context,
     DateTime day,
@@ -3536,15 +3512,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         .toList(growable: false);
   }
 
-  List<DateTime> _rangeDays(DateTime start, DateTime end) {
-    final days = <DateTime>[];
-    var cursor = start;
-    while (cursor.isBefore(end)) {
-      days.add(cursor);
-      cursor = cursor.add(const Duration(days: 1));
-    }
-    return days;
-  }
 
   String _toolbarRangeLabel(DateTime date, ScheduleViewMode mode) {
     switch (mode) {
@@ -4688,15 +4655,6 @@ Color _softenColor(Color color, Color surface, double amount) {
   return Color.lerp(color, surface, amount) ?? color;
 }
 
-int _isoWeekNumber(DateTime date) {
-  final normalized = DateTime(date.year, date.month, date.day);
-  final thursday =
-      normalized.add(Duration(days: DateTime.thursday - normalized.weekday));
-  final firstThursday = DateTime(thursday.year, 1, 4);
-  final firstWeekThursday = firstThursday
-      .add(Duration(days: DateTime.thursday - firstThursday.weekday));
-  return 1 + (thursday.difference(firstWeekThursday).inDays ~/ 7);
-}
 
 class _ShiftCard extends StatelessWidget {
   const _ShiftCard({
