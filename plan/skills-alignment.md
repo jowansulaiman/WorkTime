@@ -68,6 +68,17 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **15
 
 **Nachgezogene Welle-2-Items (separater Durchlauf):** `android-release-debug-signing` (erledigt — Upload-Keystore-signingConfig + Debug-Fallback), `no-medium-window-class` (erledigt — Rail ab 600dp, Labels ab 840dp, Höhen-Guard, +Breakpoint-Tests), `build-helper-methods-to-widget-classes` (begonnen — 3 Blatt-Widgets extrahiert, Rest inkrementell), `no-secure-storage-for-sensitive` (dokumentiert + zurückgestellt mit Begründung). **Weiterhin offen:** `no-outbox-retry-queue` (bewusst zurückgestellt, s.o.), Architektur-Roll-out des Repository-Musters auf work/schedule/team, Welle 3.
 
+## Umsetzungsstand Welle 3 — Batch (Error-Handling/Sync/Clean-Code/Testing)
+
+Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 154 → **168** (+14 neue Tests). Baseline-Verhalten unverändert. Jedes Item eigener Commit auf `skills-alignment`. Vorab wurde jeder Gap per read-only Recon-Workflow gegen den **aktuellen** Code (nicht die teils gedrifteten Audit-Zeilennummern) verifiziert — u.a. lag die Bestellnummer-Logik nach dem Repo-Split inzwischen in `firestore_inventory_repository.dart`, nicht mehr im `FirestoreService`.
+
+- **`csv-escaping-bom-undertested` (erledigt):** Neue `test/export_service_test.dart` mit 7 Tests für RFC-4180-Escaping (Semikolon, doppelte Anführungszeichen, Zeilenumbruch, kombiniert, Metazeile) inkl. quotenbewusstem Parser, der die 11-Spalten-Struktur und einen verlustfreien Round-Trip prüft. Nebenbefund mitbehoben: alle `DateFormat`-Aufrufe in `export_service.dart` erhalten explizit `'de_DE'` (CLAUDE.md-Pflicht); `pdf_service_test` initialisiert nun `de_DE`.
+- **`dedupe-absence-sort-comparator` (erledigt):** Der byte-identische AbsenceRequest-Vergleich aus `watchAllAbsenceRequests`/`getAllAbsenceRequests` ist in eine statische `_compareAbsenceRequests` gehoben; verhaltenserhaltend.
+- **`order-number-fallback-collision` + `order-number-determinism` (erledigt):** `_allocateOrderNumber` (Inventory-Repo) läuft jetzt in `retryTransient` (transiente Fehler mit Backoff statt sofortigem Fallback). Der catch schluckt nicht mehr blind: meldet an `ErrorReporter` und hängt im zeitbasierten Fallback ein UUID-Suffix an (kollisionsfest). `Uuid` ist konstruktor-injizierbar. +2 Tests (Monotonie über 3 Bestellungen; neuer `firestore_inventory_repository_test` für den Fallback via Fake-`runTransaction`).
+- **`work-template-report-stream-silent` (erledigt):** Vorlagen- und Bericht-Stream verschluckten ihre `onError` nur per Log. Jetzt nach dem etablierten TeamProvider-Muster `_setStreamError(bereich)` (deutsche Nutzer-Botschaft + ErrorReporter + Notify) und `_markStreamHealthy(bereich)`; auch der Eintraege-Stream nutzt das bereichs-skopierte Muster. +1 Test.
+- **`hybrid-delete-rethrows` (erledigt):** Alle fünf Delete-Pfade (`deleteEntry`/`deleteTemplate`, `deleteShift`/`deleteShiftSeries`/`deleteAbsenceRequest`) sind an das Save-Mutator-Muster angeglichen: im hybrid-`catch` lokal entfernen + persistieren + Tombstone setzen (propagiert via `syncLocalStateToCloud`) statt hart zu werfen; cloud-only weiterhin `rethrow`. +4 Tests.
+- **`no-outbox-retry-queue` (leichter Auto-Flush erneut geprüft → bewusst zurückgestellt):** Code-Stand bestätigt: `syncLocalStateToCloud` wird ausschließlich aus `settings_screen.dart` beim Speichermoduswechsel aufgerufen; es gibt **keinen** App-Lifecycle-Hook (kein `WidgetsBindingObserver`/`AppLifecycleState`) in `lib/`. Der empfohlene leichte Schritt (Auto-Flush bei App-Resume) bräuchte erst neue Lifecycle-Infrastruktur und würde bei jedem Resume einen **vollen** lokal→Cloud-Push auslösen → bezahlte Firestore-Writes bei jedem Resume, was dem zentralen Spark-Free-Tier-Designziel widerspricht. Der „Eintritt in einen cloud-fähigen Modus" ist bereits abgedeckt (Settings triggert Sync). Der Plan markiert dies explizit als „nur auf ausdrücklichen Wunsch" — daher hier weiter zurückgestellt; sinnvoll nur als **Delta**-Sync (Tombstones + geänderte Items), nicht als Voll-Push.
+
 ## Leitplanken
 
 - **Die App funktioniert; nichts brechen.** Bevorzugt werden additive Änderungen (neue Dateien, neue optionale Felder). Nach jeder Gruppe `flutter analyze` + `flutter test`.
@@ -152,8 +163,8 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **15
 - [ ] **no-repaintboundary-shift-cards** (🟡 mittel, performance) — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
 - [x] **schedule-shifts-getter-refilters** (🟡 mittel, performance) — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff *(in Welle-2-Performance-Strang vorgezogen)*
 - [ ] **no-connectivity-no-sync-status-ux** (🟡 mittel, sync) — Keine Konnektivitaetserkennung und keine Sync-Status-UX – Eventual Consistency ist fuer den Nutzer unsichtbar
-- [ ] **hybrid-delete-rethrows** (🟡 mittel, sync) — hybrid-Delete folgt nicht dem dokumentierten catch-Fallback-Muster – Loeschungen schlagen offline hart fehl
-- [ ] **csv-escaping-bom-undertested** (🟡 mittel, testing) — CSV-Export: Escaping-Sonderfaelle (Semikolon, Anfuehrungszeichen, Zeilenumbruch) ungetestet
+- [x] **hybrid-delete-rethrows** (🟡 mittel, sync) — hybrid-Delete folgt nicht dem dokumentierten catch-Fallback-Muster – Loeschungen schlagen offline hart fehl *(alle 5 Delete-Pfade an Save-Muster angeglichen: hybrid lokal+Tombstone statt rethrow; cloud-only weiter rethrow)*
+- [x] **csv-escaping-bom-undertested** (🟡 mittel, testing) — CSV-Export: Escaping-Sonderfaelle (Semikolon, Anfuehrungszeichen, Zeilenumbruch) ungetestet *(7 Tests inkl. quotenbewusstem Parser/Round-Trip; + de_DE-Locale-Nebenbefund behoben)*
 - [ ] **loading-not-adaptive-no-skeletons** (🟡 mittel, ux-ui) — Ladezustände immer Material-CircularProgressIndicator (nicht .adaptive), keine Skeletons
 - [ ] **no-spacing-radii-tokens** (🟡 mittel, ux-ui) — ThemeExtension nur für Farben — Spacing/Radii sind als magische Zahlen verstreut
 - [ ] **no-textscaler-reduce-motion** (🟡 mittel, ux-ui) — Keine Textskalierungs-Robustheit und kein Reduce-Motion-Respekt
@@ -161,12 +172,12 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **15
 - [ ] **download-service-stub-misnamed-platform-split** (⚪ niedrig, architektur) — Plattform-Split der Download-Datei greift nur Web vs. Nicht-Web ab; 'Stub' ist faktisch die Mobile/Desktop-Impl (share_plus)
 - [ ] **absence-query-missing-status-index-filter** (⚪ niedrig, backend-api) — Server-seitige absenceRequests-Query filtert Status erst im Speicher statt per indexiertem Query
 - [ ] **no-flavors-dev-prod** (⚪ niedrig, cicd) — Keine Flavors/Build-Varianten fuer dev/prod — Demo-Build und Prod teilen Bundle-ID
-- [ ] **dedupe-absence-sort-comparator** (⚪ niedrig, clean-code) — Identischer Sort-Comparator fuer AbsenceRequest dupliziert (watchAll/getAll)
+- [x] **dedupe-absence-sort-comparator** (⚪ niedrig, clean-code) — Identischer Sort-Comparator fuer AbsenceRequest dupliziert (watchAll/getAll) *(in statische _compareAbsenceRequests gehoben)*
 - [ ] **missing-orderby-updatedat-index-delta** (⚪ niedrig, daten-persistenz) — Kein Index/Query auf updatedAt - keine inkrementelle Delta-Synchronisation, volle Collection-Streams
 - [ ] **stockmovements-no-org-time-index** (⚪ niedrig, daten-persistenz) — watchStockMovements ohne productId nutzt orderBy(createdAt) ohne standortgescopten Composite-Index
 - [ ] **barcode-no-index-clientside-scan** (⚪ niedrig, daten-persistenz) — Barcode-/SKU-Suche und Kategorie-Filter laufen rein clientseitig (kein Feld-Index)
-- [ ] **work-template-report-stream-silent** (⚪ niedrig, error-handling) — Vorlagen- und Bericht-Stream-Fehler im WorkProvider werden ohne Nutzer-Feedback geschluckt
-- [ ] **order-number-fallback-collision** (⚪ niedrig, error-handling) — Bestellnummer-Fallback verschluckt jeden Fehler und kann kollidierende/duplizierte Nummern erzeugen
+- [x] **work-template-report-stream-silent** (⚪ niedrig, error-handling) — Vorlagen- und Bericht-Stream-Fehler im WorkProvider werden ohne Nutzer-Feedback geschluckt *(TeamProvider-Muster: _setStreamError/_markStreamHealthy für Eintraege/Vorlagen/Berichtsdaten)*
+- [x] **order-number-fallback-collision** (⚪ niedrig, error-handling) — Bestellnummer-Fallback verschluckt jeden Fehler und kann kollidierende/duplizierte Nummern erzeugen *(retryTransient + ErrorReporter + UUID-Suffix im Fallback)*
 - [ ] **no-perf-traces-critical-flows** (⚪ niedrig, observability) — Keine RUM-Performance-Signale / Custom Traces um kritische Abläufe
 - [ ] **team-management-eager-member-list** (⚪ niedrig, performance) — Team-Management materialisiert Mitarbeiter-/Site-Listen eager in ListView(children:)
 - [ ] **web-renderer-bundle-not-pinned** (⚪ niedrig, performance) — Web-Renderer/CanvasKit-Startkosten nicht bewusst konfiguriert
@@ -174,7 +185,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **15
 - [ ] **web-token-storage-not-documented** (⚪ niedrig, sicherheit) — Auth-Token-Speicherung auf Web (localStorage-Persistenz) ohne dokumentierte Risikoabwägung
 - [ ] **full-read-no-delta-sync** (⚪ niedrig, sync) — Hybrid spiegelt per Voll-Monatsstream statt Delta-Sync; cacheCloudStateLocally laedt alle Eintraege ohne Cursor
 - [ ] **no-golden-tests** (⚪ niedrig, testing) — Keine Golden-Tests fuer die Multiplattform-UI (Web/iOS/Android)
-- [ ] **order-number-determinism** (⚪ niedrig, testing) — Bestellnummern-Allokation: Transaktions-Counter und Fallback-Pfad nicht deterministisch getestet
+- [x] **order-number-determinism** (⚪ niedrig, testing) — Bestellnummern-Allokation: Transaktions-Counter und Fallback-Pfad nicht deterministisch getestet *(Monotonie über 3 Bestellungen + Fallback-Pfad via Fake-runTransaction getestet)*
 - [ ] **inventory-firestore-fallback-untested** (⚪ niedrig, testing) — Inventory-Firestore-Pfad: kein Stream-onError-Test (KEIN Hybrid-Fallback im Provider)
 - [ ] **no-coverage-gate-doc** (⚪ niedrig, testing) — Keine reproduzierbare Coverage-Messung dokumentiert (kein --coverage-Workflow)
 - [ ] **no-desktop-keyboard-shortcuts** (⚪ niedrig, ux-ui) — Keine Tastatur-Shortcuts/Hover für Desktop- und Web-Nutzung trotz Rail-Layout ab 1120dp
