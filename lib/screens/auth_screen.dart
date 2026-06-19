@@ -518,7 +518,7 @@ class _EmailLoginFormState extends State<_EmailLoginForm> {
                   ? const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
                     )
                   : const Icon(Icons.login),
               label: Text(widget.submitLabel),
@@ -744,7 +744,7 @@ class _InvitationActivationFormState extends State<_InvitationActivationForm> {
                   ? const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
                     )
                   : const Icon(Icons.person_add_alt_1),
               label: const Text('Einladung aktivieren'),

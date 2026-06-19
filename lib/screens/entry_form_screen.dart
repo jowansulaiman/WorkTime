@@ -413,7 +413,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator.adaptive(strokeWidth: 2),
                         )
                       : const Icon(Icons.save),
                   label: Text(isEdit ? 'Aktualisieren' : 'Speichern'),
@@ -1020,12 +1020,11 @@ class _ConfirmedShiftSelectorCard extends StatelessWidget {
                 ),
               ),
               if (loading)
-                SizedBox(
+                const SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(
+                  child: CircularProgressIndicator.adaptive(
                     strokeWidth: 2,
-                    color: colorScheme.primary,
                   ),
                 ),
             ],
@@ -1342,9 +1341,9 @@ class _ShiftCoverageCard extends StatelessWidget {
                 SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(
+                  child: CircularProgressIndicator.adaptive(
                     strokeWidth: 2,
-                    color: foreground,
+                    valueColor: AlwaysStoppedAnimation<Color>(foreground),
                   ),
                 ),
             ],

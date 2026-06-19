@@ -1126,7 +1126,7 @@ class _AbsenceRequestSheetState extends State<_AbsenceRequestSheet> {
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: CircularProgressIndicator.adaptive(strokeWidth: 2),
                       )
                     : Icon(
                         isEditing ? Icons.save_outlined : Icons.send_outlined,

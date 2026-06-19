@@ -407,8 +407,6 @@ class _StartupStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -419,9 +417,7 @@ class _StartupStatusCard extends StatelessWidget {
             const AppLogo(height: 78),
             const SizedBox(height: 20),
             if (showLoader) ...[
-              CircularProgressIndicator(
-                color: colorScheme.primary,
-              ),
+              const CircularProgressIndicator.adaptive(),
               const SizedBox(height: 20),
             ],
             Text(

@@ -189,9 +189,11 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
                             ? SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(
+                                child: CircularProgressIndicator.adaptive(
                                   strokeWidth: 2,
-                                  color: colorScheme.onTertiary,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    colorScheme.onTertiary,
+                                  ),
                                 ),
                               )
                             : const Icon(Icons.picture_as_pdf),

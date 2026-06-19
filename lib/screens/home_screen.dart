@@ -3977,7 +3977,7 @@ class _TimeTrackingTabState extends State<_TimeTrackingTab> {
 
     return SafeArea(
       child: currentUser == null
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator.adaptive())
           : !currentUser.canViewTimeTracking
               ? Center(
                   child: ConstrainedBox(
@@ -4353,7 +4353,7 @@ class _PunchClockSheet extends StatelessWidget {
     if (currentUser == null) {
       return const SizedBox(
         height: 240,
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(child: CircularProgressIndicator.adaptive()),
       );
     }
 
@@ -6810,7 +6810,7 @@ class _ConfirmedShiftDayPanelState extends State<_ConfirmedShiftDayPanel> {
                 const Center(
                   child: Padding(
                     padding: EdgeInsets.all(16),
-                    child: CircularProgressIndicator(),
+                    child: CircularProgressIndicator.adaptive(),
                   ),
                 )
               else if (snapshot.hasError)

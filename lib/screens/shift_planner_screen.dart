@@ -6389,7 +6389,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                   ? const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
                     )
                   : const Icon(Icons.save),
               label: Text(

@@ -273,7 +273,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ? const SizedBox(
                                     width: 18,
                                     height: 18,
-                                    child: CircularProgressIndicator(
+                                    child: CircularProgressIndicator.adaptive(
                                       strokeWidth: 2,
                                     ),
                                   )
