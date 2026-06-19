@@ -122,6 +122,19 @@ class _OfflineInventoryRepository implements InventoryRepository {
       );
 }
 
+/// Fake fuer den Cloud-Stream-Fehlerpfad: der Lieferanten-Stream schlaegt fehl,
+/// die uebrigen Streams liefern (leere) Daten. Prueft, dass onError den
+/// errorMessage setzt statt zu crashen (inventory-firestore-fallback-untested).
+class _StreamErrorInventoryRepository extends _OfflineInventoryRepository {
+  _StreamErrorInventoryRepository(super.firestore);
+
+  @override
+  Stream<List<Supplier>> watchSuppliers(String orgId) =>
+      Stream<List<Supplier>>.error(
+        StateError('Lieferanten-Stream fehlgeschlagen'),
+      );
+}
+
 void main() {
   // Nicht-Demo-Nutzer, damit _maybeSeedLocalDemo NICHT greift und wir mit
   // leerem lokalen Bestand starten.
@@ -375,6 +388,32 @@ void main() {
       expect(provider.errorMessage, isNotNull);
       expect(notified, isTrue,
           reason: 'die UI muss ueber den Fehler benachrichtigt werden');
+    });
+  });
+
+  group('InventoryProvider – Cloud-Modus', () {
+    test(
+        'Stream-onError setzt errorMessage und crasht nicht '
+        '(inventory-firestore-fallback-untested)', () async {
+      final provider = InventoryProvider(
+        firestoreService: firestoreService,
+        inventoryRepository: _StreamErrorInventoryRepository(firestore),
+      );
+      var notified = false;
+      provider.addListener(() => notified = true);
+
+      // Reiner Cloud-Modus (kein local/hybrid) -> Firestore-Subscriptions starten.
+      await provider.updateSession(user, localStorageOnly: false);
+      // Fehler-Event des Streams asynchron durchlaufen lassen.
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.errorMessage, isNotNull);
+      expect(
+        provider.errorMessage,
+        contains('Lieferanten-Stream fehlgeschlagen'),
+      );
+      expect(notified, isTrue);
     });
   });
 }
