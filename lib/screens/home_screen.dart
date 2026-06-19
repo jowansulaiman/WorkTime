@@ -43,13 +43,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final auth = context.watch<AuthProvider>();
-    final work = context.watch<WorkProvider>();
-    final schedule = context.watch<ScheduleProvider>();
-    final storage = context.watch<StorageModeProvider>();
-    final currentUser = auth.profile;
+    // Eng gescopte Watches: die Shell rebuildt nur noch bei Profil-/
+    // Storage-Aenderungen. Die haeufig wechselnden Work-/Schedule-Daten werden
+    // im Banner bzw. FAB-Teilbaum selbst abonniert (home-shell-watches-all-providers).
+    final currentUser =
+        context.select<AuthProvider, AppUserProfile?>((auth) => auth.profile);
+    final authDisabled = context.read<AuthProvider>().authDisabled;
+    final storageLocation = authDisabled
+        ? DataStorageLocation.local
+        : context.select<StorageModeProvider, DataStorageLocation>(
+            (storage) => storage.location,
+          );
     final canManageShifts = currentUser?.canManageShifts ?? false;
-    final authDisabled = auth.authDisabled;
     final destinations = _buildDestinations(currentUser);
     final selectedIndex = _navIndex.clamp(0, destinations.length - 1);
     final currentDestination = destinations[selectedIndex];
@@ -81,11 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
               SafeArea(
                 bottom: false,
                 child: _ShellStatusBanner(
-                  storageLocation: authDisabled
-                      ? DataStorageLocation.local
-                      : storage.location,
-                  work: work,
-                  schedule: schedule,
+                  storageLocation: storageLocation,
                 ),
               ),
               Expanded(child: body),
@@ -115,7 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 const AppLogo(height: 38),
                                 const SizedBox(height: 12),
                                 _RailProfileHeader(
-                                  user: auth.profile,
+                                  user: currentUser,
                                   isSelected: currentDestination.id ==
                                       _ShellDestinationId.profile,
                                   onTap: () => _activateDestination(
@@ -168,13 +169,19 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                     ],
                   ),
-            floatingActionButton: _buildFab(
-              context,
-              destination: currentDestination,
-              canManageShifts: canManageShifts,
-              destinations: destinations,
-              work: work,
-            ),
+            floatingActionButton: currentDestination.showFab
+                ? Consumer<WorkProvider>(
+                    builder: (context, work, _) =>
+                        _buildFab(
+                          context,
+                          destination: currentDestination,
+                          canManageShifts: canManageShifts,
+                          destinations: destinations,
+                          work: work,
+                        ) ??
+                        const SizedBox.shrink(),
+                  )
+                : null,
           );
         },
       ),
@@ -1056,17 +1063,18 @@ Future<void> _showShiftDetailsSheet(
 class _ShellStatusBanner extends StatelessWidget {
   const _ShellStatusBanner({
     required this.storageLocation,
-    required this.work,
-    required this.schedule,
   });
 
   final DataStorageLocation storageLocation;
-  final WorkProvider work;
-  final ScheduleProvider schedule;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    // Work/Schedule werden hier (im kleinen Banner-Teilbaum) abonniert, damit
+    // ihre haeufigen Aenderungen nur dieses Widget rebuilden, nicht die ganze
+    // Shell (home-shell-watches-all-providers).
+    final work = context.watch<WorkProvider>();
+    final schedule = context.watch<ScheduleProvider>();
     final String? text;
     final IconData icon;
     final Color color;
