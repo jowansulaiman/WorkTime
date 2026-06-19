@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
 
 import '../core/accessibility.dart';
+import '../core/analytics_service.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/employee_site_assignment.dart';
@@ -233,6 +234,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _navIndex = index;
       _loadedDestinations.add(destinations[index].id);
     });
+
+    // Screen-Tracking (no-analytics-screen-tracking), datensparsam: nur
+    // Tab-Name + Rolle, keine personenbezogenen Daten.
+    AnalyticsService.logScreenView(
+      destinations[index].id.name,
+      role: context.read<AuthProvider>().profile?.role.name,
+    );
   }
 
   bool _navigateBackInShell({List<_ShellDestination>? destinations}) {
