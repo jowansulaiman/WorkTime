@@ -576,10 +576,30 @@ class FirestoreService {
     await _saveWorkEntryDirect(entry);
   }
 
+  /// Max. Anzahl Elemente pro Callable-Aufruf (Server lehnt groessere Batches
+  /// mit `resource-exhausted` ab). Grosse Batches werden clientseitig in
+  /// Chunks aufgeteilt.
+  static const int _maxCallableBatchSize = 50;
+
+  List<List<T>> _chunked<T>(List<T> items, int size) {
+    final chunks = <List<T>>[];
+    for (var i = 0; i < items.length; i += size) {
+      final end = i + size < items.length ? i + size : items.length;
+      chunks.add(items.sublist(i, end));
+    }
+    return chunks;
+  }
+
   Future<void> saveWorkEntryBatch(List<WorkEntry> entries) async {
     if (entries.isEmpty) {
       return;
     }
+    for (final chunk in _chunked(entries, _maxCallableBatchSize)) {
+      await _saveWorkEntryBatchChunk(chunk);
+    }
+  }
+
+  Future<void> _saveWorkEntryBatchChunk(List<WorkEntry> entries) async {
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'upsertWorkEntryBatch',
@@ -1235,6 +1255,12 @@ class FirestoreService {
     if (shifts.isEmpty) {
       return;
     }
+    for (final chunk in _chunked(shifts, _maxCallableBatchSize)) {
+      await _saveShiftBatchChunk(chunk);
+    }
+  }
+
+  Future<void> _saveShiftBatchChunk(List<Shift> shifts) async {
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'upsertShiftBatch',
@@ -1259,6 +1285,16 @@ class FirestoreService {
     if (shifts.isEmpty) {
       return;
     }
+    for (final chunk in _chunked(shifts, _maxCallableBatchSize)) {
+      await _publishShiftBatchChunk(orgId: orgId, shifts: chunk, status: status);
+    }
+  }
+
+  Future<void> _publishShiftBatchChunk({
+    required String orgId,
+    required List<Shift> shifts,
+    required ShiftStatus status,
+  }) async {
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'publishShiftBatch',

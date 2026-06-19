@@ -252,6 +252,36 @@ void main() {
     );
 
     test(
+      'saveShiftBatch teilt Batches > 50 in Callable-Aufrufe <= 50 auf',
+      () async {
+        final chunkSizes = <int>[];
+        service = FirestoreService(
+          firestore: firestore,
+          cloudFunctionInvoker: (name, payload) async {
+            chunkSizes.add((payload['shifts'] as List).length);
+            return {'savedIds': <String>[], 'issues': <dynamic>[]};
+          },
+        );
+
+        final shifts = List.generate(
+          120,
+          (i) => Shift(
+            orgId: 'org-1',
+            userId: 'employee-1',
+            employeeName: 'Anna',
+            title: 'Dienst $i',
+            startTime: DateTime(2026, 4, 5, 8).add(Duration(days: i)),
+            endTime: DateTime(2026, 4, 5, 16).add(Duration(days: i)),
+          ),
+        );
+
+        await service.saveShiftBatch(shifts);
+
+        expect(chunkSizes, [50, 50, 20]);
+      },
+    );
+
+    test(
       'publishShiftBatch falls back to direct Firestore writes when the function is missing',
       () async {
         service = FirestoreService(

@@ -36,7 +36,7 @@ Umgesetzt (24 von 26 Welle-1-Gaps):
 
 ## Umsetzungsstand Welle 2 (Sync-/Daten-Härtung + A11y – laufend)
 
-Verifiziert grün: `flutter analyze` = 0, `flutter test` = **138** (fünf neue Sync-Regressionstests).
+Verifiziert grün: `flutter analyze` = 0, `flutter test` = **139** (sechs neue Regressionstests: Sync, A11y, Batch-Chunking).
 
 - **`blind-lww-merge-no-version` (erledigt):** `_mergeByKey` (beide Provider) hat einen optionalen `updatedAtOf`-Tie-Breaker (Last-Write-Wins) – eine lokal neuere Version wird nicht mehr von einem älteren Server-Snapshot überschrieben. Verdrahtet für Shifts (hat bereits `updatedAt`) und WorkEntry; dafür wurde ein lesbares `updatedAt` zu `WorkEntry` ergänzt (6-Serialisierungs-Regel) und lokale Schreibvorgänge stempeln es frisch. + Round-Trip-Test.
 - **`no-tombstones-for-deletes` / `no-soft-delete-tombstones` (erledigt für alle 3 org-Collections):** persistierter Tombstone-Store in `DatabaseService` (`loadTombstones`/`saveTombstones`). Verdrahtet in `WorkProvider` (WorkEntry) **und** `ScheduleProvider` (Shift via `deleteShift`/`deleteShiftSeries` + AbsenceRequest via `deleteAbsenceRequest`): lokale Löschungen werden gemerkt und beim Wiedereinspielen aus der Cloud (Cache, Hybrid-Merge **und** alle Live-Streams) gefiltert; in `syncLocalStateToCloud` wird die Löschung in Firestore propagiert und der Tombstone aufgelöst. + Regressionstests (WorkEntry und Shift: lokal löschen → Cloud-Modus → bleibt gelöscht).
@@ -72,7 +72,7 @@ Verifiziert grün: `flutter analyze` = 0, `flutter test` = **138** (fünf neue S
 - [x] **silent-compliance-bypass-fallback** (🟠 hoch, sicherheit) — Stiller Direct-Write-Fallback umgeht serverseitige Compliance-Validierung
 - [x] **inventory-screens-no-widget-tests** (🟠 hoch, testing) — Inventory- und Bestell-Screens (2400+ Zeilen UI) komplett ohne Widget-Tests
 - [x] **duplicate-emptystate-widget** (🟠 hoch, ux-ui) — _EmptyState (und weitere Reuse-Widgets) doppelt file-private kopiert statt nach lib/widgets gehoben
-- [ ] **batch-limit-no-client-chunking** (🟡 mittel, backend-api) — Batch-Limit 50 wird serverseitig hart abgelehnt, Client teilt nicht in Chunks
+- [x] **batch-limit-no-client-chunking** (🟡 mittel, backend-api) — Batch-Limit 50 wird serverseitig hart abgelehnt, Client teilt nicht in Chunks
 - [x] **no-flutter-version-pin** (🟡 mittel, cicd) — Flutter-/Dart-SDK-Version nicht gepinnt — Builds nicht reproduzierbar
 - [x] **strengthen-lint-ruleset** (🟡 mittel, clean-code) — analysis_options.yaml hat leeren rules-Block (nur flutter_lints, keine Verschaerfung)
 - [x] **extract-shared-empty-section-widgets** (🟡 mittel, clean-code) — Aehnliche file-private Widgets (_EmptyState, _SectionCard, _HeaderSection) ueber mehrere Screens dupliziert
