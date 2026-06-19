@@ -80,8 +80,26 @@ class TeamProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
 
   /// Macht einen Fehler beim fire-and-forget Sitzungsaufbau in der UI sichtbar
-  /// (fire-and-forget-updatesession).
-  void surfaceSessionError(Object error) => _setStreamError('Daten', error);
+  /// (fire-and-forget-updatesession). Reportet NICHT erneut – das uebernimmt
+  /// bereits `_dispatchProviderUpdate` in main.dart (kein Doppel-Logging).
+  void surfaceSessionError(Object error) {
+    _errorMessage =
+        'Daten konnten nicht geladen werden. Bitte später erneut versuchen.';
+    _errorArea = null;
+    _safeNotify();
+  }
+
+  /// Loescht einen zuvor gesetzten Stream-Fehler, sobald GENAU DIESER Bereich
+  /// wieder gesund Daten liefert (verhindert eine stehenbleibende Fehlermeldung
+  /// nach transienter Stoerung – ohne einen persistenten Fehler eines anderen
+  /// Bereichs zu verstecken).
+  void _markStreamHealthy(String bereich) {
+    if (_errorMessage != null && _errorArea == bereich) {
+      _errorMessage = null;
+      _errorArea = null;
+      _safeNotify();
+    }
+  }
 
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get usesHybridStorage =>
@@ -93,11 +111,17 @@ class TeamProvider extends ChangeNotifier {
     }
   }
 
+  // Bereich des aktuell angezeigten Stream-Fehlers (z.B. 'Standorte'), damit ein
+  // erholter Stream nur SEINEN eigenen Fehler loescht und einen persistenten
+  // Fehler eines anderen Bereichs nicht versteckt.
+  String? _errorArea;
+
   /// Macht einen dauerhaften Stammdaten-Stream-Fehler sichtbar: setzt eine
   /// Nutzer-Botschaft, meldet ihn ans Crash-Reporting und benachrichtigt die
   /// UI (statt ihn nur ins Log zu schlucken — stream-onerror-debugprint-only).
   void _setStreamError(String bereich, Object error) {
     _errorMessage = 'Fehler beim Laden ($bereich). Bitte später erneut versuchen.';
+    _errorArea = bereich;
     _loading = false;
     ErrorReporter.report(
       error,
@@ -245,6 +269,7 @@ class TeamProvider extends ChangeNotifier {
     if (changed || storageModeChanged) {
       _loading = true;
       _errorMessage = null; // stale Stream-Fehler vor Neuaufbau zuruecksetzen
+      _errorArea = null;
       _safeNotify();
       await _membersSubscription?.cancel();
       await _invitesSubscription?.cancel();
@@ -265,6 +290,7 @@ class TeamProvider extends ChangeNotifier {
         _membersSubscription = _firestoreService
             .watchOrganizationUsers(user.orgId)
             .listen((items) {
+          _markStreamHealthy('Mitglieder');
           if (usesHybridStorage) {
             unawaited(
               _storeHybridMembersSnapshot(
@@ -316,6 +342,7 @@ class TeamProvider extends ChangeNotifier {
 
       _sitesSubscription = _firestoreService.watchSites(user.orgId).listen(
         (items) {
+          _markStreamHealthy('Standorte');
           if (usesHybridStorage) {
             unawaited(_storeHybridSitesSnapshot(items));
             return;

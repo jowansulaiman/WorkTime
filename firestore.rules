@@ -703,7 +703,10 @@ service cloud.firestore {
             && request.resource.data.type in
                  ['receipt', 'issue', 'adjustment', 'stocktake']
             && request.resource.data.quantityDelta is number
-            && request.resource.data.balanceAfter is number
+            // balanceAfter ist im Modell nullable (int?) -> null/absent zulassen.
+            && (!('balanceAfter' in request.resource.data)
+                 || request.resource.data.balanceAfter == null
+                 || request.resource.data.balanceAfter is number)
             && (!('createdByUid' in request.resource.data)
                  || request.resource.data.createdByUid == null
                  || request.resource.data.createdByUid == request.auth.uid);

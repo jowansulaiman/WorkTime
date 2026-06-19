@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,6 +23,17 @@ class _ErroringSitesFirestoreService extends FirestoreService {
   @override
   Stream<List<SiteDefinition>> watchSites(String orgId) =>
       Stream<List<SiteDefinition>>.error(StateError('permission-denied'));
+}
+
+/// Steuerbarer Standorte-Stream, um Fehler -> Erholung zu testen.
+class _ControllableSitesFirestoreService extends FirestoreService {
+  _ControllableSitesFirestoreService({required super.firestore});
+
+  final StreamController<List<SiteDefinition>> controller =
+      StreamController<List<SiteDefinition>>();
+
+  @override
+  Stream<List<SiteDefinition>> watchSites(String orgId) => controller.stream;
 }
 
 void main() {
@@ -440,6 +453,36 @@ void main() {
       expect(provider.errorMessage, isNotNull,
           reason: 'ein dauerhafter Stream-Fehler darf nicht still verschwinden');
       expect(provider.errorMessage, contains('Standorte'));
+    });
+
+    test(
+        'loescht den Stream-Fehler, sobald der Stream wieder Daten liefert',
+        () async {
+      // Employee: kein Mitglieder-Stream -> nur der (kontrollierte) Standorte-
+      // Stream beeinflusst errorMessage, kein Race mit anderen _markStreamHealthy.
+      const employee = AppUserProfile(
+        uid: 'employee-1',
+        orgId: 'org-1',
+        email: 'employee@example.com',
+        role: UserRole.employee,
+        isActive: true,
+        settings: UserSettings(name: 'Employee'),
+      );
+      final service = _ControllableSitesFirestoreService(firestore: firestore);
+      addTearDown(service.controller.close);
+      final provider = TeamProvider(firestoreService: service);
+      await provider.updateSession(employee);
+      await Future<void>.delayed(Duration.zero);
+
+      service.controller.addError(StateError('unavailable'));
+      await Future<void>.delayed(Duration.zero);
+      expect(provider.errorMessage, isNotNull);
+
+      // Stream erholt sich und liefert wieder Daten.
+      service.controller.add(const <SiteDefinition>[]);
+      await Future<void>.delayed(Duration.zero);
+      expect(provider.errorMessage, isNull,
+          reason: 'nach erfolgreicher Erholung darf kein stale Fehler bleiben');
     });
 
     test('teamlead loads organization members and teams for planning',
