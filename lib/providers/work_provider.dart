@@ -229,6 +229,13 @@ class WorkProvider extends ChangeNotifier {
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
 
+  /// Anzahl lokal vorgemerkter, noch nicht in die Cloud übertragener
+  /// Löschungen (Tombstones) – ehrliches „ausstehender Abgleich"-Signal für die
+  /// Sync-Status-UX (no-connectivity-no-sync-status-ux). Bewusst NICHT die
+  /// Größe des lokalen Caches (`_localEntries`), da dieser im Hybrid-Modus die
+  /// gespiegelten Cloud-Daten enthält und nichts „Ausstehendes" wäre.
+  int get pendingDeletionCount => _deletedEntryIds.length;
+
   /// Kurzlabel des aktiven Speichermodus für Performance-/Telemetrie-Metadaten
   /// (enthält bewusst keine personenbezogenen Daten).
   String get _storageModeLabel => usesLocalStorage

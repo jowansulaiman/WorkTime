@@ -199,6 +199,12 @@ class ScheduleProvider extends ChangeNotifier {
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
 
+  /// Anzahl lokal vorgemerkter, noch nicht in die Cloud übertragener Löschungen
+  /// (Schicht- und Abwesenheits-Tombstones) – ehrliches „ausstehender
+  /// Abgleich"-Signal für die Sync-Status-UX (no-connectivity-no-sync-status-ux).
+  int get pendingDeletionCount =>
+      _deletedShiftIds.length + _deletedAbsenceIds.length;
+
   void updateReferenceData({
     required List<AppUserProfile> members,
     required List<EmploymentContract> contracts,

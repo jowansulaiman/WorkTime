@@ -153,6 +153,25 @@ void main() {
 
       expect(() => provider.deleteEntry('entry-x'), throwsException);
     });
+
+    test(
+        'pendingDeletionCount zaehlt eine lokal vorgemerkte Loeschung '
+        '(Sync-Status-UX)', () async {
+      final provider = WorkProvider(
+        firestoreService:
+            _DeleteFailingFirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.pendingDeletionCount, 0);
+
+      await provider.deleteEntry('entry-x'); // Cloud-Delete schlaegt fehl
+
+      expect(provider.pendingDeletionCount, 1,
+          reason: 'eine un-propagierte Loeschung muss als ausstehend gelten');
+    });
   });
 
   group('WorkProvider clocking', () {

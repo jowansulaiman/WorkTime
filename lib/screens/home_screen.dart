@@ -1128,6 +1128,13 @@ class _ShellStatusBanner extends StatelessWidget {
     final String? text;
     final IconData icon;
     final Color color;
+    var showSyncAction = false;
+
+    // Ehrliches „ausstehender Abgleich"-Signal: nur lokal vorgemerkte, noch
+    // nicht propagierte Löschungen (Tombstones), kein gespiegelter Cache
+    // (no-connectivity-no-sync-status-ux).
+    final pendingDeletions =
+        work.pendingDeletionCount + schedule.pendingDeletionCount;
 
     if (storageLocation == DataStorageLocation.local) {
       text =
@@ -1142,6 +1149,13 @@ class _ShellStatusBanner extends StatelessWidget {
       text = 'Daten werden aktualisiert.';
       icon = Icons.sync;
       color = colorScheme.primary;
+    } else if (pendingDeletions > 0) {
+      text = '$pendingDeletions ausstehende '
+          '${pendingDeletions == 1 ? 'Löschung wird' : 'Löschungen werden'} '
+          'beim nächsten Abgleich übertragen.';
+      icon = Icons.cloud_upload_outlined;
+      color = colorScheme.tertiary;
+      showSyncAction = true;
     } else {
       return const SizedBox.shrink();
     }
@@ -1168,9 +1182,28 @@ class _ShellStatusBanner extends StatelessWidget {
                     ),
               ),
             ),
+            if (showSyncAction)
+              TextButton(
+                onPressed: () => _syncNow(context),
+                child: const Text('Jetzt synchronisieren'),
+              ),
           ],
         ),
       ),
+    );
+  }
+
+  /// Manueller, nutzer-initiierter Abgleich der lokal gepufferten Änderungen
+  /// (inkl. Tombstones) in die Cloud – bewusst nur on-demand, um den
+  /// Spark-Free-Tier-Designzielen (keine automatischen Voll-Pushes) zu folgen.
+  Future<void> _syncNow(BuildContext context) async {
+    final work = context.read<WorkProvider>();
+    final schedule = context.read<ScheduleProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    await work.syncLocalStateToCloud();
+    await schedule.syncLocalStateToCloud();
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Abgleich abgeschlossen.')),
     );
   }
 }
