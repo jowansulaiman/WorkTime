@@ -8,18 +8,112 @@ import 'package:worktime_app/models/stock_movement.dart';
 import 'package:worktime_app/models/supplier.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
+import 'package:worktime_app/repositories/firestore_inventory_repository.dart';
+import 'package:worktime_app/repositories/inventory_repository.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
 
-/// Simuliert eine offline/fehlschlagende Cloud: Inventar-Schreibzugriffe werfen,
-/// Streams bleiben leer (echte Fake-Firestore).
-class _OfflineFirestoreService extends FirestoreService {
-  _OfflineFirestoreService({required super.firestore});
+/// Handgeschriebener Fake (kein Mockito): delegiert an ein echtes
+/// FirestoreInventoryRepository, laesst aber saveProduct fehlschlagen, um den
+/// hybrid-Offline-Fallback des Providers zu testen. Haengt damit an der
+/// InventoryRepository-Abstraktion statt an der konkreten FirestoreService.
+class _OfflineInventoryRepository implements InventoryRepository {
+  _OfflineInventoryRepository(FakeFirebaseFirestore firestore)
+      : _delegate = FirestoreInventoryRepository(firestore: firestore);
+
+  final InventoryRepository _delegate;
 
   @override
   Future<void> saveProduct(Product product) async {
     throw Exception('offline');
   }
+
+  @override
+  Stream<List<Supplier>> watchSuppliers(String orgId) =>
+      _delegate.watchSuppliers(orgId);
+
+  @override
+  Stream<List<Product>> watchProducts(String orgId) =>
+      _delegate.watchProducts(orgId);
+
+  @override
+  Stream<List<PurchaseOrder>> watchPurchaseOrders(String orgId) =>
+      _delegate.watchPurchaseOrders(orgId);
+
+  @override
+  Stream<List<StockMovement>> watchStockMovements(
+    String orgId, {
+    String? productId,
+    int limit = 100,
+  }) =>
+      _delegate.watchStockMovements(orgId, productId: productId, limit: limit);
+
+  @override
+  Future<void> deleteSupplier({
+    required String orgId,
+    required String supplierId,
+  }) =>
+      _delegate.deleteSupplier(orgId: orgId, supplierId: supplierId);
+
+  @override
+  Future<void> saveSupplier(Supplier supplier) =>
+      _delegate.saveSupplier(supplier);
+
+  @override
+  Future<void> deleteProduct({
+    required String orgId,
+    required String productId,
+  }) =>
+      _delegate.deleteProduct(orgId: orgId, productId: productId);
+
+  @override
+  Future<int> adjustProductStock({
+    required String orgId,
+    required String productId,
+    required int delta,
+    required StockMovementType type,
+    String? reason,
+    String? relatedOrderId,
+    String? createdByUid,
+    String? clientMutationId,
+  }) =>
+      _delegate.adjustProductStock(
+        orgId: orgId,
+        productId: productId,
+        delta: delta,
+        type: type,
+        reason: reason,
+        relatedOrderId: relatedOrderId,
+        createdByUid: createdByUid,
+        clientMutationId: clientMutationId,
+      );
+
+  @override
+  Future<String> savePurchaseOrder(PurchaseOrder order) =>
+      _delegate.savePurchaseOrder(order);
+
+  @override
+  Future<void> deletePurchaseOrder({
+    required String orgId,
+    required String orderId,
+  }) =>
+      _delegate.deletePurchaseOrder(orgId: orgId, orderId: orderId);
+
+  @override
+  Future<void> receivePurchaseOrder({
+    required String orgId,
+    required String orderId,
+    required Map<int, int> receivedByItemIndex,
+    String? createdByUid,
+    String? clientMutationId,
+  }) =>
+      _delegate.receivePurchaseOrder(
+        orgId: orgId,
+        orderId: orderId,
+        receivedByItemIndex: receivedByItemIndex,
+        createdByUid: createdByUid,
+        clientMutationId: clientMutationId,
+      );
 }
 
 void main() {
@@ -224,9 +318,11 @@ void main() {
     test(
         'hybrid-Offline: fehlgeschlagener Cloud-Write wirft nicht und wird '
         'lokal persistiert', () async {
-      final offline = _OfflineFirestoreService(firestore: firestore);
       // Kein disableAuthentication -> Hybrid-Modus moeglich.
-      final provider = InventoryProvider(firestoreService: offline);
+      final provider = InventoryProvider(
+        firestoreService: firestoreService,
+        inventoryRepository: _OfflineInventoryRepository(firestore),
+      );
       await provider.updateSession(user, hybridStorageEnabled: true);
 
       // Darf NICHT werfen (frueher: harter Fehler + Datenverlust).

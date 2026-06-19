@@ -11,6 +11,7 @@ import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
+import '../repositories/inventory_repository.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
 
@@ -24,14 +25,18 @@ import '../services/firestore_service.dart';
 class InventoryProvider extends ChangeNotifier {
   InventoryProvider({
     required FirestoreService firestoreService,
+    InventoryRepository? inventoryRepository,
     bool? disableAuthentication,
     Uuid? uuid,
-  })  : _firestoreService = firestoreService,
+  })  : _inventory =
+            inventoryRepository ?? firestoreService.inventoryRepository,
         _uuid = uuid ?? const Uuid(),
         _forceLocalStorage =
             disableAuthentication ?? AppConfig.disableAuthentication;
 
-  final FirestoreService _firestoreService;
+  // Provider haengt an der Repository-Abstraktion, nicht mehr an der konkreten
+  // FirestoreService-Klasse (no-domain-repository-interfaces-dip).
+  final InventoryRepository _inventory;
   final Uuid _uuid;
   final bool _forceLocalStorage;
   bool _localStorageOnly = false;
@@ -315,26 +320,26 @@ class InventoryProvider extends ChangeNotifier {
     _safeNotify();
 
     _suppliersSubscription =
-        _firestoreService.watchSuppliers(orgId).listen((items) {
+        _inventory.watchSuppliers(orgId).listen((items) {
       _suppliers = items;
       _loading = false;
       _safeNotify();
     }, onError: _setError);
 
     _productsSubscription =
-        _firestoreService.watchProducts(orgId).listen((items) {
+        _inventory.watchProducts(orgId).listen((items) {
       _products = items;
       _safeNotify();
     }, onError: _setError);
 
     _ordersSubscription =
-        _firestoreService.watchPurchaseOrders(orgId).listen((items) {
+        _inventory.watchPurchaseOrders(orgId).listen((items) {
       _orders = items;
       _safeNotify();
     }, onError: _setError);
 
     _movementsSubscription =
-        _firestoreService.watchStockMovements(orgId).listen((items) {
+        _inventory.watchStockMovements(orgId).listen((items) {
       _movements = items;
       _safeNotify();
     }, onError: _setError);
@@ -370,7 +375,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'saveSupplier',
-          () => _firestoreService.saveSupplier(prepared),
+          () => _inventory.saveSupplier(prepared),
         )) {
       return;
     }
@@ -395,7 +400,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'deleteSupplier',
-          () => _firestoreService.deleteSupplier(
+          () => _inventory.deleteSupplier(
             orgId: orgId,
             supplierId: supplierId,
           ),
@@ -423,7 +428,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'saveProduct',
-          () => _firestoreService.saveProduct(prepared),
+          () => _inventory.saveProduct(prepared),
         )) {
       return;
     }
@@ -448,7 +453,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'deleteProduct',
-          () => _firestoreService.deleteProduct(
+          () => _inventory.deleteProduct(
             orgId: orgId,
             productId: productId,
           ),
@@ -479,7 +484,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'adjustStock',
-          () => _firestoreService.adjustProductStock(
+          () => _inventory.adjustProductStock(
             orgId: orgId,
             productId: productId,
             delta: delta,
@@ -533,7 +538,7 @@ class InventoryProvider extends ChangeNotifier {
     );
     if (_usesFirestore) {
       try {
-        return await _firestoreService.savePurchaseOrder(prepared);
+        return await _inventory.savePurchaseOrder(prepared);
       } catch (error) {
         if (!usesHybridStorage) {
           rethrow;
@@ -589,7 +594,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'deletePurchaseOrder',
-          () => _firestoreService.deletePurchaseOrder(
+          () => _inventory.deletePurchaseOrder(
             orgId: orgId,
             orderId: orderId,
           ),
@@ -616,7 +621,7 @@ class InventoryProvider extends ChangeNotifier {
     if (_usesFirestore &&
         await _tryFirestore(
           'receiveOrder',
-          () => _firestoreService.receivePurchaseOrder(
+          () => _inventory.receivePurchaseOrder(
             orgId: orgId,
             orderId: orderId,
             receivedByItemIndex: receivedByItemIndex,
