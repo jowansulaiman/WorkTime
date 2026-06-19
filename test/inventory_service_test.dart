@@ -111,6 +111,34 @@ void main() {
       expect(numbers.any((n) => n?.endsWith('0002') ?? false), isTrue);
     });
 
+    test('savePurchaseOrder vergibt monoton steigende, eindeutige Nummern',
+        () async {
+      for (var i = 0; i < 3; i++) {
+        await service.savePurchaseOrder(
+          PurchaseOrder(
+            orgId: orgId,
+            siteId: 'site-1',
+            supplierId: 'sup-1',
+            items: [
+              PurchaseOrderItem(name: 'Artikel $i', quantityOrdered: 1),
+            ],
+          ),
+        );
+      }
+
+      final orders = await service.watchPurchaseOrders(orgId).first;
+      final suffixes = orders
+          .map((o) => o.orderNumber)
+          .whereType<String>()
+          .map((n) => n.split('-').last)
+          .toList()
+        ..sort();
+      expect(suffixes.toSet().length, suffixes.length,
+          reason: 'Nummern sind paarweise verschieden');
+      expect(suffixes, ['0001', '0002', '0003'],
+          reason: 'Sequenz ist monoton ab 0001');
+    });
+
     test('receivePurchaseOrder books a partial then full delivery', () async {
       final productId =
           await seedProduct(name: 'Feuerzeug', currentStock: 5, minStock: 10);

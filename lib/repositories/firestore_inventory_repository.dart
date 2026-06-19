@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:uuid/uuid.dart';
 
+import '../core/error_reporter.dart';
+import '../core/retry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
@@ -11,10 +14,14 @@ import 'inventory_repository.dart';
 /// firestore-service-god-object). Reiner Cloud-Datenzugriff; die
 /// Speicherstrategie (cloud/hybrid/local) liegt weiterhin im Provider.
 class FirestoreInventoryRepository implements InventoryRepository {
-  FirestoreInventoryRepository({required FirebaseFirestore firestore})
-      : _firestore = firestore;
+  FirestoreInventoryRepository({
+    required FirebaseFirestore firestore,
+    Uuid? uuid,
+  })  : _firestore = firestore,
+        _uuid = uuid ?? const Uuid();
 
   final FirebaseFirestore _firestore;
+  final Uuid _uuid;
 
   DocumentReference<Map<String, dynamic>> _organizationDoc(String orgId) =>
       _firestore.collection('organizations').doc(orgId);
@@ -348,22 +355,36 @@ class FirestoreInventoryRepository implements InventoryRepository {
         _organizationDoc(orgId).collection('counters').doc('purchaseOrders');
     final now = DateTime.now();
     try {
-      final seq = await _firestore.runTransaction<int>((transaction) async {
-        final snapshot = await transaction.get(counterRef);
-        final current = (snapshot.data()?['seq'] as num?)?.toInt() ?? 0;
-        final next = current + 1;
-        transaction.set(counterRef, {
-          'seq': next,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-        return next;
-      });
+      // Die Zaehler-Transaktion ist atomar und idempotent (committet
+      // entweder ganz oder gar nicht) -> transiente Fehler duerfen mit
+      // Backoff wiederholt werden, ohne den Zaehler doppelt zu erhoehen.
+      final seq = await retryTransient(
+        () => _firestore.runTransaction<int>((transaction) async {
+          final snapshot = await transaction.get(counterRef);
+          final current = (snapshot.data()?['seq'] as num?)?.toInt() ?? 0;
+          final next = current + 1;
+          transaction.set(counterRef, {
+            'seq': next,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+          return next;
+        }),
+      );
       return 'BST-${now.year}-${seq.toString().padLeft(4, '0')}';
-    } catch (_) {
-      // Fallback ohne Zaehler (z.B. eingeschraenkte Rechte): zeitbasiert.
+    } catch (error, stack) {
+      // Zaehler dauerhaft nicht verfuegbar (z.B. eingeschraenkte Rechte oder
+      // anhaltend transienter Fehler). Statt den Fehler still zu schlucken
+      // melden wir ihn und vergeben eine zeitbasierte Nummer MIT UUID-Suffix,
+      // damit parallele Bestellungen in derselben Minute nicht kollidieren.
+      ErrorReporter.report(
+        error,
+        stack,
+        context: 'Bestellnummern-Zaehler nicht verfuegbar, Fallback aktiv',
+      );
       final stamp =
           '${now.year}${_two(now.month)}${_two(now.day)}-${_two(now.hour)}${_two(now.minute)}';
-      return 'BST-$stamp';
+      final suffix = _uuid.v4().substring(0, 4).toUpperCase();
+      return 'BST-$stamp-$suffix';
     }
   }
 
