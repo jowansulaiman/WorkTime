@@ -268,6 +268,9 @@ class DatabaseService {
     );
   }
 
+  // SICHERHEIT (no-secure-storage-for-sensitive): enthaelt PII (E-Mail, Rolle).
+  // Klartext-JSON in SharedPreferences, im hybrid-Modus auch produktiv gespiegelt.
+  // Siehe ausfuehrlichen Hinweis an saveLocalEmploymentContracts.
   static Future<void> saveLocalTeamMembers(
     List<AppUserProfile> members, {
     LocalStorageScope? scope,
@@ -383,6 +386,17 @@ class DatabaseService {
     );
   }
 
+  // SICHERHEIT (no-secure-storage-for-sensitive): Arbeitsvertraege enthalten
+  // Verguetungsdaten (Cents) und werden hier als KLARTEXT-JSON in
+  // SharedPreferences abgelegt. Anders als in CLAUDE.md beschrieben werden
+  // Stammdaten im hybrid-Modus (Produktiv-Default) sehr wohl lokal gespiegelt
+  // (_storeHybridContractsSnapshot in team_provider.dart) -> die Exposition
+  // betrifft auch den Produktivbetrieb, nicht nur den local-Dev-Modus.
+  // Bedrohungsmodell fuer 2 Laeden: app-sandboxed, eigenes Geraet -> mittel.
+  // Remediation (zurueckgestellt, vgl. firebase_crashlytics-Vorgehen in Welle 1):
+  // flutter_secure_storage (Keychain/Keystore) als Backend fuer Cents/Settings,
+  // Klartext-Fallback nur auf Web. Firestores eigener Offline-Cache ist ebenfalls
+  // unverschluesselt, ersetzt also keine echte At-Rest-Verschluesselung.
   static Future<void> saveLocalEmploymentContracts(
     List<EmploymentContract> contracts, {
     LocalStorageScope? scope,
@@ -623,6 +637,9 @@ class DatabaseService {
     }
     final entries = <String, String>{
       'name': settings.name,
+      // SICHERHEIT (no-secure-storage-for-sensitive): Stundenlohn als Klartext.
+      // Geringere Sensibilitaet (eigene Daten), siehe Hinweis an
+      // saveLocalEmploymentContracts fuer die Remediation.
       'hourly_rate': settings.hourlyRate.toString(),
       'daily_hours': settings.dailyHours.toString(),
       'currency': settings.currency,
