@@ -36,11 +36,12 @@ Umgesetzt (24 von 26 Welle-1-Gaps):
 
 ## Umsetzungsstand Welle 2 (Sync-/Daten-Härtung – laufend)
 
-Verifiziert grün: `flutter analyze` = 0, `flutter test` = **136** (zwei neue Sync-Regressionstests).
+Verifiziert grün: `flutter analyze` = 0, `flutter test` = **138** (fünf neue Sync-Regressionstests).
 
 - **`blind-lww-merge-no-version` (erledigt):** `_mergeByKey` (beide Provider) hat einen optionalen `updatedAtOf`-Tie-Breaker (Last-Write-Wins) – eine lokal neuere Version wird nicht mehr von einem älteren Server-Snapshot überschrieben. Verdrahtet für Shifts (hat bereits `updatedAt`) und WorkEntry; dafür wurde ein lesbares `updatedAt` zu `WorkEntry` ergänzt (6-Serialisierungs-Regel) und lokale Schreibvorgänge stempeln es frisch. + Round-Trip-Test.
-- **`no-tombstones-for-deletes` / `no-soft-delete-tombstones` (WorkEntry erledigt):** persistierter Tombstone-Store in `DatabaseService` (`loadTombstones`/`saveTombstones`); lokale Löschungen werden gemerkt und beim Wiedereinspielen aus der Cloud (Cache, Hybrid-Merge **und** Live-Stream) gefiltert; beim `syncLocalStateToCloud` wird die Löschung in Firestore propagiert und der Tombstone aufgelöst. + Regressionstest (lokal löschen → Cloud-Modus → bleibt gelöscht).
-- **Offen (gleiches Muster):** Tombstones auf `Shift`/`AbsenceRequest` ausweiten; Outbox-Retry-Queue (`no-outbox-retry-queue`); Inventory-Hybrid-Offline (`inventory-no-offline-support`).
+- **`no-tombstones-for-deletes` / `no-soft-delete-tombstones` (erledigt für alle 3 org-Collections):** persistierter Tombstone-Store in `DatabaseService` (`loadTombstones`/`saveTombstones`). Verdrahtet in `WorkProvider` (WorkEntry) **und** `ScheduleProvider` (Shift via `deleteShift`/`deleteShiftSeries` + AbsenceRequest via `deleteAbsenceRequest`): lokale Löschungen werden gemerkt und beim Wiedereinspielen aus der Cloud (Cache, Hybrid-Merge **und** alle Live-Streams) gefiltert; in `syncLocalStateToCloud` wird die Löschung in Firestore propagiert und der Tombstone aufgelöst. + Regressionstests (WorkEntry und Shift: lokal löschen → Cloud-Modus → bleibt gelöscht).
+- **`inventory-no-offline-support` (erledigt):** `InventoryProvider` kennt jetzt `usesHybridStorage`; alle acht Mutatoren versuchen Firestore und fallen im Hybrid-Modus bei Fehler lokal zurück (`_tryFirestore`) statt hart zu werfen → kein Datenverlust mehr offline. + Regressionstest (Offline-Write wirft nicht, wird lokal persistiert).
+- **`no-outbox-retry-queue` (bewusst zurückgestellt – mit Begründung):** Eine eager Per-Mutation-Outbox, die Änderungen automatisch in die Cloud pusht, widerspricht dem zentralen Designziel des Hybrid-Modus: *bezahlte Firestore-Writes sparen* (Spark Free Tier, CLAUDE.md). Mit dem jetzt durchgängigen Hybrid-Fallback gehen Offline-Schreibvorgänge **nicht verloren** (lokal persistiert) und propagieren über `syncLocalStateToCloud` beim Moduswechsel (inkl. Tombstones). Empfohlener leichter Folgeschritt statt Voll-Outbox: `syncLocalStateToCloud` automatisch beim App-Resume bzw. beim Eintritt in einen cloud-fähigen Modus auslösen (eventual consistency ohne Per-Write-Kosten). Umsetzung nur auf ausdrücklichen Wunsch.
 
 ## Leitplanken
 

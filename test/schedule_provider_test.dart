@@ -207,6 +207,53 @@ void main() {
       expect(provider.shifts.single.title, 'Cloud-Schicht');
     });
 
+    test(
+        'tombstone: eine lokal geloeschte Schicht taucht im Cloud-Modus nicht '
+        'wieder auf', () async {
+      final remoteFirestore = FakeFirebaseFirestore();
+      final remoteService = FirestoreService(firestore: remoteFirestore);
+      final provider = ScheduleProvider(firestoreService: remoteService);
+      final shiftDay = dayInCurrentWeek(1);
+      final shiftStart = DateTime(shiftDay.year, shiftDay.month, shiftDay.day, 8);
+
+      await remoteFirestore
+          .collection('organizations')
+          .doc(adminUser.orgId)
+          .collection('shifts')
+          .doc('shift-tomb')
+          .set(
+            Shift(
+              orgId: adminUser.orgId,
+              userId: adminUser.uid,
+              employeeName: adminUser.displayName,
+              title: 'Cloud-Schicht',
+              startTime: shiftStart,
+              endTime: shiftStart.add(const Duration(hours: 8)),
+              breakMinutes: 30,
+              siteId: defaultSite.id,
+              siteName: defaultSite.name,
+              location: defaultSite.name,
+            ).toFirestoreMap(),
+          );
+
+      // local-Modus: loeschen -> Tombstone (Firestore-Doc bleibt bestehen).
+      await provider.updateSession(adminUser, localStorageOnly: true);
+      seedCompliance(provider);
+      await provider.deleteShift('shift-tomb');
+
+      // Cloud-Modus: der Stream liefert die Schicht weiter -> muss raus.
+      await provider.updateSession(adminUser, localStorageOnly: false);
+      for (var i = 0; i < 6; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(
+        provider.shifts.any((shift) => shift.id == 'shift-tomb'),
+        isFalse,
+        reason: 'Tombstone muss das Wiederauferstehen der Schicht verhindern',
+      );
+    });
+
     test('allows creating local shifts after caching cloud data locally',
         () async {
       final remoteFirestore = FakeFirebaseFirestore();

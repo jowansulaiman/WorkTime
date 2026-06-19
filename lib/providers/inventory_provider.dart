@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
+import '../core/app_logger.dart';
 import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
 import '../models/product.dart';
@@ -57,7 +58,32 @@ class InventoryProvider extends ChangeNotifier {
 
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get _usesFirestore => !usesLocalStorage;
+  bool get usesHybridStorage =>
+      !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
   String? get _orgId => _currentUser?.orgId;
+
+  /// Versucht eine Firestore-Mutation. Erfolg -> true (Aufrufer ist fertig).
+  /// Im Hybrid-Modus bei Fehler -> false (Aufrufer faellt lokal zurueck, damit
+  /// offline nichts verloren geht). Im Cloud-only-Modus wird der Fehler
+  /// durchgereicht.
+  Future<bool> _tryFirestore(
+    String label,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      AppLogger.warning(
+        'Inventory: $label offline – lokaler Fallback aktiv',
+        error: error,
+      );
+      return false;
+    }
+  }
 
   LocalStorageScope? get _localScope {
     final user = _currentUser;
@@ -329,8 +355,11 @@ class InventoryProvider extends ChangeNotifier {
       orgId: orgId,
       createdByUid: supplier.createdByUid ?? _currentUser?.uid,
     );
-    if (_usesFirestore) {
-      await _firestoreService.saveSupplier(prepared);
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveSupplier',
+          () => _firestoreService.saveSupplier(prepared),
+        )) {
       return;
     }
     _upsertLocal(
@@ -351,11 +380,14 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
-    if (_usesFirestore) {
-      await _firestoreService.deleteSupplier(
-        orgId: orgId,
-        supplierId: supplierId,
-      );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteSupplier',
+          () => _firestoreService.deleteSupplier(
+            orgId: orgId,
+            supplierId: supplierId,
+          ),
+        )) {
       return;
     }
     _suppliers = _suppliers
@@ -376,8 +408,11 @@ class InventoryProvider extends ChangeNotifier {
       orgId: orgId,
       createdByUid: product.createdByUid ?? _currentUser?.uid,
     );
-    if (_usesFirestore) {
-      await _firestoreService.saveProduct(prepared);
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveProduct',
+          () => _firestoreService.saveProduct(prepared),
+        )) {
       return;
     }
     _upsertLocal(
@@ -398,11 +433,14 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
-    if (_usesFirestore) {
-      await _firestoreService.deleteProduct(
-        orgId: orgId,
-        productId: productId,
-      );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteProduct',
+          () => _firestoreService.deleteProduct(
+            orgId: orgId,
+            productId: productId,
+          ),
+        )) {
       return;
     }
     _products = _products
@@ -423,15 +461,18 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null || delta == 0) {
       return;
     }
-    if (_usesFirestore) {
-      await _firestoreService.adjustProductStock(
-        orgId: orgId,
-        productId: productId,
-        delta: delta,
-        type: type,
-        reason: reason,
-        createdByUid: _currentUser?.uid,
-      );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'adjustStock',
+          () => _firestoreService.adjustProductStock(
+            orgId: orgId,
+            productId: productId,
+            delta: delta,
+            type: type,
+            reason: reason,
+            createdByUid: _currentUser?.uid,
+          ),
+        )) {
       return;
     }
     _applyLocalStockChange(
@@ -475,7 +516,17 @@ class InventoryProvider extends ChangeNotifier {
       createdByUid: order.createdByUid ?? _currentUser?.uid,
     );
     if (_usesFirestore) {
-      return _firestoreService.savePurchaseOrder(prepared);
+      try {
+        return await _firestoreService.savePurchaseOrder(prepared);
+      } catch (error) {
+        if (!usesHybridStorage) {
+          rethrow;
+        }
+        AppLogger.warning(
+          'Inventory: savePurchaseOrder offline – lokaler Fallback aktiv',
+          error: error,
+        );
+      }
     }
     final withId = prepared.id == null
         ? prepared.copyWith(
@@ -519,11 +570,14 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
-    if (_usesFirestore) {
-      await _firestoreService.deletePurchaseOrder(
-        orgId: orgId,
-        orderId: orderId,
-      );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deletePurchaseOrder',
+          () => _firestoreService.deletePurchaseOrder(
+            orgId: orgId,
+            orderId: orderId,
+          ),
+        )) {
       return;
     }
     _orders =
@@ -542,13 +596,16 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
-    if (_usesFirestore) {
-      await _firestoreService.receivePurchaseOrder(
-        orgId: orgId,
-        orderId: orderId,
-        receivedByItemIndex: receivedByItemIndex,
-        createdByUid: _currentUser?.uid,
-      );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'receiveOrder',
+          () => _firestoreService.receivePurchaseOrder(
+            orgId: orgId,
+            orderId: orderId,
+            receivedByItemIndex: receivedByItemIndex,
+            createdByUid: _currentUser?.uid,
+          ),
+        )) {
       return;
     }
     _applyLocalReceipt(orderId, receivedByItemIndex);

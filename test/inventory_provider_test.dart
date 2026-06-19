@@ -11,6 +11,17 @@ import 'package:worktime_app/providers/inventory_provider.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
 
+/// Simuliert eine offline/fehlschlagende Cloud: Inventar-Schreibzugriffe werfen,
+/// Streams bleiben leer (echte Fake-Firestore).
+class _OfflineFirestoreService extends FirestoreService {
+  _OfflineFirestoreService({required super.firestore});
+
+  @override
+  Future<void> saveProduct(Product product) async {
+    throw Exception('offline');
+  }
+}
+
 void main() {
   // Nicht-Demo-Nutzer, damit _maybeSeedLocalDemo NICHT greift und wir mit
   // leerem lokalen Bestand starten.
@@ -208,6 +219,31 @@ void main() {
         ),
       );
       expect(provider.openOrders, hasLength(1));
+    });
+
+    test(
+        'hybrid-Offline: fehlgeschlagener Cloud-Write wirft nicht und wird '
+        'lokal persistiert', () async {
+      final offline = _OfflineFirestoreService(firestore: firestore);
+      // Kein disableAuthentication -> Hybrid-Modus moeglich.
+      final provider = InventoryProvider(firestoreService: offline);
+      await provider.updateSession(user, hybridStorageEnabled: true);
+
+      // Darf NICHT werfen (frueher: harter Fehler + Datenverlust).
+      await provider.saveProduct(
+        const Product(
+          id: 'p-offline',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Offline-Artikel',
+        ),
+      );
+
+      // Lokaler Fallback hat den Artikel persistiert.
+      final persisted = await DatabaseService.loadLocalProducts(
+        scope: LocalStorageScope.fromUser(user),
+      );
+      expect(persisted.any((p) => p.id == 'p-offline'), isTrue);
     });
 
     test('updateSession(null) setzt den Zustand zurueck', () async {

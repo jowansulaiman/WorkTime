@@ -128,6 +128,10 @@ class ScheduleProvider extends ChangeNotifier {
   List<Shift> _localShifts = [];
   List<ShiftTemplate> _localShiftTemplates = [];
   List<AbsenceRequest> _localAbsenceRequests = [];
+  // Lokal geloeschte IDs (Tombstones), die ein Wieder-Einspielen aus der Cloud
+  // unterdruecken, bis die Loeschung propagiert wurde.
+  Set<String> _deletedShiftIds = <String>{};
+  Set<String> _deletedAbsenceIds = <String>{};
   List<AppUserProfile> _orgMembers = [];
   List<EmploymentContract> _contracts = [];
   List<EmployeeSiteAssignment> _siteAssignments = [];
@@ -687,6 +691,7 @@ class ScheduleProvider extends ChangeNotifier {
         _localShifts,
         scope: _localScope,
       );
+      await _recordShiftTombstone(shiftId);
       _applyLocalState();
       notifyListeners();
       return;
@@ -696,6 +701,14 @@ class ScheduleProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       shiftId: shiftId,
     );
+    if (_deletedShiftIds.remove(shiftId)) {
+      await DatabaseService.saveTombstones(
+        DatabaseService.shiftsCollection,
+        _deletedShiftIds,
+        scope: _localScope,
+      );
+    }
+    _localShifts.removeWhere((shift) => shift.id == shiftId);
   }
 
   Future<void> publishShifts(
@@ -751,11 +764,19 @@ class ScheduleProvider extends ChangeNotifier {
     }
 
     if (usesLocalStorage) {
+      final removedIds = _localShifts
+          .where((shift) => shift.seriesId == seriesId)
+          .map((shift) => shift.id)
+          .whereType<String>()
+          .toList(growable: false);
       _localShifts.removeWhere((shift) => shift.seriesId == seriesId);
       await DatabaseService.saveLocalShifts(
         _localShifts,
         scope: _localScope,
       );
+      for (final id in removedIds) {
+        await _recordShiftTombstone(id);
+      }
       _applyLocalState();
       notifyListeners();
       return;
@@ -859,6 +880,7 @@ class ScheduleProvider extends ChangeNotifier {
         _localAbsenceRequests,
         scope: _localScope,
       );
+      await _recordAbsenceTombstone(requestId);
       _applyLocalState();
       notifyListeners();
       return;
@@ -868,6 +890,14 @@ class ScheduleProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       requestId: requestId,
     );
+    if (_deletedAbsenceIds.remove(requestId)) {
+      await DatabaseService.saveTombstones(
+        DatabaseService.absenceRequestsCollection,
+        _deletedAbsenceIds,
+        scope: _localScope,
+      );
+    }
+    _localAbsenceRequests.removeWhere((item) => item.id == requestId);
   }
 
   Future<void> reviewAbsenceRequest({
@@ -1278,9 +1308,13 @@ class ScheduleProvider extends ChangeNotifier {
 
     final filterUserId = currentUser.canManageShifts ? null : currentUser.uid;
     _localShifts = [
-      ...await _firestoreService.getAllShifts(
-        orgId: currentUser.orgId,
-        userId: filterUserId,
+      ..._withoutTombstoned(
+        await _firestoreService.getAllShifts(
+          orgId: currentUser.orgId,
+          userId: filterUserId,
+        ),
+        (shift) => shift.id,
+        _deletedShiftIds,
       ),
     ];
     _localShiftTemplates = currentUser.canManageShifts
@@ -1292,9 +1326,13 @@ class ScheduleProvider extends ChangeNotifier {
           ]
         : <ShiftTemplate>[];
     _localAbsenceRequests = [
-      ...await _firestoreService.getAllAbsenceRequests(
-        orgId: currentUser.orgId,
-        userId: filterUserId,
+      ..._withoutTombstoned(
+        await _firestoreService.getAllAbsenceRequests(
+          orgId: currentUser.orgId,
+          userId: filterUserId,
+        ),
+        (request) => request.id,
+        _deletedAbsenceIds,
       ),
     ];
     await DatabaseService.saveLocalShifts(
@@ -1330,6 +1368,31 @@ class ScheduleProvider extends ChangeNotifier {
         }
       }
 
+      // Lokal geloeschte Schichten in die Cloud propagieren, Tombstones aufloesen.
+      if (_deletedShiftIds.isNotEmpty) {
+        final propagated = <String>{};
+        for (final id in _deletedShiftIds) {
+          try {
+            await _firestoreService.deleteShift(
+              orgId: currentUser.orgId,
+              shiftId: id,
+            );
+            propagated.add(id);
+          } catch (error) {
+            AppLogger.warning('syncLocalStateToCloud(schedule): Loeschung von '
+                'Schicht $id konnte nicht propagiert werden: $error');
+          }
+        }
+        if (propagated.isNotEmpty) {
+          _deletedShiftIds.removeAll(propagated);
+          await DatabaseService.saveTombstones(
+            DatabaseService.shiftsCollection,
+            _deletedShiftIds,
+            scope: _localScope,
+          );
+        }
+      }
+
       for (final template in _localShiftTemplates.where(
         (item) => item.orgId == currentUser.orgId,
       )) {
@@ -1351,6 +1414,31 @@ class ScheduleProvider extends ChangeNotifier {
       } catch (error) {
         AppLogger.warning('syncLocalStateToCloud(schedule): Abwesenheitsantrag '
             'konnte nicht geschrieben werden: $error');
+      }
+    }
+
+    // Lokal geloeschte Abwesenheiten in die Cloud propagieren, Tombstones loesen.
+    if (_deletedAbsenceIds.isNotEmpty) {
+      final propagated = <String>{};
+      for (final id in _deletedAbsenceIds) {
+        try {
+          await _firestoreService.deleteAbsenceRequest(
+            orgId: currentUser.orgId,
+            requestId: id,
+          );
+          propagated.add(id);
+        } catch (error) {
+          AppLogger.warning('syncLocalStateToCloud(schedule): Loeschung von '
+              'Abwesenheit $id konnte nicht propagiert werden: $error');
+        }
+      }
+      if (propagated.isNotEmpty) {
+        _deletedAbsenceIds.removeAll(propagated);
+        await DatabaseService.saveTombstones(
+          DatabaseService.absenceRequestsCollection,
+          _deletedAbsenceIds,
+          scope: _localScope,
+        );
       }
     }
   }
@@ -1396,13 +1484,18 @@ class ScheduleProvider extends ChangeNotifier {
       )
           .listen((items) {
         oldShiftsSub?.cancel();
-        _shifts = items;
+        final visible = _withoutTombstoned(
+          items,
+          (shift) => shift.id,
+          _deletedShiftIds,
+        ).toList(growable: false);
+        _shifts = visible;
         _loading = false;
         _errorMessage = null;
         if (usesHybridStorage) {
           unawaited(
             _storeHybridShiftSnapshot(
-              items,
+              visible,
               start: range.start,
               end: range.end,
               filterUserId: filterUserId,
@@ -1453,9 +1546,14 @@ class ScheduleProvider extends ChangeNotifier {
     )
         .listen((items) {
       oldAllAbsenceSub?.cancel();
-      _allAbsenceRequests = items;
+      final visible = _withoutTombstoned(
+        items,
+        (request) => request.id,
+        _deletedAbsenceIds,
+      ).toList(growable: false);
+      _allAbsenceRequests = visible;
       if (usesHybridStorage) {
-        unawaited(_storeHybridAbsenceRequestsSnapshot(items));
+        unawaited(_storeHybridAbsenceRequestsSnapshot(visible));
       }
       _safeNotify();
     }, onError: (Object error) {
@@ -1473,7 +1571,11 @@ class ScheduleProvider extends ChangeNotifier {
     )
         .listen((items) {
       oldAbsenceSub?.cancel();
-      _absenceRequests = items;
+      _absenceRequests = _withoutTombstoned(
+        items,
+        (request) => request.id,
+        _deletedAbsenceIds,
+      ).toList(growable: false);
       _safeNotify();
     }, onError: (Object error) {
       oldAbsenceSub?.cancel();
@@ -1492,6 +1594,14 @@ class ScheduleProvider extends ChangeNotifier {
         await DatabaseService.loadLocalShiftTemplates(scope: _localScope);
     _localAbsenceRequests =
         await DatabaseService.loadLocalAbsenceRequests(scope: _localScope);
+    _deletedShiftIds = await DatabaseService.loadTombstones(
+      DatabaseService.shiftsCollection,
+      scope: _localScope,
+    );
+    _deletedAbsenceIds = await DatabaseService.loadTombstones(
+      DatabaseService.absenceRequestsCollection,
+      scope: _localScope,
+    );
     _applyLocalState();
     notifyListeners();
   }
@@ -1598,7 +1708,7 @@ class ScheduleProvider extends ChangeNotifier {
       ...unaffectedShifts,
       ..._mergeByKey(
         scopedLocalShifts,
-        items,
+        _withoutTombstoned(items, (shift) => shift.id, _deletedShiftIds),
         (shift) => shift.id?.trim().isNotEmpty == true
             ? 'id:${shift.id}'
             : 'shift:${shift.userId}:${shift.startTime.toIso8601String()}:${shift.endTime.toIso8601String()}',
@@ -1639,7 +1749,7 @@ class ScheduleProvider extends ChangeNotifier {
     }
     _localAbsenceRequests = _mergeByKey(
       _localAbsenceRequests,
-      items,
+      _withoutTombstoned(items, (request) => request.id, _deletedAbsenceIds),
       (request) => request.id?.trim().isNotEmpty == true
           ? 'id:${request.id}'
           : 'absence:${request.userId}:${request.startDate.toIso8601String()}:${request.endDate.toIso8601String()}:${request.type.value}',
@@ -1699,6 +1809,40 @@ class ScheduleProvider extends ChangeNotifier {
   Future<void> _persistLocalAbsenceRequests() {
     return DatabaseService.saveLocalAbsenceRequests(
       _localAbsenceRequests,
+      scope: _localScope,
+    );
+  }
+
+  /// Filtert aus der Cloud kommende Elemente heraus, die lokal als geloescht
+  /// markiert sind (Tombstone) – verhindert Wiederauferstehen beim Mode-Switch.
+  Iterable<T> _withoutTombstoned<T>(
+    Iterable<T> items,
+    String? Function(T item) idOf,
+    Set<String> tombstones,
+  ) {
+    if (tombstones.isEmpty) {
+      return items;
+    }
+    return items.where((item) {
+      final id = idOf(item)?.trim();
+      return id == null || id.isEmpty || !tombstones.contains(id);
+    });
+  }
+
+  Future<void> _recordShiftTombstone(String id) async {
+    _deletedShiftIds.add(id);
+    await DatabaseService.saveTombstones(
+      DatabaseService.shiftsCollection,
+      _deletedShiftIds,
+      scope: _localScope,
+    );
+  }
+
+  Future<void> _recordAbsenceTombstone(String id) async {
+    _deletedAbsenceIds.add(id);
+    await DatabaseService.saveTombstones(
+      DatabaseService.absenceRequestsCollection,
+      _deletedAbsenceIds,
       scope: _localScope,
     );
   }
