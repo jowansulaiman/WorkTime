@@ -72,6 +72,15 @@ class FirestoreService {
   DocumentReference<Map<String, dynamic>> _organizationDoc(String orgId) =>
       _firestore.collection('organizations').doc(orgId);
 
+  /// Liest das org-skopierte Remote-Config-Doc (Feature-Flags + Mindest-Build,
+  /// no-feature-flags-force-update). Gibt null zurueck, wenn das Doc fehlt
+  /// (-> keine Einschraenkungen, fail-open).
+  Future<Map<String, dynamic>?> fetchAppConfig(String orgId) async {
+    final snapshot =
+        await _organizationDoc(orgId).collection('config').doc('appFlags').get();
+    return snapshot.data();
+  }
+
   CollectionReference<Map<String, dynamic>> _entryCollection(String orgId) =>
       _organizationDoc(orgId).collection('workEntries');
 

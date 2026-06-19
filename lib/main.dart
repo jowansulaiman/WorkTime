@@ -15,6 +15,7 @@ import 'core/app_logger.dart';
 import 'core/error_reporter.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
+import 'providers/feature_flag_provider.dart';
 import 'providers/inventory_provider.dart';
 import 'providers/schedule_provider.dart';
 import 'providers/storage_mode_provider.dart';
@@ -22,6 +23,7 @@ import 'providers/team_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/work_provider.dart';
 import 'screens/auth_screen.dart';
+import 'screens/force_update_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/auth_service.dart';
 import 'services/firestore_service.dart';
@@ -205,6 +207,24 @@ class WorkTimeApp extends StatelessWidget {
         ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
         ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
         ChangeNotifierProvider(create: (_) => StorageModeProvider()..init()),
+        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
+            FeatureFlagProvider>(
+          create: (_) =>
+              FeatureFlagProvider(firestoreService: firestoreService),
+          update: (_, auth, storage, provider) {
+            provider ??=
+                FeatureFlagProvider(firestoreService: firestoreService);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'FeatureFlagProvider.updateSession',
+            );
+            return provider;
+          },
+        ),
         ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
             TeamProvider>(
           create: (_) => TeamProvider(
@@ -505,6 +525,18 @@ class _AuthGate extends StatelessWidget {
     final profile = auth.profile;
     if (profile != null && !profile.isActive) {
       return const AccessBlockedScreen();
+    }
+
+    // Force-Update-Gate: nur echte Release-Builds (buildNumber > 0), die der
+    // Server explizit unterhalb der Mindest-Build-Nummer einstuft, werden
+    // blockiert (no-feature-flags-force-update, fail-open).
+    final featureFlags = context.watch<FeatureFlagProvider>();
+    if (featureFlags.requiresUpdate) {
+      return ForceUpdateScreen(
+        message: featureFlags.updateMessage,
+        minimumBuildNumber: featureFlags.minimumBuildNumber,
+        currentBuildNumber: featureFlags.currentBuildNumber,
+      );
     }
 
     return const HomeScreen();

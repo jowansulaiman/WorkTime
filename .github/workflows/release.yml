@@ -25,6 +25,9 @@ jobs:
   web-deploy:
     name: Web build & Firebase Hosting deploy
     runs-on: ubuntu-latest
+    # Secrets in if-Conditions sind nicht erlaubt -> auf Job-env spiegeln.
+    env:
+      HAS_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -39,9 +42,12 @@ jobs:
           CONFIG: ${{ secrets.FIREBASE_CONFIG_JSON }}
         run: printf '%s' "$CONFIG" > release_config.json
       - name: Build web
-        run: flutter build web --release --dart-define-from-file=release_config.json
+        run: >
+          flutter build web --release
+          --dart-define-from-file=release_config.json
+          --dart-define=APP_BUILD_NUMBER=${{ github.run_number }}
       - name: Deploy to Firebase Hosting
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        if: ${{ env.HAS_SERVICE_ACCOUNT == 'true' }}
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
@@ -52,6 +58,9 @@ jobs:
   android-aab:
     name: Android App Bundle (obfuscated)
     runs-on: ubuntu-latest
+    # Secrets in if-Conditions sind nicht erlaubt -> auf Job-env spiegeln.
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -70,7 +79,7 @@ jobs:
           CONFIG: ${{ secrets.FIREBASE_CONFIG_JSON }}
         run: printf '%s' "$CONFIG" > release_config.json
       - name: Materialise upload keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_KEYSTORE == 'true' }}
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -90,6 +99,7 @@ jobs:
         run: >
           flutter build appbundle --release
           --dart-define-from-file=release_config.json
+          --dart-define=APP_BUILD_NUMBER=${{ github.run_number }}
           --obfuscate --split-debug-info=build/symbols
           --build-name=${{ env.VERSION_NAME }}
           --build-number=${{ github.run_number }}
@@ -126,6 +136,7 @@ jobs:
         run: >
           flutter build ipa --release --no-codesign
           --dart-define-from-file=release_config.json
+          --dart-define=APP_BUILD_NUMBER=${{ github.run_number }}
           --obfuscate --split-debug-info=build/symbols
           --build-name=${{ env.VERSION_NAME }}
           --build-number=${{ github.run_number }}

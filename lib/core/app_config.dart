@@ -28,6 +28,15 @@ class AppConfig {
     defaultValue: 'europe-west3',
   );
 
+  /// Build-Nummer dieses Binaries (no-feature-flags-force-update). Wird von der
+  /// Release-Pipeline via `--dart-define=APP_BUILD_NUMBER=<github.run_number>`
+  /// gesetzt; lokale/Dev-Builds bleiben bei 0 und werden NIE per Force-Update
+  /// blockiert (siehe FeatureFlagProvider.requiresUpdate).
+  static const int buildNumber = int.fromEnvironment(
+    'APP_BUILD_NUMBER',
+    defaultValue: 0,
+  );
+
   static List<String> get bootstrapAdminEmailList => bootstrapAdminEmails
       .split(',')
       .map((value) => value.trim().toLowerCase())
