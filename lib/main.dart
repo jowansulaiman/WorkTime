@@ -8,6 +8,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 
+import 'core/accessibility.dart';
 import 'core/app_config.dart';
 import 'core/app_logger.dart';
 import 'core/error_reporter.dart';
@@ -306,6 +307,17 @@ class WorkTimeApp extends StatelessWidget {
             Locale('en', 'US'),
           ],
           locale: themeProvider.locale,
+          builder: (context, child) {
+            // Sehr große System-Textskalierung clampen, damit Komponenten mit
+            // fixen Höhen nicht überlaufen (no-textscaler-reduce-motion).
+            final mediaQuery = MediaQuery.of(context);
+            return MediaQuery(
+              data: mediaQuery.copyWith(
+                textScaler: clampTextScaler(mediaQuery.textScaler),
+              ),
+              child: child ?? const SizedBox.shrink(),
+            );
+          },
           home: const _AuthGate(),
         ),
       ),

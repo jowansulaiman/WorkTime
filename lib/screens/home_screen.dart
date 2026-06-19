@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
 
+import '../core/accessibility.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/employee_site_assignment.dart';
@@ -5356,7 +5357,9 @@ class _SlideClockActionState extends State<_SlideClockAction> {
                                 }
                               },
                         child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 140),
+                          duration: context.motionDuration(
+                            const Duration(milliseconds: 140),
+                          ),
                           width: knobSize,
                           height: knobSize,
                           decoration: BoxDecoration(
