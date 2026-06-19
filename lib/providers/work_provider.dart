@@ -24,6 +24,7 @@ import '../services/firestore_service.dart';
 import 'schedule_provider.dart';
 import '../core/app_logger.dart';
 import '../core/error_reporter.dart';
+import '../core/performance_service.dart';
 
 const _clockInKey = 'clock_in_time';
 const _clockInSiteIdKey = 'clock_in_site_id';
@@ -228,6 +229,14 @@ class WorkProvider extends ChangeNotifier {
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
 
+  /// Kurzlabel des aktiven Speichermodus für Performance-/Telemetrie-Metadaten
+  /// (enthält bewusst keine personenbezogenen Daten).
+  String get _storageModeLabel => usesLocalStorage
+      ? 'local'
+      : usesHybridStorage
+          ? 'hybrid'
+          : 'cloud';
+
   double get totalHoursThisMonth =>
       _entries.fold(0, (sum, entry) => sum + entry.workedHours);
 
@@ -427,7 +436,16 @@ class WorkProvider extends ChangeNotifier {
     await _restartReportSubscription();
   }
 
-  Future<void> addEntry(WorkEntry entry) async {
+  Future<void> addEntry(WorkEntry entry) {
+    // Custom Trace um den kritischen Speicher-Ablauf (no-perf-traces-critical-flows).
+    return PerformanceService.traceCriticalFlow(
+      'work_add_entry',
+      () => _addEntry(entry),
+      metadata: {'storage': _storageModeLabel},
+    );
+  }
+
+  Future<void> _addEntry(WorkEntry entry) async {
     final currentUser = _currentUser;
     if (currentUser == null || !currentUser.canEditTimeEntries) {
       return;
@@ -862,7 +880,12 @@ class WorkProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> clockIn() async {
+  Future<void> clockIn() {
+    // Custom Trace um den kritischen Einstempel-Ablauf (no-perf-traces-critical-flows).
+    return PerformanceService.traceCriticalFlow('work_clock_in', _clockIn);
+  }
+
+  Future<void> _clockIn() async {
     if (_isClockBusy) return;
     _isClockBusy = true;
     try {
