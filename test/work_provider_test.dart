@@ -602,6 +602,124 @@ void main() {
     });
 
     test(
+        'cloud-Pfad vergibt vor dem Callable-Aufruf eine stabile UUID-Doc-ID '
+        '(no-idempotency-key)', () async {
+      // Regression: id darf nie null an die Callable gehen, sonst hasht der
+      // Server inhaltsbasiert und ein Retry mit geaendertem Feld dupliziert.
+      Map<String, dynamic>? capturedPayload;
+      final capturingService = FirestoreService(
+        firestore: firestore,
+        cloudFunctionInvoker: (name, payload) async {
+          capturedPayload = payload;
+          return {'issues': <dynamic>[]};
+        },
+      );
+      final provider = WorkProvider(firestoreService: capturingService);
+      await provider.updateSession(user); // cloud-Modus (weder local noch hybrid)
+      provider.updateReferenceData(
+        sites: const [],
+        contracts: const [],
+        siteAssignments: const [
+          EmployeeSiteAssignment(
+            id: 'assign-1',
+            orgId: 'org-1',
+            userId: 'employee-1',
+            siteId: 'site-1',
+            siteName: 'Berlin',
+            isPrimary: true,
+          ),
+        ],
+        ruleSets: [ComplianceRuleSet.defaultRetail('org-1')],
+        travelTimeRules: const <TravelTimeRule>[],
+      );
+      await seedCurrentShift();
+
+      final now = DateTime.now();
+      await provider.addEntry(
+        WorkEntry(
+          orgId: user.orgId,
+          userId: user.uid,
+          date: now,
+          startTime: now.subtract(const Duration(minutes: 30)),
+          endTime: now.subtract(const Duration(minutes: 5)),
+          breakMinutes: 0,
+          siteId: 'site-1',
+          siteName: 'Berlin',
+          sourceShiftId: 'shift-1',
+        ),
+      );
+
+      final entryMap = capturedPayload?['entry'] as Map<String, dynamic>?;
+      expect(entryMap, isNotNull,
+          reason: 'Callable upsertWorkEntry sollte aufgerufen worden sein');
+      final id = entryMap!['id'] as String?;
+      expect(id, isNotNull,
+          reason: 'id darf nie null an die Callable gehen (Idempotenz)');
+      expect(id, startsWith('entry-'));
+      expect(RegExp(r'^entry-[0-9a-f-]{36}$').hasMatch(id!), isTrue,
+          reason: 'id muss eine UUID v4 sein, kein reiner Timestamp');
+    });
+
+    test(
+        'lokaler Pfad vergibt UUID-IDs statt reiner Timestamp-IDs '
+        '(timestamp-ids-not-uuid)', () async {
+      final provider = WorkProvider(firestoreService: firestoreService);
+      await DatabaseService.saveLocalShifts([
+        Shift(
+          id: 'shift-1',
+          orgId: user.orgId,
+          userId: user.uid,
+          employeeName: user.displayName,
+          title: 'Tagdienst',
+          startTime: DateTime(2026, 3, 31, 8, 0),
+          endTime: DateTime(2026, 3, 31, 16, 0),
+          breakMinutes: 30,
+          siteId: 'site-1',
+          siteName: 'Berlin',
+          location: 'Berlin',
+          status: ShiftStatus.confirmed,
+        ),
+      ], scope: LocalStorageScope.fromUser(user));
+      await provider.updateSession(user, localStorageOnly: true);
+      await provider.selectMonth(DateTime(2026, 3, 1));
+      provider.updateReferenceData(
+        sites: const [],
+        contracts: const [],
+        siteAssignments: const [
+          EmployeeSiteAssignment(
+            id: 'assign-1',
+            orgId: 'org-1',
+            userId: 'employee-1',
+            siteId: 'site-1',
+            siteName: 'Berlin',
+            isPrimary: true,
+          ),
+        ],
+        ruleSets: [ComplianceRuleSet.defaultRetail('org-1')],
+        travelTimeRules: const <TravelTimeRule>[],
+      );
+
+      await provider.addEntry(
+        WorkEntry(
+          orgId: user.orgId,
+          userId: user.uid,
+          date: DateTime(2026, 3, 31),
+          startTime: DateTime(2026, 3, 31, 10, 0),
+          endTime: DateTime(2026, 3, 31, 12, 0),
+          breakMinutes: 0,
+          siteId: 'site-1',
+          siteName: 'Berlin',
+          sourceShiftId: 'shift-1',
+        ),
+      );
+
+      final id = provider.entries.single.id;
+      expect(id, isNotNull);
+      expect(RegExp(r'^entry-[0-9a-f-]{36}$').hasMatch(id!), isTrue,
+          reason: 'Lokale IDs muessen UUID-basiert sein (kein Timestamp)');
+    });
+
+    test(
         'does NOT persist locally when the server rejects with a blocking '
         'compliance violation (failed-precondition) in hybrid mode', () async {
       // Regression: Eine bewusste serverseitige Compliance-Ablehnung darf im

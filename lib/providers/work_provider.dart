@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
 import '../core/compliance_rule_set_utils.dart';
@@ -83,8 +84,10 @@ class WorkProvider extends ChangeNotifier {
     required FirestoreService firestoreService,
     ComplianceService? complianceService,
     bool? disableAuthentication,
+    Uuid? uuid,
   })  : _firestoreService = firestoreService,
         _complianceService = complianceService ?? const ComplianceService(),
+        _uuid = uuid ?? const Uuid(),
         _forceLocalStorage =
             disableAuthentication ?? AppConfig.disableAuthentication;
 
@@ -96,6 +99,7 @@ class WorkProvider extends ChangeNotifier {
 
   final FirestoreService _firestoreService;
   final ComplianceService _complianceService;
+  final Uuid _uuid;
   final bool _forceLocalStorage;
   bool _localStorageOnly = false;
   bool _hybridStorageEnabled = false;
@@ -388,6 +392,10 @@ class WorkProvider extends ChangeNotifier {
       return;
     }
     final preparedEntry = entry.copyWith(
+      // ID bereits hier vergeben (nicht erst im local-Zweig), damit auch der
+      // Cloud-Pfad eine stabile Doc-ID nutzt und Callable-Retries idempotent
+      // sind (no-idempotency-key).
+      id: entry.id ?? _nextLocalId('entry'),
       orgId: currentUser.orgId,
       userId: currentUser.uid,
     );
@@ -397,11 +405,7 @@ class WorkProvider extends ChangeNotifier {
       throw StateError(blocking.map((item) => item.message).join('\n'));
     }
     if (usesLocalStorage) {
-      _upsertLocalEntry(
-        preparedEntry.copyWith(
-          id: preparedEntry.id ?? _nextLocalId('entry'),
-        ),
-      );
+      _upsertLocalEntry(preparedEntry);
       await _persistLocalEntries();
       _applyLocalState();
       await _notifyShiftWorked(preparedEntry.sourceShiftId);
@@ -421,11 +425,7 @@ class WorkProvider extends ChangeNotifier {
       if (!usesHybridStorage) {
         rethrow;
       }
-      _upsertLocalEntry(
-        preparedEntry.copyWith(
-          id: preparedEntry.id ?? _nextLocalId('entry'),
-        ),
-      );
+      _upsertLocalEntry(preparedEntry);
       await _persistLocalEntries();
       _applyLocalState();
       _safeNotify();
@@ -445,6 +445,8 @@ class WorkProvider extends ChangeNotifier {
     final preparedEntries = <WorkEntry>[];
     for (final entry in entries) {
       final preparedEntry = entry.copyWith(
+        // Stabile Doc-ID schon vor dem Callable-Aufruf (no-idempotency-key).
+        id: entry.id ?? _nextLocalId('entry'),
         orgId: entry.orgId.isNotEmpty ? entry.orgId : currentUser.orgId,
         userId: entry.userId.isNotEmpty ? entry.userId : currentUser.uid,
       );
@@ -458,11 +460,7 @@ class WorkProvider extends ChangeNotifier {
 
     if (usesLocalStorage) {
       for (final entry in preparedEntries) {
-        _upsertLocalEntry(
-          entry.copyWith(
-            id: entry.id ?? _nextLocalId('entry'),
-          ),
-        );
+        _upsertLocalEntry(entry);
       }
       await _persistLocalEntries();
       _applyLocalState();
@@ -483,11 +481,7 @@ class WorkProvider extends ChangeNotifier {
         rethrow;
       }
       for (final entry in preparedEntries) {
-        _upsertLocalEntry(
-          entry.copyWith(
-            id: entry.id ?? _nextLocalId('entry'),
-          ),
-        );
+        _upsertLocalEntry(entry);
       }
       await _persistLocalEntries();
       _applyLocalState();
@@ -1722,8 +1716,12 @@ class WorkProvider extends ChangeNotifier {
     }
   }
 
+  // Stabile, kollisionsfreie Client-ID (UUID v4). Wird bereits beim Erzeugen
+  // vergeben, damit sie auch als Doc-ID an die Callable geht -> set(merge:true)
+  // ist dadurch idempotent gegen Retry-Duplikate (timestamp-ids-not-uuid,
+  // no-idempotency-key).
   String _nextLocalId(String prefix) {
-    return '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+    return '$prefix-${_uuid.v4()}';
   }
 
   void _upsertLocalEntry(WorkEntry entry) {

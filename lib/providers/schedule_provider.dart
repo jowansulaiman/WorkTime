@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
 import '../core/compliance_rule_set_utils.dart';
@@ -99,13 +100,16 @@ class ScheduleProvider extends ChangeNotifier {
     required FirestoreService firestoreService,
     ComplianceService? complianceService,
     bool? disableAuthentication,
+    Uuid? uuid,
   })  : _firestoreService = firestoreService,
         _complianceService = complianceService ?? const ComplianceService(),
+        _uuid = uuid ?? const Uuid(),
         _forceLocalStorage =
             disableAuthentication ?? AppConfig.disableAuthentication;
 
   final FirestoreService _firestoreService;
   final ComplianceService _complianceService;
+  final Uuid _uuid;
   final bool _forceLocalStorage;
   bool _localStorageOnly = false;
   bool _hybridStorageEnabled = false;
@@ -382,6 +386,11 @@ class ScheduleProvider extends ChangeNotifier {
             recurrenceEndDate: recurrenceEndDate,
           ),
         )
+        // Jede Occurrence bekommt schon hier eine stabile Doc-ID, damit der
+        // Callable-Pfad idempotent ist (no-idempotency-key); bei id == null
+        // wuerde der Server sonst inhaltsbasiert hashen.
+        .map((occurrence) =>
+            occurrence.copyWith(id: occurrence.id ?? _nextLocalId('shift')))
         .toList(growable: false);
     try {
       await _firestoreService.saveShiftBatch(occurrences);
@@ -1759,8 +1768,11 @@ class ScheduleProvider extends ChangeNotifier {
     _safeNotify();
   }
 
+  // Stabile Client-ID (UUID v4), bereits beim Erzeugen vergeben -> auch der
+  // Cloud-Pfad nutzt sie als Doc-ID und Callable-Retries bleiben idempotent
+  // (timestamp-ids-not-uuid, no-idempotency-key).
   String _nextLocalId(String prefix) {
-    return '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+    return '$prefix-${_uuid.v4()}';
   }
 
   void _upsertLocalShift(Shift shift) {
