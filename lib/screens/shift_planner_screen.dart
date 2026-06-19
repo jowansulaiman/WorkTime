@@ -1125,16 +1125,16 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                                     context,
                                     days: days,
                                   ),
-                                  _buildSectionLabel('FREIE SCHICHTEN'),
+                                  const _PlannerSectionLabel('FREIE SCHICHTEN'),
                                   _buildFreeShiftRow(
                                     context,
                                     days: days,
                                     shiftsByDay: freeByDay,
                                     freeCount: freeShifts.length,
                                   ),
-                                  _buildSectionLabel('PLANMÄSSIGE SCHICHTEN'),
+                                  const _PlannerSectionLabel('PLANMÄSSIGE SCHICHTEN'),
                                   if (rows.isEmpty)
-                                    _buildEmptyPlannedState(context)
+                                    const _PlannerEmptyBoardState()
                                   else
                                     for (final row in rows)
                                       _buildPlannedRow(
@@ -2375,31 +2375,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     );
   }
 
-  Widget _buildEmptyPlannedState(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        vertical: 28,
-        horizontal: 16,
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.event_busy_outlined,
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 10),
-          Text(
-            'Keine Schichten fuer die aktuelle Auswahl.',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildFilters(
     BuildContext context, {
     required ScheduleProvider schedule,
@@ -2686,27 +2661,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     );
   }
 
-  Widget _buildSectionLabel(String label) {
-    final borderColor = Theme.of(context).colorScheme.outlineVariant;
-    final accentColor = Theme.of(context).appColors.success;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: borderColor),
-        ),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: accentColor,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.7,
-        ),
-      ),
-    );
-  }
 
   Widget _buildFreeShiftRow(
     BuildContext context, {
@@ -2894,7 +2848,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
             SizedBox(
               height: 72,
               child: Center(
-                child: _quickAddButton(context: context, onTap: onAdd),
+                child: _PlannerQuickAddButton(onTap: onAdd),
               ),
             )
           else ...[
@@ -2923,7 +2877,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
               ),
             Align(
               alignment: Alignment.center,
-              child: _quickAddButton(context: context, onTap: onAdd),
+              child: _PlannerQuickAddButton(onTap: onAdd),
             ),
           ],
           if (footerLabels.isNotEmpty) ...[
@@ -3509,30 +3463,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     );
   }
 
-  Widget _quickAddButton({
-    required BuildContext context,
-    required Future<void> Function() onTap,
-  }) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: Container(
-        width: 28,
-        height: 28,
-        decoration: BoxDecoration(
-          color: colorScheme.primaryContainer.withValues(alpha: 0.42),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: colorScheme.primary.withValues(alpha: 0.2)),
-        ),
-        child: Icon(
-          Icons.add,
-          size: 18,
-          color: colorScheme.primary,
-        ),
-      ),
-    );
-  }
 
   int _dayAbsenceCount(DateTime day) {
     return _dayAbsences(day).length;
@@ -5123,6 +5053,98 @@ class _AbsenceCard extends StatelessWidget {
                     ],
                   )
                 : Text(request.status.label),
+      ),
+    );
+  }
+}
+
+/// Abschnitts-Trenner im Schichtplan-Board (extrahiert aus _buildSectionLabel,
+/// build-helper-methods-to-widget-classes).
+class _PlannerSectionLabel extends StatelessWidget {
+  const _PlannerSectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = Theme.of(context).colorScheme.outlineVariant;
+    final accentColor = Theme.of(context).appColors.success;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: borderColor),
+        ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: accentColor,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.7,
+        ),
+      ),
+    );
+  }
+}
+
+/// Leerzustand der planmaessigen Board-Zeilen (extrahiert aus
+/// _buildEmptyPlannedState; eigenes Layout, daher kein Reuse von
+/// _PlannerEmptyState).
+class _PlannerEmptyBoardState extends StatelessWidget {
+  const _PlannerEmptyBoardState();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
+      child: Row(
+        children: [
+          Icon(
+            Icons.event_busy_outlined,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Keine Schichten fuer die aktuelle Auswahl.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Runder Plus-Button in einer Board-Tageszelle (extrahiert aus
+/// _quickAddButton).
+class _PlannerQuickAddButton extends StatelessWidget {
+  const _PlannerQuickAddButton({required this.onTap});
+
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: colorScheme.primaryContainer.withValues(alpha: 0.42),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: colorScheme.primary.withValues(alpha: 0.2)),
+        ),
+        child: Icon(
+          Icons.add,
+          size: 18,
+          color: colorScheme.primary,
+        ),
       ),
     );
   }
