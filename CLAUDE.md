@@ -35,6 +35,9 @@ Es gibt **keine CI**, kein Makefile. Vor jedem Commit selbst ausführen:
 flutter analyze    # lint: nur package:flutter_lints/flutter.yaml, rules leer — NICHT ohne Auftrag erweitern
 flutter test       # 16 Files, ~107 Cases, komplett offline (fakes)
 flutter test test/work_provider_test.dart --plain-name 'teil des testnamens'   # einzeln
+flutter test --coverage   # erzeugt coverage/lcov.info; pragmatisches Ziel: kritische Provider/Services ≥ 70 %
+#   Report ansehen (lcov installiert): genhtml coverage/lcov.info -o coverage/html && open coverage/html/index.html
+#   Kein Merge-Gate (self-hosted), nur Sichtbarkeit — macht u. a. sichtbar, wie weit das Warenwirtschaft-Modul gedeckt ist.
 ```
 
 ## dart-define-Inventar (gesamte Laufzeitkonfig — kein .env, keine flutterfire-Datei)
@@ -166,6 +169,15 @@ firebase deploy --only functions          # functions/ = plain JS, kein Build-St
 firebase emulators:start
 ```
 Hosting serviert `build/web` (SPA-Rewrite, no-cache Header).
+
+**Mobile Release-Builds immer obfuskiert + mit getrennten Debug-Symbolen** (erschwert Reverse-Engineering der Client-Compliance-/Berechtigungslogik; Symbole für lesbares Crash-Mapping aufheben, NICHT committen — `build/symbols/` ist in `.gitignore`):
+
+```bash
+flutter build appbundle --release --obfuscate --split-debug-info=build/symbols   # Android (Play Store)
+flutter build ipa       --release --obfuscate --split-debug-info=build/symbols   # iOS (App Store)
+```
+
+Android-Release-Signierung läuft über `android/key.properties` (Upload-Keystore, nicht im Repo) mit Debug-Fallback, falls die Datei fehlt.
 
 ## Claude Skills (Experten-Leitlinien)
 
