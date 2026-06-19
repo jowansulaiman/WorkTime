@@ -75,7 +75,15 @@ class _HomeScreenState extends State<HomeScreen> {
       },
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final useRail = constraints.maxWidth >= 1120;
+          // Material-3 Window-Size-Classes: BottomNav (<600) -> Rail mit nur
+          // ausgewaehltem Label (600–839) -> Rail mit allen Labels (>=840)
+          // (no-medium-window-class). Hoehen-Guard, damit die (nicht scrollbare)
+          // NavigationRail auf kurzen Landscape-Phones nicht vertikal ueberlaeuft.
+          final useRail =
+              MobileBreakpoints.useNavigationRail(constraints.maxWidth) &&
+                  constraints.maxHeight >= MobileBreakpoints.mediumWindow;
+          final expandedRailLabels =
+              MobileBreakpoints.useExpandedRailLabels(constraints.maxWidth);
           final body = _LazyDestinationStack(
             selectedId: currentDestination.id,
             loadedDestinations: _loadedDestinations,
@@ -107,7 +115,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             index,
                             destinations: railDestinations,
                           ),
-                          labelType: NavigationRailLabelType.all,
+                          labelType: expandedRailLabels
+                              ? NavigationRailLabelType.all
+                              : NavigationRailLabelType.selected,
                           leading: Padding(
                             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
                             child: Column(

@@ -11,6 +11,21 @@ abstract final class MobileBreakpoints {
   /// Large phones / small tablets - 600px+
   static const double expanded = 600;
 
+  /// Material-3 Window-Size-Class-Grenze: ab hier wird statt der BottomNav eine
+  /// [NavigationRail] gezeigt (medium: 600–839, iPad Portrait, Split-View,
+  /// kleine Desktopfenster).
+  static const double mediumWindow = 600;
+
+  /// Material-3 Window-Size-Class-Grenze: ab hier zeigt die Rail alle Labels
+  /// (expanded: 840px+), darunter nur das ausgewaehlte.
+  static const double expandedWindow = 840;
+
+  /// NavigationRail statt BottomNav ab medium (>= 600dp).
+  static bool useNavigationRail(double width) => width >= mediumWindow;
+
+  /// Rail mit allen Labels (statt nur ausgewaehltem) ab expanded (>= 840dp).
+  static bool useExpandedRailLabels(double width) => width >= expandedWindow;
+
   /// Returns true for screens narrower than [standard].
   static bool isCompact(BuildContext context) =>
       MediaQuery.sizeOf(context).width < standard;
