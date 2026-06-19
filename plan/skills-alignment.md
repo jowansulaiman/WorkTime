@@ -44,6 +44,30 @@ Verifiziert grün: `flutter analyze` = 0, `flutter test` = **139** (sechs neue R
 - **`no-outbox-retry-queue` (bewusst zurückgestellt – mit Begründung):** Eine eager Per-Mutation-Outbox, die Änderungen automatisch in die Cloud pusht, widerspricht dem zentralen Designziel des Hybrid-Modus: *bezahlte Firestore-Writes sparen* (Spark Free Tier, CLAUDE.md). Mit dem jetzt durchgängigen Hybrid-Fallback gehen Offline-Schreibvorgänge **nicht verloren** (lokal persistiert) und propagieren über `syncLocalStateToCloud` beim Moduswechsel (inkl. Tombstones). Empfohlener leichter Folgeschritt statt Voll-Outbox: `syncLocalStateToCloud` automatisch beim App-Resume bzw. beim Eintritt in einen cloud-fähigen Modus auslösen (eventual consistency ohne Per-Write-Kosten). Umsetzung nur auf ausdrücklichen Wunsch.
 - **`no-semantics-screenreader` (erledigt):** Die Slide-to-Clock-Geste (`_SlideClockAction` in `home_screen.dart`) war für TalkBack/VoiceOver unbedienbar. Jetzt als einzelner `Semantics(button:true, label:'Ein-/Ausstempeln', onTap:…)`-Knoten exponiert (`excludeSemantics`), plus sichtbare **Tap-Alternative** für Maus/Desktop; die Slide-Geste bleibt erhalten. Offen (kleiner Folgeschritt): Status-Pills zusätzlich zu Farbe ein Text-/Icon-Pendant geben; isolierter Widget-Test erst nach Extraktion des file-private Widgets (Teil des God-File-Splits) sinnvoll.
 
+## Umsetzungsstand Welle 2 — Fortsetzung (4 Stränge: Sync/Daten, Error-Handling, Performance, Architektur)
+
+Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 139 → **151** (+12 neue Tests). Baseline-Verhalten unverändert. Jeweils eigener Commit auf `skills-alignment`.
+
+**Sync/Daten-Integrität:**
+- **`timestamp-ids-not-uuid` + `no-idempotency-key` (erledigt):** `_nextLocalId` in Work-/Schedule-/InventoryProvider nutzt `Uuid().v4()` statt `microsecondsSinceEpoch`. Die ID wird bereits beim Erzeugen vergeben (nicht erst im local-Zweig), sodass auch der Cloud-/Hybrid-Pfad eine stabile Doc-ID an die Callable schickt → `set(merge:true)` ist idempotent gegen Retry-Duplikate. `Uuid` ist konstruktor-injizierbar. +2 Tests.
+- **`no-idempotency-on-stock-mutations` (erledigt):** `adjustProductStock`/`receivePurchaseOrder` akzeptieren eine optionale `clientMutationId`; Bestandsbewegungen werden daraus deterministisch adressiert und vor dem Inkrement auf Existenz geprüft (Reads vor Writes) → kein Doppelbuchen bei App-Level-Retry. InventoryProvider erzeugt die ID je Buchung. +1 Test.
+- **`counters-bopla-no-monotonic-check` (erledigt, Rules):** `counters.seq` muss ganzzahlig sein und darf bei Updates nie sinken; `stockMovements` mit Feld-Allowlist (`hasOnly`), type-Whitelist, `quantityDelta/balanceAfter is number`, `createdByUid == auth.uid`. **Vor Deploy:** kein lokaler Rules-Compile möglich (kein Java/Emulator) → via Firebase-Emulator/Rules-Playground gegen Wareneingang/Stock-Adjust verifizieren.
+
+**Error-Handling & Resilience:**
+- **`no-retry-backoff-idempotent` (erledigt):** Neue `lib/core/retry.dart` (`retryTransient` mit exponentiellem Backoff + vollem Jitter); wiederholt NUR transiente Fehler (`unavailable`/`deadline-exceeded`/`TimeoutException`), rethrowt fachliche/Permission-Fehler sofort. Verdrahtet in `_callCloudFunctionIfAvailable` + Batch-Direct-Writes (alle durch stabile IDs idempotent). `retryBaseDelay` als Test-Seam. +6 Tests.
+- **`stream-onerror-debugprint-only` (erledigt):** TeamProvider hat `errorMessage` + `_setStreamError`; dauerhafte watch-Fehler setzen Nutzer-Botschaft, melden an `ErrorReporter` und benachrichtigen die UI. +1 Test.
+- **`fire-and-forget-updatesession` (erledigt):** `_dispatchProviderUpdate` bekommt einen `onError`-Callback; jeder Provider hat `surfaceSessionError()` → fehlgeschlagener Sitzungsaufbau wird in der UI sichtbar. +1 Test.
+
+**Performance (verhaltensgleich, bestehende Widget-Tests als Regressionsschutz):**
+- **`schedule-shifts-getter-refilters` (erledigt, aus Welle 3 vorgezogen):** `shifts`-Getter memoisiert die gefilterte Liste gegen die Eingaben (Identität von `_shifts` + Status-/Team-Filter), Rückgabe als unveränderliche Liste. +1 Test.
+- **`home-shell-watches-all-providers` (erledigt):** Shell-build watcht nur noch `select(profile)` + `storage.location`; Work/Schedule werden im `_ShellStatusBanner` (eigenes `watch`) bzw. FAB (`Consumer<WorkProvider>`) abonniert → nur diese Teilbäume rebuilden.
+- **`planner-build-on-on-quadratic-filtering` (erledigt):** Board-Schichten werden je Build einmal in Buckets pro Zeile und pro Tag gruppiert (O(shifts)); `_buildPlannedRow`/`_buildFreeShiftRow`/`_buildDayCell` lesen nur per Lookup statt `where(row.matches)`+`isSameDay` je Zeile/Tag.
+
+**Architektur (Inventory-Pilot):**
+- **`firestore-service-god-object` + `missing-repository-layer` + `no-domain-repository-interfaces-dip` (erledigt für Inventory):** Neue `lib/repositories/inventory_repository.dart` (`abstract interface class InventoryRepository`) + `firestore_inventory_repository.dart` (gesamte Warenwirtschafts-Datenzugriffslogik aus FirestoreService extrahiert, **1846→1643 Zeilen**). FirestoreService delegiert nur noch (API unverändert → Service-Tests grün). InventoryProvider hängt an der Abstraktion (DIP), Repo injizierbar; Test-Seam von Subklasse auf handgeschriebenen Fake-Repo umgestellt. **Folgeschritt:** dasselbe Muster auf work/schedule/team ausrollen und die Storage-Strategie (cloud/hybrid/local) vollständig in die Repos heben (heute noch im Provider).
+
+**Noch offen in Welle 2 (außerhalb der 4 gewählten Stränge):** `no-medium-window-class` (ux-ui), `android-release-debug-signing` (cicd), `build-helper-methods-to-widget-classes` (clean-code), `no-secure-storage-for-sensitive` (daten-persistenz), `no-outbox-retry-queue` (bewusst zurückgestellt, s.o.).
+
 ## Leitplanken
 
 - **Die App funktioniert; nichts brechen.** Bevorzugt werden additive Änderungen (neue Dateien, neue optionale Felder). Nach jeder Gruppe `flutter analyze` + `flutter test`.
@@ -88,26 +112,26 @@ Verifiziert grün: `flutter analyze` = 0, `flutter test` = **139** (sechs neue R
 ### Welle 2 — nächste Iterationen (gezielt, je eigener Commit + Tests)
 
 - [x] **no-tombstones-for-deletes** (🔴 kritisch, sync) — Loeschungen erzeugen keine Tombstones – geloeschte Datensaetze tauchen beim naechsten Sync wieder auf
-- [ ] **missing-repository-layer** (🟠 hoch, architektur) — Provider übernehmen die Repository-Rolle: Storage-Strategie (cloud/hybrid/local) ist über 4 Provider gestreut statt gekapselt
-- [ ] **firestore-service-god-object** (🟠 hoch, architektur) — FirestoreService ist ein 1791-Zeilen-God-Object mit 88 Public-Methoden über alle Domänen + Cloud-Functions-Aufrufe
-- [ ] **no-domain-repository-interfaces-dip** (🟠 hoch, architektur) — Kein einziges Repository-/Service-Interface — Provider hängen an konkreter FirestoreService-Klasse (DIP verletzt)
-- [ ] **no-idempotency-key** (🟠 hoch, backend-api) — Schreib-Callables haben keinen Idempotency-Key gegen Retry-Duplikate aus instabilen Mobilnetzen
+- [x] **missing-repository-layer** (🟠 hoch, architektur) — Provider übernehmen die Repository-Rolle: Storage-Strategie (cloud/hybrid/local) ist über 4 Provider gestreut statt gekapselt *(Inventory-Pilot: Repository-Schicht eingeführt; Roll-out auf work/schedule/team offen)*
+- [x] **firestore-service-god-object** (🟠 hoch, architektur) — FirestoreService ist ein 1791-Zeilen-God-Object mit 88 Public-Methoden über alle Domänen + Cloud-Functions-Aufrufe *(Inventar in FirestoreInventoryRepository extrahiert, 1846→1643 Zeilen; weitere Domänen folgen demselben Muster)*
+- [x] **no-domain-repository-interfaces-dip** (🟠 hoch, architektur) — Kein einziges Repository-/Service-Interface — Provider hängen an konkreter FirestoreService-Klasse (DIP verletzt) *(InventoryRepository-Interface; Pattern etabliert)*
+- [x] **no-idempotency-key** (🟠 hoch, backend-api) — Schreib-Callables haben keinen Idempotency-Key gegen Retry-Duplikate aus instabilen Mobilnetzen
 - [ ] **android-release-debug-signing** (🟠 hoch, cicd) — Android-Release-Build signiert mit dem Debug-Keystore
-- [ ] **planner-build-on-on-quadratic-filtering** (🟠 hoch, performance) — Quadratische Synchron-Filterung im Planner-build() pro Frame
-- [ ] **home-shell-watches-all-providers** (🟠 hoch, performance) — HomeScreen-Shell rebuildt komplett bei jeder Provider-Aenderung (zu breiter watch)
+- [x] **planner-build-on-on-quadratic-filtering** (🟠 hoch, performance) — Quadratische Synchron-Filterung im Planner-build() pro Frame
+- [x] **home-shell-watches-all-providers** (🟠 hoch, performance) — HomeScreen-Shell rebuildt komplett bei jeder Provider-Aenderung (zu breiter watch)
 - [x] **blind-lww-merge-no-version** (🟠 hoch, sync) — _mergeByKey ist blindes Last-Write-Wins ohne Versions-/Zeitstempelvergleich – Offline-Edits werden still ueberschrieben
 - [ ] **no-outbox-retry-queue** (🟠 hoch, sync) — Kein Outbox/Retry – lokal gepufferte hybrid-Writes werden nie automatisch zur Cloud nachgepusht
 - [ ] **inventory-no-offline-support** (🟠 hoch, sync) — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
 - [ ] **no-medium-window-class** (🟠 hoch, ux-ui) — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett
 - [x] **no-semantics-screenreader** (🟠 hoch, ux-ui) — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
-- [ ] **fire-and-forget-updatesession** (🟡 mittel, architektur) — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
+- [x] **fire-and-forget-updatesession** (🟡 mittel, architektur) — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
 - [ ] **build-helper-methods-to-widget-classes** (🟡 mittel, clean-code) — 15+ Widget _buildXxx Helper-Methoden statt const-faehiger Widget-Klassen
 - [ ] **no-secure-storage-for-sensitive** (🟡 mittel, daten-persistenz) — Sensible Geschaefts-/Personaldaten liegen unverschluesselt im Klartext in SharedPreferences
-- [ ] **no-idempotency-on-stock-mutations** (🟡 mittel, daten-persistenz) — Stock-Adjust/Wareneingang haben keinen Idempotency-Schluessel - Client-Retry kann Bestand doppelt buchen
-- [ ] **no-retry-backoff-idempotent** (🟡 mittel, error-handling) — Keine Retry-mit-Backoff fuer idempotente Cloud-Writes; einmaliger transienter Fehler degradiert sofort lokal
-- [ ] **stream-onerror-debugprint-only** (🟡 mittel, error-handling) — Stammdaten-Stream-Fehler (TeamProvider) werden nur per debugPrint verschluckt, ohne Nutzer-Feedback
-- [ ] **counters-bopla-no-monotonic-check** (🟡 mittel, sicherheit) — counters und stockMovements: keine serverseitige Feld-/Wertvalidierung (BOPLA)
-- [ ] **timestamp-ids-not-uuid** (🟡 mittel, sync) — Client-generierte IDs sind Timestamp-basiert statt UUID/ULID – Kollisions- und Re-Sync-Risiko
+- [x] **no-idempotency-on-stock-mutations** (🟡 mittel, daten-persistenz) — Stock-Adjust/Wareneingang haben keinen Idempotency-Schluessel - Client-Retry kann Bestand doppelt buchen
+- [x] **no-retry-backoff-idempotent** (🟡 mittel, error-handling) — Keine Retry-mit-Backoff fuer idempotente Cloud-Writes; einmaliger transienter Fehler degradiert sofort lokal
+- [x] **stream-onerror-debugprint-only** (🟡 mittel, error-handling) — Stammdaten-Stream-Fehler (TeamProvider) werden nur per debugPrint verschluckt, ohne Nutzer-Feedback
+- [x] **counters-bopla-no-monotonic-check** (🟡 mittel, sicherheit) — counters und stockMovements: keine serverseitige Feld-/Wertvalidierung (BOPLA) *(Rules; vor Deploy via Emulator gegen Wareneingang/Stock-Adjust verifizieren)*
+- [x] **timestamp-ids-not-uuid** (🟡 mittel, sync) — Client-generierte IDs sind Timestamp-basiert statt UUID/ULID – Kollisions- und Re-Sync-Risiko
 - [ ] **no-soft-delete-tombstones** (⚪ niedrig, daten-persistenz) — Harte Loeschungen ohne Tombstones/Soft-Delete verhindern Loescherkennung beim Offline-Sync
 
 ### Welle 3 — größere/optionale Vorhaben
@@ -126,7 +150,7 @@ Verifiziert grün: `flutter analyze` = 0, `flutter test` = **139** (sechs neue R
 - [ ] **no-distributed-tracing** (🟡 mittel, observability) — Keine Trace-Korrelation Client -> Cloud Functions
 - [ ] **no-analytics-screen-tracking** (🟡 mittel, observability) — Keine Produkt-Telemetrie / kein Screen-Tracking für Nutzerflüsse
 - [ ] **no-repaintboundary-shift-cards** (🟡 mittel, performance) — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
-- [ ] **schedule-shifts-getter-refilters** (🟡 mittel, performance) — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff
+- [x] **schedule-shifts-getter-refilters** (🟡 mittel, performance) — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff *(in Welle-2-Performance-Strang vorgezogen)*
 - [ ] **no-connectivity-no-sync-status-ux** (🟡 mittel, sync) — Keine Konnektivitaetserkennung und keine Sync-Status-UX – Eventual Consistency ist fuer den Nutzer unsichtbar
 - [ ] **hybrid-delete-rethrows** (🟡 mittel, sync) — hybrid-Delete folgt nicht dem dokumentierten catch-Fallback-Muster – Loeschungen schlagen offline hart fehl
 - [ ] **csv-escaping-bom-undertested** (🟡 mittel, testing) — CSV-Export: Escaping-Sonderfaelle (Semikolon, Anfuehrungszeichen, Zeilenumbruch) ungetestet
