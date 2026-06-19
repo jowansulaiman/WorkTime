@@ -19,6 +19,16 @@ class AuthService {
 
   User? get currentUser => _firebaseAuth.currentUser;
 
+  /// Setzt auf Web die Firebase-Auth-Persistenz.
+  ///
+  /// Risikoabwägung (01_api-sicherheit §1): Auf Web gibt es keinen sicheren
+  /// nativen Token-Speicher. [Persistence.LOCAL] legt den Refresh-Token in
+  /// IndexedDB ab — JS-zugänglich, also bei einer XSS-Lücke exfiltrierbar.
+  /// Das ist der Firebase-SPA-Standard (überlebt Tab-/Browser-Neustart) und für
+  /// die 2-Läden-Größe vertretbar, solange die zweite Verteidigungslinie steht:
+  /// CSP-Meta in `web/index.html` + Security-Header in `firebase.json`.
+  /// Wer Token nur für die Session-Dauer halten will, kann hier auf
+  /// [Persistence.SESSION] umstellen (Login geht beim Tab-Schließen verloren).
   Future<void> configurePersistence() async {
     if (!kIsWeb) {
       return;
