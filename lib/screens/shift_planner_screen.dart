@@ -938,6 +938,45 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     return _applyBoardFilters(widget.visibleShifts);
   }
 
+  // --- Board-Vorgruppierung (planner-build-on-on-quadratic-filtering) -------
+  // Statt in jeder Zeile/Tageszelle die gesamte Schichtliste neu zu filtern
+  // (O(rows x days x shifts) pro Frame), werden die Schichten einmal pro Build
+  // in Buckets pro Zeile bzw. pro Tag gruppiert; Zeile/Tag lesen dann nur per
+  // Lookup.
+  String _shiftBucketKey(Shift shift) {
+    if (_layoutMode == _PlannerLayoutMode.employee) {
+      return 'u:${shift.userId}';
+    }
+    final location = shift.effectiveSiteLabel?.trim();
+    return 'l:${location == null || location.isEmpty ? '' : location}';
+  }
+
+  String _rowBucketKey(_PlannerBoardRowData row) {
+    if (row.memberId != null) {
+      return 'u:${row.memberId}';
+    }
+    final location = row.location?.trim();
+    return 'l:${location == null || location.isEmpty ? '' : location}';
+  }
+
+  String _dayBucketKey(DateTime day) => '${day.year}-${day.month}-${day.day}';
+
+  Map<String, List<Shift>> _groupShiftsByRow(List<Shift> shifts) {
+    final buckets = <String, List<Shift>>{};
+    for (final shift in shifts) {
+      (buckets[_shiftBucketKey(shift)] ??= <Shift>[]).add(shift);
+    }
+    return buckets;
+  }
+
+  Map<String, List<Shift>> _groupShiftsByDay(List<Shift> shifts) {
+    final buckets = <String, List<Shift>>{};
+    for (final shift in shifts) {
+      (buckets[_dayBucketKey(shift.startTime)] ??= <Shift>[]).add(shift);
+    }
+    return buckets;
+  }
+
   @override
   Widget build(BuildContext context) {
     final schedule = context.watch<ScheduleProvider>();
@@ -964,6 +1003,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     final rows = _layoutMode == _PlannerLayoutMode.employee
         ? _buildEmployeeRows(plannedShifts, schedule, days)
         : _buildLocationRows(plannedShifts);
+    // Einmalige Vorgruppierung pro Zeile (plannedShifts ist bereits nach
+    // Startzeit sortiert -> Buckets bleiben sortiert).
+    final plannedByRow = _groupShiftsByRow(plannedShifts);
+    final freeByDay = _groupShiftsByDay(freeShifts);
 
     return Material(
       color: theme.colorScheme.surface,
@@ -1086,7 +1129,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                                   _buildFreeShiftRow(
                                     context,
                                     days: days,
-                                    shifts: freeShifts,
+                                    shiftsByDay: freeByDay,
+                                    freeCount: freeShifts.length,
                                   ),
                                   _buildSectionLabel('PLANMÄSSIGE SCHICHTEN'),
                                   if (rows.isEmpty)
@@ -1097,7 +1141,9 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                                         context,
                                         row: row,
                                         days: days,
-                                        shifts: plannedShifts,
+                                        rowShifts: plannedByRow[
+                                                _rowBucketKey(row)] ??
+                                            const <Shift>[],
                                       ),
                                 ],
                               ),
@@ -2665,7 +2711,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
   Widget _buildFreeShiftRow(
     BuildContext context, {
     required List<DateTime> days,
-    required List<Shift> shifts,
+    required Map<String, List<Shift>> shiftsByDay,
+    required int freeCount,
   }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2673,17 +2720,15 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         _rowLabelCell(
           context,
           title: 'Offene Slots',
-          subtitle: shifts.isEmpty
+          subtitle: freeCount == 0
               ? 'Noch keine freie Schicht'
-              : '${shifts.length} offen',
+              : '$freeCount offen',
         ),
         for (final day in days)
           _buildDayCell(
             context,
             day: day,
-            shifts: shifts
-                .where((shift) => isSameDay(shift.startTime, day))
-                .toList(),
+            shifts: shiftsByDay[_dayBucketKey(day)] ?? const <Shift>[],
             onAdd: () => widget.onOpenShiftEditor(
               initialDate: day,
               initialUnassigned: true,
@@ -2698,13 +2743,12 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     BuildContext context, {
     required _PlannerBoardRowData row,
     required List<DateTime> days,
-    required List<Shift> shifts,
+    required List<Shift> rowShifts,
     List<DateTime>? summaryDays,
   }) {
-    final rowShifts = shifts
-        .where((shift) => row.matches(shift))
-        .toList(growable: false)
-      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+    // rowShifts ist bereits fuer diese Zeile vorgefiltert und nach Startzeit
+    // sortiert; Tages-Buckets einmal bilden statt pro Tag neu zu filtern.
+    final shiftsByDay = _groupShiftsByDay(rowShifts);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2719,9 +2763,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
             context,
             day: day,
             absences: _rowAbsencesForDay(row, day),
-            shifts: rowShifts
-                .where((shift) => isSameDay(shift.startTime, day))
-                .toList(),
+            shifts: shiftsByDay[_dayBucketKey(day)] ?? const <Shift>[],
             onAdd: () => widget.onOpenShiftEditor(
               initialDate: day,
               initialUserIds: row.memberId == null ? null : {row.memberId!},
