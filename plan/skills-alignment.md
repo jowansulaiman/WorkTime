@@ -34,7 +34,7 @@ Umgesetzt (24 von 26 Welle-1-Gaps):
 
 **Vor Deploy zu prüfen:** CSP-Meta gegen echten `flutter build web` + Login-Flow smoke-testen (Kommentar in `web/index.html`).
 
-## Umsetzungsstand Welle 2 (Sync-/Daten-Härtung – laufend)
+## Umsetzungsstand Welle 2 (Sync-/Daten-Härtung + A11y – laufend)
 
 Verifiziert grün: `flutter analyze` = 0, `flutter test` = **138** (fünf neue Sync-Regressionstests).
 
@@ -42,6 +42,7 @@ Verifiziert grün: `flutter analyze` = 0, `flutter test` = **138** (fünf neue S
 - **`no-tombstones-for-deletes` / `no-soft-delete-tombstones` (erledigt für alle 3 org-Collections):** persistierter Tombstone-Store in `DatabaseService` (`loadTombstones`/`saveTombstones`). Verdrahtet in `WorkProvider` (WorkEntry) **und** `ScheduleProvider` (Shift via `deleteShift`/`deleteShiftSeries` + AbsenceRequest via `deleteAbsenceRequest`): lokale Löschungen werden gemerkt und beim Wiedereinspielen aus der Cloud (Cache, Hybrid-Merge **und** alle Live-Streams) gefiltert; in `syncLocalStateToCloud` wird die Löschung in Firestore propagiert und der Tombstone aufgelöst. + Regressionstests (WorkEntry und Shift: lokal löschen → Cloud-Modus → bleibt gelöscht).
 - **`inventory-no-offline-support` (erledigt):** `InventoryProvider` kennt jetzt `usesHybridStorage`; alle acht Mutatoren versuchen Firestore und fallen im Hybrid-Modus bei Fehler lokal zurück (`_tryFirestore`) statt hart zu werfen → kein Datenverlust mehr offline. + Regressionstest (Offline-Write wirft nicht, wird lokal persistiert).
 - **`no-outbox-retry-queue` (bewusst zurückgestellt – mit Begründung):** Eine eager Per-Mutation-Outbox, die Änderungen automatisch in die Cloud pusht, widerspricht dem zentralen Designziel des Hybrid-Modus: *bezahlte Firestore-Writes sparen* (Spark Free Tier, CLAUDE.md). Mit dem jetzt durchgängigen Hybrid-Fallback gehen Offline-Schreibvorgänge **nicht verloren** (lokal persistiert) und propagieren über `syncLocalStateToCloud` beim Moduswechsel (inkl. Tombstones). Empfohlener leichter Folgeschritt statt Voll-Outbox: `syncLocalStateToCloud` automatisch beim App-Resume bzw. beim Eintritt in einen cloud-fähigen Modus auslösen (eventual consistency ohne Per-Write-Kosten). Umsetzung nur auf ausdrücklichen Wunsch.
+- **`no-semantics-screenreader` (erledigt):** Die Slide-to-Clock-Geste (`_SlideClockAction` in `home_screen.dart`) war für TalkBack/VoiceOver unbedienbar. Jetzt als einzelner `Semantics(button:true, label:'Ein-/Ausstempeln', onTap:…)`-Knoten exponiert (`excludeSemantics`), plus sichtbare **Tap-Alternative** für Maus/Desktop; die Slide-Geste bleibt erhalten. Offen (kleiner Folgeschritt): Status-Pills zusätzlich zu Farbe ein Text-/Icon-Pendant geben; isolierter Widget-Test erst nach Extraktion des file-private Widgets (Teil des God-File-Splits) sinnvoll.
 
 ## Leitplanken
 
@@ -98,7 +99,7 @@ Verifiziert grün: `flutter analyze` = 0, `flutter test` = **138** (fünf neue S
 - [ ] **no-outbox-retry-queue** (🟠 hoch, sync) — Kein Outbox/Retry – lokal gepufferte hybrid-Writes werden nie automatisch zur Cloud nachgepusht
 - [ ] **inventory-no-offline-support** (🟠 hoch, sync) — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
 - [ ] **no-medium-window-class** (🟠 hoch, ux-ui) — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett
-- [ ] **no-semantics-screenreader** (🟠 hoch, ux-ui) — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
+- [x] **no-semantics-screenreader** (🟠 hoch, ux-ui) — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
 - [ ] **fire-and-forget-updatesession** (🟡 mittel, architektur) — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
 - [ ] **build-helper-methods-to-widget-classes** (🟡 mittel, clean-code) — 15+ Widget _buildXxx Helper-Methoden statt const-faehiger Widget-Klassen
 - [ ] **no-secure-storage-for-sensitive** (🟡 mittel, daten-persistenz) — Sensible Geschaefts-/Personaldaten liegen unverschluesselt im Klartext in SharedPreferences

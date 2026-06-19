@@ -5219,6 +5219,28 @@ class _SlideClockActionState extends State<_SlideClockAction> {
     }
   }
 
+  /// Fuehrt die Aktion aus (gemeinsam fuer Slide-Geste und Tap-/Screenreader-
+  /// Alternative). Setzt den Fortschritt voll, ruft onCompleted und raeumt auf.
+  Future<void> _complete() async {
+    if (!widget.enabled || _busy || widget.onCompleted == null) {
+      return;
+    }
+    setState(() {
+      _progress = 1;
+      _busy = true;
+    });
+    try {
+      await widget.onCompleted!();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _progress = 0;
+          _busy = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final knobIconColor =
@@ -5226,120 +5248,127 @@ class _SlideClockActionState extends State<_SlideClockAction> {
                 Brightness.dark
             ? Colors.white
             : Theme.of(context).colorScheme.onSurface;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        final compact = width < 390;
-        final displayLabel = compact
-            ? (widget.label.contains('Aus') ? 'Ausstempeln' : 'Einstempeln')
-            : widget.label;
-        const knobSize = 56.0;
-        final maxTravel = width - knobSize - 8;
-        final left = 4 + maxTravel * _progress.clamp(0.0, 1.0);
-        return Opacity(
-          opacity: widget.enabled ? 1 : 0.55,
-          child: Container(
-            height: 64,
-            decoration: BoxDecoration(
-              color: widget.color,
-              borderRadius: BorderRadius.circular(32),
-              border: Border.all(
-                color: widget.color.withValues(alpha: 0.8),
-                width: 1.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: widget.color.withValues(alpha: 0.15),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Center(
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: compact ? 70 : 82,
-                    ),
-                    child: Text(
-                      _busy ? 'BITTE WARTEN...' : displayLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: widget.textColor,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.8,
-                          ),
-                    ),
+    // Stabiles Semantik-Label (unabhaengig von der Breite): die Geste ist fuer
+    // Screenreader unbedienbar, daher als Button mit Tap-Aktion exponieren.
+    final semanticLabel =
+        widget.label.contains('Aus') ? 'Ausstempeln' : 'Einstempeln';
+    final actionable = widget.enabled && !_busy;
+    return Semantics(
+      button: true,
+      enabled: actionable,
+      label: _busy ? 'Bitte warten' : semanticLabel,
+      onTap: actionable ? () => _complete() : null,
+      excludeSemantics: true,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final compact = width < 390;
+          final displayLabel = compact
+              ? (widget.label.contains('Aus') ? 'Ausstempeln' : 'Einstempeln')
+              : widget.label;
+          const knobSize = 56.0;
+          final maxTravel = width - knobSize - 8;
+          final left = 4 + maxTravel * _progress.clamp(0.0, 1.0);
+          return Opacity(
+            opacity: widget.enabled ? 1 : 0.55,
+            // Tap-Alternative fuer Maus/Desktop und als sichtbares Pendant zur
+            // Semantik-Aktion; die Slide-Geste am Knopf bleibt erhalten.
+            child: GestureDetector(
+              onTap: actionable ? () => _complete() : null,
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                height: 64,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  borderRadius: BorderRadius.circular(32),
+                  border: Border.all(
+                    color: widget.color.withValues(alpha: 0.8),
+                    width: 1.5,
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: widget.color.withValues(alpha: 0.15),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
-                Positioned(
-                  left: left,
-                  child: GestureDetector(
-                    onHorizontalDragUpdate: !widget.enabled || _busy
-                        ? null
-                        : (details) {
-                            setState(() {
-                              _progress = (_progress +
-                                      details.delta.dx /
-                                          (maxTravel <= 0 ? 1 : maxTravel))
-                                  .clamp(0.0, 1.0);
-                            });
-                          },
-                    onHorizontalDragEnd: !widget.enabled || _busy
-                        ? null
-                        : (_) async {
-                            if (_progress >= 0.82 &&
-                                widget.onCompleted != null) {
-                              setState(() {
-                                _progress = 1;
-                                _busy = true;
-                              });
-                              try {
-                                await widget.onCompleted!();
-                              } finally {
-                                if (mounted) {
-                                  setState(() {
-                                    _progress = 0;
-                                    _busy = false;
-                                  });
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Center(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: compact ? 70 : 82,
+                        ),
+                        child: Text(
+                          _busy ? 'BITTE WARTEN...' : displayLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: widget.textColor,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.8,
+                                  ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: left,
+                      child: GestureDetector(
+                        onHorizontalDragUpdate: !widget.enabled || _busy
+                            ? null
+                            : (details) {
+                                setState(() {
+                                  _progress = (_progress +
+                                          details.delta.dx /
+                                              (maxTravel <= 0 ? 1 : maxTravel))
+                                      .clamp(0.0, 1.0);
+                                });
+                              },
+                        onHorizontalDragEnd: !widget.enabled || _busy
+                            ? null
+                            : (_) {
+                                if (_progress >= 0.82) {
+                                  _complete();
+                                } else {
+                                  setState(() => _progress = 0);
                                 }
-                              }
-                            } else {
-                              setState(() => _progress = 0);
-                            }
-                          },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 140),
-                      width: knobSize,
-                      height: knobSize,
-                      decoration: BoxDecoration(
-                        color: widget.knobColor,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: widget.knobColor.withValues(alpha: 0.35),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
+                              },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 140),
+                          width: knobSize,
+                          height: knobSize,
+                          decoration: BoxDecoration(
+                            color: widget.knobColor,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: widget.knobColor.withValues(alpha: 0.35),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      child: Icon(
-                        _busy ? Icons.more_horiz : Icons.double_arrow_rounded,
-                        color: knobIconColor,
-                        size: 26,
+                          child: Icon(
+                            _busy
+                                ? Icons.more_horiz
+                                : Icons.double_arrow_rounded,
+                            color: knobIconColor,
+                            size: 26,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }
