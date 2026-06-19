@@ -28,7 +28,7 @@ Umgesetzt (24 von 26 Welle-1-Gaps):
 - **Tests:** `test/inventory_provider_test.dart` (7 Tests, inkl. Persistenz-Round-Trip), `test/inventory_screen_test.dart` (Widget-Smoke-Tests).
 
 **Bewusst auf Welle 2 verschoben (mit Begründung):**
-- `web-url-strategy-missing` (PathUrlStrategy): braucht `flutter_web_plugins`-Dependency + Web-Build-Verifikation – nicht ohne lauffähigen Web-Build abzusichern.
+- `web-url-strategy-missing` (PathUrlStrategy): zunächst verschoben (braucht `flutter_web_plugins`-Dependency + Web-Build-Verifikation). **→ in Welle 3 Batch 2 erledigt** (`usePathUrlStrategy()` per `kIsWeb`, SDK-Dep deklariert, VM-Import unschädlich verifiziert).
 - `batch-limit-no-client-chunking`: Server lehnt > 50 bereits sauber ab; clientseitiges Chunking ist additiv und folgt separat.
 - **Crashlytics-Dependency** selbst: nur der Einhängepunkt (`ErrorReporter.externalSink`) wurde gebaut; `firebase_crashlytics` als Paket + Verdrahtung folgt in Welle 2 (vermeidet ungetestete Dependency-Auflösung in diesem Durchlauf).
 
@@ -79,6 +79,29 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 154 → **16
 - **`hybrid-delete-rethrows` (erledigt):** Alle fünf Delete-Pfade (`deleteEntry`/`deleteTemplate`, `deleteShift`/`deleteShiftSeries`/`deleteAbsenceRequest`) sind an das Save-Mutator-Muster angeglichen: im hybrid-`catch` lokal entfernen + persistieren + Tombstone setzen (propagiert via `syncLocalStateToCloud`) statt hart zu werfen; cloud-only weiterhin `rethrow`. +4 Tests.
 - **`no-outbox-retry-queue` (leichter Auto-Flush erneut geprüft → bewusst zurückgestellt):** Code-Stand bestätigt: `syncLocalStateToCloud` wird ausschließlich aus `settings_screen.dart` beim Speichermoduswechsel aufgerufen; es gibt **keinen** App-Lifecycle-Hook (kein `WidgetsBindingObserver`/`AppLifecycleState`) in `lib/`. Der empfohlene leichte Schritt (Auto-Flush bei App-Resume) bräuchte erst neue Lifecycle-Infrastruktur und würde bei jedem Resume einen **vollen** lokal→Cloud-Push auslösen → bezahlte Firestore-Writes bei jedem Resume, was dem zentralen Spark-Free-Tier-Designziel widerspricht. Der „Eintritt in einen cloud-fähigen Modus" ist bereits abgedeckt (Settings triggert Sync). Der Plan markiert dies explizit als „nur auf ausdrücklichen Wunsch" — daher hier weiter zurückgestellt; sinnvoll nur als **Delta**-Sync (Tombstones + geänderte Items), nicht als Voll-Push.
 
+## Umsetzungsstand Welle 3 — Batch 2 (optionale/niedrige Gaps + Vorschläge)
+
+Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 168 → **169** (+1 Inventory-Cloud-Stream-onError-Test). Baseline-Verhalten unverändert, jedes Item eigener Commit auf `skills-alignment`. Jeder Gap wurde vorab per read-only Recon-Workflow (19 Agenten) gegen den **aktuellen** Code verifiziert (Zeilennummern waren nach dem Repo-Split und früheren Wellen stark gedriftet — u.a. liegen `watchStockMovements`/`watchProducts`/`watchSuppliers` jetzt in `firestore_inventory_repository.dart`).
+
+**20 Gaps geschlossen** (überwiegend ⚪ niedrig + die restlichen 🟡 mittel der Domänen UX/Backend/Daten/Observability/CI/Architektur):
+
+- **Docs/Entscheidungen:** `no-coverage-gate-doc` (`flutter test --coverage` in Quality Gates), `no-obfuscation-build-guidance` (mobile `--obfuscate --split-debug-info`-Befehle im Deployment-Abschnitt; `build/` + Keystore bereits gitignored), `web-token-storage-not-documented` (Risikoabwägung als Doc-Comment in `configurePersistence`), `barcode-no-index-clientside-scan` (clientseitiger Substring-Filter als bewusste Entscheidung kommentiert).
+- **UI additiv:** `loading-not-adaptive-no-skeletons` (alle 13 `CircularProgressIndicator()` → `.adaptive()`; Linear hat keinen adaptive-Konstruktor), `no-spacing-radii-tokens` (`AppSpacing`/`AppRadii`-ThemeExtension + `context.spacing`/`context.radii`), `no-textscaler-reduce-motion` (`core/accessibility.dart`: `prefersReducedMotion`/`motionDuration` an der Slide-Clock; `MaterialApp.builder` klemmt Textskalierung auf 1.5), `no-repaintboundary-shift-cards` (RepaintBoundary um die CustomPaint-Schichtkarte), `web-url-strategy-missing` (`usePathUrlStrategy()` per `kIsWeb`; `flutter_web_plugins` als SDK-Dep — Welle-1-Rest endlich geschlossen).
+- **Backend/API:** `no-api-contract-versioning` + `no-distributed-tracing` (gemeinsamer Commit: `_callCloudFunction` reichert jeden Payload zentral um `apiVersion`=1 und `_request_id` an; Server `assertSupportedVersion` (dormant bei MIN=1, fehlende Version toleriert) + `traceCallable` in allen fünf onCall-Handlern), `absence-query-missing-status-index-filter` (`loadShiftValidationContext` filtert `userId in[30]` + `status==approved` serverseitig über den vorhandenen Index statt In-Memory).
+- **Daten/Index:** `stockmovements-no-org-time-index` (optionaler `siteId`-Filter in `watchStockMovements` + `(siteId, createdAt)`-Composite-Index), `missing-orderby-updatedat-index-delta` (Voll-Stream-Entscheidung dokumentiert), `no-local-schema-version` (`__schema_version`-Stempel pro Scope + `_ensureScopedSchemaVersion`-Migrationshaken, v1 = No-op).
+- **Architektur/CI:** `no-architecture-fitness-lint` (`tool/check_layering.dart` + CI-Schritt + Konvention in `analysis_options.yaml`; screens→services-Whitelist), `download-service-stub-misnamed-platform-split` (idiomatischer 3-Wege-Conditional-Export: stub/io/web), `no-release-build-pipeline` + `no-build-number-automation` (`.github/workflows/release.yml` auf `v*`-Tags: Web→Hosting, Android-AAB/iOS-IPA obfuskiert, Build-Nummer aus `github.run_number`).
+- **Tests:** `inventory-firestore-fallback-untested` (Cloud-Stream-`onError` setzt `errorMessage` statt zu crashen, neuer `_StreamErrorInventoryRepository`-Fake).
+- **Nebenbei korrigiert:** zwei in Welle 2 erledigte, aber in der Roadmap noch offene Haken (`inventory-no-offline-support`, `no-soft-delete-tombstones`) auf `[x]` gesetzt.
+
+**Bewusst weiter zurückgestellt (mit Begründung, nicht in diesem Batch):**
+- **God-File-Splits & Lazy-Board** (`split-shift-planner-god-file` 8041 LOC, `split-home-screen-god-file` 7065 LOC, `planner-board-eager-listview`): große, risikoreiche Struktur-Eingriffe — eigene dedizierte Wellen mit Strangler-Fig je Commit, nicht als Beiläufer.
+- **Neue schwere Firebase-Dependencies** (`no-analytics-screen-tracking` → `firebase_analytics`, `no-perf-traces-critical-flows` → `firebase_performance`, `no-feature-flags-force-update` → `firebase_remote_config`+`package_info_plus`): folgen dem in Welle 1 etablierten Crashlytics-Präzedenzfall (Dependency-Auflösung nicht ohne lauffähigen Build verproben). Der **Force-Update-Vertrag serverseitig steht bereits** (`assertSupportedVersion`); es fehlt nur die Client-UI, die an `no-feature-flags-force-update` hängt.
+- **`no-connectivity-no-sync-status-ux`** (braucht `connectivity_plus` + Outbox), **`no-delta-sync-endpoint`/`full-read-no-delta-sync`** (Sync-Cursor-Redesign; Prerequisite „lesbares `updatedAt`" existiert seit Welle 2 auf `WorkEntry`), **`no-flavors-dev-prod`** (ändert `build.gradle.kts`, kann lokales `flutter run` ohne `--flavor` brechen + iOS-Xcode-Schemes nötig): jeweils L-Aufwand mit echtem Bruchrisiko.
+- **`no-golden-tests`**: Golden-Bilder sind font-/plattform-rendering-abhängig — auf macOS erzeugte Goldens würden die **neue Ubuntu-CI** rot färben. Ohne festgelegte CI-Referenzplattform bewusst zurückgestellt (Plan-Severity niedrig, „notorisch flaky").
+- **`timestamp-leaks-into-domain`** (Mapper-Extraktion bricht die Test-Seeds der Zwei-Serialisierungs-Regel), **`layer-first-structure`** (Plan empfiehlt selbst, die Repo-Konsistenz höher zu gewichten), **`team-management-eager-member-list`** (SliverGrid-Umbau statt ListView.builder), **`web-renderer-bundle-not-pinned`**, **`no-desktop-keyboard-shortcuts`** (L-Aufwand), **`build-helper-methods-to-widget-classes`** (inkrementell, `[~]`), **`no-outbox-retry-queue`/`no-secure-storage-for-sensitive`/`strengthen-lint-ruleset`** (bereits zuvor begründet zurückgestellt).
+
+**Vor Deploy zu prüfen:** der geänderte absenceRequests-Server-Query (`userId in` + `status` + `startDate`) gegen den vorhandenen Composite-Index im Emulator/Rules-Playground; `release.yml` benötigt die dokumentierten Repo-Secrets (Keystore, Hosting-Service-Account, dart-define-Konfig).
+
 ## Leitplanken
 
 - **Die App funktioniert; nichts brechen.** Bevorzugt werden additive Änderungen (neue Dateien, neue optionale Felder). Nach jeder Gruppe `flutter analyze` + `flutter test`.
@@ -116,7 +139,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 154 → **16
 - [x] **pii-in-logs** (🟡 mittel, observability) — Personenbezogene Daten (uid) in Log-Ausgaben
 - [x] **missing-web-security-headers** (🟡 mittel, sicherheit) — Hosting-Header ohne HSTS, CSP, X-Content-Type-Options, X-Frame-Options
 - [x] **preview-compliance-no-role-gate** (🟡 mittel, sicherheit) — previewCompliance Callable ohne Rollen-/Permission-Gate
-- [ ] **web-url-strategy-missing** (🟡 mittel, ux-ui) — Keine PathUrlStrategy — Web-Adressen mit Hash, kein Deeplink/Back-Forward-Support
+- [x] **web-url-strategy-missing** (🟡 mittel, ux-ui) — Keine PathUrlStrategy — Web-Adressen mit Hash, kein Deeplink/Back-Forward-Support
 - [x] **no-timeout-on-callable** (⚪ niedrig, backend-api) — Callable-Aufrufe ohne Timeout - haengende Calls blockieren ohne Fallback
 - [x] **no-csp-in-index-html** (⚪ niedrig, sicherheit) — Kein Content-Security-Policy-Meta-Tag in web/index.html
 
@@ -132,7 +155,7 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 154 → **16
 - [x] **home-shell-watches-all-providers** (🟠 hoch, performance) — HomeScreen-Shell rebuildt komplett bei jeder Provider-Aenderung (zu breiter watch)
 - [x] **blind-lww-merge-no-version** (🟠 hoch, sync) — _mergeByKey ist blindes Last-Write-Wins ohne Versions-/Zeitstempelvergleich – Offline-Edits werden still ueberschrieben
 - [ ] **no-outbox-retry-queue** (🟠 hoch, sync) — Kein Outbox/Retry – lokal gepufferte hybrid-Writes werden nie automatisch zur Cloud nachgepusht
-- [ ] **inventory-no-offline-support** (🟠 hoch, sync) — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
+- [x] **inventory-no-offline-support** (🟠 hoch, sync) — Warenwirtschaft-Modul ignoriert hybrid komplett – keine Offline-First-Faehigkeit, optimistische Inserts gehen bei Fehler verloren
 - [x] **no-medium-window-class** (🟠 hoch, ux-ui) — Nur ein harter Breakpoint (1120dp) — Material-3-Window-Size-Class 'medium' (600-840) fehlt komplett *(Rail ab 600dp mit Höhen-Guard; selected/all-Labels ab 840dp)*
 - [x] **no-semantics-screenreader** (🟠 hoch, ux-ui) — Keine Semantics-Labels — Icon-only Buttons, Slide-to-Clock und Status-nur-per-Farbe für Screenreader unzugänglich
 - [x] **fire-and-forget-updatesession** (🟡 mittel, architektur) — updateSession ist fire-and-forget ohne Fehler-Surfacing — Datenladefehler verschwinden in debugPrint
@@ -143,51 +166,51 @@ Verifiziert grün: `flutter analyze` = 0 Issues, `flutter test` von 154 → **16
 - [x] **stream-onerror-debugprint-only** (🟡 mittel, error-handling) — Stammdaten-Stream-Fehler (TeamProvider) werden nur per debugPrint verschluckt, ohne Nutzer-Feedback
 - [x] **counters-bopla-no-monotonic-check** (🟡 mittel, sicherheit) — counters und stockMovements: keine serverseitige Feld-/Wertvalidierung (BOPLA) *(Rules; vor Deploy via Emulator gegen Wareneingang/Stock-Adjust verifizieren)*
 - [x] **timestamp-ids-not-uuid** (🟡 mittel, sync) — Client-generierte IDs sind Timestamp-basiert statt UUID/ULID – Kollisions- und Re-Sync-Risiko
-- [ ] **no-soft-delete-tombstones** (⚪ niedrig, daten-persistenz) — Harte Loeschungen ohne Tombstones/Soft-Delete verhindern Loescherkennung beim Offline-Sync
+- [x] **no-soft-delete-tombstones** (⚪ niedrig, daten-persistenz) — Harte Loeschungen ohne Tombstones/Soft-Delete verhindern Loescherkennung beim Offline-Sync
 
 ### Welle 3 — größere/optionale Vorhaben
 
 - [ ] **split-shift-planner-god-file** (🔴 kritisch, clean-code) — shift_planner_screen.dart ist ein God-File (8041 LOC) mit zwei Mega-State-Klassen
-- [ ] **no-release-build-pipeline** (🟠 hoch, cicd) — Keine automatisierte Build-/Release-Pipeline fuer Web/Android/iOS
+- [x] **no-release-build-pipeline** (🟠 hoch, cicd) — Keine automatisierte Build-/Release-Pipeline fuer Web/Android/iOS
 - [ ] **split-home-screen-god-file** (🟠 hoch, clean-code) — home_screen.dart ist ein God-File (7065 LOC) mit vermischten Tab-Implementierungen
 - [ ] **planner-board-eager-listview** (🟠 hoch, performance) — Schichtplaner-Board materialisiert das gesamte Wochen-Grid eager statt lazy
 - [ ] **timestamp-leaks-into-domain** (🟡 mittel, architektur) — 18 von 20 Modellen importieren package:cloud_firestore — Firestore-Typ Timestamp leckt in die Domäne
-- [ ] **no-architecture-fitness-lint** (🟡 mittel, architektur) — Keine automatisierte Layering-/Import-Grenzprüfung — Schichtverstöße brechen den Build nicht
+- [x] **no-architecture-fitness-lint** (🟡 mittel, architektur) — Keine automatisierte Layering-/Import-Grenzprüfung — Schichtverstöße brechen den Build nicht
 - [ ] **no-delta-sync-endpoint** (🟡 mittel, backend-api) — Kein Delta-/since-Sync-Endpunkt und keine Tombstones - jeder Read ist Vollabzug
-- [ ] **no-api-contract-versioning** (🟡 mittel, backend-api) — Callable-Payload-Vertrag ist unversioniert - alte App-Versionen koennen still brechen
+- [x] **no-api-contract-versioning** (🟡 mittel, backend-api) — Callable-Payload-Vertrag ist unversioniert - alte App-Versionen koennen still brechen
 - [ ] **no-feature-flags-force-update** (🟡 mittel, cicd) — Kein Feature-Flag-/Force-Update-/Minimum-Version-Mechanismus
-- [ ] **no-build-number-automation** (🟡 mittel, cicd) — Statische Versionsnummer ohne automatisches Build-Counter-Hochzaehlen
-- [ ] **no-local-schema-version** (🟡 mittel, daten-persistenz) — Lokale Persistenz hat keine echte Schema-Versionierung (nur ein Prefix-Konstante)
-- [ ] **no-distributed-tracing** (🟡 mittel, observability) — Keine Trace-Korrelation Client -> Cloud Functions
+- [x] **no-build-number-automation** (🟡 mittel, cicd) — Statische Versionsnummer ohne automatisches Build-Counter-Hochzaehlen
+- [x] **no-local-schema-version** (🟡 mittel, daten-persistenz) — Lokale Persistenz hat keine echte Schema-Versionierung (nur ein Prefix-Konstante)
+- [x] **no-distributed-tracing** (🟡 mittel, observability) — Keine Trace-Korrelation Client -> Cloud Functions
 - [ ] **no-analytics-screen-tracking** (🟡 mittel, observability) — Keine Produkt-Telemetrie / kein Screen-Tracking für Nutzerflüsse
-- [ ] **no-repaintboundary-shift-cards** (🟡 mittel, performance) — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
+- [x] **no-repaintboundary-shift-cards** (🟡 mittel, performance) — Keine RepaintBoundary um CustomPaint-Schichtkarten im Board
 - [x] **schedule-shifts-getter-refilters** (🟡 mittel, performance) — ScheduleProvider.shifts re-filtert die gesamte Liste bei jedem Zugriff *(in Welle-2-Performance-Strang vorgezogen)*
 - [ ] **no-connectivity-no-sync-status-ux** (🟡 mittel, sync) — Keine Konnektivitaetserkennung und keine Sync-Status-UX – Eventual Consistency ist fuer den Nutzer unsichtbar
 - [x] **hybrid-delete-rethrows** (🟡 mittel, sync) — hybrid-Delete folgt nicht dem dokumentierten catch-Fallback-Muster – Loeschungen schlagen offline hart fehl *(alle 5 Delete-Pfade an Save-Muster angeglichen: hybrid lokal+Tombstone statt rethrow; cloud-only weiter rethrow)*
 - [x] **csv-escaping-bom-undertested** (🟡 mittel, testing) — CSV-Export: Escaping-Sonderfaelle (Semikolon, Anfuehrungszeichen, Zeilenumbruch) ungetestet *(7 Tests inkl. quotenbewusstem Parser/Round-Trip; + de_DE-Locale-Nebenbefund behoben)*
-- [ ] **loading-not-adaptive-no-skeletons** (🟡 mittel, ux-ui) — Ladezustände immer Material-CircularProgressIndicator (nicht .adaptive), keine Skeletons
-- [ ] **no-spacing-radii-tokens** (🟡 mittel, ux-ui) — ThemeExtension nur für Farben — Spacing/Radii sind als magische Zahlen verstreut
-- [ ] **no-textscaler-reduce-motion** (🟡 mittel, ux-ui) — Keine Textskalierungs-Robustheit und kein Reduce-Motion-Respekt
+- [x] **loading-not-adaptive-no-skeletons** (🟡 mittel, ux-ui) — Ladezustände immer Material-CircularProgressIndicator (nicht .adaptive), keine Skeletons
+- [x] **no-spacing-radii-tokens** (🟡 mittel, ux-ui) — ThemeExtension nur für Farben — Spacing/Radii sind als magische Zahlen verstreut
+- [x] **no-textscaler-reduce-motion** (🟡 mittel, ux-ui) — Keine Textskalierungs-Robustheit und kein Reduce-Motion-Respekt
 - [ ] **layer-first-structure** (⚪ niedrig, architektur) — Layer-first-Struktur statt Feature-first — Warenwirtschaft-Modul über 6 Verzeichnisse zersplittert
-- [ ] **download-service-stub-misnamed-platform-split** (⚪ niedrig, architektur) — Plattform-Split der Download-Datei greift nur Web vs. Nicht-Web ab; 'Stub' ist faktisch die Mobile/Desktop-Impl (share_plus)
-- [ ] **absence-query-missing-status-index-filter** (⚪ niedrig, backend-api) — Server-seitige absenceRequests-Query filtert Status erst im Speicher statt per indexiertem Query
+- [x] **download-service-stub-misnamed-platform-split** (⚪ niedrig, architektur) — Plattform-Split der Download-Datei greift nur Web vs. Nicht-Web ab; 'Stub' ist faktisch die Mobile/Desktop-Impl (share_plus)
+- [x] **absence-query-missing-status-index-filter** (⚪ niedrig, backend-api) — Server-seitige absenceRequests-Query filtert Status erst im Speicher statt per indexiertem Query
 - [ ] **no-flavors-dev-prod** (⚪ niedrig, cicd) — Keine Flavors/Build-Varianten fuer dev/prod — Demo-Build und Prod teilen Bundle-ID
 - [x] **dedupe-absence-sort-comparator** (⚪ niedrig, clean-code) — Identischer Sort-Comparator fuer AbsenceRequest dupliziert (watchAll/getAll) *(in statische _compareAbsenceRequests gehoben)*
-- [ ] **missing-orderby-updatedat-index-delta** (⚪ niedrig, daten-persistenz) — Kein Index/Query auf updatedAt - keine inkrementelle Delta-Synchronisation, volle Collection-Streams
-- [ ] **stockmovements-no-org-time-index** (⚪ niedrig, daten-persistenz) — watchStockMovements ohne productId nutzt orderBy(createdAt) ohne standortgescopten Composite-Index
-- [ ] **barcode-no-index-clientside-scan** (⚪ niedrig, daten-persistenz) — Barcode-/SKU-Suche und Kategorie-Filter laufen rein clientseitig (kein Feld-Index)
+- [x] **missing-orderby-updatedat-index-delta** (⚪ niedrig, daten-persistenz) — Kein Index/Query auf updatedAt - keine inkrementelle Delta-Synchronisation, volle Collection-Streams
+- [x] **stockmovements-no-org-time-index** (⚪ niedrig, daten-persistenz) — watchStockMovements ohne productId nutzt orderBy(createdAt) ohne standortgescopten Composite-Index
+- [x] **barcode-no-index-clientside-scan** (⚪ niedrig, daten-persistenz) — Barcode-/SKU-Suche und Kategorie-Filter laufen rein clientseitig (kein Feld-Index)
 - [x] **work-template-report-stream-silent** (⚪ niedrig, error-handling) — Vorlagen- und Bericht-Stream-Fehler im WorkProvider werden ohne Nutzer-Feedback geschluckt *(TeamProvider-Muster: _setStreamError/_markStreamHealthy für Eintraege/Vorlagen/Berichtsdaten)*
 - [x] **order-number-fallback-collision** (⚪ niedrig, error-handling) — Bestellnummer-Fallback verschluckt jeden Fehler und kann kollidierende/duplizierte Nummern erzeugen *(retryTransient + ErrorReporter + UUID-Suffix im Fallback)*
 - [ ] **no-perf-traces-critical-flows** (⚪ niedrig, observability) — Keine RUM-Performance-Signale / Custom Traces um kritische Abläufe
 - [ ] **team-management-eager-member-list** (⚪ niedrig, performance) — Team-Management materialisiert Mitarbeiter-/Site-Listen eager in ListView(children:)
 - [ ] **web-renderer-bundle-not-pinned** (⚪ niedrig, performance) — Web-Renderer/CanvasKit-Startkosten nicht bewusst konfiguriert
-- [ ] **no-obfuscation-build-guidance** (⚪ niedrig, sicherheit) — Release-Builds ohne dokumentiertes --obfuscate/--split-debug-info
-- [ ] **web-token-storage-not-documented** (⚪ niedrig, sicherheit) — Auth-Token-Speicherung auf Web (localStorage-Persistenz) ohne dokumentierte Risikoabwägung
+- [x] **no-obfuscation-build-guidance** (⚪ niedrig, sicherheit) — Release-Builds ohne dokumentiertes --obfuscate/--split-debug-info
+- [x] **web-token-storage-not-documented** (⚪ niedrig, sicherheit) — Auth-Token-Speicherung auf Web (localStorage-Persistenz) ohne dokumentierte Risikoabwägung
 - [ ] **full-read-no-delta-sync** (⚪ niedrig, sync) — Hybrid spiegelt per Voll-Monatsstream statt Delta-Sync; cacheCloudStateLocally laedt alle Eintraege ohne Cursor
 - [ ] **no-golden-tests** (⚪ niedrig, testing) — Keine Golden-Tests fuer die Multiplattform-UI (Web/iOS/Android)
 - [x] **order-number-determinism** (⚪ niedrig, testing) — Bestellnummern-Allokation: Transaktions-Counter und Fallback-Pfad nicht deterministisch getestet *(Monotonie über 3 Bestellungen + Fallback-Pfad via Fake-runTransaction getestet)*
-- [ ] **inventory-firestore-fallback-untested** (⚪ niedrig, testing) — Inventory-Firestore-Pfad: kein Stream-onError-Test (KEIN Hybrid-Fallback im Provider)
-- [ ] **no-coverage-gate-doc** (⚪ niedrig, testing) — Keine reproduzierbare Coverage-Messung dokumentiert (kein --coverage-Workflow)
+- [x] **inventory-firestore-fallback-untested** (⚪ niedrig, testing) — Inventory-Firestore-Pfad: kein Stream-onError-Test (KEIN Hybrid-Fallback im Provider)
+- [x] **no-coverage-gate-doc** (⚪ niedrig, testing) — Keine reproduzierbare Coverage-Messung dokumentiert (kein --coverage-Workflow)
 - [ ] **no-desktop-keyboard-shortcuts** (⚪ niedrig, ux-ui) — Keine Tastatur-Shortcuts/Hover für Desktop- und Web-Nutzung trotz Rail-Layout ab 1120dp
 
 ---
