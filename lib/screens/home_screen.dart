@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -38,6 +39,18 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _navIndex = 0;
+  // Strg/Ctrl + 1..9 -> n-te Rail-Destination (no-desktop-keyboard-shortcuts).
+  static const List<LogicalKeyboardKey> _navDigitKeys = [
+    LogicalKeyboardKey.digit1,
+    LogicalKeyboardKey.digit2,
+    LogicalKeyboardKey.digit3,
+    LogicalKeyboardKey.digit4,
+    LogicalKeyboardKey.digit5,
+    LogicalKeyboardKey.digit6,
+    LogicalKeyboardKey.digit7,
+    LogicalKeyboardKey.digit8,
+    LogicalKeyboardKey.digit9,
+  ];
   final Set<_ShellDestinationId> _loadedDestinations = {
     _ShellDestinationId.today,
   };
@@ -67,7 +80,20 @@ class _HomeScreenState extends State<HomeScreen> {
       (destination) => destination.id == currentDestination.id,
     );
 
-    return PopScope<void>(
+    // Desktop-/Web-Tastatur-Shortcuts (no-desktop-keyboard-shortcuts):
+    // Strg/Ctrl + 1..9 springt direkt auf die n-te Rail-Destination.
+    final shortcutBindings = <ShortcutActivator, VoidCallback>{
+      for (var i = 0;
+          i < railDestinations.length && i < _navDigitKeys.length;
+          i++)
+        SingleActivator(_navDigitKeys[i], control: true): () =>
+            _handleDestinationTap(i, destinations: railDestinations),
+    };
+
+    return CallbackShortcuts(
+      bindings: shortcutBindings,
+      child: FocusTraversalGroup(
+        child: PopScope<void>(
       canPop: _navHistory.isEmpty,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
@@ -196,6 +222,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 : null,
           );
         },
+      ),
+        ),
       ),
     );
   }
