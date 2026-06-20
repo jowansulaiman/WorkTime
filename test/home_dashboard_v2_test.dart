@@ -52,7 +52,7 @@ const _employee = AppUserProfile(
   settings: UserSettings(name: 'Peter'),
 );
 
-Future<Future<void> Function()> _pumpHome(
+Future<({Future<void> Function() cleanup, ThemeProvider theme})> _pumpHome(
   WidgetTester tester, {
   required AppUserProfile profile,
   required bool flagOn,
@@ -125,16 +125,19 @@ Future<Future<void> Function()> _pumpHome(
 
   // WorkProvider haelt periodische Clock-Timer. Im Test-Body (vor der
   // pending-Timer-Pruefung) aufraeumen: Tree unmounten, dann Provider disposen.
-  return () async {
-    await tester.pumpWidget(const SizedBox());
-    work.dispose();
-    schedule.dispose();
-    team.dispose();
-    flags.dispose();
-    storage.dispose();
-    auth.dispose();
-    theme.dispose();
-  };
+  return (
+    theme: theme,
+    cleanup: () async {
+      await tester.pumpWidget(const SizedBox());
+      work.dispose();
+      schedule.dispose();
+      team.dispose();
+      flags.dispose();
+      storage.dispose();
+      auth.dispose();
+      theme.dispose();
+    },
+  );
 }
 
 void main() {
@@ -148,23 +151,39 @@ void main() {
   });
 
   testWidgets('Employee + Flag an -> V2-Dashboard (AppHeroCard)', (tester) async {
-    final cleanup = await _pumpHome(tester, profile: _employee, flagOn: true);
+    final h = await _pumpHome(tester, profile: _employee, flagOn: true);
     expect(find.byType(AppHeroCard), findsOneWidget);
     expect(find.text('Krank melden'), findsOneWidget);
-    await cleanup();
+    await h.cleanup();
   });
 
   testWidgets('Admin + Flag an -> V2-Dashboard (AppHeroCard + Plan oeffnen)',
       (tester) async {
-    final cleanup = await _pumpHome(tester, profile: _admin, flagOn: true);
+    final h = await _pumpHome(tester, profile: _admin, flagOn: true);
     expect(find.byType(AppHeroCard), findsOneWidget);
     expect(find.text('Plan oeffnen'), findsOneWidget);
-    await cleanup();
+    await h.cleanup();
   });
 
   testWidgets('Employee + Flag aus -> V1 (keine AppHeroCard)', (tester) async {
-    final cleanup = await _pumpHome(tester, profile: _employee, flagOn: false);
+    final h = await _pumpHome(tester, profile: _employee, flagOn: false);
     expect(find.byType(AppHeroCard), findsNothing);
-    await cleanup();
+    await h.cleanup();
+  });
+
+  testWidgets('Laufzeit-Override schaltet das Home-Layout live V1 -> V2',
+      (tester) async {
+    final h = await _pumpHome(tester, profile: _employee, flagOn: false);
+    // Start ohne Flag/Override -> V1-Layout (keine AppHeroCard).
+    expect(find.byType(AppHeroCard), findsNothing);
+
+    // Schalter umlegen (wie der Einstellungs-Toggle) -> Home muss live auf das
+    // V2-Layout wechseln, nicht nur umfaerben.
+    await h.theme.setRedesignV2Override(true);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byType(AppHeroCard), findsOneWidget);
+
+    await h.cleanup();
   });
 }
