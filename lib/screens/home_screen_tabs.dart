@@ -70,6 +70,7 @@ class _EmployeeDashboardTab extends StatelessWidget {
                 provider: work,
               ),
               const SizedBox(height: 16),
+              const CustomerOrderWarningBanner(parentLabel: 'Heute'),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [
@@ -952,6 +953,7 @@ class _AdminDashboardTab extends StatelessWidget {
                 siteCount: todaySites.toSet().length,
               ),
               const SizedBox(height: 16),
+              const CustomerOrderWarningBanner(parentLabel: 'Heute'),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [
@@ -2650,11 +2652,6 @@ class _PunchClockSheet extends StatelessWidget {
               context,
               provider,
             ),
-            onQrAction: () => _handlePunchClockAction(
-              context,
-              provider,
-              viaQr: true,
-            ),
           ),
           const SizedBox(height: 16),
           _ConfirmedShiftDayPanel(
@@ -2720,7 +2717,6 @@ class _PunchClockHero extends StatelessWidget {
     required this.activeShift,
     required this.lastClockEntry,
     required this.onPrimaryAction,
-    required this.onQrAction,
   });
 
   final WorkProvider provider;
@@ -2729,33 +2725,64 @@ class _PunchClockHero extends StatelessWidget {
   final Shift? activeShift;
   final WorkEntry? lastClockEntry;
   final Future<void> Function() onPrimaryAction;
-  final Future<void> Function() onQrAction;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final appColors = theme.appColors;
+
     final isClockedIn = provider.hasActiveClockSession;
-    final durationLabel =
-        _formatClockDuration(provider.effectiveClockedDuration);
-    final startLabel = provider.effectiveClockStartTime != null
-        ? DateFormat('HH:mm').format(provider.effectiveClockStartTime!)
-        : lastClockEntry == null
-            ? '--:--'
-            : DateFormat('HH:mm').format(lastClockEntry!.startTime);
-    final endLabel = isClockedIn
-        ? '--:--'
-        : lastClockEntry == null
-            ? '--:--'
-            : DateFormat('HH:mm').format(lastClockEntry!.endTime);
-    final breakLabel = _formatClockBreakLabel(
-      provider,
-      provider.activeEntryNow ?? lastClockEntry,
-    );
-    final statusColor = isClockedIn ? appColors.success : colorScheme.outline;
+    final isEntryBacked = provider.isClockBackedByEntry;
     final hasSiteAssignment = siteAssignment != null;
     final canClock = isClockedIn || (hasSiteAssignment && activeShift != null);
+
+    final durationLabel =
+        _formatClockDuration(provider.effectiveClockedDuration);
+    final startTime =
+        provider.effectiveClockStartTime ?? lastClockEntry?.startTime;
+    final startLabel = startTime == null
+        ? '--:--'
+        : DateFormat('HH:mm', 'de_DE').format(startTime);
+    final plannedEnd = activeShift?.endTime;
+    final endLabel = isClockedIn
+        ? (plannedEnd == null
+            ? '--:--'
+            : DateFormat('HH:mm', 'de_DE').format(plannedEnd))
+        : lastClockEntry == null
+            ? '--:--'
+            : DateFormat('HH:mm', 'de_DE').format(lastClockEntry!.endTime);
+
+    final breakEntry = provider.activeEntryNow ?? lastClockEntry;
+    final breakValue = isClockedIn && !isEntryBacked
+        ? 'Auto'
+        : breakEntry == null
+            ? 'Auto'
+            : '${breakEntry.breakMinutes.toStringAsFixed(0)} min';
+
+    double? shiftProgress;
+    String? progressCaption;
+    final shift = activeShift;
+    if (shift != null) {
+      final totalSeconds = shift.endTime.difference(shift.startTime).inSeconds;
+      if (totalSeconds > 0) {
+        final elapsedSeconds =
+            DateTime.now().difference(shift.startTime).inSeconds;
+        final progress = (elapsedSeconds / totalSeconds).clamp(0.0, 1.0);
+        shiftProgress = progress;
+        progressCaption =
+            'Schicht zu ${(progress * 100).round()} % · endet '
+            '${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}';
+      }
+    }
+
+    final ringColor = isClockedIn ? appColors.success : colorScheme.outline;
+    final statusText = isClockedIn
+        ? (isEntryBacked ? 'Eintrag läuft' : 'Im Dienst')
+        : 'Nicht im Dienst';
+    final sinceLabel =
+        isClockedIn && startTime != null ? 'seit $startLabel' : null;
+
     final todayLabel =
         DateFormat('EEEE, d. MMMM', 'de_DE').format(DateTime.now());
     final siteLabel = site?.name.trim().isNotEmpty == true
@@ -2763,14 +2790,22 @@ class _PunchClockHero extends StatelessWidget {
         : siteAssignment?.siteName.trim().isNotEmpty == true
             ? siteAssignment!.siteName
             : 'Kein Standort';
-    final codeLabel = [
-      if (site?.displayCode.isNotEmpty == true) site!.displayCode,
-      if (site?.federalState?.trim().isNotEmpty == true) site!.federalState!,
-    ].join(' · ');
+    final shiftWindowLabel =
+        shift == null ? 'Keine aktive Schicht' : _formatShiftWindow(shift);
+
+    final helperText = !hasSiteAssignment
+        ? 'Zum Einstempeln ist ein Primärstandort erforderlich.'
+        : (!isClockedIn && activeShift == null)
+            ? 'Check-in ist nur während einer aktiven Schicht möglich.'
+            : !isClockedIn
+                ? 'Bereit für den nächsten Check-in.'
+                : null;
+    final helperIsError = !hasSiteAssignment;
+
     final heroSurface = Color.lerp(
           colorScheme.surface,
           appColors.successContainer,
-          isClockedIn ? 0.42 : 0.12,
+          isClockedIn ? 0.40 : 0.10,
         ) ??
         colorScheme.surface;
 
@@ -2780,7 +2815,7 @@ class _PunchClockHero extends StatelessWidget {
           colors: [
             colorScheme.surface,
             heroSurface,
-            colorScheme.secondaryContainer.withValues(alpha: 0.72),
+            colorScheme.secondaryContainer.withValues(alpha: 0.55),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -2796,241 +2831,126 @@ class _PunchClockHero extends StatelessWidget {
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final stackHeader = constraints.maxWidth < 700;
-          final stackStats = constraints.maxWidth < 520;
           final compact = constraints.maxWidth < 420;
-          final horizontalPadding = compact ? 16.0 : 20.0;
-          final statusText = isClockedIn
-              ? (provider.isClockBackedByEntry ? 'Eintrag laeuft' : 'Im Dienst')
-              : 'Nicht im Dienst';
-          final helperText = isClockedIn
-              ? (provider.isClockBackedByEntry
-                  ? 'Zeitfenster aus Eintrag seit $startLabel aktiv'
-                  : 'Laufende Zeit seit $startLabel')
-              : activeShift == null
-                  ? 'Check-in nur waehrend einer aktiven Schicht moeglich'
-                  : lastClockEntry == null
-                      ? 'Bereit fuer den naechsten Check-in'
-                      : 'Letzter Einsatz endete um $endLabel';
-          final breakSourceLabel = isClockedIn
-              ? (provider.isClockBackedByEntry ? 'Aus Zeit' : 'Automatisch')
-              : 'Letzter Eintrag';
-
+          final pad = compact ? 18.0 : 22.0;
+          final ringSize = constraints.maxWidth.isFinite
+              ? (constraints.maxWidth - pad * 2).clamp(200.0, 268.0)
+              : 240.0;
           return Padding(
-            padding: EdgeInsets.all(horizontalPadding),
+            padding: EdgeInsets.all(pad),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (stackHeader) ...[
-                  _PunchClockHeaderInfo(
-                    todayLabel: todayLabel,
-                    siteLabel: siteLabel,
-                    hasSiteAssignment: hasSiteAssignment,
-                    activeShift: activeShift,
-                    isClockedIn: isClockedIn,
-                    canClock: canClock,
-                    isClockBackedByEntry: provider.isClockBackedByEntry,
+                Text(
+                  'Heute',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    letterSpacing: 0.5,
                   ),
-                  if (codeLabel.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _PunchClockCodeBadge(label: codeLabel),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  todayLabel,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.storefront_outlined,
+                      size: 18,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '$siteLabel · $shiftWindowLabel',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
                   ],
-                ] else
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: _PunchClockHeaderInfo(
-                          todayLabel: todayLabel,
-                          siteLabel: siteLabel,
-                          hasSiteAssignment: hasSiteAssignment,
-                          activeShift: activeShift,
-                          isClockedIn: isClockedIn,
-                          canClock: canClock,
-                          isClockBackedByEntry: provider.isClockBackedByEntry,
-                        ),
-                      ),
-                      if (codeLabel.isNotEmpty) ...[
-                        const SizedBox(width: 14),
-                        _PunchClockCodeBadge(label: codeLabel),
-                      ],
-                    ],
-                  ),
-                const SizedBox(height: 18),
-                Container(
-                  padding: EdgeInsets.all(compact ? 16 : 18),
-                  decoration: BoxDecoration(
-                    color: colorScheme.surface.withValues(alpha: 0.92),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: Column(
-                    children: [
-                      if (stackStats) ...[
-                        _ClockStatTile(
-                          label: 'Start',
-                          time: startLabel,
-                          icon: Icons.login_rounded,
-                          color: appColors.success,
-                        ),
-                        const SizedBox(height: 10),
-                        _ClockStatTile(
-                          label: 'Ende',
-                          time: endLabel,
-                          icon: Icons.logout_rounded,
-                          color: colorScheme.error,
-                        ),
-                      ] else
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _ClockStatTile(
-                                label: 'Start',
-                                time: startLabel,
-                                icon: Icons.login_rounded,
-                                color: appColors.success,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: _ClockStatTile(
-                                label: 'Ende',
-                                time: endLabel,
-                                icon: Icons.logout_rounded,
-                                color: colorScheme.error,
-                              ),
-                            ),
-                          ],
-                        ),
-                      const SizedBox(height: 14),
-                      _PunchClockBreakCard(
-                        breakLabel: breakLabel,
-                        sourceLabel: breakSourceLabel,
-                      ),
-                    ],
-                  ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 22),
                 Center(
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 340),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colorScheme.surface.withValues(alpha: 0.8),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: isClockedIn
-                            ? statusColor.withValues(alpha: 0.3)
-                            : colorScheme.outlineVariant.withValues(alpha: 0.5),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (isClockedIn)
-                          TweenAnimationBuilder<double>(
-                            tween: Tween(begin: 0.4, end: 1.0),
-                            duration: const Duration(milliseconds: 800),
-                            curve: Curves.easeInOut,
-                            builder: (context, val, child) {
-                              return Container(
-                                width: 12,
-                                height: 12,
-                                decoration: BoxDecoration(
-                                  color: statusColor.withValues(alpha: val),
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: statusColor.withValues(
-                                        alpha: val * 0.5,
-                                      ),
-                                      blurRadius: 8 * val,
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          )
-                        else
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              color: statusColor,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        const SizedBox(width: 10),
-                        Flexible(
-                          child: Text(
-                            statusText,
-                            textAlign: TextAlign.center,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              letterSpacing: 0.4,
-                              fontWeight: FontWeight.w600,
-                              color: isClockedIn
-                                  ? colorScheme.onSurface
-                                  : colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ],
+                  child: SizedBox(
+                    width: ringSize,
+                    height: ringSize,
+                    child: _PunchClockRing(
+                      progress: shiftProgress,
+                      active: isClockedIn,
+                      ringColor: ringColor,
+                      trackColor:
+                          colorScheme.outlineVariant.withValues(alpha: 0.5),
+                      durationLabel: durationLabel,
+                      statusText: statusText,
+                      sinceLabel: sinceLabel,
                     ),
                   ),
                 ),
-                const SizedBox(height: 18),
-                Center(
-                  child: Column(
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        constraints: const BoxConstraints(maxWidth: 360),
-                        padding: EdgeInsets.symmetric(
-                          horizontal: compact ? 18 : 24,
-                          vertical: compact ? 10 : 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.surface.withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(28),
-                          border: Border.all(
-                            color: colorScheme.outlineVariant.withValues(
-                              alpha: 0.4,
-                            ),
-                          ),
-                        ),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Text(
-                            durationLabel,
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -1.2,
-                              color: colorScheme.onSurface,
-                              fontFeatures: const [
-                                FontFeature.tabularFigures(),
-                              ],
-                            ),
-                          ),
-                        ),
+                if (progressCaption != null) ...[
+                  const SizedBox(height: 14),
+                  Center(
+                    child: Text(
+                      progressCaption,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
                       ),
-                      const SizedBox(height: 12),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 420),
-                        child: Text(
-                          helperText,
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.bodyLarge?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
+                ],
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _ClockFactTile(
+                        icon: Icons.login_rounded,
+                        label: 'Start',
+                        value: startLabel,
+                        accent: appColors.success,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _ClockFactTile(
+                        icon: Icons.coffee_outlined,
+                        label: 'Pause',
+                        value: breakValue,
+                        accent: appColors.info,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _ClockFactTile(
+                        icon: Icons.logout_rounded,
+                        label: 'Ende',
+                        value: endLabel,
+                        accent: colorScheme.error,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 18),
+                if (helperText != null) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    helperText,
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: helperIsError
+                          ? colorScheme.error
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
                 _SlideClockAction(
                   enabled: canClock,
                   label: isClockedIn
@@ -3046,27 +2966,8 @@ class _PunchClockHero extends StatelessWidget {
                       isClockedIn ? colorScheme.error : appColors.success,
                   onCompleted: canClock ? onPrimaryAction : null,
                 ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: canClock ? onQrAction : null,
-                    icon: const Icon(Icons.qr_code_2_rounded),
-                    label: Text(
-                      isClockedIn ? 'QR-Ausstempeln' : 'QR-Einstempeln',
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: appColors.successContainer,
-                      foregroundColor: appColors.onSuccessContainer,
-                      minimumSize: const Size.fromHeight(56),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                    ),
-                  ),
-                ),
                 const SizedBox(height: 16),
-                _LocationStatusCard(
+                _PunchClockLocationRow(
                   siteAssignment: siteAssignment,
                   site: site,
                   hasSiteAssignment: hasSiteAssignment,
@@ -3080,245 +2981,366 @@ class _PunchClockHero extends StatelessWidget {
   }
 }
 
-class _PunchClockHeaderInfo extends StatelessWidget {
-  const _PunchClockHeaderInfo({
-    required this.todayLabel,
-    required this.siteLabel,
-    required this.hasSiteAssignment,
-    required this.activeShift,
-    required this.isClockedIn,
-    required this.canClock,
-    required this.isClockBackedByEntry,
+class _PunchClockRing extends StatelessWidget {
+  const _PunchClockRing({
+    required this.progress,
+    required this.active,
+    required this.ringColor,
+    required this.trackColor,
+    required this.durationLabel,
+    required this.statusText,
+    required this.sinceLabel,
   });
 
-  final String todayLabel;
-  final String siteLabel;
-  final bool hasSiteAssignment;
-  final Shift? activeShift;
-  final bool isClockedIn;
-  final bool canClock;
-  final bool isClockBackedByEntry;
+  final double? progress;
+  final bool active;
+  final Color ringColor;
+  final Color trackColor;
+  final String durationLabel;
+  final String statusText;
+  final String? sinceLabel;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Stack(
+      alignment: Alignment.center,
       children: [
-        Text(
-          'Heute',
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-                letterSpacing: 0.5,
-              ),
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: colorScheme.surface.withValues(alpha: 0.75),
+            ),
+          ),
         ),
-        const SizedBox(height: 4),
-        Text(
-          todayLabel,
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+        Positioned.fill(
+          child: CustomPaint(
+            painter: _ShiftProgressRingPainter(
+              progress: progress,
+              active: active,
+              trackColor: trackColor,
+              progressColor: ringColor,
+              strokeWidth: 14,
+            ),
+          ),
         ),
-        const SizedBox(height: 10),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            _PunchClockChip(
-              icon: Icons.storefront_outlined,
-              label: siteLabel,
-              active: hasSiteAssignment,
-            ),
-            _PunchClockChip(
-              icon: Icons.event_available_rounded,
-              label: activeShift == null
-                  ? 'Keine aktive Schicht'
-                  : _formatShiftWindow(activeShift!),
-              active: activeShift != null,
-            ),
-            _PunchClockChip(
-              icon: Icons.sync_rounded,
-              label: isClockedIn
-                  ? (isClockBackedByEntry ? 'Eintrag aktiv' : 'Aktiv')
-                  : canClock
-                      ? 'Bereit'
-                      : 'Gesperrt',
-              active: isClockedIn || canClock,
-            ),
-          ],
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 30),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  durationLabel,
+                  style: theme.textTheme.displaySmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -1.0,
+                    color: colorScheme.onSurface,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _StatusDot(active: active, color: ringColor),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      statusText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: active
+                            ? colorScheme.onSurface
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (sinceLabel != null) ...[
+                const SizedBox(height: 3),
+                Text(
+                  sinceLabel!,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ],
     );
   }
 }
 
-class _PunchClockCodeBadge extends StatelessWidget {
-  const _PunchClockCodeBadge({required this.label});
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({required this.active, required this.color});
 
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 260),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: colorScheme.surface.withValues(alpha: 0.88),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Text(
-        label,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-      ),
-    );
-  }
-}
-
-class _PunchClockBreakCard extends StatelessWidget {
-  const _PunchClockBreakCard({
-    required this.breakLabel,
-    required this.sourceLabel,
-  });
-
-  final String breakLabel;
-  final String sourceLabel;
+  final bool active;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 420;
+    if (!active) {
+      return Container(
+        width: 11,
+        height: 11,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      );
+    }
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.45, end: 1.0),
+      duration: const Duration(milliseconds: 850),
+      curve: Curves.easeInOut,
+      builder: (context, value, child) {
         return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          width: 11,
+          height: 11,
           decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
-            borderRadius: BorderRadius.circular(18),
+            color: color.withValues(alpha: value),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: value * 0.5),
+                blurRadius: 8 * value,
+              ),
+            ],
           ),
-          child: compact
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.coffee_outlined,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            breakLabel,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      sourceLabel,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                  ],
-                )
-              : Row(
-                  children: [
-                    Icon(
-                      Icons.coffee_outlined,
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        breakLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      sourceLabel,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                  ],
-                ),
         );
       },
     );
   }
 }
 
-class _PunchClockChip extends StatelessWidget {
-  const _PunchClockChip({
+class _ShiftProgressRingPainter extends CustomPainter {
+  const _ShiftProgressRingPainter({
+    required this.progress,
+    required this.active,
+    required this.trackColor,
+    required this.progressColor,
+    required this.strokeWidth,
+  });
+
+  final double? progress;
+  final bool active;
+  final Color trackColor;
+  final Color progressColor;
+  final double strokeWidth;
+
+  // Volle Umdrehung bzw. Startwinkel oben (12 Uhr) als Konstanten, weil diese
+  // Datei ein `part` ist und keinen eigenen dart:math-Import mitbringt.
+  static const double _fullTurn = 6.283185307179586;
+  static const double _topStart = -1.5707963267948966;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromCircle(
+      center: size.center(Offset.zero),
+      radius: (size.shortestSide - strokeWidth) / 2,
+    );
+    final track = Paint()
+      ..color = trackColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(rect, 0, _fullTurn, false, track);
+
+    final value = progress;
+    final double sweep;
+    if (value != null) {
+      sweep = _fullTurn * value.clamp(0.0, 1.0);
+    } else if (active) {
+      sweep = _fullTurn;
+    } else {
+      sweep = 0;
+    }
+    if (sweep <= 0) {
+      return;
+    }
+    final arc = Paint()
+      ..color = progressColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(rect, _topStart, sweep, false, arc);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ShiftProgressRingPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.active != active ||
+        oldDelegate.trackColor != trackColor ||
+        oldDelegate.progressColor != progressColor ||
+        oldDelegate.strokeWidth != strokeWidth;
+  }
+}
+
+class _ClockFactTile extends StatelessWidget {
+  const _ClockFactTile({
     required this.icon,
     required this.label,
-    required this.active,
+    required this.value,
+    required this.accent,
   });
 
   final IconData icon;
   final String label;
-  final bool active;
+  final String value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surface.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 16, color: accent),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PunchClockLocationRow extends StatelessWidget {
+  const _PunchClockLocationRow({
+    required this.siteAssignment,
+    required this.site,
+    required this.hasSiteAssignment,
+  });
+
+  final EmployeeSiteAssignment? siteAssignment;
+  final SiteDefinition? site;
+  final bool hasSiteAssignment;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final appColors = theme.appColors;
-    final width = MediaQuery.sizeOf(context).width;
-    final background = active
-        ? appColors.successContainer
-        : colorScheme.surface.withValues(alpha: 0.9);
-    final foreground =
-        active ? appColors.onSuccessContainer : colorScheme.onSurfaceVariant;
-    final maxChipWidth = width < 480 ? width - 96 : 320.0;
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxChipWidth),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18, color: foreground),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: foreground,
-                      fontWeight: FontWeight.w600,
+    final resolvedSite = site;
+    final siteName = siteAssignment?.siteName ??
+        resolvedSite?.name ??
+        'Kein Standort zugewiesen';
+    final details = <String>[
+      if (resolvedSite != null && resolvedSite.displayCode.isNotEmpty)
+        resolvedSite.displayCode,
+      if (resolvedSite?.federalState?.trim().isNotEmpty ?? false)
+        resolvedSite!.federalState!,
+      if (resolvedSite != null && resolvedSite.displayAddress.isNotEmpty)
+        resolvedSite.displayAddress,
+    ].join(' · ');
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.surface.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: (hasSiteAssignment
+                          ? appColors.successContainer
+                          : colorScheme.errorContainer)
+                      .withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  Icons.location_on_rounded,
+                  color: hasSiteAssignment
+                      ? appColors.onSuccessContainer
+                      : colorScheme.error,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      siteName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
+                    if (details.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        details,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              _LocationStatusBadge(hasSiteAssignment: hasSiteAssignment),
+            ],
+          ),
+          if (!hasSiteAssignment) ...[
+            const SizedBox(height: 10),
+            Text(
+              'Bitte in der Teamverwaltung einen Primärstandort hinterlegen.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
               ),
             ),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -3584,160 +3606,6 @@ class _SlideClockActionState extends State<_SlideClockAction> {
   }
 }
 
-class _LocationStatusCard extends StatelessWidget {
-  const _LocationStatusCard({
-    required this.siteAssignment,
-    required this.site,
-    required this.hasSiteAssignment,
-  });
-
-  final EmployeeSiteAssignment? siteAssignment;
-  final SiteDefinition? site;
-  final bool hasSiteAssignment;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final appColors = theme.appColors;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 430;
-        return Container(
-          padding: EdgeInsets.all(compact ? 12 : 14),
-          decoration: BoxDecoration(
-            color: colorScheme.surface.withValues(alpha: 0.9),
-            borderRadius: BorderRadius.circular(24),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (compact) ...[
-                Text(
-                  'Standort',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                _LocationStatusBadge(hasSiteAssignment: hasSiteAssignment),
-              ] else
-                Row(
-                  children: [
-                    Text(
-                      'Standort',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const Spacer(),
-                    _LocationStatusBadge(hasSiteAssignment: hasSiteAssignment),
-                  ],
-                ),
-              const SizedBox(height: 10),
-              Text(
-                siteAssignment?.siteName ??
-                    'Kein Standort fuer die Stempeluhr zugewiesen.',
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (site != null &&
-                  (site!.displayCode.isNotEmpty ||
-                      (site!.federalState?.trim().isNotEmpty ?? false) ||
-                      site!.displayAddress.isNotEmpty ||
-                      site!.coordinateLabel.isNotEmpty)) ...[
-                const SizedBox(height: 4),
-                Text(
-                  [
-                    if (site!.displayCode.isNotEmpty) site!.displayCode,
-                    if (site!.federalState?.trim().isNotEmpty ?? false)
-                      site!.federalState!,
-                    if (site!.displayAddress.isNotEmpty) site!.displayAddress,
-                    if (site!.coordinateLabel.isNotEmpty)
-                      'GPS ${site!.coordinateLabel}',
-                  ].join(' · '),
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 4),
-              Text(
-                hasSiteAssignment
-                    ? 'Standortpruefung ist fuer ${siteAssignment!.siteName} vorbereitet.'
-                    : 'Bitte in der Teamverwaltung einen Primaerstandort hinterlegen.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 14),
-              AspectRatio(
-                aspectRatio: compact ? 1.2 : 1.55,
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    gradient: LinearGradient(
-                      colors: [
-                        appColors.successContainer.withValues(alpha: 0.82),
-                        colorScheme.secondaryContainer.withValues(alpha: 0.72),
-                      ],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                  ),
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: _MapLikePainter(
-                            lineColor: colorScheme.outlineVariant,
-                            accent: appColors.info,
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: const Alignment(0.05, 0.08),
-                        child: Container(
-                          width: compact ? 96 : 120,
-                          height: compact ? 96 : 120,
-                          decoration: BoxDecoration(
-                            color: appColors.info.withValues(alpha: 0.18),
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: const Alignment(0.05, 0.08),
-                        child: Container(
-                          width: 18,
-                          height: 18,
-                          decoration: BoxDecoration(
-                            color: appColors.info,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: const Alignment(0.05, 0.08),
-                        child: Icon(
-                          Icons.location_on_rounded,
-                          color: appColors.onInfo,
-                          size: 16,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
 class _LocationStatusBadge extends StatelessWidget {
   const _LocationStatusBadge({required this.hasSiteAssignment});
 
@@ -3766,91 +3634,5 @@ class _LocationStatusBadge extends StatelessWidget {
             ),
       ),
     );
-  }
-}
-
-class _MapLikePainter extends CustomPainter {
-  const _MapLikePainter({
-    required this.lineColor,
-    required this.accent,
-  });
-
-  final Color lineColor;
-  final Color accent;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final road = Paint()
-      ..color = lineColor.withValues(alpha: 0.35)
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke;
-    final thin = Paint()
-      ..color = lineColor.withValues(alpha: 0.22)
-      ..strokeWidth = 1.5
-      ..style = PaintingStyle.stroke;
-    final park = Paint()
-      ..color = accent.withValues(alpha: 0.1)
-      ..style = PaintingStyle.fill;
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(size.width * 0.08, size.height * 0.55, size.width * 0.25,
-            size.height * 0.2),
-        const Radius.circular(18),
-      ),
-      park,
-    );
-
-    final path1 = Path()
-      ..moveTo(size.width * 0.08, size.height * 0.18)
-      ..quadraticBezierTo(
-        size.width * 0.32,
-        size.height * 0.24,
-        size.width * 0.62,
-        size.height * 0.14,
-      )
-      ..quadraticBezierTo(
-        size.width * 0.78,
-        size.height * 0.1,
-        size.width * 0.95,
-        size.height * 0.18,
-      );
-    canvas.drawPath(path1, road);
-
-    final path2 = Path()
-      ..moveTo(size.width * 0.12, size.height * 0.92)
-      ..quadraticBezierTo(
-        size.width * 0.38,
-        size.height * 0.62,
-        size.width * 0.54,
-        size.height * 0.48,
-      )
-      ..quadraticBezierTo(
-        size.width * 0.76,
-        size.height * 0.28,
-        size.width * 0.9,
-        size.height * 0.06,
-      );
-    canvas.drawPath(path2, road);
-
-    for (final ratio in [0.16, 0.3, 0.45, 0.7, 0.84]) {
-      canvas.drawLine(
-        Offset(size.width * ratio, size.height * 0.12),
-        Offset(size.width * (ratio - 0.08), size.height * 0.92),
-        thin,
-      );
-    }
-    for (final ratio in [0.22, 0.38, 0.58, 0.76]) {
-      canvas.drawLine(
-        Offset(size.width * 0.08, size.height * ratio),
-        Offset(size.width * 0.94, size.height * (ratio - 0.06)),
-        thin,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _MapLikePainter oldDelegate) {
-    return oldDelegate.lineColor != lineColor || oldDelegate.accent != accent;
   }
 }

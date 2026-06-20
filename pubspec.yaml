@@ -6,7 +6,9 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  # Auf >=3.7.0 angehoben fuer mobile_scanner ^7 (verlangt Dart >= 3.7 /
+  # Flutter >= 3.29). Installierte Toolchain (Dart 3.12) erfuellt das.
+  sdk: '>=3.7.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -48,6 +50,15 @@ dependencies:
   web: ^0.5.1
   flutter_svg: ^2.2.4
 
+  # Barcode/EAN-Scanner (nur Handy sichtbar, siehe ScannerScreen).
+  # v7 nutzt Apple Vision statt MLKit -> kein GTMSessionFetcher-Pod-Konflikt
+  # mit firebase_core ^3 / cloud_functions ^5. NICHT auf <=6.x downgraden.
+  mobile_scanner: ^7.2.0
+
+  # Kurze WAV-Toene fuer Scan-Erfolg/-Fehler (zwei unterscheidbare Toene;
+  # SystemSound liefert nur einen Ton und ist auf Web stumm).
+  audioplayers: ^6.7.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -58,6 +69,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/audio/
     - assets/fonts/NotoSans-Regular.ttf
     - assets/fonts/NotoSans-Bold.ttf
     - assets/fonts/NotoSans-Italic.ttf

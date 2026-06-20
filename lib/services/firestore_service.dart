@@ -15,6 +15,9 @@ import '../models/compliance_rule_set.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
 import '../models/product.dart';
+import '../models/customer_order.dart';
+import '../models/payroll_profile.dart';
+import '../models/payroll_record.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
 import '../models/shift.dart';
@@ -27,7 +30,10 @@ import '../models/travel_time_rule.dart';
 import '../models/user_invite.dart';
 import '../models/user_settings.dart';
 import '../models/work_entry.dart';
+import '../models/work_task.dart';
 import '../models/work_template.dart';
+import '../repositories/contact_repository.dart';
+import '../repositories/firestore_contact_repository.dart';
 import '../repositories/firestore_inventory_repository.dart';
 import '../repositories/inventory_repository.dart';
 import 'compliance_rejected_exception.dart';
@@ -127,6 +133,19 @@ class FirestoreService {
   ) =>
       _organizationDoc(orgId).collection('travelTimeRules');
 
+  CollectionReference<Map<String, dynamic>> _workTaskCollection(String orgId) =>
+      _organizationDoc(orgId).collection('workTasks');
+
+  CollectionReference<Map<String, dynamic>> _payrollRecordCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('payrollRecords');
+
+  CollectionReference<Map<String, dynamic>> _payrollProfileCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('payrollProfiles');
+
   // Warenwirtschafts-Datenzugriff ist in eine eigene Repository-Klasse
   // ausgelagert (firestore-service-god-object); FirestoreService delegiert nur
   // noch. Ueber den Getter koennen Provider direkt an der Abstraktion haengen
@@ -135,6 +154,11 @@ class FirestoreService {
       FirestoreInventoryRepository(firestore: _firestore);
 
   InventoryRepository get inventoryRepository => _inventoryRepository;
+
+  late final ContactRepository _contactRepository =
+      FirestoreContactRepository(firestore: _firestore);
+
+  ContactRepository get contactRepository => _contactRepository;
 
   FirebaseFunctions get _firebaseFunctions =>
       _functions ??= FirebaseFunctions.instanceFor(
@@ -267,6 +291,9 @@ class FirestoreService {
   Stream<List<PurchaseOrder>> watchPurchaseOrders(String orgId) =>
       _inventoryRepository.watchPurchaseOrders(orgId);
 
+  Stream<List<CustomerOrder>> watchCustomerOrders(String orgId) =>
+      _inventoryRepository.watchCustomerOrders(orgId);
+
   /// Letzte Bestandsbewegungen, optional auf einen Artikel gefiltert.
   Stream<List<StockMovement>> watchStockMovements(
     String orgId, {
@@ -307,6 +334,28 @@ class FirestoreService {
     final range = _monthRange(month);
     final snapshot = await _entryCollection(orgId)
         .where('userId', isEqualTo: userId)
+        .where(
+          'date',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(range.start),
+        )
+        .where('date', isLessThan: Timestamp.fromDate(range.end))
+        .orderBy('date', descending: true)
+        .get();
+
+    return snapshot.docs
+        .map((doc) => WorkEntry.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  /// Liest die Zeiteinträge ALLER Mitarbeiter eines Monats (org-weit, ohne
+  /// userId-Filter). Basis der Personalkosten-Auswertung im Personal-Bereich.
+  /// Range + orderBy auf demselben Feld `date` → kein zusätzlicher Composite-Index.
+  Future<List<WorkEntry>> getOrgWorkEntriesForMonth({
+    required String orgId,
+    required DateTime month,
+  }) async {
+    final range = _monthRange(month);
+    final snapshot = await _entryCollection(orgId)
         .where(
           'date',
           isGreaterThanOrEqualTo: Timestamp.fromDate(range.start),
@@ -770,6 +819,89 @@ class FirestoreService {
     return _employmentContractCollection(orgId).doc(contractId).delete();
   }
 
+  // --- Personal-Bereich: Arbeitsaufträge & Lohn (nur Admin) ----------------
+  // Bewusst ohne orderBy in der Query (kleine org-skopierte Collections):
+  //   * `dueDate`/`note` dürfen null sein → orderBy würde solche Docs ausblenden,
+  //   * keine zusätzlichen Composite-Indizes nötig.
+  // Sortierung übernimmt der Provider clientseitig.
+
+  Stream<List<WorkTask>> watchWorkTasks(String orgId) {
+    return _workTaskCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => WorkTask.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveWorkTask(WorkTask task) async {
+    final collection = _workTaskCollection(task.orgId);
+    final docRef = task.id == null ? collection.doc() : collection.doc(task.id);
+    await docRef.set({
+      ...task.copyWith(id: docRef.id).toFirestoreMap(),
+      if (task.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteWorkTask({
+    required String orgId,
+    required String taskId,
+  }) {
+    return _workTaskCollection(orgId).doc(taskId).delete();
+  }
+
+  Stream<List<PayrollRecord>> watchPayrollRecords(String orgId) {
+    return _payrollRecordCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => PayrollRecord.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert eine Lohnabrechnung unter der deterministischen Doc-ID
+  /// (`<userId>-<jahr>-<mm>`), damit eine erneute Abrechnung desselben Monats
+  /// überschreibt statt zu duplizieren.
+  Future<void> savePayrollRecord(PayrollRecord record) async {
+    final collection = _payrollRecordCollection(record.orgId);
+    final docId = record.id ?? record.documentId;
+    await collection.doc(docId).set(
+      record.copyWith(id: docId).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deletePayrollRecord({
+    required String orgId,
+    required String recordId,
+  }) {
+    return _payrollRecordCollection(orgId).doc(recordId).delete();
+  }
+
+  Stream<List<PayrollProfile>> watchPayrollProfiles(String orgId) {
+    return _payrollProfileCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => PayrollProfile.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert ein Lohn-Stammdatenprofil unter der deterministischen Doc-ID
+  /// (`userId`), damit es je Mitarbeiter genau einmal existiert.
+  Future<void> savePayrollProfile(PayrollProfile profile) async {
+    final collection = _payrollProfileCollection(profile.orgId);
+    final docId = profile.id ?? profile.documentId;
+    await collection.doc(docId).set(
+          profile.copyWith(id: docId).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  Future<void> deletePayrollProfile({
+    required String orgId,
+    required String userId,
+  }) {
+    return _payrollProfileCollection(orgId).doc(userId).delete();
+  }
+
   Future<void> saveSiteAssignments({
     required String orgId,
     required String userId,
@@ -881,6 +1013,15 @@ class FirestoreService {
     required String orderId,
   }) =>
       _inventoryRepository.deletePurchaseOrder(orgId: orgId, orderId: orderId);
+
+  Future<String> saveCustomerOrder(CustomerOrder order) =>
+      _inventoryRepository.saveCustomerOrder(order);
+
+  Future<void> deleteCustomerOrder({
+    required String orgId,
+    required String orderId,
+  }) =>
+      _inventoryRepository.deleteCustomerOrder(orgId: orgId, orderId: orderId);
 
   /// Bucht den Wareneingang fuer eine Bestellung atomar (delegiert).
   Future<void> receivePurchaseOrder({

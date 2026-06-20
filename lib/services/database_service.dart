@@ -6,8 +6,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
+import '../models/contact.dart';
+import '../models/customer_order.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/payroll_profile.dart';
+import '../models/payroll_record.dart';
+import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
@@ -21,6 +26,7 @@ import '../models/travel_time_rule.dart';
 import '../models/user_settings.dart';
 import '../models/user_invite.dart';
 import '../models/work_entry.dart';
+import '../models/work_task.dart';
 import '../models/work_template.dart';
 
 class LocalStorageScope {
@@ -67,6 +73,14 @@ class DatabaseService {
   static const _productsKey = 'products';
   static const _purchaseOrdersKey = 'purchase_orders';
   static const _stockMovementsKey = 'stock_movements';
+  static const _priceHistoryKey = 'price_history';
+  static const _customerOrdersKey = 'customer_orders';
+  // Kontakte (Kunden/Lieferanten/Partner): org-skopiert, ohne Legacy-Migration.
+  static const _contactsKey = 'contacts';
+  // Personal-Bereich (nur Admin): org-skopiert, ohne Legacy-Migration.
+  static const _workTasksKey = 'work_tasks';
+  static const _payrollRecordsKey = 'payroll_records';
+  static const _payrollProfilesKey = 'payroll_profiles';
   static const _localAuthUserIdKey = 'local_auth_user_id';
   static const _settingsPrefix = 'setting_';
   static const _dataStorageLocationKey = 'data_storage_location';
@@ -101,6 +115,14 @@ class DatabaseService {
     _productsKey,
     _purchaseOrdersKey,
     _stockMovementsKey,
+    _priceHistoryKey,
+    _customerOrdersKey,
+    // Kontakte: org-skopiert, neue Collection ohne Altbestand.
+    _contactsKey,
+    // Personal-Bereich: org-skopiert, neue Collections ohne Altbestand.
+    _workTasksKey,
+    _payrollRecordsKey,
+    _payrollProfilesKey,
   };
   static const _legacyWorkSettingKeys = <String>[
     'name',
@@ -417,6 +439,93 @@ class DatabaseService {
     );
   }
 
+  // --- Personal-Bereich: Arbeitsaufträge ------------------------------------
+
+  static Future<List<WorkTask>> loadLocalWorkTasks({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _workTasksKey,
+      scope: scope,
+      fromMap: WorkTask.fromMap,
+      compare: (a, b) {
+        final ad = a.dueDate;
+        final bd = b.dueDate;
+        if (ad == null && bd == null) {
+          return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+        }
+        if (ad == null) return 1;
+        if (bd == null) return -1;
+        return ad.compareTo(bd);
+      },
+    );
+  }
+
+  static Future<void> saveLocalWorkTasks(
+    List<WorkTask> tasks, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _workTasksKey,
+      scope: scope,
+      items: tasks,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  // --- Personal-Bereich: Lohnabrechnungen -----------------------------------
+  // SICHERHEIT: Lohndaten (Cents) liegen wie Arbeitsverträge als Klartext-JSON
+  // in SharedPreferences (vgl. Hinweis an saveLocalEmploymentContracts).
+
+  static Future<List<PayrollRecord>> loadLocalPayrollRecords({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _payrollRecordsKey,
+      scope: scope,
+      fromMap: PayrollRecord.fromMap,
+      compare: (a, b) {
+        final y = b.periodYear.compareTo(a.periodYear);
+        if (y != 0) return y;
+        return b.periodMonth.compareTo(a.periodMonth);
+      },
+    );
+  }
+
+  static Future<void> saveLocalPayrollRecords(
+    List<PayrollRecord> records, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _payrollRecordsKey,
+      scope: scope,
+      items: records,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<PayrollProfile>> loadLocalPayrollProfiles({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _payrollProfilesKey,
+      scope: scope,
+      fromMap: PayrollProfile.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalPayrollProfiles(
+    List<PayrollProfile> profiles, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _payrollProfilesKey,
+      scope: scope,
+      items: profiles,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<EmployeeSiteAssignment>> loadLocalSiteAssignments({
     LocalStorageScope? scope,
   }) {
@@ -559,6 +668,29 @@ class DatabaseService {
     );
   }
 
+  static Future<List<CustomerOrder>> loadLocalCustomerOrders({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _customerOrdersKey,
+      scope: scope,
+      fromMap: CustomerOrder.fromMap,
+      compare: (a, b) => (b.orderNumber ?? '').compareTo(a.orderNumber ?? ''),
+    );
+  }
+
+  static Future<void> saveLocalCustomerOrders(
+    List<CustomerOrder> orders, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _customerOrdersKey,
+      scope: scope,
+      items: orders,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<StockMovement>> loadLocalStockMovements({
     LocalStorageScope? scope,
   }) {
@@ -579,6 +711,55 @@ class DatabaseService {
       key: _stockMovementsKey,
       scope: scope,
       items: movements,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<PriceHistoryEntry>> loadLocalPriceHistory({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _priceHistoryKey,
+      scope: scope,
+      fromMap: PriceHistoryEntry.fromMap,
+      compare: (a, b) => (b.changedAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+          .compareTo(a.changedAt ?? DateTime.fromMillisecondsSinceEpoch(0)),
+    );
+  }
+
+  static Future<void> saveLocalPriceHistory(
+    List<PriceHistoryEntry> entries, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _priceHistoryKey,
+      scope: scope,
+      items: entries,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  // --- Kontakte (lokale Persistenz) --------------------------------------
+
+  static Future<List<Contact>> loadLocalContacts({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _contactsKey,
+      scope: scope,
+      fromMap: Contact.fromMap,
+      compare: (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+  }
+
+  static Future<void> saveLocalContacts(
+    List<Contact> contacts, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _contactsKey,
+      scope: scope,
+      items: contacts,
       toMap: (item) => item.toMap(),
     );
   }

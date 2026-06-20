@@ -10,9 +10,12 @@ import '../models/supplier.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
+import '../services/export_service.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/responsive_layout.dart';
 import 'purchase_order_screens.dart';
+import 'scanner_screen.dart';
 
 final NumberFormat _euroFormat =
     NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
@@ -146,6 +149,7 @@ class _InventoryScreenState extends State<InventoryScreen>
           ),
           const BreadcrumbItem(label: 'Warenwirtschaft'),
         ],
+        actions: [_buildExportMenu(context, inventory, sites)],
       ),
       floatingActionButton: canManage
           ? _buildFab(context, inventory, sites)
@@ -228,6 +232,56 @@ class _InventoryScreenState extends State<InventoryScreen>
     );
   }
 
+  Widget _buildExportMenu(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<SiteDefinition> sites,
+  ) {
+    String? siteLabel;
+    if (_selectedSiteId != null) {
+      for (final site in sites) {
+        if (site.id == _selectedSiteId) {
+          siteLabel = site.name;
+          break;
+        }
+      }
+    }
+    return PopupMenuButton<int>(
+      icon: const Icon(Icons.ios_share_outlined),
+      tooltip: 'Exportieren',
+      onSelected: (value) async {
+        final products = inventory.productsForSite(_selectedSiteId);
+        final reorder = inventory.lowStockProducts(siteId: _selectedSiteId);
+        try {
+          switch (value) {
+            case 0:
+              await ExportService.exportStockListPdf(
+                  products: products, siteLabel: siteLabel);
+            case 1:
+              await ExportService.exportStockListCsv(
+                  products: products, siteLabel: siteLabel);
+            case 2:
+              await ExportService.exportReorderListPdf(
+                  products: reorder, siteLabel: siteLabel);
+            case 3:
+              await ExportService.exportReorderListCsv(
+                  products: reorder, siteLabel: siteLabel);
+          }
+        } catch (_) {
+          if (context.mounted) {
+            _showSnack(context, 'Export fehlgeschlagen.');
+          }
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 0, child: Text('Bestandsliste (PDF)')),
+        PopupMenuItem(value: 1, child: Text('Bestandsliste (CSV)')),
+        PopupMenuItem(value: 2, child: Text('Nachbestellliste (PDF)')),
+        PopupMenuItem(value: 3, child: Text('Nachbestellliste (CSV)')),
+      ],
+    );
+  }
+
   Widget? _buildFab(
     BuildContext context,
     InventoryProvider inventory,
@@ -235,10 +289,35 @@ class _InventoryScreenState extends State<InventoryScreen>
   ) {
     switch (_tabController.index) {
       case 0:
-        return FloatingActionButton.extended(
+        final addFab = FloatingActionButton.extended(
+          heroTag: 'inv-add-product',
           onPressed: () => _addProduct(context, inventory, sites),
           icon: const Icon(Icons.add),
           label: const Text('Artikel'),
+        );
+        // Scan-FAB auf echten Mobil-Plattformen (Handy + Tablet, Android/iOS).
+        final showScanner = MobileBreakpoints.isNativeMobile;
+        if (!showScanner) {
+          return addFab;
+        }
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            FloatingActionButton.small(
+              heroTag: 'inv-scan',
+              tooltip: 'Scanner',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      const ScannerScreen(parentLabel: 'Warenwirtschaft'),
+                ),
+              ),
+              child: const Icon(Icons.qr_code_scanner_outlined),
+            ),
+            const SizedBox(height: 12),
+            addFab,
+          ],
         );
       case 1:
         return FloatingActionButton.extended(
@@ -495,6 +574,42 @@ class _StockTab extends StatelessWidget {
             onChanged: onSearchChanged,
           ),
         ),
+        Builder(builder: (context) {
+          final valueCents =
+              inventory.totalStockValuePurchaseCents(siteId: siteId);
+          if (valueCents <= 0) {
+            return const SizedBox.shrink();
+          }
+          final marginCents = inventory.totalStockMarginCents(siteId: siteId);
+          final theme = Theme.of(context);
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Icon(Icons.account_balance_wallet_outlined,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'Warenwert: ${formatCents(valueCents)}',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                if (marginCents > 0) ...[
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      'Spanne: ${formatCents(marginCents)}',
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
+        }),
         if (lowStock.isNotEmpty && canManage)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -664,6 +779,8 @@ class _ProductTile extends StatelessWidget {
                 itemBuilder: (_) => const [
                   PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
                   PopupMenuItem(
+                      value: 'issue', child: Text('Abgang buchen')),
+                  PopupMenuItem(
                       value: 'adjust', child: Text('Bestand korrigieren')),
                   PopupMenuItem(value: 'stocktake', child: Text('Inventur')),
                   PopupMenuItem(value: 'delete', child: Text('Loeschen')),
@@ -684,6 +801,9 @@ class _ProductTile extends StatelessWidget {
     switch (value) {
       case 'edit':
         await _edit(context, inventory);
+        break;
+      case 'issue':
+        await _issue(context, inventory);
         break;
       case 'adjust':
         await _adjust(context, inventory);
@@ -731,6 +851,22 @@ class _ProductTile extends StatelessWidget {
       if (context.mounted) {
         _showSnack(context, 'Bestand korrigiert.');
       }
+    }
+  }
+
+  Future<void> _issue(
+      BuildContext context, InventoryProvider inventory) async {
+    final result = await _showStockIssueDialog(context, product);
+    if (result == null) {
+      return;
+    }
+    final error = await inventory.issueStock(
+      product: product,
+      quantity: result.quantity,
+      reason: result.reason,
+    );
+    if (context.mounted) {
+      _showSnack(context, error ?? 'Abgang gebucht.');
     }
   }
 
@@ -962,6 +1098,7 @@ Future<Product?> showProductDialog(
   required List<Supplier> suppliers,
   Product? product,
   String? defaultSiteId,
+  String? initialBarcode,
 }) {
   return showDialog<Product>(
     context: context,
@@ -970,6 +1107,7 @@ Future<Product?> showProductDialog(
       suppliers: suppliers,
       product: product,
       defaultSiteId: defaultSiteId,
+      initialBarcode: initialBarcode,
     ),
   );
 }
@@ -980,12 +1118,16 @@ class _ProductDialog extends StatefulWidget {
     required this.suppliers,
     this.product,
     this.defaultSiteId,
+    this.initialBarcode,
   });
 
   final List<SiteDefinition> sites;
   final List<Supplier> suppliers;
   final Product? product;
   final String? defaultSiteId;
+
+  /// Vorbefuellter Barcode fuer die Neuanlage aus dem Scanner (kein Treffer).
+  final String? initialBarcode;
 
   @override
   State<_ProductDialog> createState() => _ProductDialogState();
@@ -1002,6 +1144,7 @@ class _ProductDialogState extends State<_ProductDialog> {
   late final TextEditingController _sellingPrice;
   late final TextEditingController _stock;
   late final TextEditingController _minStock;
+  late final TextEditingController _targetStock;
   late final TextEditingController _reorderQty;
   String? _siteId;
   String? _supplierId;
@@ -1014,7 +1157,8 @@ class _ProductDialogState extends State<_ProductDialog> {
     _category = TextEditingController(text: product?.category ?? '');
     _unit = TextEditingController(text: product?.unit ?? Product.defaultUnit);
     _sku = TextEditingController(text: product?.sku ?? '');
-    _barcode = TextEditingController(text: product?.barcode ?? '');
+    _barcode = TextEditingController(
+        text: product?.barcode ?? widget.initialBarcode ?? '');
     _purchasePrice = TextEditingController(
         text: _centsToEuroInput(product?.purchasePriceCents));
     _sellingPrice = TextEditingController(
@@ -1023,6 +1167,10 @@ class _ProductDialogState extends State<_ProductDialog> {
         TextEditingController(text: (product?.currentStock ?? 0).toString());
     _minStock =
         TextEditingController(text: (product?.minStock ?? 0).toString());
+    _targetStock = TextEditingController(
+        text: (product?.targetStock ?? 0) > 0
+            ? product!.targetStock.toString()
+            : '');
     _reorderQty = TextEditingController(
         text: product?.reorderQuantity?.toString() ?? '');
     _siteId = product?.siteId ??
@@ -1042,6 +1190,7 @@ class _ProductDialogState extends State<_ProductDialog> {
     _sellingPrice.dispose();
     _stock.dispose();
     _minStock.dispose();
+    _targetStock.dispose();
     _reorderQty.dispose();
     super.dispose();
   }
@@ -1204,6 +1353,16 @@ class _ProductDialogState extends State<_ProductDialog> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _targetStock,
+                  decoration: const InputDecoration(
+                    labelText: 'Zielbestand (optional)',
+                    helperText: 'Auffüllen bis zu dieser Menge beim Nachbestellen',
+                  ),
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                ),
               ],
             ),
           ),
@@ -1264,6 +1423,7 @@ class _ProductDialogState extends State<_ProductDialog> {
       clearSellingPrice: parseEuroToCents(_sellingPrice.text) == null,
       currentStock: int.tryParse(_stock.text.trim()) ?? 0,
       minStock: int.tryParse(_minStock.text.trim()) ?? 0,
+      targetStock: int.tryParse(_targetStock.text.trim()) ?? 0,
       reorderQuantity: int.tryParse(_reorderQty.text.trim()),
       clearReorderQuantity: _reorderQty.text.trim().isEmpty,
     );
@@ -1434,6 +1594,64 @@ class _SupplierDialogState extends State<_SupplierDialog> {
     );
     Navigator.of(context).pop(result);
   }
+}
+
+Future<({int quantity, String reason})?> _showStockIssueDialog(
+    BuildContext context, Product product) {
+  final quantityController = TextEditingController();
+  final reasonController = TextEditingController(text: 'Verkauf');
+  return showDialog<({int quantity, String reason})>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: Text('Abgang buchen: ${product.name}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Aktueller Bestand: ${product.currentStock} ${product.unit}'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: quantityController,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: const InputDecoration(
+              labelText: 'Menge (Abgang)',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: reasonController,
+            decoration: const InputDecoration(
+              labelText: 'Grund (z.B. Verkauf, Schwund, Eigenbedarf)',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Abbrechen'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final qty = int.tryParse(quantityController.text.trim());
+            if (qty == null || qty <= 0) {
+              Navigator.of(context).pop();
+              return;
+            }
+            final reason = reasonController.text.trim();
+            Navigator.of(context).pop((
+              quantity: qty,
+              reason: reason.isEmpty ? 'Verkauf' : reason,
+            ));
+          },
+          child: const Text('Buchen'),
+        ),
+      ],
+    ),
+  );
 }
 
 Future<int?> _showStockDeltaDialog(BuildContext context, Product product) {

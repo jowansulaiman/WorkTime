@@ -7,6 +7,8 @@ import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
+import '../models/customer_order.dart';
+import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
@@ -28,15 +30,22 @@ class InventoryProvider extends ChangeNotifier {
     InventoryRepository? inventoryRepository,
     bool? disableAuthentication,
     Uuid? uuid,
-  })  : _inventory =
-            inventoryRepository ?? firestoreService.inventoryRepository,
+  })  : _firestoreService = firestoreService,
+        _injectedInventory = inventoryRepository,
         _uuid = uuid ?? const Uuid(),
         _forceLocalStorage =
             disableAuthentication ?? AppConfig.disableAuthentication;
 
   // Provider haengt an der Repository-Abstraktion, nicht mehr an der konkreten
-  // FirestoreService-Klasse (no-domain-repository-interfaces-dip).
-  final InventoryRepository _inventory;
+  // FirestoreService-Klasse (no-domain-repository-interfaces-dip). Das
+  // Cloud-Repository wird LAZY aufgeloest: Im lokalen/disableAuth-Modus wird es
+  // nie beruehrt, sodass FirebaseFirestore.instance ohne konfiguriertes Firebase
+  // nicht ausgewertet wird (sonst Crash bereits bei Provider-Konstruktion ->
+  // rote Fehlerseite ueberall, wo der Provider gelesen wird).
+  final FirestoreService _firestoreService;
+  final InventoryRepository? _injectedInventory;
+  InventoryRepository get _inventory =>
+      _injectedInventory ?? _firestoreService.inventoryRepository;
   final Uuid _uuid;
   final bool _forceLocalStorage;
   bool _localStorageOnly = false;
@@ -46,12 +55,15 @@ class InventoryProvider extends ChangeNotifier {
   StreamSubscription<List<Product>>? _productsSubscription;
   StreamSubscription<List<PurchaseOrder>>? _ordersSubscription;
   StreamSubscription<List<StockMovement>>? _movementsSubscription;
+  StreamSubscription<List<CustomerOrder>>? _customerOrdersSubscription;
 
   AppUserProfile? _currentUser;
   List<Supplier> _suppliers = [];
   List<Product> _products = [];
   List<PurchaseOrder> _orders = [];
   List<StockMovement> _movements = [];
+  List<PriceHistoryEntry> _priceHistory = [];
+  List<CustomerOrder> _customerOrders = [];
   bool _loading = false;
   String? _errorMessage;
   bool _disposed = false;
@@ -62,6 +74,15 @@ class InventoryProvider extends ChangeNotifier {
   List<Product> get products => _products;
   List<PurchaseOrder> get purchaseOrders => _orders;
   List<StockMovement> get recentMovements => _movements;
+
+  /// Lokal protokollierte Preisaenderungen. Im **local**-Modus die volle
+  /// Historie; in **cloud/hybrid** ist die Quelle der Wahrheit die
+  /// write-only-Firestore-Subcollection `products/{id}/priceHistory` (analog zu
+  /// stockMovements wird sie nicht in den Speicher gestreamt) — dort bleibt diese
+  /// In-Memory-Liste daher leer. Ein kuenftiger Historie-View muss in
+  /// cloud/hybrid via watchPriceHistory lesen.
+  List<PriceHistoryEntry> get priceHistory => _priceHistory;
+  List<CustomerOrder> get customerOrders => _customerOrders;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
@@ -116,12 +137,78 @@ class InventoryProvider extends ChangeNotifier {
         .toList(growable: false);
   }
 
+  /// Findet einen Artikel anhand seines Barcodes (EAN) — fuer den Scanner.
+  ///
+  /// Rein clientseitig ueber die bereits gestreamte Artikelliste: kein
+  /// Firestore-Index, kein Repo-Zugriff (umgeht den Lazy-Cloud-Repo-Footgun),
+  /// deckt local/cloud/hybrid einheitlich ab. Bei mehreren Treffern wird der
+  /// erste geliefert — fuer die Mehrfach-Behandlung siehe [productsByBarcode].
+  /// Standardmaessig werden nur aktive Artikel beruecksichtigt; mit
+  /// [includeInactive] laesst sich ein deaktivierter Artikel finden (z.B. um
+  /// eine Reaktivierung statt einer Neuanlage anzubieten).
+  Product? productByBarcode(
+    String barcode, {
+    String? siteId,
+    bool includeInactive = false,
+  }) {
+    final matches = productsByBarcode(
+      barcode,
+      siteId: siteId,
+      includeInactive: includeInactive,
+    );
+    return matches.isEmpty ? null : matches.first;
+  }
+
+  /// Alle (standardmaessig aktiven) Artikel mit exakt diesem Barcode, optional
+  /// auf einen Standort beschraenkt. Der Barcode hat KEINE Eindeutigkeits-
+  /// Constraint -> ein Code kann je Laden bzw. theoretisch mehrfach vorkommen.
+  List<Product> productsByBarcode(
+    String barcode, {
+    String? siteId,
+    bool includeInactive = false,
+  }) {
+    final code = barcode.trim();
+    if (code.isEmpty) {
+      return const <Product>[];
+    }
+    return _products
+        .where(
+          (product) =>
+              (includeInactive || product.isActive) &&
+              (product.barcode?.trim() ?? '') == code &&
+              (siteId == null || siteId.isEmpty || product.siteId == siteId),
+        )
+        .toList(growable: false);
+  }
+
   /// Artikel, die nachbestellt werden sollten (Bestand <= Meldebestand).
   List<Product> lowStockProducts({String? siteId}) {
     return productsForSite(siteId)
         .where((product) => product.isActive && product.needsReorder)
         .toList(growable: false);
   }
+
+  // --- Warenwert / Marge --------------------------------------------------
+
+  /// Warenwert (Einkaufspreis × Bestand) der aktiven Artikel, optional je
+  /// Standort. In Cent. Beantwortet „wie viel Geld liegt im Regal".
+  int totalStockValuePurchaseCents({String? siteId}) {
+    return productsForSite(siteId)
+        .where((product) => product.isActive)
+        .fold<int>(0, (sum, product) => sum + product.stockValuePurchaseCents);
+  }
+
+  /// Warenwert zum Verkaufspreis der aktiven Artikel, optional je Standort. Cent.
+  int totalStockValueSellingCents({String? siteId}) {
+    return productsForSite(siteId)
+        .where((product) => product.isActive)
+        .fold<int>(0, (sum, product) => sum + product.stockValueSellingCents);
+  }
+
+  /// Erwartete Spanne (VK − EK) über den gesamten Bestand, optional je Standort.
+  int totalStockMarginCents({String? siteId}) =>
+      totalStockValueSellingCents(siteId: siteId) -
+      totalStockValuePurchaseCents(siteId: siteId);
 
   /// Offene Bestellungen (weder geliefert noch storniert).
   List<PurchaseOrder> get openOrders => _orders
@@ -136,6 +223,61 @@ class InventoryProvider extends ChangeNotifier {
         .where((order) => order.siteId == siteId)
         .toList(growable: false);
   }
+
+  // --- Kundenbestellungen (Sonderbestellungen) ---------------------------
+
+  List<CustomerOrder> customerOrdersForSite(String? siteId) {
+    if (siteId == null || siteId.isEmpty) {
+      return _customerOrders;
+    }
+    return _customerOrders
+        .where((order) => order.siteId == siteId)
+        .toList(growable: false);
+  }
+
+  /// Offene Kundenbestellungen (weder abgeholt noch storniert).
+  List<CustomerOrder> get openCustomerOrders => _customerOrders
+      .where((order) => order.status.isOpen)
+      .toList(growable: false);
+
+  /// Distinkte Warengruppen über alle Kundenbestellungs-Positionen (für die
+  /// Kategorie-Filter im Screen).
+  Set<String> get customerOrderCategories {
+    final result = <String>{};
+    for (final order in _customerOrders) {
+      for (final item in order.items) {
+        final category = item.category?.trim();
+        if (category != null && category.isNotEmpty) {
+          result.add(category);
+        }
+      }
+    }
+    return result;
+  }
+
+  /// Kundenbestellungen, deren Abholtermin innerhalb von [withinDays] liegt
+  /// (oder bereits überfällig ist) und die noch nicht vorbereitet sind –
+  /// die Grundlage aller "nicht vorbereitet"-Warnungen (Liste, Dashboard,
+  /// Benachrichtigungen). Sortiert nach Abholtermin (dringendste zuerst).
+  List<CustomerOrder> ordersDueSoonNotPrepared({
+    int withinDays = 2,
+    String? siteId,
+  }) {
+    final threshold = DateTime.now().add(Duration(days: withinDays));
+    final list = customerOrdersForSite(siteId).where((order) {
+      if (order.status.isClosed || order.isPrepared) {
+        return false;
+      }
+      final due = order.pickupDate;
+      return due != null && due.isBefore(threshold);
+    }).toList();
+    list.sort((a, b) => a.pickupDate!.compareTo(b.pickupDate!));
+    return list;
+  }
+
+  /// Anzahl der bald fälligen, nicht vorbereiteten Kundenbestellungen.
+  int dueSoonNotPreparedCount({int withinDays = 2, String? siteId}) =>
+      ordersDueSoonNotPrepared(withinDays: withinDays, siteId: siteId).length;
 
   Supplier? supplierById(String? id) {
     if (id == null || id.isEmpty) {
@@ -262,6 +404,9 @@ class InventoryProvider extends ChangeNotifier {
     _products = await DatabaseService.loadLocalProducts(scope: scope);
     _orders = await DatabaseService.loadLocalPurchaseOrders(scope: scope);
     _movements = await DatabaseService.loadLocalStockMovements(scope: scope);
+    _priceHistory = await DatabaseService.loadLocalPriceHistory(scope: scope);
+    _customerOrders =
+        await DatabaseService.loadLocalCustomerOrders(scope: scope);
   }
 
   Future<void> _persistSuppliers() =>
@@ -272,12 +417,19 @@ class InventoryProvider extends ChangeNotifier {
       DatabaseService.saveLocalPurchaseOrders(_orders, scope: _localScope);
   Future<void> _persistMovements() =>
       DatabaseService.saveLocalStockMovements(_movements, scope: _localScope);
+  Future<void> _persistPriceHistory() =>
+      DatabaseService.saveLocalPriceHistory(_priceHistory, scope: _localScope);
+  Future<void> _persistCustomerOrders() =>
+      DatabaseService.saveLocalCustomerOrders(_customerOrders,
+          scope: _localScope);
 
   Future<void> _persistAllLocal() async {
     await _persistSuppliers();
     await _persistProducts();
     await _persistOrders();
     await _persistMovements();
+    await _persistPriceHistory();
+    await _persistCustomerOrders();
   }
 
   /// Befuellt den lokalen Modus einmalig mit Demo-Daten, damit die
@@ -304,6 +456,13 @@ class InventoryProvider extends ChangeNotifier {
       );
       seeded = true;
     }
+    if (_customerOrders.isEmpty) {
+      _customerOrders = LocalDemoData.customerOrdersForOrg(
+        orgId: user.orgId,
+        createdByUid: user.uid,
+      );
+      seeded = true;
+    }
     return seeded;
   }
 
@@ -312,6 +471,8 @@ class InventoryProvider extends ChangeNotifier {
     _products = [];
     _orders = [];
     _movements = [];
+    _priceHistory = [];
+    _customerOrders = [];
     _loading = false;
   }
 
@@ -343,6 +504,12 @@ class InventoryProvider extends ChangeNotifier {
       _movements = items;
       _safeNotify();
     }, onError: _setError);
+
+    _customerOrdersSubscription =
+        _inventory.watchCustomerOrders(orgId).listen((items) {
+      _customerOrders = items;
+      _safeNotify();
+    }, onError: _setError);
   }
 
   Future<void> _cancelSubscriptions() async {
@@ -350,10 +517,12 @@ class InventoryProvider extends ChangeNotifier {
     await _productsSubscription?.cancel();
     await _ordersSubscription?.cancel();
     await _movementsSubscription?.cancel();
+    await _customerOrdersSubscription?.cancel();
     _suppliersSubscription = null;
     _productsSubscription = null;
     _ordersSubscription = null;
     _movementsSubscription = null;
+    _customerOrdersSubscription = null;
   }
 
   String _nextLocalId(String prefix) {
@@ -445,6 +614,119 @@ class InventoryProvider extends ChangeNotifier {
     _safeNotify();
   }
 
+  /// Aktualisiert EK-/VK-Preis eines Artikels und protokolliert jede tatsaechliche
+  /// Aenderung in der Preis-Historie (Audit-Log). Genutzt vom Scanner bei
+  /// erkannter Preisabweichung. Nur die uebergebenen (nicht-null) Preise werden
+  /// veraendert. Liefert die Zahl der protokollierten Preisaenderungen.
+  Future<int> updateProductPrices(
+    Product product, {
+    int? newPurchaseCents,
+    int? newSellingCents,
+  }) async {
+    if (product.id == null) {
+      throw StateError('Artikel ist noch nicht gespeichert.');
+    }
+    final oldPurchase = product.purchasePriceCents;
+    final oldSelling = product.sellingPriceCents;
+    final nextPurchase = newPurchaseCents ?? oldPurchase;
+    final nextSelling = newSellingCents ?? oldSelling;
+    if (nextPurchase == oldPurchase && nextSelling == oldSelling) {
+      return 0;
+    }
+
+    await saveProduct(
+      product.copyWith(
+        purchasePriceCents: nextPurchase,
+        clearPurchasePrice: nextPurchase == null,
+        sellingPriceCents: nextSelling,
+        clearSellingPrice: nextSelling == null,
+      ),
+    );
+
+    var logged = 0;
+    if (nextPurchase != oldPurchase) {
+      await _recordPriceChange(
+        product: product,
+        field: PriceField.purchase,
+        oldCents: oldPurchase,
+        newCents: nextPurchase,
+      );
+      logged++;
+    }
+    if (nextSelling != oldSelling) {
+      await _recordPriceChange(
+        product: product,
+        field: PriceField.selling,
+        oldCents: oldSelling,
+        newCents: nextSelling,
+      );
+      logged++;
+    }
+    return logged;
+  }
+
+  /// Schreibt einen unveraenderlichen Preis-Historie-Eintrag (Audit-Log). Folgt
+  /// demselben Speichermodus-Muster wie [adjustStock]: cloud/hybrid ueber das
+  /// Repo (bei hybrid mit lokalem Fallback), local direkt lokal.
+  Future<void> _recordPriceChange({
+    required Product product,
+    required PriceField field,
+    required int? oldCents,
+    required int? newCents,
+  }) async {
+    final orgId = _orgId;
+    final productId = product.id;
+    if (orgId == null || productId == null) {
+      return;
+    }
+    final entry = PriceHistoryEntry(
+      orgId: orgId,
+      productId: productId,
+      field: field,
+      oldCents: oldCents,
+      newCents: newCents,
+      changedByUid: _currentUser?.uid,
+      changedAt: DateTime.now(),
+    );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'recordPriceChange',
+          () => _inventory.addPriceHistory(entry),
+        )) {
+      return;
+    }
+    _priceHistory = [
+      entry.copyWith(id: _nextLocalId('price_history')),
+      ..._priceHistory,
+    ];
+    await _persistPriceHistory();
+    _safeNotify();
+  }
+
+  /// Preis-Historie eines Artikels (neueste zuerst). In cloud/hybrid aus der
+  /// Firestore-Subcollection (Quelle der Wahrheit); in local-Modus aus dem
+  /// lokalen Spiegel. Der Lazy-Cloud-Repo-Footgun bleibt gewahrt: das Repo wird
+  /// nur bei _usesFirestore angefasst.
+  Future<List<PriceHistoryEntry>> priceHistoryFor(String productId) async {
+    if (_usesFirestore) {
+      final orgId = _orgId;
+      if (orgId == null) {
+        return const <PriceHistoryEntry>[];
+      }
+      try {
+        return await _inventory.fetchPriceHistory(
+          orgId: orgId,
+          productId: productId,
+        );
+      } catch (_) {
+        // Hybrid-Offline-Fallback: lokalen Spiegel zeigen (ggf. leer).
+      }
+    }
+    return _priceHistory
+        .where((entry) => entry.productId == productId)
+        .toList(growable: false);
+  }
+
   Future<void> deleteProduct(String productId) async {
     final orgId = _orgId;
     if (orgId == null) {
@@ -468,19 +750,28 @@ class InventoryProvider extends ChangeNotifier {
   }
 
   /// Bucht eine Bestandsaenderung (Korrektur/Abgang). [delta] positiv = Zugang.
+  ///
+  /// [clientMutationId] erlaubt eine STABILE Idempotenz-Id von aussen: ohne sie
+  /// erzeugt jeder Aufruf eine frische UUID. Die Daten-Idempotenz greift nur auf
+  /// dem **Firestore-Pfad** (cloud/hybrid-Erfolg): die Bewegung wird dort unter
+  /// der mutationId adressiert (no-idempotency-on-stock-mutations). Der lokale
+  /// Pfad (local-Modus + hybrid-Offline-Fallback) bucht synchron und einmalig
+  /// und kennt keine Replays; gegen Doppel-Tap schuetzt dort der UI-Guard im
+  /// Scanner (in-flight-Sperre + deaktivierte Buttons).
   Future<void> adjustStock({
     required String productId,
     required int delta,
     StockMovementType type = StockMovementType.adjustment,
     String? reason,
+    String? clientMutationId,
   }) async {
     final orgId = _orgId;
     if (orgId == null || delta == 0) {
       return;
     }
-    // Stabile ID pro Buchung -> ein (kuenftiger) Retry bucht den Bestand nicht
-    // doppelt (no-idempotency-on-stock-mutations).
-    final mutationId = _uuid.v4();
+    // Stabile ID pro Buchung -> ein Retry bzw. Doppel-Scan bucht den Bestand
+    // nicht doppelt (no-idempotency-on-stock-mutations).
+    final mutationId = clientMutationId ?? _uuid.v4();
     if (_usesFirestore &&
         await _tryFirestore(
           'adjustStock',
@@ -522,6 +813,54 @@ class InventoryProvider extends ChangeNotifier {
       type: StockMovementType.stocktake,
       reason: 'Inventur',
     );
+  }
+
+  /// Prueft, ob ein Abgang von [quantity] Stueck fuer [product] zulaessig ist.
+  /// Gibt eine deutsche Fehlermeldung zurueck oder `null`, wenn die Buchung ok
+  /// ist. Verhindert einen Negativbestand bei Verkauf/Schwund (Korrekturen und
+  /// Inventuren duerfen den Bestand dagegen legitim unter null nicht senken,
+  /// laufen aber ohnehin nicht ueber diesen Pfad).
+  String? validateStockIssue({
+    required Product product,
+    required int quantity,
+  }) {
+    if (quantity <= 0) {
+      return 'Bitte eine Menge groesser als 0 eingeben.';
+    }
+    if (product.currentStock - quantity < 0) {
+      return 'Abgangsmenge ($quantity) uebersteigt den aktuellen Bestand '
+          '(${product.currentStock} ${product.unit}).';
+    }
+    return null;
+  }
+
+  /// Bucht einen Abgang (Verkauf, Schwund, Eigenbedarf) als negative Bewegung
+  /// vom Typ [StockMovementType.issue]. Gibt `null` bei Erfolg oder eine
+  /// deutsche Fehlermeldung zurueck (z.B. bei Bestandsueberzug). Die eigentliche
+  /// Buchung laeuft ueber die atomare [adjustStock]-Transaktion.
+  Future<String?> issueStock({
+    required Product product,
+    required int quantity,
+    String? reason,
+    String? clientMutationId,
+  }) async {
+    final error = validateStockIssue(product: product, quantity: quantity);
+    if (error != null) {
+      return error;
+    }
+    if (product.id == null) {
+      return 'Artikel ist noch nicht gespeichert.';
+    }
+    await adjustStock(
+      productId: product.id!,
+      delta: -quantity,
+      type: StockMovementType.issue,
+      reason: (reason == null || reason.trim().isEmpty)
+          ? 'Abgang'
+          : reason.trim(),
+      clientMutationId: clientMutationId,
+    );
+    return null;
   }
 
   // --- Bestellungen -------------------------------------------------------
@@ -636,6 +975,126 @@ class InventoryProvider extends ChangeNotifier {
     await _persistProducts();
     await _persistMovements();
     _safeNotify();
+  }
+
+  // --- Kundenbestellungen (Sonderbestellungen) ---------------------------
+
+  /// Speichert eine Kundenbestellung und gibt deren Id zurueck.
+  Future<String> saveCustomerOrder(CustomerOrder order) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final prepared = order.copyWith(
+      orgId: orgId,
+      createdByUid: order.createdByUid ?? _currentUser?.uid,
+    );
+    if (_usesFirestore) {
+      try {
+        return await _inventory.saveCustomerOrder(prepared);
+      } catch (error) {
+        if (!usesHybridStorage) {
+          rethrow;
+        }
+        AppLogger.warning(
+          'Inventory: saveCustomerOrder offline – lokaler Fallback aktiv',
+          error: error,
+        );
+      }
+    }
+    final withId = prepared.id == null
+        ? prepared.copyWith(
+            id: _nextLocalId('customerOrder'),
+            orderNumber: prepared.orderNumber ??
+                'KB-${DateTime.now().year}-${(_customerOrders.length + 1).toString().padLeft(4, '0')}',
+          )
+        : prepared;
+    _upsertLocal(_customerOrders, withId, (item) => item.id);
+    await _persistCustomerOrders();
+    _safeNotify();
+    return withId.id!;
+  }
+
+  Future<void> deleteCustomerOrder(String orderId) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      return;
+    }
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteCustomerOrder',
+          () => _inventory.deleteCustomerOrder(
+            orgId: orgId,
+            orderId: orderId,
+          ),
+        )) {
+      return;
+    }
+    _customerOrders = _customerOrders
+        .where((order) => order.id != orderId)
+        .toList(growable: false);
+    await _persistCustomerOrders();
+    _safeNotify();
+  }
+
+  /// Markiert eine Kundenbestellung als vorbereitet ([prepared] = true) bzw.
+  /// nimmt die Markierung zurueck und setzt sie wieder auf offen.
+  Future<void> markCustomerOrderPrepared(
+    CustomerOrder order, {
+    bool prepared = true,
+  }) async {
+    if (order.id == null) {
+      return;
+    }
+    await saveCustomerOrder(
+      order.copyWith(
+        status:
+            prepared ? CustomerOrderStatus.prepared : CustomerOrderStatus.open,
+        preparedAt: prepared ? DateTime.now() : null,
+        clearPreparedAt: !prepared,
+      ),
+    );
+  }
+
+  /// Schliesst eine Kundenbestellung als abgeholt ab. Bei wiederkehrenden
+  /// Bestellungen (woechentlich/monatlich) wird automatisch eine offene
+  /// Folgebestellung mit dem naechsten Abholtermin angelegt – die Vorbereitung
+  /// startet damit wieder bei null.
+  Future<void> markCustomerOrderPickedUp(CustomerOrder order) async {
+    if (order.id == null) {
+      return;
+    }
+    await saveCustomerOrder(
+      order.copyWith(status: CustomerOrderStatus.pickedUp),
+    );
+    final next = order.nextPickupDate;
+    if (order.recurrence.isRecurring && next != null) {
+      await saveCustomerOrder(
+        CustomerOrder(
+          orgId: order.orgId,
+          siteId: order.siteId,
+          siteName: order.siteName,
+          customerName: order.customerName,
+          customerContact: order.customerContact,
+          status: CustomerOrderStatus.open,
+          recurrence: order.recurrence,
+          items: order.items,
+          notes: order.notes,
+          pickupDate: next,
+          createdByUid: _currentUser?.uid,
+        ),
+      );
+    }
+  }
+
+  /// Storniert eine Kundenbestellung.
+  Future<void> cancelCustomerOrder(CustomerOrder order) async {
+    if (order.id == null) {
+      return;
+    }
+    await saveCustomerOrder(
+      order.copyWith(status: CustomerOrderStatus.cancelled),
+    );
   }
 
   // --- Lokale Mutationen (Dev-Modus) -------------------------------------

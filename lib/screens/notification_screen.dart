@@ -3,9 +3,12 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/absence_request.dart';
+import '../models/customer_order.dart';
 import '../models/shift.dart';
 import '../providers/auth_provider.dart';
+import '../providers/inventory_provider.dart';
 import '../providers/schedule_provider.dart';
+import '../theme/theme_extensions.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 
 Future<bool?> showAbsenceRequestSheet(
@@ -92,7 +95,12 @@ class _NotificationScreenState extends State<NotificationScreen> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     final schedule = context.watch<ScheduleProvider>();
+    final inventory = context.watch<InventoryProvider>();
     final currentUser = auth.profile;
+    final canViewInventory = currentUser?.canViewInventory ?? false;
+    final canManageInventory = currentUser?.canManageInventory ?? false;
+    final dueCustomerOrders =
+        canViewInventory ? inventory.ordersDueSoonNotPrepared() : <CustomerOrder>[];
     final canManageShifts = currentUser?.canManageShifts ?? false;
     final isTeamLead = currentUser?.isTeamLead ?? false;
     final canCreateOwnRequests =
@@ -135,6 +143,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
       reviewedAbsences: reviewedAbsences,
       pendingSwaps: pendingSwaps,
       upcomingOwnShifts: upcomingOwnShifts,
+      dueCustomerOrders: dueCustomerOrders,
+      canManageInventory: canManageInventory,
     );
     final filteredItems = items.where((item) => _matchesFilter(item)).toList()
       ..sort((a, b) => b.time.compareTo(a.time));
@@ -380,6 +390,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
     required List<AbsenceRequest> reviewedAbsences,
     required List<Shift> pendingSwaps,
     required List<Shift> upcomingOwnShifts,
+    required List<CustomerOrder> dueCustomerOrders,
+    required bool canManageInventory,
   }) {
     final schedule = context.read<ScheduleProvider>();
     final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
@@ -631,6 +643,44 @@ class _NotificationScreenState extends State<NotificationScreen> {
         },
       ),
     ];
+
+    // Kundenbestellungen, die bald abgeholt werden, aber noch nicht vorbereitet
+    // sind: als Warnung (Warnfarbe) ins Benachrichtigungs-Center.
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final warningColor = Theme.of(context).appColors.warning;
+    for (final order in dueCustomerOrders) {
+      final pickup = order.pickupDate;
+      final overdue = pickup != null && pickup.isBefore(today);
+      final positions = order.items.map((item) => item.name).join(', ');
+      items.add(
+        _InboxItem(
+          kind: _InboxItemKind.update,
+          icon: Icons.shopping_bag_outlined,
+          title: 'Kundenbestellung nicht vorbereitet',
+          subtitle: '${order.customerName}'
+              '${pickup != null ? ' · Abholung ${dateFmt.format(pickup)}' : ''}'
+              '${positions.isNotEmpty ? '\n$positions' : ''}',
+          time: pickup ?? now,
+          color: warningColor,
+          badge: overdue ? 'Ueberfaellig' : 'Bald faellig',
+          actions: [
+            if (canManageInventory && order.id != null)
+              _InboxAction(
+                label: 'Als vorbereitet markieren',
+                primary: true,
+                successMessage: 'Bestellung als vorbereitet markiert',
+                onPressed: (context) async {
+                  await context
+                      .read<InventoryProvider>()
+                      .markCustomerOrderPrepared(order);
+                  return true;
+                },
+              ),
+          ],
+        ),
+      );
+    }
 
     return items;
   }

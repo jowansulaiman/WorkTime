@@ -2,6 +2,8 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/customer_order.dart';
+import 'package:worktime_app/models/price_history_entry.dart';
 import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/purchase_order.dart';
 import 'package:worktime_app/models/stock_movement.dart';
@@ -95,6 +97,17 @@ class _OfflineInventoryRepository implements InventoryRepository {
       );
 
   @override
+  Future<void> addPriceHistory(PriceHistoryEntry entry) =>
+      _delegate.addPriceHistory(entry);
+
+  @override
+  Future<List<PriceHistoryEntry>> fetchPriceHistory({
+    required String orgId,
+    required String productId,
+  }) =>
+      _delegate.fetchPriceHistory(orgId: orgId, productId: productId);
+
+  @override
   Future<String> savePurchaseOrder(PurchaseOrder order) =>
       _delegate.savePurchaseOrder(order);
 
@@ -104,6 +117,21 @@ class _OfflineInventoryRepository implements InventoryRepository {
     required String orderId,
   }) =>
       _delegate.deletePurchaseOrder(orgId: orgId, orderId: orderId);
+
+  @override
+  Stream<List<CustomerOrder>> watchCustomerOrders(String orgId) =>
+      _delegate.watchCustomerOrders(orgId);
+
+  @override
+  Future<String> saveCustomerOrder(CustomerOrder order) =>
+      _delegate.saveCustomerOrder(order);
+
+  @override
+  Future<void> deleteCustomerOrder({
+    required String orgId,
+    required String orderId,
+  }) =>
+      _delegate.deleteCustomerOrder(orgId: orgId, orderId: orderId);
 
   @override
   Future<void> receivePurchaseOrder({
@@ -230,6 +258,39 @@ void main() {
       expect(restored.recentMovements, hasLength(1));
     });
 
+    test('issueStock blockt Bestandsueberzug und bucht sonst einen Abgang',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Feuerzeug',
+          currentStock: 5,
+        ),
+      );
+      final product = provider.products.single;
+
+      // Ueberzug -> harte Sperre, Bestand bleibt, keine Bewegung.
+      final error = await provider.issueStock(product: product, quantity: 8);
+      expect(error, isNotNull);
+      expect(provider.products.single.currentStock, 5);
+      expect(provider.recentMovements, isEmpty);
+
+      // Gueltiger Abgang -> gebucht als issue.
+      final ok = await provider.issueStock(
+        product: provider.products.single,
+        quantity: 3,
+        reason: 'Verkauf',
+      );
+      expect(ok, isNull);
+      expect(provider.products.single.currentStock, 2);
+      expect(provider.recentMovements.single.quantityDelta, -3);
+      expect(provider.recentMovements.single.type, StockMovementType.issue);
+      expect(provider.recentMovements.single.reason, 'Verkauf');
+    });
+
     test('savePurchaseOrder vergibt eine lokale Bestellnummer', () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);
@@ -332,6 +393,49 @@ void main() {
         ),
       );
       expect(provider.openOrders, hasLength(1));
+    });
+
+    test('Warenwert/Marge: Aggregation gesamt und je Standort', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'A',
+          currentStock: 10,
+          purchasePriceCents: 100,
+          sellingPriceCents: 150,
+        ),
+      );
+      await provider.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-2',
+          name: 'B',
+          currentStock: 5,
+          purchasePriceCents: 200,
+          sellingPriceCents: 260,
+        ),
+      );
+      // Ohne Preis -> traegt 0 zum Warenwert bei.
+      await provider.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'C',
+          currentStock: 7,
+        ),
+      );
+
+      // Gesamt: 10*100 + 5*200 = 2000 EK.
+      expect(provider.totalStockValuePurchaseCents(), 2000);
+      // Gesamt VK: 10*150 + 5*260 = 2800; Spanne = 800.
+      expect(provider.totalStockValueSellingCents(), 2800);
+      expect(provider.totalStockMarginCents(), 800);
+      // Je Standort site-1: nur A (C hat keinen Preis).
+      expect(provider.totalStockValuePurchaseCents(siteId: 'site-1'), 1000);
+      expect(provider.totalStockMarginCents(siteId: 'site-1'), 500);
     });
 
     test(

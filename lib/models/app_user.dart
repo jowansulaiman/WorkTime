@@ -327,6 +327,20 @@ class AppUserProfile {
   /// (Mitarbeiter mit Schicht-Bearbeitungsrecht).
   bool get canManageInventory => isActive && (isAdmin || canManageShifts);
 
+  /// Den Barcode-Scanner darf benutzen, wer den Bestand verwalten darf
+  /// (er bucht Bestand und schreibt ggf. Preise). canManageInventory enthaelt
+  /// bereits isActive. Die Plattform-/Groessenpruefung ("nur Handy") ist eine
+  /// reine UI-Sache und gehoert NICHT ins Profil-Model
+  /// (siehe MobileBreakpoints.isNativeMobile).
+  bool get canUseScanner => canManageInventory;
+
+  /// Kontakte ansehen darf jedes aktive Mitglied.
+  bool get canViewContacts => isActive;
+
+  /// Kontakte verwalten (anlegen/bearbeiten/loeschen) duerfen Admins und
+  /// Schichtleiter — analog zur Warenwirtschaft.
+  bool get canManageContacts => isActive && (isAdmin || canManageShifts);
+
   bool canReviewAbsenceRequestFor(AppUserProfile requester) {
     if (!canManageShifts || !isActive) {
       return false;

@@ -17,8 +17,10 @@ import 'core/error_reporter.dart';
 import 'core/redesign_flags.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
+import 'providers/contact_provider.dart';
 import 'providers/feature_flag_provider.dart';
 import 'providers/inventory_provider.dart';
+import 'providers/personal_provider.dart';
 import 'providers/schedule_provider.dart';
 import 'providers/storage_mode_provider.dart';
 import 'providers/team_provider.dart';
@@ -288,6 +290,49 @@ class WorkTimeApp extends StatelessWidget {
               ),
               'InventoryProvider.updateSession',
               onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
+            ContactProvider>(
+          create: (_) => ContactProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, provider) {
+            provider ??= ContactProvider(firestoreService: firestoreService);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'ContactProvider.updateSession',
+              onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        ChangeNotifierProxyProvider3<AuthProvider, TeamProvider,
+            StorageModeProvider, PersonalProvider>(
+          create: (_) => PersonalProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, team, storage, provider) {
+            provider ??= PersonalProvider(firestoreService: firestoreService);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'PersonalProvider.updateSession',
+              onError: provider.surfaceSessionError,
+            );
+            provider.updateReferenceData(
+              members: team.members,
+              contracts: team.contracts,
+              sites: team.sites,
             );
             return provider;
           },

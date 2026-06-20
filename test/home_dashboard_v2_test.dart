@@ -8,6 +8,7 @@ import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
 import 'package:worktime_app/providers/feature_flag_provider.dart';
+import 'package:worktime_app/providers/inventory_provider.dart';
 import 'package:worktime_app/providers/schedule_provider.dart';
 import 'package:worktime_app/providers/storage_mode_provider.dart';
 import 'package:worktime_app/providers/team_provider.dart';
@@ -86,6 +87,7 @@ Future<({Future<void> Function() cleanup, ThemeProvider theme})> _pumpHome(
   final team = TeamProvider(firestoreService: firestoreService);
   final schedule = ScheduleProvider(firestoreService: firestoreService);
   final work = WorkProvider(firestoreService: firestoreService);
+  final inventory = InventoryProvider(firestoreService: firestoreService);
   final storage = StorageModeProvider();
   final flags = FeatureFlagProvider(firestoreService: firestoreService);
   final theme = ThemeProvider();
@@ -93,6 +95,7 @@ Future<({Future<void> Function() cleanup, ThemeProvider theme})> _pumpHome(
   await team.updateSession(profile);
   await schedule.updateSession(profile);
   await work.updateSession(profile);
+  await inventory.updateSession(profile);
   await flags.updateSession(profile, localStorageOnly: false);
 
 
@@ -104,6 +107,7 @@ Future<({Future<void> Function() cleanup, ThemeProvider theme})> _pumpHome(
         ChangeNotifierProvider<TeamProvider>.value(value: team),
         ChangeNotifierProvider<ScheduleProvider>.value(value: schedule),
         ChangeNotifierProvider<WorkProvider>.value(value: work),
+        ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
         ChangeNotifierProvider<FeatureFlagProvider>.value(value: flags),
         ChangeNotifierProvider<ThemeProvider>.value(value: theme),
       ],
@@ -130,6 +134,7 @@ Future<({Future<void> Function() cleanup, ThemeProvider theme})> _pumpHome(
     cleanup: () async {
       await tester.pumpWidget(const SizedBox());
       work.dispose();
+      inventory.dispose();
       schedule.dispose();
       team.dispose();
       flags.dispose();

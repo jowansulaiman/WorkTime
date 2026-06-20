@@ -24,6 +24,8 @@ import '../ui/app_quick_action.dart';
 import '../ui/app_section_card.dart';
 import '../ui/app_stat_cards.dart';
 import '../widgets/app_logo.dart';
+import '../widgets/app_nav_menu.dart';
+import '../widgets/app_nav_rail.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/info_chip.dart';
@@ -31,9 +33,13 @@ import '../widgets/responsive_layout.dart';
 import '../widgets/section_card.dart';
 import '../widgets/section_header.dart';
 import 'entry_form_screen.dart';
+import 'contacts_screen.dart';
+import 'customer_order_screen.dart';
 import 'inventory_screen.dart';
 import 'month_report_screen.dart';
+import 'personal_screen.dart';
 import 'notification_screen.dart';
+import 'scanner_screen.dart';
 import 'settings_screen.dart';
 import 'shift_planner_screen.dart';
 import 'statistics_screen.dart';
@@ -68,6 +74,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _ShellDestinationId.today,
   };
   final List<_ShellDestinationId> _navHistory = [];
+
+  /// Steuert das V2-Slide-in-Menü (drawer/endDrawer) von ausserhalb des
+  /// Scaffold-Subtrees (mobiler ☰-Trigger, Rail-Profil-Header).
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   Widget build(BuildContext context) {
@@ -108,135 +118,182 @@ class _HomeScreenState extends State<HomeScreen> {
       bindings: shortcutBindings,
       child: FocusTraversalGroup(
         child: PopScope<void>(
-      canPop: _navHistory.isEmpty,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) {
-          return;
-        }
-        _navigateBackInShell(destinations: destinations);
-      },
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          // Material-3 Window-Size-Classes: BottomNav (<600) -> Rail mit nur
-          // ausgewaehltem Label (600–839) -> Rail mit allen Labels (>=840)
-          // (no-medium-window-class). Hoehen-Guard, damit die (nicht scrollbare)
-          // NavigationRail auf kurzen Landscape-Phones nicht vertikal ueberlaeuft.
-          final useRail =
-              MobileBreakpoints.useNavigationRail(constraints.maxWidth) &&
-                  constraints.maxHeight >= MobileBreakpoints.mediumWindow;
-          final expandedRailLabels =
-              MobileBreakpoints.useExpandedRailLabels(constraints.maxWidth);
-          final body = _LazyDestinationStack(
-            selectedId: currentDestination.id,
-            loadedDestinations: _loadedDestinations,
-            destinations: destinations,
-          );
-          final shellContent = Column(
-            children: [
-              SafeArea(
-                bottom: false,
-                child: _ShellStatusBanner(
-                  storageLocation: storageLocation,
-                ),
-              ),
-              Expanded(child: body),
-            ],
-          );
+          canPop: _navHistory.isEmpty,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) {
+              return;
+            }
+            _navigateBackInShell(destinations: destinations);
+          },
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Material-3 Window-Size-Classes: BottomNav (<600) -> Rail mit nur
+              // ausgewaehltem Label (600–839) -> Rail mit allen Labels (>=840)
+              // (no-medium-window-class). Hoehen-Guard, damit die (nicht scrollbare)
+              // NavigationRail auf kurzen Landscape-Phones nicht vertikal ueberlaeuft.
+              final useRail =
+                  MobileBreakpoints.useNavigationRail(constraints.maxWidth) &&
+                      constraints.maxHeight >= MobileBreakpoints.mediumWindow;
+              final expandedRailLabels =
+                  MobileBreakpoints.useExpandedRailLabels(constraints.maxWidth);
+              final body = _LazyDestinationStack(
+                selectedId: currentDestination.id,
+                loadedDestinations: _loadedDestinations,
+                destinations: destinations,
+              );
+              final shellContent = Column(
+                children: [
+                  SafeArea(
+                    bottom: false,
+                    child: _ShellStatusBanner(
+                      storageLocation: storageLocation,
+                    ),
+                  ),
+                  Expanded(child: body),
+                ],
+              );
 
-          return Scaffold(
-            body: useRail
-                ? SafeArea(
-                    child: Row(
-                      children: [
-                        NavigationRail(
-                          selectedIndex: railSelectedIndex == -1
-                              ? null
-                              : railSelectedIndex,
-                          onDestinationSelected: (index) =>
-                              _handleDestinationTap(
-                            index,
-                            destinations: railDestinations,
-                          ),
-                          labelType: expandedRailLabels
-                              ? NavigationRailLabelType.all
-                              : NavigationRailLabelType.selected,
-                          leading: Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const AppLogo(height: 38),
-                                const SizedBox(height: 12),
-                                _RailProfileHeader(
-                                  user: currentUser,
-                                  isSelected: currentDestination.id ==
-                                      _ShellDestinationId.profile,
-                                  onTap: () => _activateDestination(
-                                    _ShellDestinationId.profile,
-                                    destinations: destinations,
+              return Scaffold(
+                key: _scaffoldKey,
+                // V2-Slide-in-Menü: mobil von links (drawer, ☰ in der schlanken
+                // V2-AppBar), auf Rail/Desktop von rechts (endDrawer, geöffnet vom
+                // Rail-Profil-Header). Pro Layout nur eine Seite, damit es kein
+                // verwirrendes Wischen von der „falschen" Kante gibt. V1 bleibt ohne.
+                drawer: (useV2 && !useRail)
+                    ? _buildAppMenuDrawer(currentUser, authDisabled)
+                    : null,
+                endDrawer: (useV2 && useRail)
+                    ? _buildAppMenuDrawer(currentUser, authDisabled)
+                    : null,
+                // Schmaler Rand: lässt dem horizontalen TableCalendar-/Wochen-Swipe
+                // im ShiftPlanner Platz, statt ihn am linken Rand abzufangen.
+                drawerEdgeDragWidth: useV2 ? 24 : null,
+                appBar: (useV2 && !useRail)
+                    ? _V2MenuTopBar(
+                        user: currentUser,
+                        onOpenMenu: () =>
+                            _scaffoldKey.currentState?.openDrawer(),
+                      )
+                    : null,
+                body: useRail
+                    ? SafeArea(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (useV2)
+                              AppNavRail(
+                                items: [
+                                  for (final destination in railDestinations)
+                                    AppNavRailItem(
+                                      icon: destination.icon,
+                                      selectedIcon: destination.selectedIcon,
+                                      label: destination.label,
+                                    ),
+                                ],
+                                selectedIndex: railSelectedIndex,
+                                onSelected: (index) => _handleDestinationTap(
+                                  index,
+                                  destinations: railDestinations,
+                                ),
+                                onOpenMenu: () =>
+                                    _scaffoldKey.currentState?.openEndDrawer(),
+                                user: currentUser,
+                                expandedLabels: expandedRailLabels,
+                              )
+                            else ...[
+                              NavigationRail(
+                                selectedIndex: railSelectedIndex == -1
+                                    ? null
+                                    : railSelectedIndex,
+                                onDestinationSelected: (index) =>
+                                    _handleDestinationTap(
+                                  index,
+                                  destinations: railDestinations,
+                                ),
+                                labelType: expandedRailLabels
+                                    ? NavigationRailLabelType.all
+                                    : NavigationRailLabelType.selected,
+                                leading: Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const AppLogo(height: 38),
+                                      const SizedBox(height: 12),
+                                      _RailProfileHeader(
+                                        user: currentUser,
+                                        isSelected: currentDestination.id ==
+                                            _ShellDestinationId.profile,
+                                        onTap: () => _activateDestination(
+                                          _ShellDestinationId.profile,
+                                          destinations: destinations,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          trailing: Padding(
-                            padding: const EdgeInsets.only(bottom: 16),
-                            child: IconButton(
-                              tooltip:
-                                  authDisabled ? 'Profil wechseln' : 'Abmelden',
-                              onPressed: () =>
-                                  context.read<AuthProvider>().signOut(),
-                              icon: const Icon(Icons.logout),
-                            ),
-                          ),
-                          destinations: [
-                            for (final destination in railDestinations)
-                              NavigationRailDestination(
-                                icon: Icon(destination.icon),
-                                selectedIcon: Icon(destination.selectedIcon),
-                                label: Text(destination.label),
+                                trailing: Padding(
+                                  padding: const EdgeInsets.only(bottom: 16),
+                                  child: IconButton(
+                                    tooltip: authDisabled
+                                        ? 'Profil wechseln'
+                                        : 'Abmelden',
+                                    onPressed: () =>
+                                        context.read<AuthProvider>().signOut(),
+                                    icon: const Icon(Icons.logout),
+                                  ),
+                                ),
+                                destinations: [
+                                  for (final destination in railDestinations)
+                                    NavigationRailDestination(
+                                      icon: Icon(destination.icon),
+                                      selectedIcon:
+                                          Icon(destination.selectedIcon),
+                                      label: Text(destination.label),
+                                    ),
+                                ],
                               ),
+                              const VerticalDivider(width: 1),
+                            ],
+                            Expanded(child: shellContent),
                           ],
                         ),
-                        const VerticalDivider(width: 1),
-                        Expanded(child: shellContent),
-                      ],
-                    ),
-                  )
-                : shellContent,
-            bottomNavigationBar: useRail
-                ? null
-                : NavigationBar(
-                    selectedIndex: selectedIndex,
-                    onDestinationSelected: (index) => _handleDestinationTap(
-                      index,
-                      destinations: destinations,
-                    ),
-                    destinations: [
-                      for (final destination in destinations)
-                        NavigationDestination(
-                          icon: Icon(destination.icon),
-                          selectedIcon: Icon(destination.selectedIcon),
-                          label: destination.label,
-                        ),
-                    ],
-                  ),
-            floatingActionButton: currentDestination.showFab
-                ? Consumer<WorkProvider>(
-                    builder: (context, work, _) =>
-                        _buildFab(
-                          context,
-                          destination: currentDestination,
-                          canManageShifts: canManageShifts,
+                      )
+                    : shellContent,
+                bottomNavigationBar: useRail
+                    ? null
+                    : NavigationBar(
+                        selectedIndex: selectedIndex,
+                        onDestinationSelected: (index) => _handleDestinationTap(
+                          index,
                           destinations: destinations,
-                          work: work,
-                        ) ??
-                        const SizedBox.shrink(),
-                  )
-                : null,
-          );
-        },
-      ),
+                        ),
+                        destinations: [
+                          for (final destination in destinations)
+                            NavigationDestination(
+                              icon: Icon(destination.icon),
+                              selectedIcon: Icon(destination.selectedIcon),
+                              label: destination.label,
+                            ),
+                        ],
+                      ),
+                floatingActionButton: currentDestination.showFab
+                    ? Consumer<WorkProvider>(
+                        builder: (context, work, _) =>
+                            _buildFab(
+                              context,
+                              destination: currentDestination,
+                              canManageShifts: canManageShifts,
+                              destinations: destinations,
+                              work: work,
+                            ) ??
+                            const SizedBox.shrink(),
+                      )
+                    : null,
+              );
+            },
+          ),
         ),
       ),
     );
@@ -389,52 +446,41 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final canEditTimeEntries = work.currentUser?.canEditTimeEntries ?? false;
     final actionsFab = canManageShifts
-        ? FloatingActionButton.extended(
-            heroTag: 'shell_actions_fab',
+        ? _ExpressiveActionsFab(
+            label: 'Aktionen',
+            icon: Icons.bolt_rounded,
             onPressed: () => _showPlannerQuickActions(
               destinations,
               currentDestinationLabel: destination.label,
             ),
-            icon: const Icon(Icons.bolt),
-            label: const Text('Aktionen'),
           )
-        : FloatingActionButton.extended(
-            heroTag: 'shell_actions_fab',
+        : _ExpressiveActionsFab(
+            label: 'Schnell',
+            icon: Icons.bolt_rounded,
             onPressed: () => _showEmployeeQuickActions(
               currentDestinationLabel: destination.label,
             ),
-            icon: const Icon(Icons.bolt),
-            label: const Text('Schnell'),
           );
 
-    if (!canEditTimeEntries) {
-      return actionsFab;
-    }
+    final punchClockFab = FloatingActionButton(
+      heroTag: 'shell_punch_clock_fab',
+      tooltip: work.hasActiveClockSession
+          ? 'Stempeluhr oeffnen und ausstempeln'
+          : 'Stempeluhr oeffnen',
+      onPressed: work.currentUser == null ? null : () => _showPunchClockSheet(),
+      backgroundColor:
+          work.hasActiveClockSession ? colorScheme.error : appColors.success,
+      foregroundColor: work.hasActiveClockSession
+          ? colorScheme.onError
+          : appColors.onSuccess,
+      child: Icon(
+        work.hasActiveClockSession ? Icons.logout_rounded : Icons.login_rounded,
+      ),
+    );
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        FloatingActionButton(
-          heroTag: 'shell_punch_clock_fab',
-          tooltip: work.hasActiveClockSession
-              ? 'Stempeluhr oeffnen und ausstempeln'
-              : 'Stempeluhr oeffnen',
-          onPressed:
-              work.currentUser == null ? null : () => _showPunchClockSheet(),
-          backgroundColor: work.hasActiveClockSession
-              ? colorScheme.error
-              : appColors.success,
-          foregroundColor: work.hasActiveClockSession
-              ? colorScheme.onError
-              : appColors.onSuccess,
-          child: Icon(
-            work.hasActiveClockSession
-                ? Icons.logout_rounded
-                : Icons.login_rounded,
-          ),
-        ),
-        const SizedBox(height: 12),
+    return _ShellFabCluster(
+      actions: [
+        if (canEditTimeEntries) punchClockFab,
         actionsFab,
       ],
     );
@@ -732,6 +778,95 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Baut den Inhalt des V2-Slide-in-Menüs. Wird sowohl als `drawer` (links)
+  /// als auch als `endDrawer` (rechts) verwendet. Der `Consumer2`-Teilbaum wird
+  /// erst beim Öffnen des Drawers gebaut (geschlossen ist er nicht im Tree),
+  /// abonniert Team/Work also nur dann und weitet die Shell-Rebuilds nicht aus.
+  Widget _buildAppMenuDrawer(AppUserProfile? user, bool authDisabled) {
+    return Drawer(
+      child: Consumer2<TeamProvider, WorkProvider>(
+        builder: (context, team, work, _) {
+          final assignments = team.siteAssignments
+              .where((assignment) => assignment.userId == user?.uid)
+              .toList(growable: false);
+          EmployeeSiteAssignment? primaryAssignment;
+          for (final assignment in assignments) {
+            if (assignment.isPrimary) {
+              primaryAssignment = assignment;
+              break;
+            }
+          }
+          primaryAssignment ??= assignments.isEmpty ? null : assignments.first;
+          final availableSites =
+              team.sites.isNotEmpty ? team.sites : work.sites;
+          String? siteName;
+          for (final site in availableSites) {
+            if (site.id == primaryAssignment?.siteId) {
+              siteName = site.name;
+              break;
+            }
+          }
+
+          // Scanner-Einstieg auf echten Mobil-Plattformen (Handy UND Tablet:
+          // Android/iOS nativ). Web und Desktop-OS haben keine sinnvolle
+          // Kamera-/Scan-UX und fallen raus.
+          final showScanner = MobileBreakpoints.isNativeMobile;
+
+          return AppNavMenu(
+            user: user,
+            authDisabled: authDisabled,
+            showScanner: showScanner,
+            siteName: siteName,
+            dailyHours: work.settings.dailyHours,
+            vacationDays: work.settings.vacationDays,
+            onSignOut: () {
+              _closeAppMenu();
+              context.read<AuthProvider>().signOut();
+            },
+            onOpenMonthReport: () =>
+                _pushFromMenu(const MonthReportScreen(parentLabel: 'Profil')),
+            onOpenStatistics: () =>
+                _pushFromMenu(const StatisticsScreen(parentLabel: 'Profil')),
+            onOpenPersonal: () =>
+                _pushFromMenu(const PersonalScreen(parentLabel: 'Profil')),
+            onOpenTeam: () => _pushFromMenu(
+                const TeamManagementScreen(parentLabel: 'Profil')),
+            onOpenInventory: () =>
+                _pushFromMenu(const InventoryScreen(parentLabel: 'Profil')),
+            onOpenCustomerOrders: () => _pushFromMenu(
+                const CustomerOrderScreen(parentLabel: 'Profil')),
+            onOpenScanner: () =>
+                _pushFromMenu(const ScannerScreen(parentLabel: 'Profil')),
+            onOpenSettings: () =>
+                _pushFromMenu(const SettingsScreen(parentLabel: 'Profil')),
+          );
+        },
+      ),
+    );
+  }
+
+  void _closeAppMenu() {
+    final state = _scaffoldKey.currentState;
+    if (state == null) {
+      return;
+    }
+    if (state.isDrawerOpen) {
+      state.closeDrawer();
+    }
+    if (state.isEndDrawerOpen) {
+      state.closeEndDrawer();
+    }
+  }
+
+  /// Schliesst das Menü und pusht den Detail-Screen — damit ein anschliessendes
+  /// Zurück den Detail-Screen poppt und nicht in einen offenen Drawer führt.
+  void _pushFromMenu(Widget screen) {
+    _closeAppMenu();
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => screen),
+    );
+  }
+
   List<_ShellDestination> _buildDestinations(
     AppUserProfile? user, {
     bool useV2 = false,
@@ -740,6 +875,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final canManageShifts = user?.canManageShifts ?? false;
     final canViewSchedule = user?.canViewSchedule ?? false;
     final canViewTimeTracking = user?.canViewTimeTracking ?? false;
+    final canViewContacts = user?.canViewContacts ?? false;
     final items = <_ShellDestination>[
       _ShellDestination(
         id: _ShellDestinationId.today,
@@ -806,22 +942,38 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         showFab: true,
       ),
-      _ShellDestination(
-        id: _ShellDestinationId.profile,
-        label: 'Profil',
-        icon: Icons.person_outline,
-        selectedIcon: Icons.person,
-        child: _ProfileHubTab(
-          canNavigateBack: canNavigateBack,
-          onNavigateBack: _handleShellBackPressed,
+      if (canViewContacts)
+        _ShellDestination(
+          id: _ShellDestinationId.contacts,
+          label: 'Kontakte',
+          icon: Icons.contacts_outlined,
+          selectedIcon: Icons.contacts,
+          child: ContactsScreen(
+            canNavigateBack: canNavigateBack,
+            onNavigateBack: _handleShellBackPressed,
+          ),
+          // Kontakte bringen ihren eigenen FAB ("Neuer Kontakt") mit; der
+          // schicht-/zeitbezogene Shell-FAB ist hier bewusst aus.
+          showFab: false,
         ),
-      ),
+      // In V2 ersetzt das Slide-in-Menü (Scaffold.drawer/endDrawer) den
+      // Profil-Tab; die Bottom-Nav zeigt nur die 4 Kern-Tabs.
+      if (!useV2)
+        _ShellDestination(
+          id: _ShellDestinationId.profile,
+          label: 'Profil',
+          icon: Icons.person_outline,
+          selectedIcon: Icons.person,
+          child: _ProfileHubTab(
+            canNavigateBack: canNavigateBack,
+            onNavigateBack: _handleShellBackPressed,
+          ),
+        ),
     ];
 
     return items;
   }
 }
-
 
 class _ShellDestination {
   const _ShellDestination({
@@ -841,7 +993,53 @@ class _ShellDestination {
   final bool showFab;
 }
 
-enum _ShellDestinationId { today, plan, time, inbox, profile }
+enum _ShellDestinationId { today, plan, time, inbox, contacts, profile }
+
+/// Schlanke V2-Top-Bar im Bottom-Nav-Modus: ein Avatar-Button links öffnet das
+/// Slide-in-Menü. Bewusst ohne Titel — den Abschnittstitel liefert weiterhin der
+/// `SectionHeader` jedes Tabs (kein Doppel-Header).
+class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
+  const _V2MenuTopBar({required this.user, required this.onOpenMenu});
+
+  final AppUserProfile? user;
+  final VoidCallback onOpenMenu;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(56);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final initial = user?.displayName.characters.first.toUpperCase() ?? '?';
+    return AppBar(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      titleSpacing: 0,
+      leadingWidth: 64,
+      leading: Padding(
+        padding: const EdgeInsets.only(left: 12),
+        child: IconButton(
+          tooltip: 'Menü',
+          onPressed: onOpenMenu,
+          icon: CircleAvatar(
+            radius: 16,
+            backgroundColor: colorScheme.primary,
+            foregroundColor: colorScheme.onPrimary,
+            child: Text(
+              initial,
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: colorScheme.onPrimary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _RailProfileHeader extends StatelessWidget {
   const _RailProfileHeader({
@@ -1226,6 +1424,262 @@ class _DayHeaderCell extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Sammelt die Shell-FABs hinter einem dauerhaft sichtbaren Toggle unten rechts
+/// (modernes vertikales Speed-Dial). Eingeklappt zeigt nur der Chevron-Toggle,
+/// dass dort Aktionen liegen; Tippen klappt die Buttons gestaffelt nach oben aus
+/// und dreht den Chevron. Standard: eingeklappt.
+class _ShellFabCluster extends StatefulWidget {
+  const _ShellFabCluster({required this.actions});
+
+  /// Buttons in Anzeigereihenfolge von oben nach unten. Der letzte Eintrag sitzt
+  /// am naechsten zum Toggle und erscheint beim Ausklappen zuerst.
+  final List<Widget> actions;
+
+  @override
+  State<_ShellFabCluster> createState() => _ShellFabClusterState();
+}
+
+class _ShellFabClusterState extends State<_ShellFabCluster>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  bool _expanded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Respektiert die "Bewegung reduzieren"-Systemeinstellung.
+    _controller.duration =
+        context.motionDuration(const Duration(milliseconds: 300));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    if (_expanded) {
+      _controller.forward();
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final count = widget.actions.length;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        for (var i = 0; i < count; i++)
+          _RevealSlot(
+            controller: _controller,
+            expanded: _expanded,
+            position: count - 1 - i,
+            child: widget.actions[i],
+          ),
+        _buildToggle(context),
+      ],
+    );
+  }
+
+  Widget _buildToggle(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Tooltip(
+      message: _expanded ? 'Aktionen ausblenden' : 'Aktionen anzeigen',
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: colorScheme.primary.withValues(alpha: 0.32),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          shape: const CircleBorder(),
+          child: Ink(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [colorScheme.primary, colorScheme.secondary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: InkWell(
+              onTap: _toggle,
+              customBorder: const CircleBorder(),
+              child: SizedBox(
+                width: 52,
+                height: 52,
+                child: AnimatedBuilder(
+                  animation: _controller,
+                  builder: (context, _) => Transform.rotate(
+                    angle: _controller.value * 3.1415926,
+                    child: Icon(
+                      Icons.chevron_left,
+                      color: colorScheme.onPrimary,
+                      size: 28,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Ein gestaffelt ein-/ausblendender Platz im [_ShellFabCluster]. Eingeklappt
+/// nimmt er keinen Platz ein und schluckt keine Taps.
+class _RevealSlot extends StatelessWidget {
+  const _RevealSlot({
+    required this.controller,
+    required this.expanded,
+    required this.position,
+    required this.child,
+  });
+
+  final AnimationController controller;
+  final bool expanded;
+
+  /// 0 = naechster am Toggle (erscheint zuerst), groesser = weiter oben/spaeter.
+  final int position;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final start = (position * 0.14).clamp(0.0, 0.4);
+    final end = (start + 0.6).clamp(0.0, 1.0);
+    return AnimatedBuilder(
+      animation: controller,
+      child: child,
+      builder: (context, child) {
+        final t = ((controller.value - start) / (end - start)).clamp(0.0, 1.0);
+        final eased = Curves.easeOutCubic.transform(t);
+        if (eased <= 0.001 && !expanded) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Opacity(
+            opacity: eased,
+            child: Transform.translate(
+              offset: Offset(0, (1 - eased) * 18),
+              child: Transform.scale(
+                scale: 0.85 + 0.15 * eased,
+                alignment: Alignment.bottomRight,
+                child: IgnorePointer(
+                  ignoring: !expanded,
+                  child: child,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Markanter, gebrandeter Aktions-FAB (Signal-Teal-Verlauf) der Shell. Bewusst
+/// als eigenes Widget statt `FloatingActionButton.extended`, damit der Verlauf
+/// und der weiche Marken-Schatten moeglich sind und sich der Button klar vom
+/// gruen/roten Stempeluhr-FAB darueber absetzt. Verhalten bleibt: oeffnet das
+/// Schnellaktionen-Sheet.
+class _ExpressiveActionsFab extends StatelessWidget {
+  const _ExpressiveActionsFab({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Tooltip(
+      message: label,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: [
+            BoxShadow(
+              color: colorScheme.primary.withValues(alpha: 0.32),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          shape: const StadiumBorder(),
+          child: Ink(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [colorScheme.primary, colorScheme.secondary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: InkWell(
+              onTap: onPressed,
+              customBorder: const StadiumBorder(),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 56),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, color: colorScheme.onPrimary, size: 22),
+                      const SizedBox(width: 10),
+                      Text(
+                        label,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: colorScheme.onPrimary,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1807,7 +2261,6 @@ class _ManagerDecisionTile extends StatelessWidget {
   }
 }
 
-
 class _DashboardMetricCard extends StatelessWidget {
   const _DashboardMetricCard({
     required this.label,
@@ -1855,7 +2308,6 @@ class _DashboardMetricCard extends StatelessWidget {
     );
   }
 }
-
 
 class _EmptyState extends StatelessWidget {
   const _EmptyState({
@@ -2335,6 +2787,20 @@ class _ProfileHubTab extends StatelessWidget {
                         ),
                       ),
                     ),
+                  if (currentUser?.isAdmin ?? false)
+                    _QuickActionCard(
+                      icon: Icons.badge_outlined,
+                      title: 'Personal',
+                      subtitle:
+                          'Auftraege, Lohn-Richtwerte, Finanzen und Statistik',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const PersonalScreen(
+                            parentLabel: 'Profil',
+                          ),
+                        ),
+                      ),
+                    ),
                   if (currentUser?.canViewInventory ?? false)
                     _QuickActionCard(
                       icon: Icons.inventory_2_outlined,
@@ -2344,6 +2810,20 @@ class _ProfileHubTab extends StatelessWidget {
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => const InventoryScreen(
+                            parentLabel: 'Profil',
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (currentUser?.canViewInventory ?? false)
+                    _QuickActionCard(
+                      icon: Icons.shopping_bag_outlined,
+                      title: 'Kundenbestellungen',
+                      subtitle:
+                          'Sonderbestellungen von Kunden verwalten',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const CustomerOrderScreen(
                             parentLabel: 'Profil',
                           ),
                         ),
@@ -2425,7 +2905,6 @@ class _ProfileHubTab extends StatelessWidget {
     );
   }
 }
-
 
 class _ShiftStatusBadge extends StatelessWidget {
   const _ShiftStatusBadge({required this.status});

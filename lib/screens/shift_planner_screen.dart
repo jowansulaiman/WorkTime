@@ -1409,16 +1409,20 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                     ),
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text(
-                    _toolbarRangeLabel(
-                      schedule.visibleDate,
-                      schedule.viewMode,
-                    ),
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: colorScheme.onSurface,
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: Text(
+                      _toolbarRangeLabel(
+                        schedule.visibleDate,
+                        schedule.viewMode,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: colorScheme.onSurface,
+                      ),
                     ),
                   ),
                 ),

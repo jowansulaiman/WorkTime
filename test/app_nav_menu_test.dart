@@ -1,0 +1,184 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/user_settings.dart';
+import 'package:worktime_app/theme/app_theme.dart';
+import 'package:worktime_app/widgets/app_nav_menu.dart';
+
+/// Isolierter Widget-Test fuer das Slide-in-Menue [AppNavMenu]: prueft die nach
+/// Berechtigung gruppierten Eintraege, den authDisabled-Footer und die Callbacks
+/// — ohne Provider-Stack, da das Widget bewusst rein praesentational ist.
+const _admin = AppUserProfile(
+  uid: 'admin-1',
+  orgId: 'org-1',
+  email: 'admin@example.com',
+  role: UserRole.admin,
+  isActive: true,
+  settings: UserSettings(name: 'Sandra'),
+);
+
+// Mitarbeiter explizit OHNE Berichts-Recht (die Rollen-Defaults erlauben
+// Reports) — so wird die Auswertungen-Gruppe ausgeblendet.
+const _employeeNoReports = AppUserProfile(
+  uid: 'emp-1',
+  orgId: 'org-1',
+  email: 'peter@example.com',
+  role: UserRole.employee,
+  isActive: true,
+  settings: UserSettings(name: 'Peter'),
+  permissions: UserPermissions(
+    canViewSchedule: true,
+    canEditSchedule: false,
+    canViewTimeTracking: true,
+    canEditTimeEntries: true,
+    canViewReports: false,
+  ),
+);
+
+Future<void> _pump(
+  WidgetTester tester, {
+  required AppUserProfile user,
+  bool authDisabled = false,
+  bool showScanner = false,
+  VoidCallback? onSignOut,
+  VoidCallback? onOpenSettings,
+  VoidCallback? onOpenPersonal,
+  VoidCallback? onOpenScanner,
+}) async {
+  // Hoher Viewport, damit die (lazy) ListView alle Menue-Eintraege baut.
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(304, 5000);
+  addTearDown(() {
+    tester.view.resetDevicePixelRatio();
+    tester.view.resetPhysicalSize();
+  });
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: AppTheme.resolveLight(useV2: true),
+      home: Scaffold(
+        body: AppNavMenu(
+          user: user,
+          authDisabled: authDisabled,
+          showScanner: showScanner,
+          siteName: 'Strichmaennchen',
+          dailyHours: 8,
+          vacationDays: 30,
+          onSignOut: onSignOut ?? () {},
+          onOpenMonthReport: () {},
+          onOpenStatistics: () {},
+          onOpenPersonal: onOpenPersonal ?? () {},
+          onOpenTeam: () {},
+          onOpenInventory: () {},
+          onOpenCustomerOrders: () {},
+          onOpenScanner: onOpenScanner ?? () {},
+          onOpenSettings: onOpenSettings ?? () {},
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+}
+
+void main() {
+  setUpAll(() async => initializeDateFormatting('de_DE'));
+
+  testWidgets('Admin sieht alle Gruppen + Eintraege', (tester) async {
+    await _pump(tester, user: _admin);
+
+    expect(find.text('Sandra'), findsOneWidget); // Name im Header
+    expect(find.text('Admin'), findsOneWidget); // Rollen-Label
+    expect(find.text('Auswertungen'), findsOneWidget);
+    expect(find.text('Monatsbericht'), findsOneWidget);
+    expect(find.text('Statistiken'), findsOneWidget);
+    expect(find.text('Verwaltung'), findsOneWidget);
+    expect(find.text('Personal'), findsOneWidget);
+    expect(find.text('Teamverwaltung'), findsOneWidget);
+    expect(find.text('Warenwirtschaft'), findsOneWidget);
+    expect(find.text('Einstellungen'), findsOneWidget);
+    expect(find.text('Abmelden'), findsOneWidget);
+  });
+
+  testWidgets('Mitarbeiter ohne Reports: keine Auswertungen/Teamverwaltung',
+      (tester) async {
+    await _pump(tester, user: _employeeNoReports);
+
+    expect(find.text('Peter'), findsOneWidget);
+    expect(find.text('Mitarbeiter'), findsOneWidget);
+    expect(find.text('Auswertungen'), findsNothing);
+    expect(find.text('Monatsbericht'), findsNothing);
+    expect(find.text('Statistiken'), findsNothing);
+    expect(find.text('Teamverwaltung'), findsNothing);
+    // Personal ist Admin-only -> fuer Mitarbeiter ausgeblendet.
+    expect(find.text('Personal'), findsNothing);
+    // Verwaltung-Gruppe bleibt: Warenwirtschaft darf jedes aktive Mitglied.
+    expect(find.text('Warenwirtschaft'), findsOneWidget);
+    expect(find.text('Einstellungen'), findsOneWidget);
+    expect(find.text('Abmelden'), findsOneWidget);
+  });
+
+  testWidgets('Scanner-Eintrag: nur bei showScanner UND Verwalter-Recht',
+      (tester) async {
+    // showScanner=false (z.B. Desktop/Web/Tablet) -> kein Scanner.
+    await _pump(tester, user: _admin);
+    expect(find.text('Scanner'), findsNothing);
+
+    // showScanner=true + Admin (canManageInventory) -> Scanner sichtbar.
+    await _pump(tester, user: _admin, showScanner: true);
+    expect(find.text('Scanner'), findsOneWidget);
+
+    // showScanner=true, aber Mitarbeiter ohne Verwalterrecht -> kein Scanner.
+    await _pump(tester, user: _employeeNoReports, showScanner: true);
+    expect(find.text('Scanner'), findsNothing);
+  });
+
+  testWidgets('Tap Scanner ruft onOpenScanner', (tester) async {
+    var opened = false;
+    await _pump(
+      tester,
+      user: _admin,
+      showScanner: true,
+      onOpenScanner: () => opened = true,
+    );
+    await tester.ensureVisible(find.text('Scanner'));
+    await tester.tap(find.text('Scanner'));
+    await tester.pump();
+    expect(opened, isTrue);
+  });
+
+  testWidgets('authDisabled -> Footer "Profil wechseln"', (tester) async {
+    await _pump(tester, user: _admin, authDisabled: true);
+    expect(find.text('Profil wechseln'), findsOneWidget);
+    expect(find.text('Abmelden'), findsNothing);
+  });
+
+  testWidgets('Abmelden ruft onSignOut', (tester) async {
+    var signedOut = false;
+    await _pump(tester, user: _admin, onSignOut: () => signedOut = true);
+
+    await tester.ensureVisible(find.text('Abmelden'));
+    await tester.tap(find.text('Abmelden'));
+    await tester.pump();
+    expect(signedOut, isTrue);
+  });
+
+  testWidgets('Tap Einstellungen ruft onOpenSettings', (tester) async {
+    var opened = false;
+    await _pump(tester, user: _admin, onOpenSettings: () => opened = true);
+
+    await tester.ensureVisible(find.text('Einstellungen'));
+    await tester.tap(find.text('Einstellungen'));
+    await tester.pump();
+    expect(opened, isTrue);
+  });
+
+  testWidgets('Tap Personal ruft onOpenPersonal', (tester) async {
+    var opened = false;
+    await _pump(tester, user: _admin, onOpenPersonal: () => opened = true);
+
+    await tester.ensureVisible(find.text('Personal'));
+    await tester.tap(find.text('Personal'));
+    await tester.pump();
+    expect(opened, isTrue);
+  });
+}

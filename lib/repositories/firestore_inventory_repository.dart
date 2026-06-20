@@ -3,6 +3,8 @@ import 'package:uuid/uuid.dart';
 
 import '../core/error_reporter.dart';
 import '../core/retry.dart';
+import '../models/customer_order.dart';
+import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
@@ -41,6 +43,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('stockMovements');
+
+  CollectionReference<Map<String, dynamic>> _customerOrderCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('customerOrders');
 
   // Bewusste Entscheidung (missing-orderby-updatedat-index-delta / full-read-no-
   // delta-sync): Lieferanten/Artikel werden als vollstaendiger, nach nameLower
@@ -141,6 +148,31 @@ class FirestoreInventoryRepository implements InventoryRepository {
     return _productCollection(orgId).doc(productId).delete();
   }
 
+  CollectionReference<Map<String, dynamic>> _priceHistoryCollection(
+    String orgId,
+    String productId,
+  ) =>
+      _productCollection(orgId).doc(productId).collection('priceHistory');
+
+  @override
+  Future<void> addPriceHistory(PriceHistoryEntry entry) {
+    return _priceHistoryCollection(entry.orgId, entry.productId)
+        .add(entry.toFirestoreMap());
+  }
+
+  @override
+  Future<List<PriceHistoryEntry>> fetchPriceHistory({
+    required String orgId,
+    required String productId,
+  }) async {
+    final snapshot = await _priceHistoryCollection(orgId, productId)
+        .orderBy('changedAt', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => PriceHistoryEntry.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
   @override
   Future<int> adjustProductStock({
     required String orgId,
@@ -227,6 +259,52 @@ class FirestoreInventoryRepository implements InventoryRepository {
     required String orderId,
   }) {
     return _purchaseOrderCollection(orgId).doc(orderId).delete();
+  }
+
+  // Kundenbestellungen werden – wie Lieferantenbestellungen – nach createdAt
+  // gelesen (immer gesetzt via serverTimestamp). Ein orderBy('pickupDate')
+  // wuerde Bestellungen ohne Abholtermin verlieren; die Sortierung nach Termin
+  // und das "bald faellig"-Filtern laufen clientseitig im Provider.
+  @override
+  Stream<List<CustomerOrder>> watchCustomerOrders(String orgId) {
+    return _customerOrderCollection(orgId)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => CustomerOrder.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<String> saveCustomerOrder(CustomerOrder order) async {
+    final collection = _customerOrderCollection(order.orgId);
+    final docRef =
+        order.id == null ? collection.doc() : collection.doc(order.id);
+    var prepared = order.copyWith(id: docRef.id);
+    if (order.id == null && order.orderNumber == null) {
+      prepared = prepared.copyWith(
+        orderNumber: await _allocateOrderNumber(
+          order.orgId,
+          counterId: 'customerOrders',
+          prefix: 'KB',
+        ),
+      );
+    }
+    await docRef.set({
+      ...prepared.toFirestoreMap(),
+      if (order.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    return docRef.id;
+  }
+
+  @override
+  Future<void> deleteCustomerOrder({
+    required String orgId,
+    required String orderId,
+  }) {
+    return _customerOrderCollection(orgId).doc(orderId).delete();
   }
 
   @override
@@ -363,9 +441,15 @@ class FirestoreInventoryRepository implements InventoryRepository {
 
   /// Reserviert die naechste fortlaufende Bestellnummer ueber einen
   /// Zaehler in einer Transaktion (garantiert eindeutig pro Organisation).
-  Future<String> _allocateOrderNumber(String orgId) async {
+  /// [counterId] waehlt den Zaehler-Dokument-Schluessel, [prefix] das Praefix
+  /// der Nummer (Lieferantenbestellung: BST, Kundenbestellung: KB).
+  Future<String> _allocateOrderNumber(
+    String orgId, {
+    String counterId = 'purchaseOrders',
+    String prefix = 'BST',
+  }) async {
     final counterRef =
-        _organizationDoc(orgId).collection('counters').doc('purchaseOrders');
+        _organizationDoc(orgId).collection('counters').doc(counterId);
     final now = DateTime.now();
     try {
       // Die Zaehler-Transaktion ist atomar und idempotent (committet
@@ -383,7 +467,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
           return next;
         }),
       );
-      return 'BST-${now.year}-${seq.toString().padLeft(4, '0')}';
+      return '$prefix-${now.year}-${seq.toString().padLeft(4, '0')}';
     } catch (error, stack) {
       // Zaehler dauerhaft nicht verfuegbar (z.B. eingeschraenkte Rechte oder
       // anhaltend transienter Fehler). Statt den Fehler still zu schlucken
@@ -397,7 +481,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
       final stamp =
           '${now.year}${_two(now.month)}${_two(now.day)}-${_two(now.hour)}${_two(now.minute)}';
       final suffix = _uuid.v4().substring(0, 4).toUpperCase();
-      return 'BST-$stamp-$suffix';
+      return '$prefix-$stamp-$suffix';
     }
   }
 

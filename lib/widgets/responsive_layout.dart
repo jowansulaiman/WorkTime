@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 /// Breakpoints for mobile-first responsive design.
@@ -25,6 +26,16 @@ abstract final class MobileBreakpoints {
 
   /// Rail mit allen Labels (statt nur ausgewaehltem) ab expanded (>= 840dp).
   static bool useExpandedRailLabels(double width) => width >= expandedWindow;
+
+  /// True nur auf echten Mobil-Plattformen (Android/iOS native), nicht auf Web,
+  /// Desktop-OS oder im Web-Browser. Fensterbreite ist hier bewusst NICHT Teil
+  /// der Definition — ein iPad-Split-View oder kleines Desktopfenster ist < 600px
+  /// breit, aber kein Handy. Fuer „nur Handy"-Sichtbarkeit zusaetzlich die Breite
+  /// gegen [mediumWindow] pruefen (siehe ScannerScreen-Einbindung).
+  static bool get isNativeMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   /// Returns true for screens narrower than [standard].
   static bool isCompact(BuildContext context) =>

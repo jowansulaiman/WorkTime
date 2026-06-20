@@ -284,6 +284,12 @@ service cloud.firestore {
       return isAdmin() || canManageShifts();
     }
 
+    // Kontakte verwalten: Admins und Schichtleiter (analog Warenwirtschaft) —
+    // spiegelt AppUserProfile.canManageContacts.
+    function canManageContacts() {
+      return isAdmin() || canManageShifts();
+    }
+
     function canReviewAbsenceRequestData(data) {
       return sameOrg(dataOrgId(data))
           && canManageShifts()
@@ -669,6 +675,34 @@ service cloud.firestore {
         allow delete: if isAdmin() && sameOrg(orgId);
       }
 
+      // --- Personal-Bereich (nur Admin) -----------------------------------
+
+      match /workTasks/{taskId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Lohndaten enthalten Verguetungsinformationen -> Lesen Admin-only.
+      match /payrollRecords/{recordId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Lohn-Stammdaten je Mitarbeiter (Steuerklasse/SV/Bundesland) -> Admin-only.
+      match /payrollProfiles/{userId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
       // --- Warenwirtschaft ------------------------------------------------
 
       match /suppliers/{supplierId} {
@@ -685,6 +719,33 @@ service cloud.firestore {
             && canManageInventory()
             && request.resource.data.orgId == orgId;
         allow delete: if sameOrg(orgId) && canManageInventory();
+
+        // Preis-Historie ist ein Audit-Log (wie stockMovements): anlegen ja,
+        // aendern/loeschen nein. Eigene Subcollection statt neuer
+        // StockMovementType, damit Bewegung (Menge) und Preis sauber getrennt
+        // bleiben. Feld-Allowlist gegen Mass Assignment (BOPLA).
+        match /priceHistory/{entryId} {
+          allow read: if sameOrg(orgId);
+          allow create: if sameOrg(orgId)
+              && canManageInventory()
+              && request.resource.data.orgId == orgId
+              && request.resource.data.keys().hasOnly([
+                   'orgId', 'productId', 'field', 'oldCents', 'newCents',
+                   'changedByUid', 'changedAt'
+                 ])
+              && request.resource.data.field in ['purchase', 'selling']
+              // oldCents/newCents sind nullable (int?) -> null/absent zulassen.
+              && (!('oldCents' in request.resource.data)
+                   || request.resource.data.oldCents == null
+                   || request.resource.data.oldCents is number)
+              && (!('newCents' in request.resource.data)
+                   || request.resource.data.newCents == null
+                   || request.resource.data.newCents is number)
+              && (!('changedByUid' in request.resource.data)
+                   || request.resource.data.changedByUid == null
+                   || request.resource.data.changedByUid == request.auth.uid);
+          allow update, delete: if false;
+        }
       }
 
       match /purchaseOrders/{orderId} {
@@ -693,6 +754,26 @@ service cloud.firestore {
             && canManageInventory()
             && request.resource.data.orgId == orgId;
         allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Kundenbestellungen (Sonderbestellungen) – wie Lieferantenbestellungen
+      // direkte Writes, gated ueber dieselbe Warenwirtschafts-Berechtigung.
+      match /customerOrders/{orderId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Kontakte (Kunden/Lieferanten/Partner/Behoerden) – direkte Writes,
+      // lesen alle aktiven Mitglieder, verwalten Admins + Schichtleiter.
+      match /contacts/{contactId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && canManageContacts()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageContacts();
       }
 
       // Bestandsbewegungen sind ein Audit-Log: anlegen ja, aendern/loeschen nein.

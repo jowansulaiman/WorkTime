@@ -3,6 +3,11 @@ import 'dart:typed_data';
 
 import 'package:intl/intl.dart';
 
+import '../core/personnel_cost.dart';
+import '../models/contact.dart';
+import '../models/customer_order.dart';
+import '../models/payroll_record.dart';
+import '../models/product.dart';
 import '../models/shift.dart';
 import '../models/user_settings.dart';
 import '../models/work_entry.dart';
@@ -120,6 +125,372 @@ class ExportService {
     }
 
     return buffer.toString();
+  }
+
+  // --- Kundenbestellungen --------------------------------------------------
+
+  static Future<void> exportCustomerOrdersPdf({
+    required List<CustomerOrder> orders,
+    String? siteLabel,
+  }) async {
+    final bytes = await PdfService.generateCustomerOrderReport(
+      orders: orders,
+      siteLabel: siteLabel,
+    );
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _customerOrderFileName('pdf'),
+      mimeType: 'application/pdf',
+    );
+  }
+
+  static Future<void> exportCustomerOrdersCsv({
+    required List<CustomerOrder> orders,
+    String? siteLabel,
+  }) async {
+    final csv = buildCustomerOrderCsv(orders: orders, siteLabel: siteLabel);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _customerOrderFileName('csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static String buildCustomerOrderCsv({
+    required List<CustomerOrder> orders,
+    String? siteLabel,
+  }) {
+    final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
+    final currencyFmt =
+        NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    final buffer = StringBuffer('﻿');
+
+    buffer.writeln('Kundenbestellungen Export');
+    if (siteLabel != null && siteLabel.trim().isNotEmpty) {
+      buffer.writeln('Laden;${_escapeCsv(siteLabel)}');
+    }
+    buffer.writeln();
+    buffer.writeln(
+      'Bestellnr.;Kunde;Kontakt;Laden;Abholtermin;Rhythmus;Status;Vorbereitet;Positionen;Summe;Notiz',
+    );
+
+    for (final order in orders) {
+      final positions = order.items
+          .map((item) => '${item.quantity}x ${item.name}')
+          .join(' | ');
+      buffer.writeln([
+        order.orderNumber ?? '',
+        order.customerName,
+        order.customerContact ?? '',
+        order.siteName ?? '',
+        order.pickupDate == null ? '' : dateFmt.format(order.pickupDate!),
+        order.recurrence.label,
+        order.status.label,
+        order.isPrepared ? 'Ja' : 'Nein',
+        positions,
+        order.hasPrices ? currencyFmt.format(order.totalCents / 100) : '',
+        order.notes ?? '',
+      ].map(_escapeCsv).join(';'));
+    }
+
+    return buffer.toString();
+  }
+
+  static String _customerOrderFileName(String extension) {
+    final stamp = DateFormat('yyyy-MM-dd', 'de_DE').format(DateTime.now());
+    return 'kundenbestellungen-$stamp.$extension';
+  }
+
+  // --- Warenwirtschaft: Bestand & Nachbestellung ---------------------------
+
+  static Future<void> exportStockListPdf({
+    required List<Product> products,
+    String? siteLabel,
+  }) async {
+    final bytes = await PdfService.generateStockListReport(
+      products: products,
+      siteLabel: siteLabel,
+    );
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _inventoryFileName('bestandsliste', 'pdf'),
+      mimeType: 'application/pdf',
+    );
+  }
+
+  static Future<void> exportStockListCsv({
+    required List<Product> products,
+    String? siteLabel,
+  }) async {
+    final csv = buildStockListCsv(products: products, siteLabel: siteLabel);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _inventoryFileName('bestandsliste', 'csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static Future<void> exportReorderListPdf({
+    required List<Product> products,
+    String? siteLabel,
+  }) async {
+    final bytes = await PdfService.generateReorderListReport(
+      products: products,
+      siteLabel: siteLabel,
+    );
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _inventoryFileName('nachbestellliste', 'pdf'),
+      mimeType: 'application/pdf',
+    );
+  }
+
+  static Future<void> exportReorderListCsv({
+    required List<Product> products,
+    String? siteLabel,
+  }) async {
+    final csv = buildReorderListCsv(products: products, siteLabel: siteLabel);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _inventoryFileName('nachbestellliste', 'csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static String buildStockListCsv({
+    required List<Product> products,
+    String? siteLabel,
+  }) {
+    final currencyFmt =
+        NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    final buffer = StringBuffer('﻿');
+    buffer.writeln('Bestandsliste Export');
+    if (siteLabel != null && siteLabel.trim().isNotEmpty) {
+      buffer.writeln('Laden;${_escapeCsv(siteLabel)}');
+    }
+    buffer.writeln();
+    buffer.writeln(
+      'Artikel;Warengruppe;Standort;Bestand;Einheit;Mindestbestand;Zielbestand;EK;VK;Warenwert',
+    );
+    final sorted = [...products]
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    for (final p in sorted) {
+      buffer.writeln([
+        p.name,
+        p.category ?? '',
+        p.siteName ?? '',
+        '${p.currentStock}',
+        p.unit,
+        p.minStock > 0 ? '${p.minStock}' : '',
+        p.targetStock > 0 ? '${p.targetStock}' : '',
+        p.purchasePriceCents == null
+            ? ''
+            : currencyFmt.format(p.purchasePriceCents! / 100),
+        p.sellingPriceCents == null
+            ? ''
+            : currencyFmt.format(p.sellingPriceCents! / 100),
+        p.stockValuePurchaseCents > 0
+            ? currencyFmt.format(p.stockValuePurchaseCents / 100)
+            : '',
+      ].map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
+  }
+
+  static String buildReorderListCsv({
+    required List<Product> products,
+    String? siteLabel,
+  }) {
+    final buffer = StringBuffer('﻿');
+    buffer.writeln('Nachbestell-Liste Export');
+    if (siteLabel != null && siteLabel.trim().isNotEmpty) {
+      buffer.writeln('Laden;${_escapeCsv(siteLabel)}');
+    }
+    buffer.writeln();
+    buffer.writeln(
+      'Artikel;Lieferant;Standort;Bestand;Einheit;Mindestbestand;Zielbestand;Vorschlag',
+    );
+    final sorted = [...products]
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    for (final p in sorted) {
+      buffer.writeln([
+        p.name,
+        p.supplierName ?? '',
+        p.siteName ?? '',
+        '${p.currentStock}',
+        p.unit,
+        '${p.minStock}',
+        p.targetStock > 0 ? '${p.targetStock}' : '',
+        '${p.suggestedReorderQuantity}',
+      ].map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
+  }
+
+  static String _inventoryFileName(String base, String extension) {
+    final stamp = DateFormat('yyyy-MM-dd', 'de_DE').format(DateTime.now());
+    return '$base-$stamp.$extension';
+  }
+
+  // --- Kontakte ------------------------------------------------------------
+
+  static Future<void> exportContactsPdf({
+    required List<Contact> contacts,
+    String? siteLabel,
+    String? filterLabel,
+  }) async {
+    final bytes = await PdfService.generateContactListReport(
+      contacts: contacts,
+      siteLabel: siteLabel,
+      filterLabel: filterLabel,
+    );
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _contactsFileName('pdf'),
+      mimeType: 'application/pdf',
+    );
+  }
+
+  static Future<void> exportContactsCsv({
+    required List<Contact> contacts,
+    String? filterLabel,
+  }) async {
+    final csv = buildContactsCsv(contacts: contacts, filterLabel: filterLabel);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _contactsFileName('csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static String buildContactsCsv({
+    required List<Contact> contacts,
+    String? filterLabel,
+  }) {
+    final buffer = StringBuffer('﻿');
+    final sorted = [...contacts]
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    buffer.writeln('Kontakte Export');
+    if (filterLabel != null && filterLabel.trim().isNotEmpty) {
+      buffer.writeln('Auswahl;${_escapeCsv(filterLabel)}');
+    }
+    buffer.writeln();
+    buffer.writeln(
+      'Name;Kategorie;Ansprechpartner;Telefon;Mobil;E-Mail;Website;Straße;PLZ;Ort;USt-IdNr.;Kunden-/Lief.-Nr.;Standort;Schlagworte;Wichtig;Aktiv;Notiz',
+    );
+
+    for (final contact in sorted) {
+      buffer.writeln([
+        contact.name,
+        contact.type.label,
+        contact.contactPerson ?? '',
+        contact.phone ?? '',
+        contact.mobile ?? '',
+        contact.email ?? '',
+        contact.website ?? '',
+        contact.street ?? '',
+        contact.postalCode ?? '',
+        contact.city ?? '',
+        contact.taxId ?? '',
+        contact.customerNumber ?? '',
+        contact.siteName ?? 'Allgemein',
+        contact.tags.join(', '),
+        contact.isFavorite ? 'Ja' : 'Nein',
+        contact.isActive ? 'Ja' : 'Nein',
+        contact.notes ?? '',
+      ].map(_escapeCsv).join(';'));
+    }
+
+    return buffer.toString();
+  }
+
+  static String _contactsFileName(String extension) {
+    final stamp = DateFormat('yyyy-MM-dd', 'de_DE').format(DateTime.now());
+    return 'kontakte-$stamp.$extension';
+  }
+
+  // --- Personal-Bereich: Lohnabrechnung & Personalkosten -------------------
+
+  static Future<void> exportPayrollPdf({
+    required PayrollRecord record,
+    required String employeeName,
+  }) async {
+    final bytes = await PdfService.generatePayrollReport(
+      record: record,
+      employeeName: employeeName,
+    );
+    final stamp =
+        '${record.periodYear}-${record.periodMonth.toString().padLeft(2, '0')}';
+    await downloadPdfBytes(
+      bytes: bytes,
+      fileName: 'lohnabrechnung-$stamp.pdf',
+    );
+  }
+
+  static Future<void> exportPersonnelCostPdf({
+    required List<PersonnelCostRow> rows,
+    required String rangeLabel,
+    required String title,
+  }) async {
+    final bytes = await PdfService.generatePersonnelCostReport(
+      rows: rows,
+      rangeLabel: rangeLabel,
+      title: title,
+    );
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _personnelCostFileName('pdf'),
+      mimeType: 'application/pdf',
+    );
+  }
+
+  static Future<void> exportPersonnelCostCsv({
+    required List<PersonnelCostRow> rows,
+    required String rangeLabel,
+    required String title,
+  }) async {
+    final csv =
+        buildPersonnelCostCsv(rows: rows, rangeLabel: rangeLabel, title: title);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _personnelCostFileName('csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static String buildPersonnelCostCsv({
+    required List<PersonnelCostRow> rows,
+    required String rangeLabel,
+    required String title,
+  }) {
+    final currencyFmt =
+        NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    final buffer = StringBuffer('﻿');
+
+    buffer.writeln('Personalkosten Export');
+    buffer.writeln('Auswertung;${_escapeCsv(title)}');
+    buffer.writeln('Zeitraum;${_escapeCsv(rangeLabel)}');
+    buffer.writeln();
+    buffer.writeln('Bezeichnung;Stunden;Personalkosten;AG-Gesamtkosten');
+
+    for (final row in rows) {
+      buffer.writeln([
+        row.label,
+        row.workedHours.toStringAsFixed(2),
+        currencyFmt.format(row.laborCostCents / 100),
+        row.employerTotalCents > 0
+            ? currencyFmt.format(row.employerTotalCents / 100)
+            : '',
+      ].map(_escapeCsv).join(';'));
+    }
+
+    return buffer.toString();
+  }
+
+  static String _personnelCostFileName(String extension) {
+    final stamp = DateFormat('yyyy-MM-dd', 'de_DE').format(DateTime.now());
+    return 'personalkosten-$stamp.$extension';
   }
 
   static String _shiftPlanFileName({

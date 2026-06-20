@@ -1,4 +1,6 @@
 import '../models/app_user.dart';
+import '../models/contact.dart';
+import '../models/customer_order.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
@@ -307,6 +309,212 @@ class LocalDemoData {
         unit: 'Stück',
         currentStock: 3,
         minStock: 5,
+        createdByUid: createdByUid,
+      ),
+    ];
+  }
+
+  /// Demo-Kundenbestellungen (Sonderbestellungen) fuer den lokalen Modus.
+  /// Eine Bestellung liegt bewusst ueberfaellig und unvorbereitet vor, damit die
+  /// "nicht vorbereitet"-Warnung (Liste, Dashboard, Benachrichtigungen) ohne
+  /// Firebase sichtbar ist.
+  static List<CustomerOrder> customerOrdersForOrg({
+    required String orgId,
+    required String createdByUid,
+  }) {
+    final berlin = berlinSiteId(orgId);
+    final hamburg = hamburgSiteId(orgId);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day, 12);
+    DateTime atNoon(int addDays) => today.add(Duration(days: addDays));
+
+    return [
+      // 1) Ueberfaellig + nicht vorbereitet -> Warnung.
+      CustomerOrder(
+        id: 'demo-customerOrder-$orgId-1',
+        orgId: orgId,
+        siteId: berlin,
+        siteName: 'Hauptstandort Berlin',
+        customerName: 'Herr Schmidt',
+        customerContact: '0151 2345678',
+        orderNumber: 'KB-${now.year}-0001',
+        status: CustomerOrderStatus.open,
+        recurrence: CustomerOrderRecurrence.weekly,
+        pickupDate: atNoon(-1),
+        notes: 'Holt jeden Freitag ab.',
+        createdByUid: createdByUid,
+        items: const [
+          CustomerOrderItem(
+            name: 'Pueblo Tabak 30g',
+            category: 'Drehtabak',
+            unit: 'Beutel',
+            quantity: 5,
+            unitPriceCents: 650,
+          ),
+          CustomerOrderItem(
+            name: 'OCB Slim Blättchen',
+            category: 'Raucherbedarf',
+            unit: 'Heft',
+            quantity: 3,
+            unitPriceCents: 90,
+          ),
+        ],
+      ),
+      // 2) Bald faellig (morgen) + nicht vorbereitet -> Warnung.
+      CustomerOrder(
+        id: 'demo-customerOrder-$orgId-2',
+        orgId: orgId,
+        siteId: hamburg,
+        siteName: 'Filiale Hamburg',
+        customerName: 'Frau Meier',
+        customerContact: 'meier@example.com',
+        orderNumber: 'KB-${now.year}-0002',
+        status: CustomerOrderStatus.open,
+        recurrence: CustomerOrderRecurrence.monthly,
+        pickupDate: atNoon(1),
+        createdByUid: createdByUid,
+        items: const [
+          CustomerOrderItem(
+            name: 'Zeitschrift Der Spiegel',
+            category: 'Presse',
+            unit: 'Stück',
+            quantity: 1,
+            unitPriceCents: 650,
+          ),
+        ],
+      ),
+      // 3) Vorbereitet, Abholung in drei Tagen -> keine Warnung.
+      CustomerOrder(
+        id: 'demo-customerOrder-$orgId-3',
+        orgId: orgId,
+        siteId: berlin,
+        siteName: 'Hauptstandort Berlin',
+        customerName: 'Café Sonnenschein',
+        customerContact: '0431 998877',
+        orderNumber: 'KB-${now.year}-0003',
+        status: CustomerOrderStatus.prepared,
+        recurrence: CustomerOrderRecurrence.none,
+        pickupDate: atNoon(3),
+        preparedAt: now,
+        createdByUid: createdByUid,
+        items: const [
+          CustomerOrderItem(
+            name: 'Marlboro Rot (Stange)',
+            category: 'Zigaretten',
+            unit: 'Stange',
+            quantity: 2,
+            unitPriceCents: 8500,
+          ),
+        ],
+      ),
+    ];
+  }
+
+  /// Demo-Kontakte fuer den lokalen Modus (Kunden, Lieferanten, Behoerden …).
+  static List<Contact> contactsForOrg({
+    required String orgId,
+    required String createdByUid,
+  }) {
+    final berlin = berlinSiteId(orgId);
+    final hamburg = hamburgSiteId(orgId);
+    return [
+      Contact(
+        id: 'demo-contact-$orgId-nordtabak',
+        orgId: orgId,
+        name: 'Nord-Tabak Großhandel GmbH',
+        type: ContactType.wholesaler,
+        contactPerson: 'Frau Petersen',
+        email: 'service@nord-tabak.de',
+        phone: '0431 1234560',
+        website: 'https://nord-tabak.de',
+        street: 'Eichhofstraße 12',
+        postalCode: '24116',
+        city: 'Kiel',
+        customerNumber: 'KD-44213',
+        notes: 'Hauptlieferant Tabakwaren, Lieferung Di + Fr.',
+        tags: const ['Tabak', 'Stammlieferant'],
+        isFavorite: true,
+        createdByUid: createdByUid,
+      ),
+      Contact(
+        id: 'demo-contact-$orgId-presse',
+        orgId: orgId,
+        name: 'Kieler Pressevertrieb',
+        type: ContactType.supplier,
+        contactPerson: 'Herr Brandt',
+        email: 'bestellung@kn-pressevertrieb.de',
+        phone: '0431 9988770',
+        street: 'Fleethörn 1',
+        postalCode: '24103',
+        city: 'Kiel',
+        notes: 'Zeitschriften & Zeitungen, Remission montags.',
+        tags: const ['Presse'],
+        createdByUid: createdByUid,
+      ),
+      Contact(
+        id: 'demo-contact-$orgId-getraenke',
+        orgId: orgId,
+        name: 'Förde Getränke Service',
+        type: ContactType.serviceProvider,
+        contactPerson: 'Frau Johannsen',
+        email: 'info@foerde-getraenke.de',
+        phone: '0431 556677',
+        mobile: '0170 5566778',
+        city: 'Kiel',
+        siteId: hamburg,
+        siteName: 'Filiale Hamburg',
+        notes: 'Kühlgeräte-Wartung und Getränkebelieferung.',
+        createdByUid: createdByUid,
+      ),
+      Contact(
+        id: 'demo-contact-$orgId-zoll',
+        orgId: orgId,
+        name: 'Hauptzollamt Kiel',
+        type: ContactType.authority,
+        email: 'poststelle.hza-kiel@zoll.bund.de',
+        phone: '0431 200840',
+        street: 'Am Sophienhof 11',
+        postalCode: '24114',
+        city: 'Kiel',
+        notes: 'Tabaksteuer / Steuerzeichen.',
+        tags: const ['Tabaksteuer'],
+        createdByUid: createdByUid,
+      ),
+      Contact(
+        id: 'demo-contact-$orgId-steuer',
+        orgId: orgId,
+        name: 'Steuerkanzlei Albrecht & Partner',
+        type: ContactType.taxAdvisor,
+        contactPerson: 'Herr Albrecht',
+        email: 'kanzlei@albrecht-stb.de',
+        phone: '0431 778899',
+        street: 'Holtenauer Straße 88',
+        postalCode: '24105',
+        city: 'Kiel',
+        isFavorite: true,
+        createdByUid: createdByUid,
+      ),
+      Contact(
+        id: 'demo-contact-$orgId-vermieter',
+        orgId: orgId,
+        name: 'Hausverwaltung Möller',
+        type: ContactType.landlord,
+        contactPerson: 'Frau Möller',
+        email: 'verwaltung@moeller-immobilien.de',
+        phone: '0431 445566',
+        siteId: berlin,
+        siteName: 'Hauptstandort Berlin',
+        notes: 'Mietobjekt Ladenfläche, Nebenkosten jährlich.',
+        createdByUid: createdByUid,
+      ),
+      Contact(
+        id: 'demo-contact-$orgId-stammkunde',
+        orgId: orgId,
+        name: 'Jörg Hansen',
+        type: ContactType.customer,
+        mobile: '0151 23456789',
+        notes: 'Stammkunde, Sonderbestellungen Zigarren.',
+        tags: const ['Stammkunde', 'Zigarren'],
         createdByUid: createdByUid,
       ),
     ];

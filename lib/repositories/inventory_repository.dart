@@ -1,3 +1,5 @@
+import '../models/customer_order.dart';
+import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
@@ -42,6 +44,16 @@ abstract interface class InventoryRepository {
     required String productId,
   });
 
+  /// Schreibt einen unveraenderlichen Preis-Historie-Eintrag in die
+  /// Subcollection des Artikels (`products/{productId}/priceHistory`).
+  Future<void> addPriceHistory(PriceHistoryEntry entry);
+
+  /// Liest die Preis-Historie eines Artikels (neueste zuerst).
+  Future<List<PriceHistoryEntry>> fetchPriceHistory({
+    required String orgId,
+    required String productId,
+  });
+
   /// Bucht eine Bestandsaenderung atomar und gibt den neuen Bestand zurueck.
   Future<int> adjustProductStock({
     required String orgId,
@@ -57,6 +69,17 @@ abstract interface class InventoryRepository {
   Future<String> savePurchaseOrder(PurchaseOrder order);
 
   Future<void> deletePurchaseOrder({
+    required String orgId,
+    required String orderId,
+  });
+
+  Stream<List<CustomerOrder>> watchCustomerOrders(String orgId);
+
+  /// Speichert eine Kundenbestellung (Anlage oder Update) und gibt deren Id
+  /// zurueck. Vergibt bei neuen Bestellungen eine Bestellnummer.
+  Future<String> saveCustomerOrder(CustomerOrder order);
+
+  Future<void> deleteCustomerOrder({
     required String orgId,
     required String orderId,
   });

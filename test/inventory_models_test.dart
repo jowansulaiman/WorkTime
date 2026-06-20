@@ -62,6 +62,7 @@ void main() {
         sellingPriceCents: 99,
         currentStock: 12,
         minStock: 10,
+        targetStock: 40,
         reorderQuantity: 50,
       );
 
@@ -72,6 +73,7 @@ void main() {
       expect(restored.purchasePriceCents, 45);
       expect(restored.currentStock, 12);
       expect(restored.minStock, 10);
+      expect(restored.targetStock, 40);
       expect(restored.reorderQuantity, 50);
     });
 
@@ -111,6 +113,50 @@ void main() {
       expect(explicit.suggestedReorderQuantity, 30);
       // target = 2 * minStock (20), delta = 20 - 4 = 16
       expect(derived.suggestedReorderQuantity, 16);
+    });
+
+    test('suggestedReorderQuantity nutzt den Zielbestand vor minStock*2', () {
+      const withTarget = Product(
+        orgId: 'o',
+        siteId: 's',
+        name: 'x',
+        currentStock: 5,
+        minStock: 5,
+        targetStock: 20,
+      );
+      // Zielbestand 20 - Bestand 5 = 15 (statt minStock*2 - 5 = 5).
+      expect(withTarget.suggestedReorderQuantity, 15);
+
+      // Explizite Bestellmenge schlaegt den Zielbestand.
+      expect(
+        withTarget.copyWith(reorderQuantity: 8).suggestedReorderQuantity,
+        8,
+      );
+      // Bereits ueber Zielbestand -> Mindestmenge 1.
+      expect(
+        withTarget.copyWith(currentStock: 25).suggestedReorderQuantity,
+        1,
+      );
+    });
+
+    test('Marge und Warenwert je Artikel', () {
+      const p = Product(
+        orgId: 'o',
+        siteId: 's',
+        name: 'x',
+        purchasePriceCents: 100,
+        sellingPriceCents: 150,
+        currentStock: 4,
+      );
+      expect(p.marginCents, 50);
+      expect(p.marginPercent, closeTo(50, 0.001));
+      expect(p.stockValuePurchaseCents, 400); // 4 * 100
+      expect(p.stockValueSellingCents, 600); // 4 * 150
+
+      // Ohne Preis -> kein Wert, keine Marge.
+      const noPrice = Product(orgId: 'o', siteId: 's', name: 'y', currentStock: 3);
+      expect(noPrice.marginCents, isNull);
+      expect(noPrice.stockValuePurchaseCents, 0);
     });
   });
 

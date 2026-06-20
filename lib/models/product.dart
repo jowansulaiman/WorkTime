@@ -25,6 +25,7 @@ class Product {
     this.sellingPriceCents,
     this.currentStock = 0,
     this.minStock = 0,
+    this.targetStock = 0,
     this.reorderQuantity,
     this.isActive = true,
     this.createdByUid,
@@ -70,6 +71,9 @@ class Product {
   /// Meldebestand: bei Erreichen sollte nachbestellt werden.
   final int minStock;
 
+  /// Zielbestand: gewuenschter Bestand nach einer Nachbestellung (0 = ungesetzt).
+  final int targetStock;
+
   /// Vorgeschlagene Bestellmenge.
   final int? reorderQuantity;
   final bool isActive;
@@ -83,19 +87,42 @@ class Product {
   /// Bestand ist 0 oder negativ.
   bool get isOutOfStock => currentStock <= 0;
 
-  /// Vorgeschlagene Nachbestellmenge: explizit gesetzt, sonst Differenz bis
-  /// zum doppelten Meldebestand (Mindestmenge 1).
+  /// Vorgeschlagene Nachbestellmenge: explizit gesetzte [reorderQuantity] hat
+  /// Vorrang, sonst die Differenz bis zum [targetStock] (Zielbestand) bzw. – wenn
+  /// kein Zielbestand gesetzt ist – bis zum doppelten Meldebestand (Mindestmenge 1).
   int get suggestedReorderQuantity {
     if (reorderQuantity != null && reorderQuantity! > 0) {
       return reorderQuantity!;
     }
-    if (minStock <= 0) {
+    final target = targetStock > 0 ? targetStock : minStock * 2;
+    if (target <= 0) {
       return 1;
     }
-    final target = minStock * 2;
     final delta = target - currentStock;
     return delta > 0 ? delta : 1;
   }
+
+  /// Spanne (Marge) je Stueck in Cent, falls Ein- und Verkaufspreis gesetzt sind.
+  int? get marginCents =>
+      (sellingPriceCents != null && purchasePriceCents != null)
+          ? sellingPriceCents! - purchasePriceCents!
+          : null;
+
+  /// Marge in Prozent des Einkaufspreises, falls berechenbar.
+  double? get marginPercent => (purchasePriceCents != null &&
+          purchasePriceCents! > 0 &&
+          sellingPriceCents != null)
+      ? (sellingPriceCents! - purchasePriceCents!) / purchasePriceCents! * 100
+      : null;
+
+  /// Warenwert dieses Artikels zum Einkaufspreis (Bestand × EK), 0 ohne Preis
+  /// oder bei Negativbestand.
+  int get stockValuePurchaseCents =>
+      (purchasePriceCents ?? 0) * (currentStock > 0 ? currentStock : 0);
+
+  /// Warenwert dieses Artikels zum Verkaufspreis (Bestand × VK), 0 ohne Preis.
+  int get stockValueSellingCents =>
+      (sellingPriceCents ?? 0) * (currentStock > 0 ? currentStock : 0);
 
   factory Product.fromFirestore(String id, Map<String, dynamic> map) {
     return Product(
@@ -116,6 +143,7 @@ class Product {
       sellingPriceCents: parse.toInt(map['sellingPriceCents']),
       currentStock: parse.toInt(map['currentStock']) ?? 0,
       minStock: parse.toInt(map['minStock']) ?? 0,
+      targetStock: parse.toInt(map['targetStock']) ?? 0,
       reorderQuantity: parse.toInt(map['reorderQuantity']),
       isActive: parse.toBool(map['isActive']) ?? true,
       createdByUid: map['createdByUid'] as String?,
@@ -143,6 +171,7 @@ class Product {
       sellingPriceCents: parse.toInt(map['selling_price_cents']),
       currentStock: parse.toInt(map['current_stock']) ?? 0,
       minStock: parse.toInt(map['min_stock']) ?? 0,
+      targetStock: parse.toInt(map['target_stock']) ?? 0,
       reorderQuantity: parse.toInt(map['reorder_quantity']),
       isActive: parse.toBool(map['is_active']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
@@ -168,6 +197,7 @@ class Product {
       'sellingPriceCents': sellingPriceCents,
       'currentStock': currentStock,
       'minStock': minStock,
+      'targetStock': targetStock,
       'reorderQuantity': reorderQuantity,
       'isActive': isActive,
       'createdByUid': createdByUid,
@@ -192,6 +222,7 @@ class Product {
       'selling_price_cents': sellingPriceCents,
       'current_stock': currentStock,
       'min_stock': minStock,
+      'target_stock': targetStock,
       'reorder_quantity': reorderQuantity,
       'is_active': isActive,
       'created_by_uid': createdByUid,
@@ -216,6 +247,7 @@ class Product {
     int? sellingPriceCents,
     int? currentStock,
     int? minStock,
+    int? targetStock,
     int? reorderQuantity,
     bool? isActive,
     bool clearSiteName = false,
@@ -250,6 +282,7 @@ class Product {
           : (sellingPriceCents ?? this.sellingPriceCents),
       currentStock: currentStock ?? this.currentStock,
       minStock: minStock ?? this.minStock,
+      targetStock: targetStock ?? this.targetStock,
       reorderQuantity: clearReorderQuantity
           ? null
           : (reorderQuantity ?? this.reorderQuantity),

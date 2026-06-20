@@ -44,5 +44,11 @@
     <false/>
     <key>NSCalendarsUsageDescription</key>
     <string>Diese App benötigt Zugriff auf den Kalender</string>
+    <key>NSCameraUsageDescription</key>
+    <string>WorkTime nutzt die Kamera zum Scannen von Artikel-Barcodes (EAN).</string>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
 </dict>
 </plist>
