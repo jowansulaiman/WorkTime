@@ -34,23 +34,45 @@ class AppHeroCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final background = switch (tone) {
-      AppHeroTone.neutral => colorScheme.surfaceContainerLow,
-      AppHeroTone.accent =>
-        colorScheme.secondaryContainer.withValues(alpha: 0.72),
+    // Tonaler Teal-Gradient als markanter Fokuspunkt (M3 Expressive). Text bleibt
+    // dunkel/lesbar (helle Container-Toene). Weicher Akzent-Schatten gibt Tiefe.
+    final gradient = switch (tone) {
+      AppHeroTone.neutral => LinearGradient(
+          colors: [
+            colorScheme.primaryContainer.withValues(alpha: 0.55),
+            colorScheme.surfaceContainerLow,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      AppHeroTone.accent => LinearGradient(
+          colors: [
+            colorScheme.secondaryContainer,
+            colorScheme.primaryContainer.withValues(alpha: 0.6),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
     };
 
     return Container(
       clipBehavior: clipBehavior,
       decoration: BoxDecoration(
-        color: background,
+        gradient: gradient,
         borderRadius: BorderRadius.circular(context.radii.xxl),
         border: Border.all(
-          color: colorScheme.outlineVariant.withValues(alpha: 0.7),
+          color: colorScheme.primary.withValues(alpha: 0.12),
         ),
+        boxShadow: [
+          BoxShadow(
+            color: colorScheme.primary.withValues(alpha: 0.10),
+            blurRadius: 28,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
       child: Padding(
-        padding: padding ?? EdgeInsets.all(context.spacing.lg),
+        padding: padding ?? EdgeInsets.all(context.spacing.lg + context.spacing.xs),
         child: child,
       ),
     );

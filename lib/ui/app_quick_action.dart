@@ -25,64 +25,53 @@ class AppQuickActionCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final spacing = context.spacing;
-    final radius = BorderRadius.circular(context.radii.xl);
 
-    return InkWell(
+    // Solide Teal-getoente Kachel auf AppCard (Schatten + Radius) — klarer
+    // Kachel-Rand und konsistente Tiefe mit den uebrigen Karten.
+    return AppCard(
       onTap: onTap,
-      borderRadius: radius,
-      child: Ink(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [colorScheme.surface, colorScheme.surfaceContainerLow],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+      color: Color.alphaBlend(
+        colorScheme.primaryContainer.withValues(alpha: 0.30),
+        colorScheme.surfaceContainerLowest,
+      ),
+      padding: EdgeInsets.all(spacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: EdgeInsets.all(spacing.sm + spacing.xxs),
+            decoration: BoxDecoration(
+              color: colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(context.radii.md),
+            ),
+            child: Icon(icon, color: colorScheme.onPrimaryContainer),
           ),
-          borderRadius: radius,
-          border: Border.all(
-            color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-          ),
-        ),
-        child: Padding(
-          padding: EdgeInsets.all(spacing.md),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          SizedBox(height: spacing.md + spacing.xxs),
+          Row(
             children: [
-              Container(
-                padding: EdgeInsets.all(spacing.sm + spacing.xxs),
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withValues(alpha: 0.8),
-                  borderRadius: BorderRadius.circular(context.radii.md),
-                ),
-                child: Icon(icon, color: colorScheme.primary),
-              ),
-              SizedBox(height: spacing.md + spacing.xxs),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
+              Expanded(
+                child: Text(
+                  title,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
                   ),
-                  Icon(
-                    Icons.arrow_forward_rounded,
-                    color: colorScheme.onSurfaceVariant,
-                    size: context.iconSizes.sm,
-                  ),
-                ],
-              ),
-              SizedBox(height: spacing.sm + spacing.xs),
-              Text(
-                subtitle,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
                 ),
+              ),
+              Icon(
+                Icons.arrow_forward_rounded,
+                color: colorScheme.onSurfaceVariant,
+                size: context.iconSizes.sm,
               ),
             ],
           ),
-        ),
+          SizedBox(height: spacing.sm + spacing.xs),
+          Text(
+            subtitle,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }

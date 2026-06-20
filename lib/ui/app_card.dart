@@ -35,7 +35,7 @@ class AppCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pad = padding ?? EdgeInsets.all(context.spacing.md);
+    final pad = padding ?? EdgeInsets.all(context.spacing.md + context.spacing.xs);
     Widget content = Padding(padding: pad, child: child);
 
     if (onTap != null) {
@@ -48,6 +48,10 @@ class AppCard extends StatelessWidget {
 
     return Card(
       color: color,
+      // Weicher Schatten fuer dezente Tiefe (modern). In hellem Theme sichtbar,
+      // im dunklen praktisch unsichtbar (dort tragen Border/Container-Kontrast).
+      elevation: 1,
+      shadowColor: Theme.of(context).colorScheme.shadow.withValues(alpha: 0.5),
       clipBehavior: onTap != null ? Clip.antiAlias : Clip.none,
       child: content,
     );
