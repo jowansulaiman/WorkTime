@@ -6,6 +6,7 @@ import 'package:table_calendar/table_calendar.dart';
 
 import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
+import '../core/redesign_flags.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/employee_site_assignment.dart';
@@ -18,8 +19,13 @@ import '../providers/storage_mode_provider.dart';
 import '../providers/team_provider.dart';
 import '../providers/work_provider.dart';
 import '../theme/app_theme.dart';
+import '../ui/app_hero_card.dart';
+import '../ui/app_quick_action.dart';
+import '../ui/app_section_card.dart';
+import '../ui/app_stat_cards.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/empty_state.dart';
 import '../widgets/info_chip.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/section_card.dart';
@@ -35,6 +41,7 @@ import 'team_management_screen.dart';
 
 part 'home_screen_helpers.dart';
 part 'home_screen_tabs.dart';
+part 'home_dashboards_v2.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -76,7 +83,8 @@ class _HomeScreenState extends State<HomeScreen> {
             (storage) => storage.location,
           );
     final canManageShifts = currentUser?.canManageShifts ?? false;
-    final destinations = _buildDestinations(currentUser);
+    final useV2 = RedesignFlags.isOn(context);
+    final destinations = _buildDestinations(currentUser, useV2: useV2);
     final selectedIndex = _navIndex.clamp(0, destinations.length - 1);
     final currentDestination = destinations[selectedIndex];
     final railDestinations = destinations
@@ -724,7 +732,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  List<_ShellDestination> _buildDestinations(AppUserProfile? user) {
+  List<_ShellDestination> _buildDestinations(
+    AppUserProfile? user, {
+    bool useV2 = false,
+  }) {
     final canNavigateBack = _navHistory.isNotEmpty;
     final canManageShifts = user?.canManageShifts ?? false;
     final canViewSchedule = user?.canViewSchedule ?? false;
@@ -742,10 +753,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 canNavigateBack: canNavigateBack,
                 onNavigateBack: _handleShellBackPressed,
               )
-            : _EmployeeDashboardTab(
-                canNavigateBack: canNavigateBack,
-                onNavigateBack: _handleShellBackPressed,
-              ),
+            : useV2
+                ? _EmployeeDashboardTabV2(
+                    canNavigateBack: canNavigateBack,
+                    onNavigateBack: _handleShellBackPressed,
+                  )
+                : _EmployeeDashboardTab(
+                    canNavigateBack: canNavigateBack,
+                    onNavigateBack: _handleShellBackPressed,
+                  ),
         showFab: true,
       ),
       if (canViewSchedule)
