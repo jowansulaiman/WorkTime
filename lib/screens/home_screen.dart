@@ -747,12 +747,19 @@ class _HomeScreenState extends State<HomeScreen> {
         icon: Icons.home_outlined,
         selectedIcon: Icons.home,
         child: canManageShifts
-            ? _AdminDashboardTab(
-                onOpenPlan: _openPlanDestination,
-                onOpenPlanForDate: _openPlanDestinationForDate,
-                canNavigateBack: canNavigateBack,
-                onNavigateBack: _handleShellBackPressed,
-              )
+            ? (useV2
+                ? _AdminDashboardTabV2(
+                    onOpenPlan: _openPlanDestination,
+                    onOpenPlanForDate: _openPlanDestinationForDate,
+                    canNavigateBack: canNavigateBack,
+                    onNavigateBack: _handleShellBackPressed,
+                  )
+                : _AdminDashboardTab(
+                    onOpenPlan: _openPlanDestination,
+                    onOpenPlanForDate: _openPlanDestinationForDate,
+                    canNavigateBack: canNavigateBack,
+                    onNavigateBack: _handleShellBackPressed,
+                  ))
             : useV2
                 ? _EmployeeDashboardTabV2(
                     canNavigateBack: canNavigateBack,

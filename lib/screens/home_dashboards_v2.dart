@@ -563,3 +563,291 @@ class _SummaryCardsV2 extends StatelessWidget {
     );
   }
 }
+
+class _AdminDashboardTabV2 extends StatelessWidget {
+  const _AdminDashboardTabV2({
+    required this.onOpenPlan,
+    required this.onOpenPlanForDate,
+    required this.canNavigateBack,
+    this.onNavigateBack,
+  });
+
+  final Future<void> Function() onOpenPlan;
+  final Future<void> Function(DateTime focusDate) onOpenPlanForDate;
+  final bool canNavigateBack;
+  final VoidCallback? onNavigateBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUser = context.watch<AuthProvider>().profile;
+    final team = context.watch<TeamProvider>();
+    final schedule = context.watch<ScheduleProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
+    final spacing = context.spacing;
+    final activeMembers =
+        team.members.where((member) => member.isActive).length;
+    final pendingAbsences = schedule.allAbsenceRequests
+        .where((request) => request.status == AbsenceStatus.pending)
+        .toList(growable: false);
+    final pendingSwapRequests = schedule.shifts
+        .where((shift) => shift.swapStatus == 'pending')
+        .toList(growable: false);
+    final upcomingShifts = [...schedule.shifts]
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+    final todayStart = DateTime(
+      DateTime.now().year,
+      DateTime.now().month,
+      DateTime.now().day,
+    );
+    final todayEnd = todayStart.add(const Duration(days: 1));
+    final todayShifts = schedule.shifts.where((shift) {
+      return !shift.startTime.isBefore(todayStart) &&
+          shift.startTime.isBefore(todayEnd);
+    }).toList(growable: false)
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+    final unassignedToday = todayShifts.where((shift) => shift.isUnassigned);
+    final completedToday = todayShifts
+        .where((shift) => shift.status == ShiftStatus.completed)
+        .length;
+    final openToday = todayShifts
+        .where((shift) =>
+            shift.status != ShiftStatus.completed &&
+            shift.status != ShiftStatus.cancelled &&
+            !shift.isUnassigned)
+        .length;
+    final todaySites = todayShifts
+        .map((shift) => shift.effectiveSiteLabel)
+        .whereType<String>();
+
+    final screenPad = MobileBreakpoints.screenPadding(context);
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1160),
+          child: ListView(
+            padding: EdgeInsets.symmetric(
+              horizontal: screenPad.horizontal / 2,
+              vertical: spacing.md,
+            ),
+            children: [
+              SectionHeader(
+                title: 'Heute',
+                subtitle:
+                    'Filialbetrieb, Ausnahmen und Entscheidungen fuer den laufenden Tag.',
+                breadcrumbs: const [BreadcrumbItem(label: 'Heute')],
+                onBack: canNavigateBack ? onNavigateBack : null,
+              ),
+              SizedBox(height: spacing.lg),
+              _PlannerHeroCardV2(
+                activeMembers: activeMembers,
+                todayShiftCount: todayShifts.length,
+                pendingAbsenceCount: pendingAbsences.length,
+                pendingSwapCount: pendingSwapRequests.length,
+                siteCount: todaySites.toSet().length,
+              ),
+              SizedBox(height: spacing.md),
+              AdaptiveCardGrid(
+                minItemWidth: 180,
+                children: [
+                  AppQuickActionCard(
+                    icon: Icons.view_timeline_outlined,
+                    title: 'Plan oeffnen',
+                    subtitle: 'Direkt in die mobile Tagesplanung springen',
+                    onTap: onOpenPlan,
+                  ),
+                  if (currentUser?.isAdmin ?? false)
+                    AppQuickActionCard(
+                      icon: Icons.groups_outlined,
+                      title: 'Team verwalten',
+                      subtitle: 'Standorte, Rollen und Qualifikationen pflegen',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const TeamManagementScreen(
+                            parentLabel: 'Heute',
+                          ),
+                        ),
+                      ),
+                    ),
+                  AppQuickActionCard(
+                    icon: Icons.inbox_outlined,
+                    title: 'Anfragen pruefen',
+                    subtitle:
+                        'Krankmeldungen und Tausch ohne Umwege entscheiden',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const NotificationScreen(
+                          parentLabel: 'Heute',
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: spacing.md),
+              AdaptiveCardGrid(
+                minItemWidth: 155,
+                children: [
+                  AppMetricCard(
+                    label: 'Aktive Mitarbeiter',
+                    value: '$activeMembers',
+                    icon: Icons.people_alt_outlined,
+                  ),
+                  AppMetricCard(
+                    label: 'Offene Einladungen',
+                    value: '${team.invites.length}',
+                    icon: Icons.mark_email_unread_outlined,
+                  ),
+                  AppMetricCard(
+                    label: 'Schichten heute',
+                    value: '${todayShifts.length}',
+                    icon: Icons.view_timeline_outlined,
+                  ),
+                  AppMetricCard(
+                    label: 'Erledigt',
+                    value: '$completedToday / ${todayShifts.length}',
+                    icon: Icons.check_circle_outline,
+                  ),
+                  AppMetricCard(
+                    label: 'Noch offen',
+                    value: '$openToday',
+                    icon: Icons.pending_actions_outlined,
+                  ),
+                  AppMetricCard(
+                    label: 'Offene Abwesenheiten',
+                    value: '${pendingAbsences.length}',
+                    icon: Icons.event_note_outlined,
+                  ),
+                ],
+              ),
+              SizedBox(height: spacing.lg),
+              AppSectionCard(
+                title: 'Heute priorisieren',
+                child: Column(
+                  children: [
+                    _ActionStateTile(
+                      icon: Icons.warning_amber_rounded,
+                      title:
+                          '${pendingAbsences.length + pendingSwapRequests.length} Entscheidungen offen',
+                      subtitle:
+                          'Abwesenheiten und Tauschanfragen sollten vor der naechsten Schicht geklaert werden.',
+                      color: colorScheme.tertiary,
+                    ),
+                    const Divider(height: 20),
+                    _ActionStateTile(
+                      icon: Icons.person_off_outlined,
+                      title:
+                          '${unassignedToday.length} freie oder unbesetzte Schichten',
+                      subtitle:
+                          'Nicht zugewiesene Dienste fallen im Tagesbetrieb sofort auf.',
+                      color: colorScheme.error,
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: spacing.lg),
+              AppSectionCard(
+                title: 'Naechste Schichten',
+                child: upcomingShifts.isEmpty
+                    ? const EmptyState(
+                        icon: Icons.event_busy_outlined,
+                        message: 'Keine Schichten im aktuellen Planungsfenster.',
+                      )
+                    : Column(
+                        children: upcomingShifts.take(8).map((shift) {
+                          return _ShiftPreviewTile(
+                            shift: shift,
+                            onTap: () => _showShiftDetailsSheet(
+                              context,
+                              shift: shift,
+                              isPlanner: true,
+                              onOpenPlanForDate: onOpenPlanForDate,
+                            ),
+                          );
+                        }).toList(),
+                      ),
+              ),
+              SizedBox(height: spacing.lg),
+              AppSectionCard(
+                title: 'Naechste Entscheidungen',
+                child: _ManagerDecisionList(
+                  pendingAbsences: pendingAbsences,
+                  pendingSwapRequests: pendingSwapRequests,
+                ),
+              ),
+              SizedBox(height: spacing.lg),
+              _TeamCalendarWidget(
+                members: team.members.where((m) => m.isActive).toList(),
+                shifts: schedule.shifts,
+                absences: schedule.absenceRequests,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// V2-Hero des Admin-Dashboards (Akzent-Tonalitaet), gleiche Kennzahl-Texte wie
+/// [_PlannerHeroCard].
+class _PlannerHeroCardV2 extends StatelessWidget {
+  const _PlannerHeroCardV2({
+    required this.activeMembers,
+    required this.todayShiftCount,
+    required this.pendingAbsenceCount,
+    required this.pendingSwapCount,
+    required this.siteCount,
+  });
+
+  final int activeMembers;
+  final int todayShiftCount;
+  final int pendingAbsenceCount;
+  final int pendingSwapCount;
+  final int siteCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    return AppHeroCard(
+      tone: AppHeroTone.accent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Filialbetrieb im Blick',
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          SizedBox(height: spacing.sm),
+          Text(
+            '$todayShiftCount Schichten heute in $siteCount Standorten. '
+            '$pendingAbsenceCount Abwesenheiten und $pendingSwapCount Tausch-Anfragen brauchen Aufmerksamkeit.',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          SizedBox(height: spacing.md - spacing.xxs),
+          Wrap(
+            spacing: spacing.sm + spacing.xxs,
+            runSpacing: spacing.sm + spacing.xxs,
+            children: [
+              InfoChip(
+                icon: Icons.people_alt_outlined,
+                label: '$activeMembers aktiv',
+              ),
+              InfoChip(
+                icon: Icons.event_note_outlined,
+                label: '$pendingAbsenceCount offen',
+              ),
+              InfoChip(icon: Icons.swap_horiz, label: '$pendingSwapCount Tausch'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
