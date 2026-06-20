@@ -37,6 +37,17 @@ class AppConfig {
     defaultValue: 0,
   );
 
+  /// Dev-/Test-Override fuer das Signal-Teal-Redesign (Flag `redesign_v2`).
+  /// Erlaubt, die V2-Optik offline bzw. im APP_DISABLE_AUTH-Demo-Modus zu
+  /// testen, wo es keine Remote-Config gibt
+  /// (`flutter run --dart-define=APP_REDESIGN_V2=true`). Produktiv steuert das
+  /// org-seitige Flag ueber den FeatureFlagProvider; dieser Override gewinnt
+  /// immer (Aufloesung in RedesignFlags).
+  static const bool redesignV2Override = bool.fromEnvironment(
+    'APP_REDESIGN_V2',
+    defaultValue: false,
+  );
+
   static List<String> get bootstrapAdminEmailList => bootstrapAdminEmails
       .split(',')
       .map((value) => value.trim().toLowerCase())
