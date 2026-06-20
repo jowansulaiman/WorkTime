@@ -37,11 +37,17 @@ void main() {
       expect(AppTheme.darkV2.colorScheme.surfaceTint, Colors.transparent);
     });
 
-    test('Alle V2-TextTheme-Styles nutzen NotoSans (Web-CanvasKit-Schutz)', () {
-      // Regression-Guard: Die per-Style-Overrides muessen vom ANGEWANDTEN
-      // TextTheme ableiten, sonst tragen sie die Plattform-Font (Roboto/Apple
-      // CupertinoSystemText) — auf Web-CanvasKit unsichtbar (no-system-font).
-      for (final theme in [AppTheme.lightV2, AppTheme.darkV2]) {
+    test('Alle TextTheme-Styles nutzen NotoSans (Web-CanvasKit-Schutz)', () {
+      // Regression-Guard fuer V1 UND V2: Die per-Style-Overrides muessen vom
+      // ANGEWANDTEN TextTheme ableiten, sonst tragen sie die Plattform-Font
+      // (Roboto / Apple CupertinoSystemText) — auf Web-CanvasKit unsichtbar
+      // (no-system-font).
+      for (final theme in [
+        AppTheme.light,
+        AppTheme.dark,
+        AppTheme.lightV2,
+        AppTheme.darkV2,
+      ]) {
         final tt = theme.textTheme;
         final styles = <String, TextStyle?>{
           'displaySmall': tt.displaySmall,

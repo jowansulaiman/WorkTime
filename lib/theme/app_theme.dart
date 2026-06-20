@@ -36,43 +36,46 @@ abstract final class AppTheme {
     final borderColor = colorScheme.outlineVariant.withValues(alpha: 0.7);
     final typography = Typography.material2021(platform: defaultTargetPlatform);
     final baseTextTheme = isDark ? typography.white : typography.black;
-    final textTheme = baseTextTheme
-        .apply(
-          fontFamily: 'NotoSans',
-          bodyColor: colorScheme.onSurface,
-          displayColor: colorScheme.onSurface,
-        )
-        .copyWith(
-          displaySmall: baseTextTheme.displaySmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.8,
-          ),
-          headlineMedium: baseTextTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.6,
-          ),
-          headlineSmall: baseTextTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.4,
-          ),
-          titleLarge: baseTextTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.2,
-          ),
-          titleMedium: baseTextTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-          titleSmall: baseTextTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-          labelLarge: baseTextTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-          ),
-          bodyLarge: baseTextTheme.bodyLarge?.copyWith(height: 1.45),
-          bodyMedium: baseTextTheme.bodyMedium?.copyWith(height: 1.4),
-          bodySmall: baseTextTheme.bodySmall?.copyWith(height: 1.35),
-        );
+    // Erst NotoSans (+ Farben) anwenden, DANN die per-Style-Overrides vom
+    // angewandten TextTheme ableiten. Sonst tragen die Overrides wieder die
+    // Plattform-Font (Roboto / auf Apple CupertinoSystemText) statt NotoSans —
+    // auf Web-CanvasKit (keine System-Fonts) wird der Text dann unsichtbar.
+    final appliedTextTheme = baseTextTheme.apply(
+      fontFamily: 'NotoSans',
+      bodyColor: colorScheme.onSurface,
+      displayColor: colorScheme.onSurface,
+    );
+    final textTheme = appliedTextTheme.copyWith(
+      displaySmall: appliedTextTheme.displaySmall?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.8,
+      ),
+      headlineMedium: appliedTextTheme.headlineMedium?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.6,
+      ),
+      headlineSmall: appliedTextTheme.headlineSmall?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.4,
+      ),
+      titleLarge: appliedTextTheme.titleLarge?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.2,
+      ),
+      titleMedium: appliedTextTheme.titleMedium?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+      titleSmall: appliedTextTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+      labelLarge: appliedTextTheme.labelLarge?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.2,
+      ),
+      bodyLarge: appliedTextTheme.bodyLarge?.copyWith(height: 1.45),
+      bodyMedium: appliedTextTheme.bodyMedium?.copyWith(height: 1.4),
+      bodySmall: appliedTextTheme.bodySmall?.copyWith(height: 1.35),
+    );
 
     return ThemeData(
       brightness: brightness,
