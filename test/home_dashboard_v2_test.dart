@@ -11,6 +11,7 @@ import 'package:worktime_app/providers/feature_flag_provider.dart';
 import 'package:worktime_app/providers/schedule_provider.dart';
 import 'package:worktime_app/providers/storage_mode_provider.dart';
 import 'package:worktime_app/providers/team_provider.dart';
+import 'package:worktime_app/providers/theme_provider.dart';
 import 'package:worktime_app/providers/work_provider.dart';
 import 'package:worktime_app/screens/home_screen.dart';
 import 'package:worktime_app/services/auth_service.dart';
@@ -87,6 +88,7 @@ Future<Future<void> Function()> _pumpHome(
   final work = WorkProvider(firestoreService: firestoreService);
   final storage = StorageModeProvider();
   final flags = FeatureFlagProvider(firestoreService: firestoreService);
+  final theme = ThemeProvider();
 
   await team.updateSession(profile);
   await schedule.updateSession(profile);
@@ -103,6 +105,7 @@ Future<Future<void> Function()> _pumpHome(
         ChangeNotifierProvider<ScheduleProvider>.value(value: schedule),
         ChangeNotifierProvider<WorkProvider>.value(value: work),
         ChangeNotifierProvider<FeatureFlagProvider>.value(value: flags),
+        ChangeNotifierProvider<ThemeProvider>.value(value: theme),
       ],
       child: MaterialApp(
         theme: AppTheme.resolveLight(useV2: flagOn),
@@ -130,6 +133,7 @@ Future<Future<void> Function()> _pumpHome(
     flags.dispose();
     storage.dispose();
     auth.dispose();
+    theme.dispose();
   };
 }
 

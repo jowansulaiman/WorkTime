@@ -7,6 +7,7 @@ import 'package:worktime_app/core/redesign_flags.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/feature_flag_provider.dart';
+import 'package:worktime_app/providers/theme_provider.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
 import 'package:worktime_app/theme/app_theme.dart';
@@ -104,51 +105,82 @@ void main() {
         const Color(0xFF9FC2DB)); // V1-Dunkel-Leitfarbe
   });
 
-  // Deckt die Lese-Mechanik ab, die der _AuthGate-Chooser nutzt
-  // (context.watch<FeatureFlagProvider> via RedesignFlags.isOn).
-  testWidgets('RedesignFlags.isOn liest das org-Flag im Widget-Baum',
+  // Deckt die Lese-Mechanik der flag-gegateten Chooser ab: RedesignFlags.isOn
+  // ueber FeatureFlagProvider (org-Flag) + ThemeProvider (Laufzeit-Override).
+  Future<bool> pumpIsOn(
+    WidgetTester tester, {
+    required FeatureFlagProvider flags,
+    ThemeProvider? theme,
+  }) async {
+    late bool onValue;
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<FeatureFlagProvider>.value(value: flags),
+          ChangeNotifierProvider<ThemeProvider>.value(
+            value: theme ?? ThemeProvider(),
+          ),
+        ],
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) {
+              onValue = RedesignFlags.isOn(context);
+              return const SizedBox();
+            },
+          ),
+        ),
+      ),
+    );
+    return onValue;
+  }
+
+  testWidgets('isOn liest das org-Flag (Override null)', (tester) async {
+    await seedConfig({
+      'featureFlags': {'redesign_v2': true},
+    });
+    final flags = FeatureFlagProvider(firestoreService: firestoreService);
+    await flags.updateSession(user, localStorageOnly: false);
+    expect(await pumpIsOn(tester, flags: flags), isTrue);
+  });
+
+  testWidgets('isOn ist false ohne Flag und ohne Override', (tester) async {
+    final flags = FeatureFlagProvider(firestoreService: firestoreService);
+    await flags.updateSession(user, localStorageOnly: false);
+    expect(await pumpIsOn(tester, flags: flags), isFalse);
+  });
+
+  testWidgets('Runtime-Override true erzwingt V2 trotz fehlendem Flag',
+      (tester) async {
+    final flags = FeatureFlagProvider(firestoreService: firestoreService);
+    await flags.updateSession(user, localStorageOnly: false);
+    final theme = ThemeProvider();
+    await theme.setRedesignV2Override(true);
+    expect(await pumpIsOn(tester, flags: flags, theme: theme), isTrue);
+  });
+
+  testWidgets('Runtime-Override false erzwingt V1 trotz aktivem Flag',
       (tester) async {
     await seedConfig({
       'featureFlags': {'redesign_v2': true},
     });
-    final provider = FeatureFlagProvider(firestoreService: firestoreService);
-    await provider.updateSession(user, localStorageOnly: false);
-
-    late bool onValue;
-    await tester.pumpWidget(
-      ChangeNotifierProvider<FeatureFlagProvider>.value(
-        value: provider,
-        child: MaterialApp(
-          home: Builder(
-            builder: (context) {
-              onValue = RedesignFlags.isOn(context);
-              return const SizedBox();
-            },
-          ),
-        ),
-      ),
-    );
-    expect(onValue, isTrue);
+    final flags = FeatureFlagProvider(firestoreService: firestoreService);
+    await flags.updateSession(user, localStorageOnly: false);
+    final theme = ThemeProvider();
+    await theme.setRedesignV2Override(false);
+    expect(await pumpIsOn(tester, flags: flags, theme: theme), isFalse);
   });
 
-  testWidgets('RedesignFlags.isOn ist false ohne Flag', (tester) async {
-    final provider = FeatureFlagProvider(firestoreService: firestoreService);
-    await provider.updateSession(user, localStorageOnly: false);
-
-    late bool onValue;
-    await tester.pumpWidget(
-      ChangeNotifierProvider<FeatureFlagProvider>.value(
-        value: provider,
-        child: MaterialApp(
-          home: Builder(
-            builder: (context) {
-              onValue = RedesignFlags.isOn(context);
-              return const SizedBox();
-            },
-          ),
-        ),
-      ),
-    );
-    expect(onValue, isFalse);
+  test('ThemeProvider.setRedesignV2Override persistiert + liest zurueck',
+      () async {
+    final theme = ThemeProvider();
+    await theme.setRedesignV2Override(true);
+    expect(theme.redesignV2Override, isTrue);
+    final restored = ThemeProvider();
+    await restored.init();
+    expect(restored.redesignV2Override, isTrue);
+    await restored.setRedesignV2Override(null);
+    final cleared = ThemeProvider();
+    await cleared.init();
+    expect(cleared.redesignV2Override, isNull);
   });
 }

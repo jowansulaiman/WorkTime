@@ -1,6 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_config.dart';
+import '../core/redesign_flags.dart';
 import '../models/app_user.dart';
 import '../models/user_settings.dart';
 import '../models/work_template.dart';
@@ -265,6 +268,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const SizedBox(height: 20),
                           _sectionTitle('Erscheinungsbild'),
                           const _ThemeSelector(),
+                          const _RedesignToggle(),
                           const SizedBox(height: 24),
                           FilledButton.icon(
                             onPressed:
@@ -684,6 +688,44 @@ class _ThemeSelector extends StatelessWidget {
               ),
             );
           }).toList(),
+        ),
+      ),
+    );
+  }
+}
+
+/// Laufzeit-Schalter fuer das Signal-Teal-Redesign (nur im Demo-/Dev-Modus
+/// sichtbar). Setzt den persistierten Override in [ThemeProvider]; Theme und
+/// flag-gegatete Screens schalten live um (kein Neustart, kein dart-define).
+class _RedesignToggle extends StatelessWidget {
+  const _RedesignToggle();
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AppConfig.disableAuthentication && !kDebugMode) {
+      return const SizedBox.shrink();
+    }
+    final colorScheme = Theme.of(context).colorScheme;
+    final on = RedesignFlags.isOn(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Container(
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: colorScheme.outlineVariant),
+        ),
+        child: SwitchListTile(
+          value: on,
+          onChanged: (value) =>
+              context.read<ThemeProvider>().setRedesignV2Override(value),
+          title: const Text('Neues Design (Signal Teal)'),
+          subtitle: const Text(
+            'Vorschau des Redesigns — live umschaltbar (nur Entwicklungsmodus).',
+          ),
+          secondary: Icon(Icons.auto_awesome, color: colorScheme.primary),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         ),
       ),
     );

@@ -328,8 +328,12 @@ class WorkTimeApp extends StatelessWidget {
           // Theme-Flip (redesign_v2): Dev-Override > org-Flag waehlt V1/V2-Optik.
           // Die Bootstrap-Shell bleibt auf V1 gepinnt (Anti-Flash) — kein
           // Umschalten vor Aufloesung der Remote-Config.
-          theme: AppTheme.resolveLight(useV2: _resolveUseV2(featureFlags)),
-          darkTheme: AppTheme.resolveDark(useV2: _resolveUseV2(featureFlags)),
+          theme: AppTheme.resolveLight(
+            useV2: _resolveUseV2(featureFlags, themeProvider.redesignV2Override),
+          ),
+          darkTheme: AppTheme.resolveDark(
+            useV2: _resolveUseV2(featureFlags, themeProvider.redesignV2Override),
+          ),
           themeMode: themeProvider.themeMode,
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
@@ -362,9 +366,11 @@ class WorkTimeApp extends StatelessWidget {
 
 /// Loest die V2-Optik-Wahl fuer den Theme-Flip auf: der Dev-Override
 /// (APP_REDESIGN_V2) gewinnt, sonst zaehlt das org-seitige `redesign_v2`-Flag.
-bool _resolveUseV2(FeatureFlagProvider featureFlags) => RedesignFlags.resolve(
+bool _resolveUseV2(FeatureFlagProvider featureFlags, bool? runtimeOverride) =>
+    RedesignFlags.resolve(
       serverFlag:
           featureFlags.isEnabled(RedesignFlags.flagKey, fallback: false),
+      runtimeOverride: runtimeOverride,
     );
 
 void _dispatchProviderUpdate(
