@@ -472,43 +472,47 @@ abstract final class AppTheme {
     const radii = AppRadii.v2;
     final typography = Typography.material2021(platform: defaultTargetPlatform);
     final baseTextTheme = isDark ? typography.white : typography.black;
-    final textTheme = baseTextTheme
-        .apply(
-          fontFamily: 'NotoSans',
-          bodyColor: colorScheme.onSurface,
-          displayColor: colorScheme.onSurface,
-        )
-        .copyWith(
-          displaySmall: baseTextTheme.displaySmall?.copyWith(
-            fontWeight: FontWeight.w800,
-            letterSpacing: -1,
-          ),
-          headlineMedium: baseTextTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.6,
-          ),
-          headlineSmall: baseTextTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.4,
-          ),
-          titleLarge: baseTextTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.2,
-          ),
-          titleMedium: baseTextTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w700,
-          ),
-          titleSmall: baseTextTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-          ),
-          labelLarge: baseTextTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-          ),
-          bodyLarge: baseTextTheme.bodyLarge?.copyWith(height: 1.45),
-          bodyMedium: baseTextTheme.bodyMedium?.copyWith(height: 1.4),
-          bodySmall: baseTextTheme.bodySmall?.copyWith(height: 1.35),
-        );
+    // WICHTIG: Erst NotoSans (+ Farben) anwenden, DANN die per-Style-Overrides
+    // vom BEREITS angewandten TextTheme ableiten. Wuerde man (wie urspruenglich)
+    // `baseTextTheme.<style>.copyWith(...)` nutzen, traegt der Override wieder die
+    // Plattform-Font (Roboto / auf Apple `CupertinoSystemText`) statt NotoSans —
+    // auf Web-CanvasKit gibt es dafuer keine System-Font ⇒ unsichtbarer Text.
+    final appliedTextTheme = baseTextTheme.apply(
+      fontFamily: 'NotoSans',
+      bodyColor: colorScheme.onSurface,
+      displayColor: colorScheme.onSurface,
+    );
+    final textTheme = appliedTextTheme.copyWith(
+      displaySmall: appliedTextTheme.displaySmall?.copyWith(
+        fontWeight: FontWeight.w800,
+        letterSpacing: -1,
+      ),
+      headlineMedium: appliedTextTheme.headlineMedium?.copyWith(
+        fontWeight: FontWeight.w800,
+        letterSpacing: -0.6,
+      ),
+      headlineSmall: appliedTextTheme.headlineSmall?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.4,
+      ),
+      titleLarge: appliedTextTheme.titleLarge?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.2,
+      ),
+      titleMedium: appliedTextTheme.titleMedium?.copyWith(
+        fontWeight: FontWeight.w700,
+      ),
+      titleSmall: appliedTextTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.w700,
+      ),
+      labelLarge: appliedTextTheme.labelLarge?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.2,
+      ),
+      bodyLarge: appliedTextTheme.bodyLarge?.copyWith(height: 1.45),
+      bodyMedium: appliedTextTheme.bodyMedium?.copyWith(height: 1.4),
+      bodySmall: appliedTextTheme.bodySmall?.copyWith(height: 1.35),
+    );
 
     return ThemeData(
       brightness: brightness,

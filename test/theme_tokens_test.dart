@@ -36,6 +36,32 @@ void main() {
       expect(AppTheme.lightV2.colorScheme.surfaceTint, Colors.transparent);
       expect(AppTheme.darkV2.colorScheme.surfaceTint, Colors.transparent);
     });
+
+    test('Alle V2-TextTheme-Styles nutzen NotoSans (Web-CanvasKit-Schutz)', () {
+      // Regression-Guard: Die per-Style-Overrides muessen vom ANGEWANDTEN
+      // TextTheme ableiten, sonst tragen sie die Plattform-Font (Roboto/Apple
+      // CupertinoSystemText) — auf Web-CanvasKit unsichtbar (no-system-font).
+      for (final theme in [AppTheme.lightV2, AppTheme.darkV2]) {
+        final tt = theme.textTheme;
+        final styles = <String, TextStyle?>{
+          'displaySmall': tt.displaySmall,
+          'headlineMedium': tt.headlineMedium,
+          'headlineSmall': tt.headlineSmall,
+          'titleLarge': tt.titleLarge,
+          'titleMedium': tt.titleMedium,
+          'titleSmall': tt.titleSmall,
+          'bodyLarge': tt.bodyLarge,
+          'bodyMedium': tt.bodyMedium,
+          'bodySmall': tt.bodySmall,
+          'labelLarge': tt.labelLarge,
+          'labelMedium': tt.labelMedium,
+        };
+        styles.forEach((name, style) {
+          expect(style?.fontFamily, 'NotoSans',
+              reason: '$name muss NotoSans tragen (Web-Sichtbarkeit)');
+        });
+      }
+    });
   });
 
   group('AppThemeColors in beiden V2-Varianten (kein appColors-null-Crash)', () {
