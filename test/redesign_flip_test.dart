@@ -1,6 +1,7 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/redesign_flags.dart';
 import 'package:worktime_app/models/app_user.dart';
@@ -101,5 +102,53 @@ void main() {
     expect(useV2(provider), isFalse);
     expect(AppTheme.resolveDark(useV2: useV2(provider)).colorScheme.primary,
         const Color(0xFF9FC2DB)); // V1-Dunkel-Leitfarbe
+  });
+
+  // Deckt die Lese-Mechanik ab, die der _AuthGate-Chooser nutzt
+  // (context.watch<FeatureFlagProvider> via RedesignFlags.isOn).
+  testWidgets('RedesignFlags.isOn liest das org-Flag im Widget-Baum',
+      (tester) async {
+    await seedConfig({
+      'featureFlags': {'redesign_v2': true},
+    });
+    final provider = FeatureFlagProvider(firestoreService: firestoreService);
+    await provider.updateSession(user, localStorageOnly: false);
+
+    late bool onValue;
+    await tester.pumpWidget(
+      ChangeNotifierProvider<FeatureFlagProvider>.value(
+        value: provider,
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) {
+              onValue = RedesignFlags.isOn(context);
+              return const SizedBox();
+            },
+          ),
+        ),
+      ),
+    );
+    expect(onValue, isTrue);
+  });
+
+  testWidgets('RedesignFlags.isOn ist false ohne Flag', (tester) async {
+    final provider = FeatureFlagProvider(firestoreService: firestoreService);
+    await provider.updateSession(user, localStorageOnly: false);
+
+    late bool onValue;
+    await tester.pumpWidget(
+      ChangeNotifierProvider<FeatureFlagProvider>.value(
+        value: provider,
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) {
+              onValue = RedesignFlags.isOn(context);
+              return const SizedBox();
+            },
+          ),
+        ),
+      ),
+    );
+    expect(onValue, isFalse);
   });
 }

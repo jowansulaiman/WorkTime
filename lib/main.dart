@@ -25,6 +25,7 @@ import 'providers/team_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/work_provider.dart';
 import 'screens/auth_screen.dart';
+import 'screens/auth_screen_v2.dart';
 import 'screens/force_update_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/auth_service.dart';
@@ -504,9 +505,12 @@ class _AuthGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
+    // Flag-gegateter Chooser fuer die Auth-Flow-Screens (redesign_v2). Ein
+    // Flag-Wechsel rebuildet die _AuthGate und waehlt V1/V2 neu.
+    final useV2 = RedesignFlags.isOn(context);
 
     if (!auth.firebaseConfigured) {
-      return const FirebaseSetupScreen();
+      return useV2 ? const FirebaseSetupScreenV2() : const FirebaseSetupScreen();
     }
 
     if (!auth.initialized) {
@@ -532,12 +536,12 @@ class _AuthGate extends StatelessWidget {
     }
 
     if (!auth.isAuthenticated) {
-      return const AuthScreen();
+      return useV2 ? const AuthScreenV2() : const AuthScreen();
     }
 
     final profile = auth.profile;
     if (profile != null && !profile.isActive) {
-      return const AccessBlockedScreen();
+      return useV2 ? const AccessBlockedScreenV2() : const AccessBlockedScreen();
     }
 
     // Force-Update-Gate: nur echte Release-Builds (buildNumber > 0), die der
