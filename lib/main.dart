@@ -14,6 +14,7 @@ import 'core/analytics_service.dart';
 import 'core/app_config.dart';
 import 'core/app_logger.dart';
 import 'core/error_reporter.dart';
+import 'core/redesign_flags.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
 import 'providers/feature_flag_provider.dart';
@@ -319,12 +320,15 @@ class WorkTimeApp extends StatelessWidget {
           },
         ),
       ],
-      child: Consumer<ThemeProvider>(
-        builder: (context, themeProvider, _) => MaterialApp(
+      child: Consumer2<ThemeProvider, FeatureFlagProvider>(
+        builder: (context, themeProvider, featureFlags, _) => MaterialApp(
           title: 'timework',
           debugShowCheckedModeBanner: false,
-          theme: AppTheme.light,
-          darkTheme: AppTheme.dark,
+          // Theme-Flip (redesign_v2): Dev-Override > org-Flag waehlt V1/V2-Optik.
+          // Die Bootstrap-Shell bleibt auf V1 gepinnt (Anti-Flash) — kein
+          // Umschalten vor Aufloesung der Remote-Config.
+          theme: AppTheme.resolveLight(useV2: _resolveUseV2(featureFlags)),
+          darkTheme: AppTheme.resolveDark(useV2: _resolveUseV2(featureFlags)),
           themeMode: themeProvider.themeMode,
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
@@ -354,6 +358,13 @@ class WorkTimeApp extends StatelessWidget {
     );
   }
 }
+
+/// Loest die V2-Optik-Wahl fuer den Theme-Flip auf: der Dev-Override
+/// (APP_REDESIGN_V2) gewinnt, sonst zaehlt das org-seitige `redesign_v2`-Flag.
+bool _resolveUseV2(FeatureFlagProvider featureFlags) => RedesignFlags.resolve(
+      serverFlag:
+          featureFlags.isEnabled(RedesignFlags.flagKey, fallback: false),
+    );
 
 void _dispatchProviderUpdate(
   Future<void> future,
