@@ -140,7 +140,8 @@ class PayrollCalculator {
 
     // --- Minijob: keine AN-Abzüge, AG zahlt Pauschalabgaben ----------------
     if (kind == PayrollEmploymentKind.minijob) {
-      final flat = _round(gross * settings.minijobEmployerFlatRate);
+      // AG-Pauschalen aufgeschlüsselt (KV+RV+Umlagen+Pauschsteuer) statt 30 %-Block.
+      final flat = _round(gross * settings.minijobEmployerTotalRate);
       return PayrollResult(
         grossCents: gross,
         kind: kind,

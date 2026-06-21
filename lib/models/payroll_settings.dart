@@ -27,8 +27,13 @@ class PayrollSettings {
     this.bbgRvAlvMonthlyCents = 805000,
     this.minijobCeilingCents = 55600,
     this.minijobEmployerFlatRate = 0.30,
+    this.minijobEmployerHealthRate = 0.13,
+    this.minijobEmployerPensionRate = 0.15,
+    this.minijobEmployerLevyRate = 0.0138,
+    this.minijobEmployerFlatTaxRate = 0.02,
     this.midijobUpperCents = 200000,
     this.midijobFactorF = 0.6683,
+    this.minimumHourlyWageCents = 1282,
     this.taxTariff = TaxTariff.year2026,
   });
 
@@ -70,9 +75,35 @@ class PayrollSettings {
   final int bbgKvPvMonthlyCents;
   final int bbgRvAlvMonthlyCents;
 
-  /// Minijob-Grenze und Arbeitgeber-Pauschalabgaben (ca. 30 %).
+  /// Minijob-Grenze und Arbeitgeber-Pauschalabgaben.
   final int minijobCeilingCents;
+
+  /// **Veraltet** – früher pauschale 30 %. Bleibt für Serialisierungs-Kompatibilität;
+  /// der Rechner nutzt jetzt die aufgeschlüsselten Komponenten ([minijobEmployerTotalRate]).
   final double minijobEmployerFlatRate;
+
+  /// Arbeitgeber-Pauschalen beim gewerblichen Minijob (aufgeschlüsselt statt
+  /// eines einzelnen 30-%-Blocks): KV-Pauschale, RV-Pauschale, Umlagen
+  /// (U1/U2/InsO) und Pauschsteuer.
+  final double minijobEmployerHealthRate;
+  final double minijobEmployerPensionRate;
+  final double minijobEmployerLevyRate;
+  final double minijobEmployerFlatTaxRate;
+
+  /// Gesetzlicher Mindestlohn je Stunde (Cent) – für die Mindestlohn-Warnung.
+  final int minimumHourlyWageCents;
+
+  /// Summe der Arbeitgeber-Pauschalsätze beim Minijob (≈ 31,4 %).
+  double get minijobEmployerTotalRate =>
+      minijobEmployerHealthRate +
+      minijobEmployerPensionRate +
+      minijobEmployerLevyRate +
+      minijobEmployerFlatTaxRate;
+
+  /// True, wenn [hourlyRateCents] unter dem gesetzlichen Mindestlohn liegt
+  /// (nur prüfen, wenn ein positiver Stundenlohn vorliegt).
+  bool isBelowMinimumWage(int hourlyRateCents) =>
+      hourlyRateCents > 0 && hourlyRateCents < minimumHourlyWageCents;
 
   /// Midijob-Obergrenze (Übergangsbereich) und Faktor F.
   final int midijobUpperCents;
@@ -159,10 +190,27 @@ class PayrollSettings {
       minijobEmployerFlatRate:
           parse.toDouble(map['minijob_employer_flat_rate']) ??
               base.minijobEmployerFlatRate,
+      minijobEmployerHealthRate:
+          parse.toDouble(map['minijob_employer_health_rate']) ??
+              base.minijobEmployerHealthRate,
+      minijobEmployerPensionRate:
+          parse.toDouble(map['minijob_employer_pension_rate']) ??
+              base.minijobEmployerPensionRate,
+      minijobEmployerLevyRate:
+          parse.toDouble(map['minijob_employer_levy_rate']) ??
+              base.minijobEmployerLevyRate,
+      minijobEmployerFlatTaxRate:
+          parse.toDouble(map['minijob_employer_flat_tax_rate']) ??
+              base.minijobEmployerFlatTaxRate,
       midijobUpperCents:
           parse.toInt(map['midijob_upper_cents']) ?? base.midijobUpperCents,
       midijobFactorF:
           parse.toDouble(map['midijob_factor_f']) ?? base.midijobFactorF,
+      minimumHourlyWageCents: parse.toInt(map['minimum_hourly_wage_cents']) ??
+          base.minimumHourlyWageCents,
+      reducedChurchTaxStates:
+          (map['reduced_church_tax_states'] as List?)?.cast<String>().toSet() ??
+              base.reducedChurchTaxStates,
     );
   }
 
@@ -186,8 +234,15 @@ class PayrollSettings {
       'bbg_rv_alv_monthly_cents': bbgRvAlvMonthlyCents,
       'minijob_ceiling_cents': minijobCeilingCents,
       'minijob_employer_flat_rate': minijobEmployerFlatRate,
+      'minijob_employer_health_rate': minijobEmployerHealthRate,
+      'minijob_employer_pension_rate': minijobEmployerPensionRate,
+      'minijob_employer_levy_rate': minijobEmployerLevyRate,
+      'minijob_employer_flat_tax_rate': minijobEmployerFlatTaxRate,
       'midijob_upper_cents': midijobUpperCents,
       'midijob_factor_f': midijobFactorF,
+      'minimum_hourly_wage_cents': minimumHourlyWageCents,
+      'reduced_church_tax_states': reducedChurchTaxStates.toList(),
+      // taxTariff wird über [year] abgeleitet (aktuell nur year2026).
     };
   }
 

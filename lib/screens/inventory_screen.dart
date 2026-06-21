@@ -783,6 +783,7 @@ class _ProductTile extends StatelessWidget {
                   PopupMenuItem(
                       value: 'adjust', child: Text('Bestand korrigieren')),
                   PopupMenuItem(value: 'stocktake', child: Text('Inventur')),
+                  PopupMenuItem(value: 'transfer', child: Text('Umlagern')),
                   PopupMenuItem(value: 'delete', child: Text('Loeschen')),
                 ],
               )
@@ -810,6 +811,9 @@ class _ProductTile extends StatelessWidget {
         break;
       case 'stocktake':
         await _stocktake(context, inventory);
+        break;
+      case 'transfer':
+        await _transfer(context, inventory);
         break;
       case 'delete':
         if (await _confirmDelete(context, product.name) &&
@@ -878,6 +882,31 @@ class _ProductTile extends StatelessWidget {
       if (context.mounted) {
         _showSnack(context, 'Inventur gebucht.');
       }
+    }
+  }
+
+  Future<void> _transfer(
+      BuildContext context, InventoryProvider inventory) async {
+    final candidates = inventory.products
+        .where((p) =>
+            p.id != null && p.id != product.id && p.siteId != product.siteId)
+        .toList();
+    if (candidates.isEmpty) {
+      _showSnack(context,
+          'Kein Zielartikel an einem anderen Standort vorhanden. Lege ihn dort zuerst an.');
+      return;
+    }
+    final result = await _showTransferDialog(context, product, candidates);
+    if (result == null) {
+      return;
+    }
+    final error = await inventory.transferStock(
+      from: product,
+      to: result.target,
+      quantity: result.quantity,
+    );
+    if (context.mounted) {
+      _showSnack(context, error ?? 'Umlagerung gebucht.');
     }
   }
 }
@@ -1594,6 +1623,80 @@ class _SupplierDialogState extends State<_SupplierDialog> {
     );
     Navigator.of(context).pop(result);
   }
+}
+
+Future<({Product target, int quantity})?> _showTransferDialog(
+  BuildContext context,
+  Product product,
+  List<Product> candidates,
+) {
+  Product target = candidates.first;
+  final quantityController = TextEditingController();
+  return showDialog<({Product target, int quantity})>(
+    context: context,
+    builder: (_) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: Text('Umlagern: ${product.name}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Bestand ${product.siteName ?? 'Quelle'}: '
+                '${product.currentStock} ${product.unit}'),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<Product>(
+              initialValue: target,
+              decoration: const InputDecoration(
+                labelText: 'Ziel-Standort',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final candidate in candidates)
+                  DropdownMenuItem(
+                    value: candidate,
+                    child: Text(
+                      '${candidate.siteName ?? 'Standort'} · ${candidate.name}'
+                      ' (${candidate.currentStock})',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => target = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: quantityController,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: 'Menge',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final qty = int.tryParse(quantityController.text.trim());
+              if (qty == null || qty <= 0) {
+                Navigator.of(context).pop();
+                return;
+              }
+              Navigator.of(context).pop((target: target, quantity: qty));
+            },
+            child: const Text('Umlagern'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 Future<({int quantity, String reason})?> _showStockIssueDialog(

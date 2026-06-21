@@ -703,6 +703,22 @@ service cloud.firestore {
         allow delete: if isAdmin() && sameOrg(orgId);
       }
 
+      // Änderungsprotokoll (Audit-Trail): append-only. Lesen nur Admins;
+      // anlegen darf jedes aktive Org-Mitglied für sich selbst; nie ändern/löschen.
+      match /auditLog/{entryId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        // Anlegen nur für sich selbst (actorUid an den Aufrufer gepinnt),
+        // damit Einträge nicht im Namen anderer gefälscht werden können.
+        allow create: if sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && (!('actorUid' in request.resource.data)
+                || request.resource.data.actorUid == null
+                || request.resource.data.actorUid == request.auth.uid)
+            && request.resource.data.action in
+                 ['created', 'updated', 'deleted'];
+        allow update, delete: if false;
+      }
+
       // --- Warenwirtschaft ------------------------------------------------
 
       match /suppliers/{supplierId} {
@@ -790,7 +806,7 @@ service cloud.firestore {
                  'createdByUid', 'createdAt'
                ])
             && request.resource.data.type in
-                 ['receipt', 'issue', 'adjustment', 'stocktake']
+                 ['receipt', 'issue', 'adjustment', 'stocktake', 'transfer']
             && request.resource.data.quantityDelta is number
             // balanceAfter ist im Modell nullable (int?) -> null/absent zulassen.
             && (!('balanceAfter' in request.resource.data)

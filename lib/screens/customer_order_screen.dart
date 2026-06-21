@@ -4,12 +4,14 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/customer_order.dart';
+import '../models/product.dart';
 import '../models/site_definition.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
+import '../widgets/contact_picker_field.dart';
 
 final NumberFormat _euroFormat =
     NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
@@ -61,7 +63,7 @@ Future<bool> _confirm(BuildContext context, String title, String message) async 
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Bestaetigen'),
+          child: const Text('Bestätigen'),
         ),
       ],
     ),
@@ -94,7 +96,7 @@ class CustomerOrderWarningBanner extends StatelessWidget {
         tone: AppStatusTone.warning,
         icon: Icons.warning_amber_rounded,
         message:
-            '${due.length} ${due.length == 1 ? 'Kundenbestellung ist' : 'Kundenbestellungen sind'} bald faellig und nicht vorbereitet.',
+            '${due.length} ${due.length == 1 ? 'Kundenbestellung ist' : 'Kundenbestellungen sind'} bald fällig und nicht vorbereitet.',
         action: TextButton(
           onPressed: () => Navigator.of(context).push(
             MaterialPageRoute(
@@ -149,7 +151,7 @@ class _CustomerOrderScreenState extends State<CustomerOrderScreen> {
       return Scaffold(
         appBar: BreadcrumbAppBar(breadcrumbs: breadcrumbs),
         body: const Center(
-          child: Text('Keine Berechtigung fuer Kundenbestellungen.'),
+          child: Text('Keine Berechtigung für Kundenbestellungen.'),
         ),
       );
     }
@@ -234,7 +236,7 @@ class _CustomerOrderScreenState extends State<CustomerOrderScreen> {
                       tone: AppStatusTone.warning,
                       icon: Icons.warning_amber_rounded,
                       message:
-                          '${dueOrders.length} ${dueOrders.length == 1 ? 'Bestellung ist' : 'Bestellungen sind'} bald faellig und noch nicht vorbereitet.',
+                          '${dueOrders.length} ${dueOrders.length == 1 ? 'Bestellung ist' : 'Bestellungen sind'} bald fällig und noch nicht vorbereitet.',
                     ),
                   ),
                 Expanded(
@@ -242,7 +244,7 @@ class _CustomerOrderScreenState extends State<CustomerOrderScreen> {
                       ? EmptyState(
                           icon: Icons.shopping_bag_outlined,
                           message: inventory.customerOrders.isEmpty
-                              ? 'Noch keine Kundenbestellungen. Lege ueber das Plus die erste Sonderbestellung an.'
+                              ? 'Noch keine Kundenbestellungen. Lege über das Plus die erste Sonderbestellung an.'
                               : 'Keine Bestellungen passen zu den Filtern.',
                         )
                       : ListView.separated(
@@ -403,7 +405,7 @@ class _SiteFilterBar extends StatelessWidget {
         child: Row(
           children: [
             ChoiceChip(
-              label: const Text('Alle Laeden'),
+              label: const Text('Alle Läden'),
               selected: selectedSiteId == null,
               onSelected: (_) => onChanged(null),
             ),
@@ -620,7 +622,7 @@ class _CustomerOrderTile extends StatelessWidget {
                   if (order.isPrepared && order.status.isOpen)
                     const PopupMenuItem(
                       value: 'unprepare',
-                      child: Text('Vorbereitung zuruecknehmen'),
+                      child: Text('Vorbereitung zurücknehmen'),
                     ),
                   if (order.status.isOpen)
                     const PopupMenuItem(
@@ -632,7 +634,7 @@ class _CustomerOrderTile extends StatelessWidget {
                       value: 'cancel',
                       child: Text('Stornieren'),
                     ),
-                  const PopupMenuItem(value: 'delete', child: Text('Loeschen')),
+                  const PopupMenuItem(value: 'delete', child: Text('Löschen')),
                 ],
               )
             : null,
@@ -668,7 +670,7 @@ class _CustomerOrderTile extends StatelessWidget {
       case 'unprepare':
         await inventory.markCustomerOrderPrepared(order, prepared: false);
         if (context.mounted) {
-          _showSnack(context, 'Vorbereitung zurueckgenommen.');
+          _showSnack(context, 'Vorbereitung zurückgenommen.');
         }
         break;
       case 'pickup':
@@ -693,12 +695,12 @@ class _CustomerOrderTile extends StatelessWidget {
         }
         break;
       case 'delete':
-        if (await _confirm(context, 'Bestellung loeschen?',
-                '${order.customerName}: Bestellung wird unwiderruflich geloescht.') &&
+        if (await _confirm(context, 'Bestellung löschen?',
+                '${order.customerName}: Bestellung wird unwiderruflich gelöscht.') &&
             order.id != null) {
           await inventory.deleteCustomerOrder(order.id!);
           if (context.mounted) {
-            _showSnack(context, 'Bestellung geloescht.');
+            _showSnack(context, 'Bestellung gelöscht.');
           }
         }
         break;
@@ -761,6 +763,7 @@ class _CustomerOrderDialogState extends State<_CustomerOrderDialog> {
   late final TextEditingController _customerContact;
   late final TextEditingController _notes;
   String? _siteId;
+  String? _contactId;
   CustomerOrderRecurrence _recurrence = CustomerOrderRecurrence.none;
   DateTime? _pickupDate;
   late List<CustomerOrderItem> _items;
@@ -772,6 +775,7 @@ class _CustomerOrderDialogState extends State<_CustomerOrderDialog> {
     _customerName = TextEditingController(text: order?.customerName ?? '');
     _customerContact =
         TextEditingController(text: order?.customerContact ?? '');
+    _contactId = order?.contactId;
     _notes = TextEditingController(text: order?.notes ?? '');
     _siteId = order?.siteId ??
         widget.defaultSiteId ??
@@ -803,6 +807,20 @@ class _CustomerOrderDialogState extends State<_CustomerOrderDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                ContactPickerField(
+                  contactId: _contactId,
+                  onSelected: (contact) => setState(() {
+                    _contactId = contact?.id;
+                    if (contact != null) {
+                      _customerName.text = contact.name;
+                      final reach = contact.primaryPhone ?? contact.email;
+                      if (reach != null && reach.trim().isNotEmpty) {
+                        _customerContact.text = reach;
+                      }
+                    }
+                  }),
+                ),
+                const SizedBox(height: 4),
                 TextFormField(
                   controller: _customerName,
                   decoration: const InputDecoration(labelText: 'Kunde *'),
@@ -830,7 +848,7 @@ class _CustomerOrderDialogState extends State<_CustomerOrderDialog> {
                     ],
                     onChanged: (value) => setState(() => _siteId = value),
                     validator: (value) =>
-                        value == null ? 'Bitte einen Laden waehlen' : null,
+                        value == null ? 'Bitte einen Laden wählen' : null,
                   ),
                 Row(
                   children: [
@@ -955,7 +973,7 @@ class _CustomerOrderDialogState extends State<_CustomerOrderDialog> {
       return;
     }
     if (_items.isEmpty) {
-      _showSnack(context, 'Bitte mindestens eine Position hinzufuegen.');
+      _showSnack(context, 'Bitte mindestens eine Position hinzufügen.');
       return;
     }
     final site = widget.sites.firstWhere(
@@ -978,6 +996,8 @@ class _CustomerOrderDialogState extends State<_CustomerOrderDialog> {
       customerName: _customerName.text.trim(),
       customerContact: contact.isEmpty ? null : contact,
       clearCustomerContact: contact.isEmpty,
+      contactId: _contactId,
+      clearContactId: _contactId == null,
       recurrence: _recurrence,
       items: List<CustomerOrderItem>.unmodifiable(_items),
       notes: notes.isEmpty ? null : notes,
@@ -1152,6 +1172,8 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
   late final TextEditingController _unit;
   late final TextEditingController _quantity;
   late final TextEditingController _price;
+  String? _productId;
+  String? _sku;
 
   @override
   void initState() {
@@ -1162,6 +1184,30 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
     _unit = TextEditingController(text: item?.unit ?? 'Stück');
     _quantity = TextEditingController(text: (item?.quantity ?? 1).toString());
     _price = TextEditingController(text: _centsToEuroInput(item?.unitPriceCents));
+    _productId = item?.productId;
+    _sku = item?.sku;
+  }
+
+  Future<void> _pickProduct() async {
+    final products = context.read<InventoryProvider>().products;
+    final picked = await showModalBottomSheet<Product>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _ProductPickSheet(products: products),
+    );
+    if (picked == null) return;
+    setState(() {
+      _productId = picked.id;
+      _sku = picked.sku;
+      _name.text = picked.name;
+      if (picked.category != null) _category.text = picked.category!;
+      _unit.text = picked.unit;
+      if (picked.sellingPriceCents != null) {
+        _price.text = _centsToEuroInput(picked.sellingPriceCents);
+      }
+    });
   }
 
   @override
@@ -1187,6 +1233,16 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _pickProduct,
+                    icon: const Icon(Icons.inventory_2_outlined, size: 18),
+                    label: Text(_productId == null
+                        ? 'Aus Warenwirtschaft wählen'
+                        : 'Verknüpfter Artikel ändern'),
+                  ),
+                ),
                 TextFormField(
                   controller: _name,
                   decoration: const InputDecoration(labelText: 'Artikel *'),
@@ -1267,7 +1323,7 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
         ),
         FilledButton(
           onPressed: _submit,
-          child: const Text('Uebernehmen'),
+          child: const Text('Übernehmen'),
         ),
       ],
     );
@@ -1280,14 +1336,86 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
     final category = _category.text.trim();
     final unit = _unit.text.trim();
     final result = CustomerOrderItem(
-      productId: widget.item?.productId,
+      productId: _productId,
       name: _name.text.trim(),
-      sku: widget.item?.sku,
+      sku: _sku,
       category: category.isEmpty ? null : category,
       unit: unit.isEmpty ? 'Stück' : unit,
       quantity: int.tryParse(_quantity.text.trim()) ?? 1,
       unitPriceCents: _parseEuroToCents(_price.text),
     );
     Navigator.of(context).pop(result);
+  }
+}
+
+/// Durchsuchbares Auswahl-Sheet für Artikel aus der Warenwirtschaft, um eine
+/// Bestellposition mit einem echten [Product] zu verknüpfen.
+class _ProductPickSheet extends StatefulWidget {
+  const _ProductPickSheet({required this.products});
+
+  final List<Product> products;
+
+  @override
+  State<_ProductPickSheet> createState() => _ProductPickSheetState();
+}
+
+class _ProductPickSheetState extends State<_ProductPickSheet> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final filtered = widget.products.where((p) {
+      if (!p.isActive) return false;
+      if (query.isEmpty) return true;
+      return p.name.toLowerCase().contains(query) ||
+          (p.sku?.toLowerCase().contains(query) ?? false) ||
+          (p.barcode?.toLowerCase().contains(query) ?? false);
+    }).toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.7,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: TextField(
+                autofocus: true,
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Artikel suchen',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+            ),
+            Expanded(
+              child: filtered.isEmpty
+                  ? const Center(child: Text('Keine Artikel gefunden.'))
+                  : ListView.builder(
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final product = filtered[index];
+                        return ListTile(
+                          leading: const Icon(Icons.inventory_2_outlined),
+                          title: Text(product.name),
+                          subtitle: Text([
+                            if (product.siteName != null) product.siteName,
+                            'Bestand ${product.currentStock} ${product.unit}',
+                          ].whereType<String>().join(' · ')),
+                          trailing: Text(_formatCents(product.sellingPriceCents)),
+                          onTap: () => Navigator.of(context).pop(product),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

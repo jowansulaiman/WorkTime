@@ -32,6 +32,8 @@ import '../widgets/info_chip.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/section_card.dart';
 import '../widgets/section_header.dart';
+import '../widgets/dashboard_action_items_card.dart';
+import 'audit_log_screen.dart';
 import 'entry_form_screen.dart';
 import 'contacts_screen.dart';
 import 'customer_order_screen.dart';
@@ -876,6 +878,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final canViewSchedule = user?.canViewSchedule ?? false;
     final canViewTimeTracking = user?.canViewTimeTracking ?? false;
     final canViewContacts = user?.canViewContacts ?? false;
+    final canViewInventory = user?.canViewInventory ?? false;
+    final isAdmin = user?.isAdmin ?? false;
     final items = <_ShellDestination>[
       _ShellDestination(
         id: _ShellDestinationId.today,
@@ -956,6 +960,21 @@ class _HomeScreenState extends State<HomeScreen> {
           // schicht-/zeitbezogene Shell-FAB ist hier bewusst aus.
           showFab: false,
         ),
+      // "Laden" buendelt die Geschaefts-Module (Warenwirtschaft,
+      // Kundenbestellungen, Personal) als ein einziger Tab -> kein Bottom-Nav-
+      // Ueberlauf durch drei getrennte Tabs.
+      if (canViewInventory || isAdmin)
+        _ShellDestination(
+          id: _ShellDestinationId.shop,
+          label: 'Laden',
+          icon: Icons.storefront_outlined,
+          selectedIcon: Icons.storefront,
+          child: _ShopHubTab(
+            canNavigateBack: canNavigateBack,
+            onNavigateBack: _handleShellBackPressed,
+          ),
+          showFab: false,
+        ),
       // In V2 ersetzt das Slide-in-Menü (Scaffold.drawer/endDrawer) den
       // Profil-Tab; die Bottom-Nav zeigt nur die 4 Kern-Tabs.
       if (!useV2)
@@ -993,7 +1012,7 @@ class _ShellDestination {
   final bool showFab;
 }
 
-enum _ShellDestinationId { today, plan, time, inbox, contacts, profile }
+enum _ShellDestinationId { today, plan, time, inbox, contacts, shop, profile }
 
 /// Schlanke V2-Top-Bar im Bottom-Nav-Modus: ein Avatar-Button links öffnet das
 /// Slide-in-Menü. Bewusst ohne Titel — den Abschnittstitel liefert weiterhin der
@@ -2624,6 +2643,108 @@ class _PlannedActualStatCard extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Laden"-Tab: ein gebuendelter Einstieg in die Geschaefts-Module
+/// (Warenwirtschaft, Kundenbestellungen, Personal). Bewusst als Hub mit
+/// Schnellzugriff-Karten – die Module sind selbst Tab-Screens, echte Unter-Tabs
+/// waeren Tabs-in-Tabs. Oeffnet die Vollbild-Screens per Navigator.push.
+class _ShopHubTab extends StatelessWidget {
+  const _ShopHubTab({
+    required this.canNavigateBack,
+    this.onNavigateBack,
+  });
+
+  final bool canNavigateBack;
+  final VoidCallback? onNavigateBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUser = context.watch<AuthProvider>().profile;
+    final canViewInventory = currentUser?.canViewInventory ?? false;
+    final isAdmin = currentUser?.isAdmin ?? false;
+    final screenPad = MobileBreakpoints.screenPadding(context);
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 960),
+          child: ListView(
+            padding: EdgeInsets.symmetric(
+              horizontal: screenPad.horizontal / 2,
+              vertical: 16,
+            ),
+            children: [
+              SectionHeader(
+                title: 'Laden',
+                subtitle:
+                    'Warenwirtschaft, Kundenbestellungen und Personal an einem Ort.',
+                breadcrumbs: const [BreadcrumbItem(label: 'Laden')],
+                onBack: canNavigateBack ? onNavigateBack : null,
+              ),
+              const SizedBox(height: 20),
+              AdaptiveCardGrid(
+                minItemWidth: 180,
+                children: [
+                  if (canViewInventory)
+                    _QuickActionCard(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'Warenwirtschaft',
+                      subtitle:
+                          'Bestand, Lieferanten und Bestellungen verwalten',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const InventoryScreen(parentLabel: 'Laden'),
+                        ),
+                      ),
+                    ),
+                  if (canViewInventory)
+                    _QuickActionCard(
+                      icon: Icons.shopping_bag_outlined,
+                      title: 'Kundenbestellungen',
+                      subtitle: 'Sonderbestellungen von Kunden verwalten',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const CustomerOrderScreen(parentLabel: 'Laden'),
+                        ),
+                      ),
+                    ),
+                  if (isAdmin)
+                    _QuickActionCard(
+                      icon: Icons.badge_outlined,
+                      title: 'Personal',
+                      subtitle:
+                          'Auftraege, Lohn-Richtwerte, Finanzen und Statistik',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const PersonalScreen(parentLabel: 'Laden'),
+                        ),
+                      ),
+                    ),
+                  if (isAdmin)
+                    _QuickActionCard(
+                      icon: Icons.history_outlined,
+                      title: 'Änderungsprotokoll',
+                      subtitle:
+                          'Wer hat wann was geaendert (Lohn, Kontakte, Preise)',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const AuditLogScreen(parentLabel: 'Laden'),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

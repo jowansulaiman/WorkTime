@@ -281,6 +281,18 @@ class ContactProvider extends ChangeNotifier {
     _safeNotify();
   }
 
+  /// Importiert mehrere Kontakte (z.B. aus CSV) und gibt die Anzahl der
+  /// gespeicherten zurück. Speichert nacheinander über [saveContact].
+  Future<int> importContacts(List<Contact> contacts) async {
+    var saved = 0;
+    for (final contact in contacts) {
+      if (contact.name.trim().isEmpty) continue;
+      await saveContact(contact);
+      saved++;
+    }
+    return saved;
+  }
+
   Future<void> deleteContact(String contactId) async {
     final orgId = _orgId;
     if (orgId == null) {

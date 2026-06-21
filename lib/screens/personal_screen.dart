@@ -7,12 +7,14 @@ import 'package:provider/provider.dart';
 import '../core/payroll_calculator.dart';
 import '../core/personnel_cost.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/customer_order.dart';
 import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../models/payroll_settings.dart';
 import '../models/work_entry.dart';
 import '../models/work_task.dart';
+import '../providers/audit_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/personal_provider.dart';
 import '../services/export_service.dart';
@@ -1385,6 +1387,18 @@ class _EmployeeDetailScreen extends StatelessWidget {
               ],
             ),
           ),
+          if (rate > 0 &&
+              personal.payrollSettings
+                  .isBelowMinimumWage((rate * 100).round())) ...[
+            SizedBox(height: spacing.md),
+            AppStatusBanner(
+              tone: AppStatusTone.warning,
+              icon: Icons.warning_amber_rounded,
+              message: 'Stundenlohn ${_euro((rate * 100).round())} liegt unter '
+                  'dem gesetzlichen Mindestlohn von '
+                  '${_euro(personal.payrollSettings.minimumHourlyWageCents)}.',
+            ),
+          ],
           SizedBox(height: spacing.lg),
           Row(
             children: [
@@ -1980,6 +1994,10 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     if (result == null || _userId == null) return;
     setState(() => _saving = true);
     final personal = context.read<PersonalProvider>();
+    final audit = context.read<AuditProvider>();
+    final memberName =
+        personal.memberById(_userId!)?.displayName ?? 'Mitarbeiter';
+    final isNew = widget.existing == null;
     final record = result.buildRecord(
       id: widget.existing?.id,
       orgId: '',
@@ -2000,6 +2018,15 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
         churchTax: _churchTax,
         federalState: _federalState,
         monthlyGrossCents: record.grossCents,
+      );
+      // Audit-Trail: Lohn-Snapshots werden per deterministischer Doc-ID still
+      // ueberschrieben -> Aenderung protokollieren.
+      await audit.log(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Lohnabrechnung',
+        entityId: record.documentId,
+        summary: '$memberName ${_monthLabel(widget.month)}: '
+            'Brutto ${_euro(record.grossCents)}, Netto ${_euro(record.netCents)}',
       );
       if (mounted) Navigator.of(context).pop();
     } catch (error) {

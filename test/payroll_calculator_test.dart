@@ -92,8 +92,32 @@ void main() {
       expect(r.incomeTaxCents, 0);
       expect(r.employeeSocialTotalCents, 0);
       expect(r.netCents, 55600);
-      expect(r.minijobEmployerFlatCents, 16680); // 30 %
-      expect(r.employerTotalCents, 72280);
+      // AG-Pauschalen aufgeschlüsselt: 31,38 % von 556 € = 174,47 €.
+      expect(r.minijobEmployerFlatCents, 17447);
+      expect(r.employerTotalCents, 73047); // 55600 + 17447
+    });
+
+    test('Minijob-AG-Pauschalsatz ist Summe der Komponenten', () {
+      expect(settings.minijobEmployerTotalRate,
+          closeTo(0.13 + 0.15 + 0.0138 + 0.02, 1e-9));
+    });
+
+    test('Mindestlohn-Warnung greift unterhalb der Schwelle', () {
+      // Default 12,82 €/h.
+      expect(settings.isBelowMinimumWage(1200), isTrue); // 12,00 €
+      expect(settings.isBelowMinimumWage(1300), isFalse); // 13,00 €
+      expect(settings.isBelowMinimumWage(0), isFalse); // kein Lohn -> keine Warnung
+    });
+
+    test('PayrollSettings toMap/fromMap erhält die neuen Felder', () {
+      final custom = PayrollSettings.defaults2026();
+      final restored = PayrollSettings.fromMap(custom.toMap());
+      expect(restored.minimumHourlyWageCents, custom.minimumHourlyWageCents);
+      expect(restored.minijobEmployerHealthRate,
+          custom.minijobEmployerHealthRate);
+      expect(restored.minijobEmployerTotalRate,
+          closeTo(custom.minijobEmployerTotalRate, 1e-9));
+      expect(restored.reducedChurchTaxStates, custom.reducedChurchTaxStates);
     });
 
     test('Midijob: reduzierte AN-Bemessung gegenüber Standard', () {

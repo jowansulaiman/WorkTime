@@ -31,8 +31,9 @@ void main() {
       expect(csv.codeUnitAt(0), 0xFEFF); // UTF-8-BOM
       expect(csv, contains('Artikel;Warengruppe;Standort;Bestand;'));
       expect(csv, contains('Feuerzeug;Raucherbedarf;Strichmännchen;10;'));
-      // Warenwert = 10 * 0,45 € = 4,50 €
-      expect(csv, contains('4,50 €'));
+      // Warenwert = 10 * 0,45 € = 4,50 € (Leerzeichen vor € ist geschütztes
+      // Leerzeichen -> nur auf den Zahlteil pruefen).
+      expect(csv, contains('4,50'));
     });
   });
 

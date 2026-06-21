@@ -218,6 +218,7 @@ class CustomerOrder {
     this.siteName,
     required this.customerName,
     this.customerContact,
+    this.contactId,
     this.orderNumber,
     this.status = CustomerOrderStatus.open,
     this.recurrence = CustomerOrderRecurrence.none,
@@ -240,6 +241,10 @@ class CustomerOrder {
 
   /// Freitext-Kontakt (Telefon/E-Mail), optional.
   final String? customerContact;
+
+  /// Optionale Verknüpfung mit einem echten Kontakt (Kundenkartei). [customerName]
+  /// bleibt denormalisiert erhalten (Offline-Anzeige, Lauf-/Stammkunden).
+  final String? contactId;
 
   /// Menschlich lesbare Bestellnummer (z.B. "KB-2026-0007").
   final String? orderNumber;
@@ -287,6 +292,7 @@ class CustomerOrder {
       siteName: map['siteName'] as String?,
       customerName: (map['customerName'] ?? '').toString(),
       customerContact: map['customerContact'] as String?,
+      contactId: map['contactId'] as String?,
       orderNumber: map['orderNumber'] as String?,
       status: CustomerOrderStatusX.fromValue(map['status']?.toString()),
       recurrence:
@@ -309,6 +315,7 @@ class CustomerOrder {
       siteName: map['site_name'] as String?,
       customerName: (map['customer_name'] ?? '').toString(),
       customerContact: map['customer_contact'] as String?,
+      contactId: map['contact_id'] as String?,
       orderNumber: map['order_number'] as String?,
       status: CustomerOrderStatusX.fromValue(map['status']?.toString()),
       recurrence:
@@ -330,6 +337,7 @@ class CustomerOrder {
       'siteName': _trimmedOrNull(siteName),
       'customerName': customerName.trim(),
       'customerContact': _trimmedOrNull(customerContact),
+      'contactId': _trimmedOrNull(contactId),
       'orderNumber': _trimmedOrNull(orderNumber),
       'status': status.value,
       'recurrence': recurrence.value,
@@ -351,6 +359,7 @@ class CustomerOrder {
       'site_name': siteName,
       'customer_name': customerName,
       'customer_contact': customerContact,
+      'contact_id': contactId,
       'order_number': orderNumber,
       'status': status.value,
       'recurrence': recurrence.value,
@@ -371,6 +380,7 @@ class CustomerOrder {
     String? siteName,
     String? customerName,
     String? customerContact,
+    String? contactId,
     String? orderNumber,
     CustomerOrderStatus? status,
     CustomerOrderRecurrence? recurrence,
@@ -380,6 +390,7 @@ class CustomerOrder {
     DateTime? preparedAt,
     bool clearSiteName = false,
     bool clearCustomerContact = false,
+    bool clearContactId = false,
     bool clearOrderNumber = false,
     bool clearNotes = false,
     bool clearPickupDate = false,
@@ -397,6 +408,7 @@ class CustomerOrder {
       customerContact: clearCustomerContact
           ? null
           : (customerContact ?? this.customerContact),
+      contactId: clearContactId ? null : (contactId ?? this.contactId),
       orderNumber: clearOrderNumber ? null : (orderNumber ?? this.orderNumber),
       status: status ?? this.status,
       recurrence: recurrence ?? this.recurrence,

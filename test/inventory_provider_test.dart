@@ -291,6 +291,53 @@ void main() {
       expect(provider.recentMovements.single.reason, 'Verkauf');
     });
 
+    test('transferStock lagert zwischen Standorten um (gepaart)', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          siteName: 'Strichmännchen',
+          name: 'Feuerzeug',
+          currentStock: 10,
+        ),
+      );
+      await provider.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-2',
+          siteName: 'Tabak Börse',
+          name: 'Feuerzeug',
+          currentStock: 2,
+        ),
+      );
+      final from = provider.products.firstWhere((p) => p.siteId == 'site-1');
+      final to = provider.products.firstWhere((p) => p.siteId == 'site-2');
+
+      // Überzug -> Sperre.
+      expect(
+        await provider.transferStock(from: from, to: to, quantity: 99),
+        isNotNull,
+      );
+
+      final ok = await provider.transferStock(from: from, to: to, quantity: 4);
+      expect(ok, isNull);
+      expect(
+        provider.products.firstWhere((p) => p.siteId == 'site-1').currentStock,
+        6,
+      );
+      expect(
+        provider.products.firstWhere((p) => p.siteId == 'site-2').currentStock,
+        6,
+      );
+      // Zwei gepaarte transfer-Bewegungen.
+      final transfers = provider.recentMovements
+          .where((m) => m.type == StockMovementType.transfer)
+          .toList();
+      expect(transfers, hasLength(2));
+    });
+
     test('savePurchaseOrder vergibt eine lokale Bestellnummer', () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);

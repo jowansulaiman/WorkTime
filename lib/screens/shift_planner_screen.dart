@@ -23,7 +23,7 @@ import 'shift_planner/planner_logic.dart';
 part 'shift_planner/planner_cells.dart';
 part 'shift_planner/shift_editor_sheet.dart';
 
-enum ShiftPlanExportFormat { pdf, csv }
+enum ShiftPlanExportFormat { pdf, csv, ical }
 
 enum _PlannerLayoutMode { employee, location }
 
@@ -424,6 +424,10 @@ class ShiftPlannerScreen extends StatelessWidget {
                                 value: ShiftPlanExportFormat.csv,
                                 child: Text('Als CSV exportieren'),
                               ),
+                              PopupMenuItem(
+                                value: ShiftPlanExportFormat.ical,
+                                child: Text('Als Kalender (.ics)'),
+                              ),
                             ],
                             icon: const Icon(Icons.download_outlined),
                           ),
@@ -739,6 +743,12 @@ class ShiftPlannerScreen extends StatelessWidget {
             employeeLabel: employeeLabel,
             teamLabel: teamLabel,
           );
+        case ShiftPlanExportFormat.ical:
+          await ExportService.exportShiftPlanIcal(
+            shifts: shifts,
+            rangeStart: range.start,
+            rangeEnd: range.end,
+          );
       }
 
       if (!context.mounted) {
@@ -747,6 +757,7 @@ class ShiftPlannerScreen extends StatelessWidget {
       final label = switch (format) {
         ShiftPlanExportFormat.pdf => 'PDF',
         ShiftPlanExportFormat.csv => 'CSV',
+        ShiftPlanExportFormat.ical => 'Kalender',
       };
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Schichtplan als $label exportiert')),

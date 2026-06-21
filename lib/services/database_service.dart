@@ -10,6 +10,7 @@ import '../models/contact.dart';
 import '../models/customer_order.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/audit_log_entry.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
 import '../models/price_history_entry.dart';
@@ -81,6 +82,7 @@ class DatabaseService {
   static const _workTasksKey = 'work_tasks';
   static const _payrollRecordsKey = 'payroll_records';
   static const _payrollProfilesKey = 'payroll_profiles';
+  static const _auditLogKey = 'audit_log';
   static const _localAuthUserIdKey = 'local_auth_user_id';
   static const _settingsPrefix = 'setting_';
   static const _dataStorageLocationKey = 'data_storage_location';
@@ -123,6 +125,7 @@ class DatabaseService {
     _workTasksKey,
     _payrollRecordsKey,
     _payrollProfilesKey,
+    _auditLogKey,
   };
   static const _legacyWorkSettingKeys = <String>[
     'name',
@@ -522,6 +525,30 @@ class DatabaseService {
       key: _payrollProfilesKey,
       scope: scope,
       items: profiles,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<AuditLogEntry>> loadLocalAuditLog({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _auditLogKey,
+      scope: scope,
+      fromMap: AuditLogEntry.fromMap,
+      compare: (a, b) => (b.createdAt ?? DateTime(0))
+          .compareTo(a.createdAt ?? DateTime(0)),
+    );
+  }
+
+  static Future<void> saveLocalAuditLog(
+    List<AuditLogEntry> entries, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _auditLogKey,
+      scope: scope,
+      items: entries,
       toMap: (item) => item.toMap(),
     );
   }

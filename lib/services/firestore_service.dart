@@ -16,6 +16,7 @@ import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
 import '../models/product.dart';
 import '../models/customer_order.dart';
+import '../models/audit_log_entry.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
 import '../models/purchase_order.dart';
@@ -900,6 +901,28 @@ class FirestoreService {
     required String userId,
   }) {
     return _payrollProfileCollection(orgId).doc(userId).delete();
+  }
+
+  CollectionReference<Map<String, dynamic>> _auditLogCollection(String orgId) =>
+      _organizationDoc(orgId).collection('auditLog');
+
+  /// Letzte Audit-Einträge (nach Zeit absteigend). Single-Field-orderBy →
+  /// kein Composite-Index nötig.
+  Stream<List<AuditLogEntry>> watchAuditLog(String orgId, {int limit = 200}) {
+    return _auditLogCollection(orgId)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => AuditLogEntry.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Hängt einen Audit-Eintrag an (append-only, Auto-ID, serverTimestamp).
+  Future<void> appendAuditLog(AuditLogEntry entry) async {
+    await _auditLogCollection(entry.orgId).add(entry.toFirestoreMap());
   }
 
   Future<void> saveSiteAssignments({

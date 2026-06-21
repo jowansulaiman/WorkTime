@@ -70,7 +70,7 @@ class _EmployeeDashboardTab extends StatelessWidget {
                 provider: work,
               ),
               const SizedBox(height: 16),
-              const CustomerOrderWarningBanner(parentLabel: 'Heute'),
+              const DashboardActionItemsCard(parentLabel: 'Heute'),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [
@@ -953,7 +953,7 @@ class _AdminDashboardTab extends StatelessWidget {
                 siteCount: todaySites.toSet().length,
               ),
               const SizedBox(height: 16),
-              const CustomerOrderWarningBanner(parentLabel: 'Heute'),
+              const DashboardActionItemsCard(parentLabel: 'Heute'),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [

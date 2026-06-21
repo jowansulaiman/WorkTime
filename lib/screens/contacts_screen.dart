@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../core/contact_csv_import.dart';
+import '../core/contact_dedup.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/site_definition.dart';
+import '../providers/audit_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/contact_provider.dart';
 import '../providers/team_provider.dart';
@@ -211,6 +215,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
           enabled: filtered.isNotEmpty && !_exporting,
           busy: _exporting,
           onSelected: (asCsv) => _export(filtered, sites, asCsv: asCsv),
+        ),
+        IconButton(
+          tooltip: 'Kontakte aus CSV importieren',
+          icon: const Icon(Icons.file_upload_outlined),
+          onPressed: _importCsv,
         ),
       ],
     );
@@ -435,6 +444,86 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
   }
 
+  Future<void> _importCsv() async {
+    final profile = context.read<AuthProvider>().profile;
+    if (profile == null || !profile.canManageContacts) {
+      _snack('Keine Berechtigung zum Importieren.', isError: true);
+      return;
+    }
+    final controller = TextEditingController();
+    final start = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Kontakte aus CSV importieren'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'CSV-Inhalt einfügen (deutsches Excel, mit „;" getrennt). '
+                'Erste Zeile = Spaltennamen, z.B. '
+                'Name;Kategorie;E-Mail;Telefon;PLZ;Ort.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                minLines: 5,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'Name;Kategorie;E-Mail;Telefon\n…',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Einlesen'),
+          ),
+        ],
+      ),
+    );
+    if (start != true || !mounted) {
+      return;
+    }
+    final result =
+        ContactCsvImport.parse(controller.text, orgId: profile.orgId);
+    if (!result.hasContacts) {
+      _snack(
+        'Keine Kontakte gefunden. '
+        '${result.errors.isNotEmpty ? result.errors.first : ''}',
+        isError: true,
+      );
+      return;
+    }
+    final proceed = await AppConfirmDialog.show(
+      context,
+      title: 'Importieren?',
+      message: '${result.contacts.length} Kontakt(e) werden importiert'
+          '${result.errors.isNotEmpty ? ', ${result.errors.length} Zeile(n) übersprungen' : ''}.',
+      icon: Icons.file_upload_outlined,
+      confirmLabel: 'Importieren',
+    );
+    if (!proceed || !mounted) {
+      return;
+    }
+    try {
+      final count =
+          await context.read<ContactProvider>().importContacts(result.contacts);
+      _snack('$count Kontakt(e) importiert.');
+    } catch (error) {
+      _snack('Import fehlgeschlagen: $error', isError: true);
+    }
+  }
+
   Future<void> _openDetail(Contact contact) async {
     final canManage =
         context.read<AuthProvider>().profile?.canManageContacts ?? false;
@@ -472,6 +561,26 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (!mounted || result == null) {
       return;
     }
+    // Dubletten-Hinweis nur beim Neuanlegen (in-memory, keine extra Reads).
+    if (contact == null) {
+      final dups = ContactDedup.findDuplicates(
+        result,
+        context.read<ContactProvider>().contacts,
+      );
+      if (dups.isNotEmpty) {
+        final proceed = await AppConfirmDialog.show(
+          context,
+          title: 'Möglicherweise doppelt',
+          message: 'Es gibt bereits einen ähnlichen Kontakt: '
+              '„${dups.first.contact.name}". Trotzdem neu anlegen?',
+          icon: Icons.people_alt_outlined,
+          confirmLabel: 'Trotzdem anlegen',
+        );
+        if (!proceed || !mounted) {
+          return;
+        }
+      }
+    }
     try {
       await context.read<ContactProvider>().saveContact(result);
       _snack(contact == null
@@ -492,8 +601,15 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (!confirmed || !mounted || contact.id == null) {
       return;
     }
+    final audit = context.read<AuditProvider>();
     try {
       await context.read<ContactProvider>().deleteContact(contact.id!);
+      await audit.log(
+        action: AuditAction.deleted,
+        entityType: 'Kontakt',
+        entityId: contact.id,
+        summary: 'Kontakt „${contact.name}" gelöscht.',
+      );
       _snack('Kontakt gelöscht.');
     } catch (error) {
       _snack('Löschen fehlgeschlagen: $error', isError: true);

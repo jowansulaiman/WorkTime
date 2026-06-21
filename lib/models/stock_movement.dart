@@ -16,6 +16,9 @@ enum StockMovementType {
 
   /// Inventur / Bestandsaufnahme.
   stocktake,
+
+  /// Umlagerung zwischen zwei Standorten (gepaart: Abgang @A + Eingang @B).
+  transfer,
 }
 
 extension StockMovementTypeX on StockMovementType {
@@ -24,6 +27,7 @@ extension StockMovementTypeX on StockMovementType {
         StockMovementType.issue => 'issue',
         StockMovementType.adjustment => 'adjustment',
         StockMovementType.stocktake => 'stocktake',
+        StockMovementType.transfer => 'transfer',
       };
 
   String get label => switch (this) {
@@ -31,12 +35,14 @@ extension StockMovementTypeX on StockMovementType {
         StockMovementType.issue => 'Abgang',
         StockMovementType.adjustment => 'Korrektur',
         StockMovementType.stocktake => 'Inventur',
+        StockMovementType.transfer => 'Umlagerung',
       };
 
   static StockMovementType fromValue(String? value) => switch (value) {
         'receipt' => StockMovementType.receipt,
         'issue' => StockMovementType.issue,
         'stocktake' => StockMovementType.stocktake,
+        'transfer' => StockMovementType.transfer,
         _ => StockMovementType.adjustment,
       };
 }

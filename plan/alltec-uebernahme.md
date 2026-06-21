@@ -1,8 +1,17 @@
 # Plan: AllTec-Erkenntnisse in WorkTime übernehmen + Bestehendes verbessern
 
-> **Status (Stand 2026-06-21):** Sofort-Scope **M0 + M1 umgesetzt & verifiziert**
-> (`flutter analyze` sauber, `flutter test` = 400 grün). Nächster Schritt: **M2**.
-> Vollständiger Fahrplan unten; Governance = Ausblick, Audit-Trail fest in M5.
+> **Status (Stand 2026-06-21):** **M0–M2 vollständig; M3 (Navigation+Aktionspunkte);
+> M4 vollständig; M5 (Money+Audit-Trail+Lohn-Korrekturen, ohne PdfTheme); M6 (Doku+Test);
+> M7 (Umlagerung+Bestellpos↔Artikel+iCal)** — alle umgesetzt, durch ein **adversariales
+> Multi-Agent-Review** geprüft (8 Funde, 7 behoben: stockMovements-Rule fehlte `transfer`,
+> auditLog-Rule `actorUid`-Pinning, transferStock-Kompensation bei Teilfehler, CSV-Parser
+> quote-bewusste Zeilenumbrüche, iCal CRLF, Money de_DE-Parse, PayrollSettings-Serialisierung;
+> 1 Low-Sev Midijob-Grenzfall offen) und verifiziert (`flutter analyze` sauber, `flutter test`
+> = 434 grün).
+> **Bewusst offen:** persistenter NotificationProvider (M3-Rest, Nutzer-Deferral wg.
+> Scanner-Parallelarbeit); M5b PdfTheme (kosmetisch); M7c Lieferanten-Felder/Aktivitäten,
+> M7d Serien-Schicht-Bearbeitung, M7f Lohn-Status/Stundenkonto (kleinere Nachzügler).
+> Governance-Abschnitt 4 (DSGVO/Rechte-Matrix/Secure-Storage) bleibt Ausblick.
 
 ## Kontext
 
@@ -82,29 +91,32 @@ Neues `lib/models/payroll_profile.dart` (Doc-ID = userId, admin-only), Plumbing 
 
 ## 3. ANSCHLUSS-FAHRPLAN (offen, Meilenstein für Meilenstein, jeweils Check-in)
 
-### M2 — Geschäftswert sichtbar machen · [P1, mehrheitlich klein]  ← NÄCHSTER SCHRITT
-- **Warenwert + Marge** [Übernahme: AllTec `costPriceCents`-Intent]: reine Getter auf `InventoryProvider`
-  `totalStockValueCents({siteId})` = Σ(`currentStock` × `purchasePriceCents`) je Standort + gesamt; Marge-Getter
-  auf `Product` (WorkTime hat zusätzlich `sellingPriceCents`). Keine Schema-/Firestore-Änderung. Anzeige im
-  Inventar-Header + V2-Admin-Dashboard („Warenwert Strichmännchen: 1.240,50 €").
-- **Export erweitern** [Verbesserung]: Bestandsliste, Nachbestell-Liste und Lieferantenbestellungen als PDF+CSV
-  (heute nur Kundenbestellungen). Bestehendes `PdfService`/`ExportService`-Muster (UTF-8-BOM, `;`) wiederverwenden.
-  „Bestellt" zur echten Aktion machen: PO-PDF + vorausgefüllter `mailto:` an `supplier.effectiveOrderEmail`.
-- **Zwei-Schwellen-Nachbestellung** [Übernahme: AllTec `Article.targetStock`]: `targetStock` („Zielbestand", int=0)
-  an `Product`; `suggestedReorderQuantity` bevorzugt `(targetStock − currentStock)` statt `minStock*2`-Schätzung.
-- **Proaktive Nachbestell-Warnung** [Verbesserung, klein]: `lowStockProducts` in **exakt** das bewährte
-  `ordersDueSoonNotPrepared`-Muster einspeisen (Listen-Banner + Home-Dashboard + Benachrichtigungs-Center).
+### ✅ M2 — Geschäftswert sichtbar machen · [P1] — ERLEDIGT
+- ✅ **Warenwert + Marge**: Getter `totalStockValuePurchaseCents/Selling/Margin({siteId})` auf
+  `InventoryProvider` + `marginCents`/`marginPercent`/`stockValue*Cents` auf `Product`. Anzeige als
+  „Warenwert: … · Spanne: …" im Bestand-Tab-Header (standortabhängig). Tests in `inventory_models_test`/`inventory_provider_test`.
+- ✅ **Zwei-Schwellen-Nachbestellung**: `targetStock` („Zielbestand") an `Product` (6 Touchpoints + Dialogfeld);
+  `suggestedReorderQuantity` = `reorderQuantity` → `(targetStock − currentStock)` → `minStock*2`. Test.
+- ✅ **Export**: Bestandsliste + Nachbestell-Liste als **PDF + CSV** (`PdfService.generateStockListReport`/
+  `generateReorderListReport`, `ExportService.export{StockList,ReorderList}{Pdf,Csv}`, UTF-8-BOM/`;`),
+  Export-Menü in der Warenwirtschafts-Toolbar. Test `inventory_export_test`.
+- ✅ **Proaktive Nachbestell-Warnung**: `LowStockWarningBanner` (`lib/widgets/`) auf V1- **und** V2-Dashboards
+  (neben der Kundenbestell-Warnung) + gebündelter Eintrag im Benachrichtigungs-Center; Listen-Banner (`_ReorderBanner`) existierte bereits.
+- **Offen / verschoben:** Lieferantenbestellung als PDF + `mailto:`-Versand an `supplier.effectiveOrderEmail`
+  (Teil von M2 „Export") → in die Lieferanten-Bestell-Schleife (Nähe M7) verschoben.
 
-### M3 — Navigation + Benachrichtigungs-Rückgrat · [P1, mittel]
-- **Persistenter `NotificationProvider` + `ReminderScheduler`** [Übernahme: AllTec `Reminder`/`AppNotification`]:
-  dauerhafte, abhakbare Hinweise statt pro-Frame berechneter Inbox. Clientseitig erzeugt,
-  SharedPreferences-persistiert, deterministische IDs (`order-<id>-pickup`). Kein Functions-Fanout.
-- **Module als echte Shell-Tabs** [Verbesserung, CLAUDE.md Kopplung 7]: Warenwirtschaft/Kundenbestellungen/Personal
-  zu permission-gegateten `_ShellDestinationId`-Einträgen heben (via `destinations.indexWhere`).
-- **„Hinweise & Aktionspunkte"-Karte** [Übernahme: AllTec `DashboardWarning`/`WarningListCard`]: severity-sortierte
-  Sammelkarte statt verstreuter Banner; Farben via `appColors`, „link" = Tab-ID statt Route.
+### ⏳ M3 — Navigation + Benachrichtigungs-Rückgrat · [P1] — TEILWEISE ERLEDIGT
+- ✅ **Sammel-Tab „Laden"** (Nutzer-Entscheidung statt 3 Einzel-Tabs → kein Bottom-Nav-Überlauf):
+  neuer `_ShellDestinationId.shop` + `_ShopHubTab` (Hub mit Schnellzugriff auf Warenwirtschaft/
+  Kundenbestellungen/Personal-admin). Bewusst Hub statt Unter-Tabs, weil die Module selbst Tab-Screens sind.
+- ✅ **„Hinweise & Aktionspunkte"-Karte** [Übernahme: AllTec `DashboardWarning`/`WarningListCard`]:
+  `DashboardActionItemsCard` (`lib/widgets/`) — severity-sortiert (überfällige > bald fällige Bestellungen >
+  Low-Stock), Farben via `appColors`, **ersetzt** die zwei Einzel-Banner auf V1- und V2-Dashboards. Widget-Test.
+- ⏳ **Aufgeschoben (Nutzer-Entscheidung):** der persistente `NotificationProvider` + `ReminderScheduler`
+  (dauerhaft/abhakbar/geplante Erinnerungen) — später angehen, wenn das parallele Scanner-Modul steht
+  (greift in die tragende main.dart-Kette + die in Arbeit befindliche notification_screen.dart ein).
 
-### M4 — CRM-Verknüpfung + Konsistenz · [P1/P2]
+### M4 — CRM-Verknüpfung + Konsistenz · [P1/P2]  ← NÄCHSTER SCHRITT
 - **`contactId` an `CustomerOrder`** [#1 offene Erweiterung in `docs/kundenbestellungen.md`]: optionales
   `contactId` + wiederverwendbares `ContactPickerField` (`lib/widgets/`) liest In-Memory-`ContactProvider`.
 - **Dublettenerkennung** [Übernahme: AllTec `ContactMergeService.findDuplicates`]: reine Funktion nach

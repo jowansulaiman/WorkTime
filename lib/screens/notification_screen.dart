@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models/absence_request.dart';
 import '../models/customer_order.dart';
+import '../models/product.dart';
 import '../models/shift.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
@@ -101,6 +102,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
     final canManageInventory = currentUser?.canManageInventory ?? false;
     final dueCustomerOrders =
         canViewInventory ? inventory.ordersDueSoonNotPrepared() : <CustomerOrder>[];
+    final lowStock =
+        canViewInventory ? inventory.lowStockProducts() : <Product>[];
     final canManageShifts = currentUser?.canManageShifts ?? false;
     final isTeamLead = currentUser?.isTeamLead ?? false;
     final canCreateOwnRequests =
@@ -144,6 +147,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
       pendingSwaps: pendingSwaps,
       upcomingOwnShifts: upcomingOwnShifts,
       dueCustomerOrders: dueCustomerOrders,
+      lowStockProducts: lowStock,
       canManageInventory: canManageInventory,
     );
     final filteredItems = items.where((item) => _matchesFilter(item)).toList()
@@ -391,6 +395,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
     required List<Shift> pendingSwaps,
     required List<Shift> upcomingOwnShifts,
     required List<CustomerOrder> dueCustomerOrders,
+    required List<Product> lowStockProducts,
     required bool canManageInventory,
   }) {
     final schedule = context.read<ScheduleProvider>();
@@ -678,6 +683,23 @@ class _NotificationScreenState extends State<NotificationScreen> {
                 },
               ),
           ],
+        ),
+      );
+    }
+
+    // Artikel unter Meldebestand: als eine gebuendelte Nachbestell-Warnung.
+    if (lowStockProducts.isNotEmpty) {
+      final names = lowStockProducts.take(4).map((p) => p.name).join(', ');
+      final more = lowStockProducts.length > 4 ? ' …' : '';
+      items.add(
+        _InboxItem(
+          kind: _InboxItemKind.update,
+          icon: Icons.inventory_2_outlined,
+          title: '${lowStockProducts.length} Artikel nachbestellen',
+          subtitle: '$names$more',
+          time: now,
+          color: warningColor,
+          badge: 'Nachbestellen',
         ),
       );
     }

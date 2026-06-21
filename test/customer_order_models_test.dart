@@ -9,6 +9,7 @@ void main() {
         siteName: 'Tabak Boerse',
         customerName: 'Herr Schmidt',
         customerContact: '0151 2345678',
+        contactId: 'contact-99',
         orderNumber: 'KB-2026-0007',
         status: CustomerOrderStatus.prepared,
         recurrence: CustomerOrderRecurrence.weekly,
@@ -156,6 +157,7 @@ void main() {
       expect(restored.id, 'co-1');
       expect(restored.customerName, 'Herr Schmidt');
       expect(restored.customerContact, '0151 2345678');
+      expect(restored.contactId, 'contact-99');
       expect(restored.orderNumber, 'KB-2026-0007');
       expect(restored.status, CustomerOrderStatus.prepared);
       expect(restored.recurrence, CustomerOrderRecurrence.weekly);
@@ -174,6 +176,7 @@ void main() {
       expect(map['totalCents'], 5 * 650);
       final restored = CustomerOrder.fromFirestore('co-1', map);
       expect(restored.customerName, 'Herr Schmidt');
+      expect(restored.contactId, 'contact-99');
       expect(restored.status, CustomerOrderStatus.prepared);
       expect(restored.recurrence, CustomerOrderRecurrence.weekly);
       expect(restored.pickupDate, DateTime(2026, 6, 19, 12));

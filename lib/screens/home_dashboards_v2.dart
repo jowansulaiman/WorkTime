@@ -68,7 +68,7 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
               SizedBox(height: spacing.lg),
               _EmployeeHeroCardV2(nextShift: nextShift, provider: work),
               SizedBox(height: spacing.md),
-              const CustomerOrderWarningBanner(parentLabel: 'Heute'),
+              const DashboardActionItemsCard(parentLabel: 'Heute'),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [
@@ -648,7 +648,7 @@ class _AdminDashboardTabV2 extends StatelessWidget {
                 siteCount: todaySites.toSet().length,
               ),
               SizedBox(height: spacing.md),
-              const CustomerOrderWarningBanner(parentLabel: 'Heute'),
+              const DashboardActionItemsCard(parentLabel: 'Heute'),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [

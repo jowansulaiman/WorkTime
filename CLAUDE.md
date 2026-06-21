@@ -73,10 +73,18 @@ firestore.rules · firestore.indexes.json · docs/firebase_setup.md
 
 ```
 AuthProvider(.value, vor runApp init'd) → ThemeProvider → StorageModeProvider
-  → TeamProvider (Proxy2<Auth,Storage>)        // einziger Produzent von Stammdaten
+  → FeatureFlagProvider (Proxy2<Auth,Storage>)  // erster Proxy, von _AuthGate gelesen
+  → TeamProvider (Proxy2<Auth,Storage>)         // einziger Produzent von Stammdaten
   → ScheduleProvider (Proxy3<Auth,Team,Storage>)
+  → InventoryProvider (Proxy2<Auth,Storage>)    // Warenwirtschaft + Kundenbestellungen
+  → ContactProvider (Proxy2<Auth,Storage>)      // Kontakte
+  → AuditProvider (Proxy2<Auth,Storage>)        // Änderungsprotokoll (best-effort)
+  → PersonalProvider (Proxy3<Auth,Team,Storage>)// HR (workTasks/payrollRecords/-Profiles)
   → WorkProvider (Proxy4<Auth,Team,Storage,Schedule>)
 ```
+> Inventory/Contact/Audit/Personal lösen ihr Cloud-Repository **lazy** auf (nie im
+> Konstruktor) — sonst Crash im `APP_DISABLE_AUTH`/Web-Modus. Neue abhängige
+> Provider weiterhin DANACH einfügen.
 - Jeder Proxy ruft `provider.updateSession(auth.profile, localStorageOnly: storage.isLocalOnly, hybridStorageEnabled: storage.isHybrid)`. `updateSession` ist `async`, der Proxy-Callback aber sync → wird via `_dispatchProviderUpdate` **fire-and-forget** ausgeführt; Fehler werden nur per `debugPrint` geloggt. **Nie annehmen, dass updateSession beim Rebuild fertig ist.**
 - `TeamProvider` schiebt seine Listen synchron via `updateReferenceData(...)` in Schedule/Work (die lesen Stammdaten nie selbst). Diese Setter rufen kein `notifyListeners` (sonst Rebuild-Loops).
 - `WorkProvider` bekommt zusätzlich die lebende `ScheduleProvider`-Instanz via `updateScheduleProvider` (markiert Schicht als completed bei Entry-Save). Einziger direkter Provider→Provider-Call.

@@ -863,6 +863,72 @@ class InventoryProvider extends ChangeNotifier {
     return null;
   }
 
+  /// Lagert [quantity] Stück von [from] (Quelle) nach [to] (Ziel) um — bucht
+  /// einen gepaarten Abgang an der Quelle und Eingang am Ziel (Typ transfer).
+  /// Gibt `null` bei Erfolg oder eine deutsche Fehlermeldung zurück (z.B.
+  /// Bestandsüberzug). Für den Multi-Standort-Betrieb (Strichmännchen ↔ Tabak
+  /// Börse): ein Artikel existiert je Laden als eigener Datensatz.
+  Future<String?> transferStock({
+    required Product from,
+    required Product to,
+    required int quantity,
+  }) async {
+    if (quantity <= 0) {
+      return 'Bitte eine Menge größer als 0 eingeben.';
+    }
+    if (from.id == null || to.id == null) {
+      return 'Artikel ist noch nicht gespeichert.';
+    }
+    if (from.id == to.id) {
+      return 'Quelle und Ziel müssen unterschiedlich sein.';
+    }
+    if (from.currentStock - quantity < 0) {
+      return 'Menge ($quantity) übersteigt den Bestand der Quelle '
+          '(${from.currentStock} ${from.unit}).';
+    }
+    final toLabel = to.siteName ?? 'Ziel';
+    final fromLabel = from.siteName ?? 'Quelle';
+    // Die Umlagerung sind zwei getrennte (je atomare) Buchungen. Im cloud-only-
+    // Modus kann adjustStock rethrowen -> dann darf der bereits gebuchte Abgang
+    // an der Quelle nicht verloren gehen: bei Fehler am Ziel kompensieren wir
+    // die Quellbuchung wieder (best-effort) und melden den Fehler.
+    try {
+      await adjustStock(
+        productId: from.id!,
+        delta: -quantity,
+        type: StockMovementType.transfer,
+        reason: 'Umlagerung nach $toLabel',
+      );
+    } catch (error) {
+      return 'Umlagerung fehlgeschlagen (Quelle wurde nicht belastet).';
+    }
+    try {
+      await adjustStock(
+        productId: to.id!,
+        delta: quantity,
+        type: StockMovementType.transfer,
+        reason: 'Umlagerung von $fromLabel',
+      );
+    } catch (error) {
+      // Ziel-Buchung fehlgeschlagen -> Abgang an der Quelle zurücknehmen.
+      try {
+        await adjustStock(
+          productId: from.id!,
+          delta: quantity,
+          type: StockMovementType.transfer,
+          reason: 'Storno Umlagerung (Ziel-Buchung fehlgeschlagen)',
+        );
+      } catch (_) {
+        // Kompensation selbst fehlgeschlagen -> in den Fehlertext aufnehmen.
+        return 'Umlagerung am Ziel fehlgeschlagen; Quellbuchung konnte NICHT '
+            'automatisch zurückgenommen werden – bitte Bestand prüfen.';
+      }
+      return 'Umlagerung am Ziel fehlgeschlagen – Quellbuchung wurde '
+          'zurückgenommen.';
+    }
+    return null;
+  }
+
   // --- Bestellungen -------------------------------------------------------
 
   /// Speichert eine Bestellung und gibt deren Id zurueck.

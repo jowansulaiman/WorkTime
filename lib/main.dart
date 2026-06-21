@@ -16,6 +16,7 @@ import 'core/app_logger.dart';
 import 'core/error_reporter.dart';
 import 'core/redesign_flags.dart';
 import 'firebase_options.dart';
+import 'providers/audit_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/contact_provider.dart';
 import 'providers/feature_flag_provider.dart';
@@ -309,6 +310,24 @@ class WorkTimeApp extends StatelessWidget {
               ),
               'ContactProvider.updateSession',
               onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
+            AuditProvider>(
+          create: (_) => AuditProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, provider) {
+            provider ??= AuditProvider(firestoreService: firestoreService);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'AuditProvider.updateSession',
             );
             return provider;
           },

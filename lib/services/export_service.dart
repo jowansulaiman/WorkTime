@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:intl/intl.dart';
 
+import '../core/ical_export.dart';
 import '../core/personnel_cost.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
@@ -82,6 +83,23 @@ class ExportService {
         extension: 'csv',
       ),
       mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static Future<void> exportShiftPlanIcal({
+    required List<Shift> shifts,
+    required DateTime rangeStart,
+    required DateTime rangeEnd,
+  }) async {
+    final ical = IcalExport.buildShifts(shifts);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(ical)),
+      fileName: _shiftPlanFileName(
+        rangeStart: rangeStart,
+        rangeEnd: rangeEnd,
+        extension: 'ics',
+      ),
+      mimeType: 'text/calendar;charset=utf-8',
     );
   }
 
