@@ -8,10 +8,14 @@
 > quote-bewusste Zeilenumbrüche, iCal CRLF, Money de_DE-Parse, PayrollSettings-Serialisierung;
 > 1 Low-Sev Midijob-Grenzfall offen) und verifiziert (`flutter analyze` sauber, `flutter test`
 > = 434 grün).
+> **M7c ergänzt (2026-06-21, auf main):** Lieferanten-Einkaufsfelder
+> (minOrderQuantity/packagingUnit) + Nachbestell-Aufrundung; Kontakthistorie
+> (eingebettete `ContactActivity`-Liste + „Verlauf"/„Aktivität erfassen"). 438 Tests grün.
+> Alles auf `main` gemergt (FF), 75 Commits vor `origin/main` (noch **kein Push**).
+>
 > **Bewusst offen:** persistenter NotificationProvider (M3-Rest, Nutzer-Deferral wg.
-> Scanner-Parallelarbeit); M5b PdfTheme (kosmetisch); M7c Lieferanten-Felder/Aktivitäten,
-> M7d Serien-Schicht-Bearbeitung, M7f Lohn-Status/Stundenkonto (kleinere Nachzügler).
-> Governance-Abschnitt 4 (DSGVO/Rechte-Matrix/Secure-Storage) bleibt Ausblick.
+> Scanner-Parallelarbeit); M5b PdfTheme (kosmetisch); M7d Serien-Schicht-Bearbeitung,
+> M7f Lohn-Status/Stundenkonto. Governance-Abschnitt 4 (DSGVO/Rechte-Matrix/Secure-Storage) = Ausblick.
 
 ## Kontext
 
