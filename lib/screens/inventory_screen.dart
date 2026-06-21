@@ -1488,6 +1488,8 @@ class _SupplierDialogState extends State<_SupplierDialog> {
   late final TextEditingController _orderEmail;
   late final TextEditingController _customerNumber;
   late final TextEditingController _leadTime;
+  late final TextEditingController _minOrder;
+  late final TextEditingController _packaging;
   late final TextEditingController _notes;
 
   @override
@@ -1503,6 +1505,9 @@ class _SupplierDialogState extends State<_SupplierDialog> {
         TextEditingController(text: supplier?.customerNumber ?? '');
     _leadTime = TextEditingController(
         text: supplier?.leadTimeDays?.toString() ?? '');
+    _minOrder = TextEditingController(
+        text: supplier?.minOrderQuantity?.toString() ?? '');
+    _packaging = TextEditingController(text: supplier?.packagingUnit ?? '');
     _notes = TextEditingController(text: supplier?.notes ?? '');
   }
 
@@ -1515,6 +1520,8 @@ class _SupplierDialogState extends State<_SupplierDialog> {
     _orderEmail.dispose();
     _customerNumber.dispose();
     _leadTime.dispose();
+    _minOrder.dispose();
+    _packaging.dispose();
     _notes.dispose();
     super.dispose();
   }
@@ -1567,12 +1574,37 @@ class _SupplierDialogState extends State<_SupplierDialog> {
                   decoration:
                       const InputDecoration(labelText: 'Eigene Kundennr.'),
                 ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _leadTime,
+                        decoration: const InputDecoration(
+                            labelText: 'Lieferzeit (Tage)'),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _minOrder,
+                        decoration: const InputDecoration(
+                            labelText: 'Mindestbestellmenge'),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
                 TextFormField(
-                  controller: _leadTime,
-                  decoration:
-                      const InputDecoration(labelText: 'Lieferzeit (Tage)'),
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  controller: _packaging,
+                  decoration: const InputDecoration(
+                      labelText: 'Gebinde / Verpackungseinheit'),
                 ),
                 TextFormField(
                   controller: _notes,
@@ -1618,6 +1650,10 @@ class _SupplierDialogState extends State<_SupplierDialog> {
       clearCustomerNumber: _customerNumber.text.trim().isEmpty,
       leadTimeDays: int.tryParse(_leadTime.text.trim()),
       clearLeadTimeDays: _leadTime.text.trim().isEmpty,
+      minOrderQuantity: int.tryParse(_minOrder.text.trim()),
+      clearMinOrderQuantity: _minOrder.text.trim().isEmpty,
+      packagingUnit: trimOrNull(_packaging.text),
+      clearPackagingUnit: _packaging.text.trim().isEmpty,
       notes: trimOrNull(_notes.text),
       clearNotes: _notes.text.trim().isEmpty,
     );

@@ -308,6 +308,15 @@ class InventoryProvider extends ChangeNotifier {
     required String siteId,
     required String supplierId,
   }) {
+    // Mindestbestellmenge des Lieferanten (falls gepflegt) -> Vorschlag darauf
+    // anheben, damit die Bestellung die Vorgabe des Lieferanten erfüllt.
+    var minOrder = 0;
+    for (final supplier in _suppliers) {
+      if (supplier.id == supplierId) {
+        minOrder = supplier.minOrderQuantity ?? 0;
+        break;
+      }
+    }
     return _products
         .where((product) =>
             product.isActive &&
@@ -315,14 +324,20 @@ class InventoryProvider extends ChangeNotifier {
             product.supplierId == supplierId &&
             product.needsReorder)
         .map(
-          (product) => PurchaseOrderItem(
-            productId: product.id,
-            name: product.name,
-            sku: product.sku,
-            unit: product.unit,
-            quantityOrdered: product.suggestedReorderQuantity,
-            unitPriceCents: product.purchasePriceCents,
-          ),
+          (product) {
+            var quantity = product.suggestedReorderQuantity;
+            if (minOrder > quantity) {
+              quantity = minOrder;
+            }
+            return PurchaseOrderItem(
+              productId: product.id,
+              name: product.name,
+              sku: product.sku,
+              unit: product.unit,
+              quantityOrdered: quantity,
+              unitPriceCents: product.purchasePriceCents,
+            );
+          },
         )
         .toList(growable: false);
   }

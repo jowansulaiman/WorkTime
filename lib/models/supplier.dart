@@ -18,6 +18,8 @@ class Supplier {
     this.orderEmail,
     this.customerNumber,
     this.leadTimeDays,
+    this.minOrderQuantity,
+    this.packagingUnit,
     this.notes,
     this.isActive = true,
     this.createdByUid,
@@ -40,6 +42,13 @@ class Supplier {
 
   /// Uebliche Lieferzeit in Tagen.
   final int? leadTimeDays;
+
+  /// Mindestbestellmenge des Lieferanten (Nachbestellmengen werden hierauf
+  /// aufgerundet).
+  final int? minOrderQuantity;
+
+  /// Gebindegroesse / Verpackungseinheit (z.B. "Karton à 10").
+  final String? packagingUnit;
   final String? notes;
   final bool isActive;
   final String? createdByUid;
@@ -70,6 +79,8 @@ class Supplier {
       orderEmail: map['orderEmail'] as String?,
       customerNumber: map['customerNumber'] as String?,
       leadTimeDays: parse.toInt(map['leadTimeDays']),
+      minOrderQuantity: parse.toInt(map['minOrderQuantity']),
+      packagingUnit: map['packagingUnit'] as String?,
       notes: map['notes'] as String?,
       isActive: parse.toBool(map['isActive']) ?? true,
       createdByUid: map['createdByUid'] as String?,
@@ -89,6 +100,8 @@ class Supplier {
       orderEmail: map['order_email'] as String?,
       customerNumber: map['customer_number'] as String?,
       leadTimeDays: parse.toInt(map['lead_time_days']),
+      minOrderQuantity: parse.toInt(map['min_order_quantity']),
+      packagingUnit: map['packaging_unit'] as String?,
       notes: map['notes'] as String?,
       isActive: parse.toBool(map['is_active']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
@@ -108,6 +121,8 @@ class Supplier {
       'orderEmail': _trimmedOrNull(orderEmail),
       'customerNumber': _trimmedOrNull(customerNumber),
       'leadTimeDays': leadTimeDays,
+      'minOrderQuantity': minOrderQuantity,
+      'packagingUnit': _trimmedOrNull(packagingUnit),
       'notes': _trimmedOrNull(notes),
       'isActive': isActive,
       'createdByUid': createdByUid,
@@ -126,6 +141,8 @@ class Supplier {
       'order_email': orderEmail,
       'customer_number': customerNumber,
       'lead_time_days': leadTimeDays,
+      'min_order_quantity': minOrderQuantity,
+      'packaging_unit': packagingUnit,
       'notes': notes,
       'is_active': isActive,
       'created_by_uid': createdByUid,
@@ -144,6 +161,8 @@ class Supplier {
     String? orderEmail,
     String? customerNumber,
     int? leadTimeDays,
+    int? minOrderQuantity,
+    String? packagingUnit,
     String? notes,
     bool? isActive,
     bool clearContactPerson = false,
@@ -152,6 +171,8 @@ class Supplier {
     bool clearOrderEmail = false,
     bool clearCustomerNumber = false,
     bool clearLeadTimeDays = false,
+    bool clearMinOrderQuantity = false,
+    bool clearPackagingUnit = false,
     bool clearNotes = false,
     String? createdByUid,
     DateTime? createdAt,
@@ -170,6 +191,11 @@ class Supplier {
           clearCustomerNumber ? null : (customerNumber ?? this.customerNumber),
       leadTimeDays:
           clearLeadTimeDays ? null : (leadTimeDays ?? this.leadTimeDays),
+      minOrderQuantity: clearMinOrderQuantity
+          ? null
+          : (minOrderQuantity ?? this.minOrderQuantity),
+      packagingUnit:
+          clearPackagingUnit ? null : (packagingUnit ?? this.packagingUnit),
       notes: clearNotes ? null : (notes ?? this.notes),
       isActive: isActive ?? this.isActive,
       createdByUid: createdByUid ?? this.createdByUid,

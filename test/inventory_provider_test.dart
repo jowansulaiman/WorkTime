@@ -442,6 +442,33 @@ void main() {
       expect(provider.openOrders, hasLength(1));
     });
 
+    test('buildReorderItems hebt Vorschlag auf die Mindestbestellmenge', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveSupplier(
+        const Supplier(orgId: 'org-1', name: 'Nord', minOrderQuantity: 24),
+      );
+      final supplierId = provider.suppliers.single.id!;
+      await provider.saveProduct(
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Feuerzeug',
+          currentStock: 1,
+          minStock: 5, // Vorschlag wäre minStock*2 - 1 = 9
+          supplierId: supplierId,
+        ),
+      );
+
+      final items = provider.buildReorderItems(
+        siteId: 'site-1',
+        supplierId: supplierId,
+      );
+      expect(items, hasLength(1));
+      // 9 < 24 -> auf Mindestbestellmenge angehoben.
+      expect(items.single.quantityOrdered, 24);
+    });
+
     test('Warenwert/Marge: Aggregation gesamt und je Standort', () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);

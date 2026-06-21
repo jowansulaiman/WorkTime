@@ -17,6 +17,8 @@ void main() {
         phone: '0431 12345',
         customerNumber: 'KD-9981',
         leadTimeDays: 2,
+        minOrderQuantity: 24,
+        packagingUnit: 'Karton à 10',
         notes: 'Liefert dienstags',
       );
 
@@ -26,6 +28,8 @@ void main() {
       expect(restored.orderEmail, 'bestellung@thnord.de');
       expect(restored.customerNumber, 'KD-9981');
       expect(restored.leadTimeDays, 2);
+      expect(restored.minOrderQuantity, 24);
+      expect(restored.packagingUnit, 'Karton à 10');
     });
 
     test('effectiveOrderEmail falls back to the contact email', () {
