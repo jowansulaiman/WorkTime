@@ -7,6 +7,7 @@ import '../core/app_logger.dart';
 import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
 import '../models/contact.dart';
+import '../models/contact_activity.dart';
 import '../repositories/contact_repository.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
@@ -291,6 +292,18 @@ class ContactProvider extends ChangeNotifier {
       saved++;
     }
     return saved;
+  }
+
+  /// Fügt der Kontakthistorie eine Aktivität hinzu (neueste zuerst, gedeckelt
+  /// auf 50 Einträge) und speichert den Kontakt.
+  Future<void> addContactActivity(
+    Contact contact,
+    ContactActivity activity,
+  ) async {
+    final updated = contact.copyWith(
+      activities: [activity, ...contact.activities].take(50).toList(),
+    );
+    await saveContact(updated);
   }
 
   Future<void> deleteContact(String contactId) async {

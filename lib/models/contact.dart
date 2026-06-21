@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
+import 'contact_activity.dart';
 
 /// Art eines Kontakts (Kategorie fuer Filter und Gruppierung).
 ///
@@ -104,6 +105,7 @@ class Contact {
     this.siteId,
     this.siteName,
     this.tags = const [],
+    this.activities = const [],
     this.isFavorite = false,
     this.isActive = true,
     this.createdByUid,
@@ -141,6 +143,9 @@ class Contact {
 
   /// Freie Schlagworte zum zusaetzlichen Filtern.
   final List<String> tags;
+
+  /// Eingebettete Kontakthistorie (Anrufe, E-Mails, Notizen …), neueste zuerst.
+  final List<ContactActivity> activities;
 
   /// Als wichtig markiert (Favorit).
   final bool isFavorite;
@@ -213,6 +218,7 @@ class Contact {
       siteId: map['siteId'] as String?,
       siteName: map['siteName'] as String?,
       tags: _tagsFromList(map['tags']),
+      activities: _activitiesFromList(map['activities'], firestore: true),
       isFavorite: parse.toBool(map['isFavorite']) ?? false,
       isActive: parse.toBool(map['isActive']) ?? true,
       createdByUid: map['createdByUid'] as String?,
@@ -241,6 +247,7 @@ class Contact {
       siteId: map['site_id'] as String?,
       siteName: map['site_name'] as String?,
       tags: _tagsFromList(map['tags']),
+      activities: _activitiesFromList(map['activities'], firestore: false),
       isFavorite: parse.toBool(map['is_favorite']) ?? false,
       isActive: parse.toBool(map['is_active']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
@@ -269,6 +276,7 @@ class Contact {
       'siteId': _trimmedOrNull(siteId),
       'siteName': _trimmedOrNull(siteName),
       'tags': tags,
+      'activities': activities.map((a) => a.toFirestoreMap()).toList(),
       'isFavorite': isFavorite,
       'isActive': isActive,
       'createdByUid': createdByUid,
@@ -296,6 +304,7 @@ class Contact {
       'site_id': siteId,
       'site_name': siteName,
       'tags': tags,
+      'activities': activities.map((a) => a.toMap()).toList(),
       'is_favorite': isFavorite,
       'is_active': isActive,
       'created_by_uid': createdByUid,
@@ -323,6 +332,7 @@ class Contact {
     String? siteId,
     String? siteName,
     List<String>? tags,
+    List<ContactActivity>? activities,
     bool? isFavorite,
     bool? isActive,
     bool clearContactPerson = false,
@@ -362,12 +372,31 @@ class Contact {
       siteId: clearSite ? null : (siteId ?? this.siteId),
       siteName: clearSite ? null : (siteName ?? this.siteName),
       tags: tags ?? this.tags,
+      activities: activities ?? this.activities,
       isFavorite: isFavorite ?? this.isFavorite,
       isActive: isActive ?? this.isActive,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
+  }
+
+  static List<ContactActivity> _activitiesFromList(
+    dynamic value, {
+    required bool firestore,
+  }) {
+    if (value is! List) {
+      return const [];
+    }
+    return value
+        .whereType<Map>()
+        .map((item) {
+          final map = item.cast<String, dynamic>();
+          return firestore
+              ? ContactActivity.fromFirestoreMap(map)
+              : ContactActivity.fromMap(map);
+        })
+        .toList(growable: false);
   }
 
   static List<String> _tagsFromList(dynamic value) {

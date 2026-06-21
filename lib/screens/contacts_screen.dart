@@ -7,6 +7,7 @@ import '../core/contact_dedup.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
+import '../models/contact_activity.dart';
 import '../models/site_definition.dart';
 import '../providers/audit_provider.dart';
 import '../providers/auth_provider.dart';
@@ -544,6 +545,74 @@ class _ContactsScreenState extends State<ContactsScreen> {
         await _confirmDelete(contact);
       case _DetailAction.toggleFavorite:
         await context.read<ContactProvider>().toggleFavorite(contact);
+      case _DetailAction.addActivity:
+        await _addActivity(contact);
+    }
+  }
+
+  Future<void> _addActivity(Contact contact) async {
+    var type = ContactActivityType.note;
+    final noteController = TextEditingController();
+    final result = await showDialog<ContactActivity>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Aktivität erfassen'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<ContactActivityType>(
+                initialValue: type,
+                decoration: const InputDecoration(labelText: 'Art'),
+                items: [
+                  for (final t in ContactActivityType.values)
+                    DropdownMenuItem(value: t, child: Text(t.label)),
+                ],
+                onChanged: (value) {
+                  if (value != null) setState(() => type = value);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: noteController,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Notiz',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Abbrechen'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(
+                ContactActivity(
+                  type: type,
+                  occurredAt: DateTime.now(),
+                  note: noteController.text.trim().isEmpty
+                      ? null
+                      : noteController.text.trim(),
+                ),
+              ),
+              child: const Text('Speichern'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    try {
+      await context.read<ContactProvider>().addContactActivity(contact, result);
+      _snack('Aktivität erfasst.');
+    } catch (error) {
+      _snack('Speichern fehlgeschlagen: $error', isError: true);
     }
   }
 
@@ -632,7 +701,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 }
 
-enum _DetailAction { edit, delete, toggleFavorite }
+enum _DetailAction { edit, delete, toggleFavorite, addActivity }
 
 // --- Statistik-Zeile ------------------------------------------------------
 
@@ -1018,6 +1087,20 @@ class _MetaChip extends StatelessWidget {
 
 // --- Detail-Sheet ---------------------------------------------------------
 
+IconData _activityIcon(ContactActivityType type) => switch (type) {
+      ContactActivityType.call => Icons.call_outlined,
+      ContactActivityType.email => Icons.email_outlined,
+      ContactActivityType.meeting => Icons.groups_outlined,
+      ContactActivityType.task => Icons.check_circle_outline,
+      ContactActivityType.note => Icons.sticky_note_2_outlined,
+    };
+
+String _formatActivityDate(DateTime date) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(date.day)}.${two(date.month)}.${date.year} '
+      '${two(date.hour)}:${two(date.minute)}';
+}
+
 class _ContactDetailSheet extends StatelessWidget {
   const _ContactDetailSheet({
     required this.contact,
@@ -1123,6 +1206,61 @@ class _ContactDetailSheet extends StatelessWidget {
               icon: Icons.sticky_note_2_outlined,
               label: 'Notiz',
               value: contact.notes!,
+            ),
+          if (contact.activities.isNotEmpty) ...[
+            SizedBox(height: spacing.md),
+            Text(
+              'Verlauf',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            SizedBox(height: spacing.xs),
+            for (final activity in contact.activities.take(8))
+              Padding(
+                padding: EdgeInsets.symmetric(vertical: spacing.xxs),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(_activityIcon(activity.type),
+                        size: 18,
+                        color: Theme.of(context).colorScheme.primary),
+                    SizedBox(width: spacing.sm),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${activity.type.label} · ${_formatActivityDate(activity.occurredAt)}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                          if (activity.note != null &&
+                              activity.note!.trim().isNotEmpty)
+                            Text(activity.note!),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          if (canManage)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () =>
+                    Navigator.of(context).pop(_DetailAction.addActivity),
+                icon: const Icon(Icons.add_comment_outlined, size: 18),
+                label: const Text('Aktivität erfassen'),
+              ),
             ),
           if (canManage) ...[
             SizedBox(height: spacing.md),
