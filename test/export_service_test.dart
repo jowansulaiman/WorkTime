@@ -123,6 +123,25 @@ void main() {
       expect(csv, contains('"Zeile 1\nZeile 2"'));
     });
 
+    test('neutralisiert Formel-Praefixe gegen CSV-Injection (probleme #7)', () {
+      final csv = ExportService.buildShiftPlanCsv(
+        shifts: [_shift(notes: '=HYPERLINK("http://evil","x")')],
+        rangeLabel: 'Test',
+      );
+      // Vorangestellter Apostroph entschaerft die Formel; das Feld wird zudem
+      // gequotet, weil es Anfuehrungszeichen enthaelt.
+      expect(csv, contains("\"'=HYPERLINK"));
+      expect(csv, isNot(contains(';=HYPERLINK')));
+    });
+
+    test('quotet Felder mit alleinstehendem Carriage-Return (probleme #38)', () {
+      final csv = ExportService.buildShiftPlanCsv(
+        shifts: [_shift(title: 'Zeile\rUmbruch')],
+        rangeLabel: 'Test',
+      );
+      expect(csv, contains('"Zeile\rUmbruch"'));
+    });
+
     test('quotet kombinierte Sonderzeichen in der Zeitraum-Metazeile', () {
       final csv = ExportService.buildShiftPlanCsv(
         shifts: const [],

@@ -7,6 +7,7 @@ import '../core/app_config.dart';
 import '../core/compliance_rule_set_utils.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/compliance_violation.dart';
 import '../models/employee_site_assignment.dart';
@@ -19,6 +20,7 @@ import '../services/compliance_service.dart';
 import '../services/compliance_rejected_exception.dart';
 import '../services/firestore_service.dart';
 import '../core/app_logger.dart';
+import 'audit_sink.dart';
 
 enum ScheduleViewMode { day, week, month }
 
@@ -205,6 +207,13 @@ class ScheduleProvider extends ChangeNotifier {
   int get pendingDeletionCount =>
       _deletedShiftIds.length + _deletedAbsenceIds.length;
 
+  AuditSink? _audit;
+
+  /// Senke fürs Änderungsprotokoll (best-effort). Wird in main.dart verdrahtet.
+  void setAuditSink(AuditSink sink) {
+    _audit = sink;
+  }
+
   void updateReferenceData({
     required List<AppUserProfile> members,
     required List<EmploymentContract> contracts,
@@ -367,18 +376,6 @@ class ScheduleProvider extends ChangeNotifier {
     _safeNotify();
   }
 
-  Future<void> saveShift(
-    Shift shift, {
-    RecurrencePattern recurrencePattern = RecurrencePattern.none,
-    DateTime? recurrenceEndDate,
-  }) async {
-    await saveShifts(
-      [shift],
-      recurrencePattern: recurrencePattern,
-      recurrenceEndDate: recurrenceEndDate,
-    );
-  }
-
   Future<void> saveShifts(
     List<Shift> shifts, {
     RecurrencePattern recurrencePattern = RecurrencePattern.none,
@@ -398,7 +395,16 @@ class ScheduleProvider extends ChangeNotifier {
       throw ShiftConflictException(conflictIssues);
     }
 
+    // created vs updated VOR dem Vergeben neuer ids ableiten: sind alle
+    // Eingabe-Schichten neu (keine id), ist es eine Neuanlage – sonst (auch bei
+    // gemischtem Batch) als Änderung protokollieren.
+    final allNew =
+        shifts.every((shift) => shift.id == null || shift.id!.isEmpty);
+    final auditAction = allNew ? AuditAction.created : AuditAction.updated;
+
     if (usesLocalStorage) {
+      var occurrenceCount = 0;
+      String? lastShiftId;
       for (final shift in shifts) {
         final occurrences = _firestoreService.buildShiftOccurrences(
           shift.copyWith(createdByUid: currentUser.uid),
@@ -407,17 +413,26 @@ class ScheduleProvider extends ChangeNotifier {
         );
 
         for (final occurrence in occurrences) {
-          _upsertLocalShift(
-            occurrence.copyWith(
-              id: occurrence.id ?? _nextLocalId('shift'),
-            ),
+          final stored = occurrence.copyWith(
+            id: occurrence.id ?? _nextLocalId('shift'),
           );
+          _upsertLocalShift(stored);
+          occurrenceCount++;
+          lastShiftId = stored.id;
         }
       }
 
       await _persistLocalShifts();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Schicht',
+        entityId: occurrenceCount == 1 ? lastShiftId : null,
+        summary: occurrenceCount == 1
+            ? '1 Schicht gespeichert'
+            : '$occurrenceCount Schichten gespeichert',
+      );
       return;
     }
 
@@ -455,7 +470,24 @@ class ScheduleProvider extends ChangeNotifier {
       await _persistLocalShifts();
       _applyLocalState();
       _safeNotify();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Schicht',
+        entityId: occurrences.length == 1 ? occurrences.first.id : null,
+        summary: occurrences.length == 1
+            ? '1 Schicht gespeichert'
+            : '${occurrences.length} Schichten gespeichert',
+      );
+      return;
     }
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Schicht',
+      entityId: occurrences.length == 1 ? occurrences.first.id : null,
+      summary: occurrences.length == 1
+          ? '1 Schicht gespeichert'
+          : '${occurrences.length} Schichten gespeichert',
+    );
   }
 
   Future<void> saveShiftTemplate(ShiftTemplate template) async {
@@ -737,6 +769,10 @@ class ScheduleProvider extends ChangeNotifier {
       return;
     }
 
+    // Beschreibung der Schicht (Mitarbeiter/Datum) für ein aussagekräftiges
+    // Protokoll vor dem Entfernen ermitteln.
+    final auditSummary = 'Schicht gelöscht${_describeShift(shiftId)}';
+
     if (usesLocalStorage) {
       _localShifts.removeWhere((shift) => shift.id == shiftId);
       await DatabaseService.saveLocalShifts(
@@ -746,6 +782,12 @@ class ScheduleProvider extends ChangeNotifier {
       await _recordShiftTombstone(shiftId);
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Schicht',
+        entityId: shiftId,
+        summary: auditSummary,
+      );
       return;
     }
 
@@ -765,6 +807,12 @@ class ScheduleProvider extends ChangeNotifier {
       await _recordShiftTombstone(shiftId);
       _applyLocalState();
       _safeNotify();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Schicht',
+        entityId: shiftId,
+        summary: auditSummary,
+      );
       return;
     }
     if (_deletedShiftIds.remove(shiftId)) {
@@ -775,6 +823,40 @@ class ScheduleProvider extends ChangeNotifier {
       );
     }
     _localShifts.removeWhere((shift) => shift.id == shiftId);
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Schicht',
+      entityId: shiftId,
+      summary: auditSummary,
+    );
+  }
+
+  /// Liefert einen kurzen Zusatz „ (Mitarbeiter, TT.MM.JJJJ)" für eine bekannte
+  /// Schicht – sonst einen leeren String. Nur aus in-memory-Listen, kein I/O.
+  String _describeShift(String shiftId) {
+    Shift? found;
+    for (final shift in _shifts) {
+      if (shift.id == shiftId) {
+        found = shift;
+        break;
+      }
+    }
+    found ??= () {
+      for (final shift in _localShifts) {
+        if (shift.id == shiftId) {
+          return shift;
+        }
+      }
+      return null;
+    }();
+    if (found == null) {
+      return '';
+    }
+    final start = found.startTime;
+    final datum =
+        '${start.day.toString().padLeft(2, '0')}.${start.month.toString().padLeft(2, '0')}.${start.year}';
+    final name = found.employeeName.trim();
+    return name.isEmpty ? ' ($datum)' : ' ($name, $datum)';
   }
 
   Future<void> publishShifts(
@@ -793,16 +875,16 @@ class ScheduleProvider extends ChangeNotifier {
     }
 
     if (usesLocalStorage) {
-      var changed = false;
+      var publishedCount = 0;
       for (final shift in publishable) {
         final index = _localShifts.indexWhere((item) => item.id == shift.id);
         if (index == -1) {
           continue;
         }
         _localShifts[index] = _localShifts[index].copyWith(status: status);
-        changed = true;
+        publishedCount++;
       }
-      if (!changed) {
+      if (publishedCount == 0) {
         return;
       }
       await DatabaseService.saveLocalShifts(
@@ -811,6 +893,14 @@ class ScheduleProvider extends ChangeNotifier {
       );
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Schicht',
+        entityId: null,
+        summary: publishedCount == 1
+            ? '1 Schicht veröffentlicht'
+            : '$publishedCount Schichten veröffentlicht',
+      );
       return;
     }
 
@@ -820,6 +910,14 @@ class ScheduleProvider extends ChangeNotifier {
           .map((shift) => shift.copyWith(createdByUid: currentUser.uid))
           .toList(growable: false),
       status: status,
+    );
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Schicht',
+      entityId: null,
+      summary: publishable.length == 1
+          ? '1 Schicht veröffentlicht'
+          : '${publishable.length} Schichten veröffentlicht',
     );
   }
 
@@ -845,6 +943,12 @@ class ScheduleProvider extends ChangeNotifier {
       }
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Schicht',
+        entityId: seriesId,
+        summary: 'Schichtserie gelöscht',
+      );
       return;
     }
 
@@ -870,7 +974,20 @@ class ScheduleProvider extends ChangeNotifier {
       }
       _applyLocalState();
       _safeNotify();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Schicht',
+        entityId: seriesId,
+        summary: 'Schichtserie gelöscht',
+      );
+      return;
     }
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Schicht',
+      entityId: seriesId,
+      summary: 'Schichtserie gelöscht',
+    );
   }
 
   Future<void> submitAbsenceRequest(AbsenceRequest request) async {
@@ -911,6 +1028,13 @@ class ScheduleProvider extends ChangeNotifier {
       updatedAt: existingRequest?.updatedAt,
     );
 
+    final auditSummary =
+        'Abwesenheitsantrag ${requestWithContext.type.label} '
+        '${_describeAbsenceRange(requestWithContext.startDate, requestWithContext.endDate)}';
+    // Neuer Antrag (created) vs. Bearbeitung eines bestehenden (updated).
+    final auditAction =
+        existingRequest == null ? AuditAction.created : AuditAction.updated;
+
     if (usesLocalStorage) {
       final localRequest = requestWithContext.copyWith(
         id: requestWithContext.id ?? _nextLocalId('absence'),
@@ -919,6 +1043,12 @@ class ScheduleProvider extends ChangeNotifier {
       await _persistLocalAbsenceRequests();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Abwesenheit',
+        entityId: localRequest.id,
+        summary: auditSummary,
+      );
       return;
     }
 
@@ -930,15 +1060,37 @@ class ScheduleProvider extends ChangeNotifier {
       if (!usesHybridStorage) {
         rethrow;
       }
-      _upsertLocalAbsenceRequest(
-        requestWithContext.copyWith(
-          id: requestWithContext.id ?? _nextLocalId('absence'),
-        ),
+      final localRequest = requestWithContext.copyWith(
+        id: requestWithContext.id ?? _nextLocalId('absence'),
       );
+      _upsertLocalAbsenceRequest(localRequest);
       await _persistLocalAbsenceRequests();
       _applyLocalState();
       _safeNotify();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Abwesenheit',
+        entityId: localRequest.id,
+        summary: auditSummary,
+      );
+      return;
     }
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Abwesenheit',
+      entityId: requestWithContext.id,
+      summary: auditSummary,
+    );
+  }
+
+  /// Formatiert einen Abwesenheits-Zeitraum als „TT.MM.JJJJ–TT.MM.JJJJ" (bzw.
+  /// nur ein Datum, wenn Start = Ende) für lesbare Protokolleinträge.
+  String _describeAbsenceRange(DateTime start, DateTime end) {
+    String fmt(DateTime d) =>
+        '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+    final from = fmt(start);
+    final to = fmt(end);
+    return from == to ? from : '$from–$to';
   }
 
   Future<void> deleteAbsenceRequest(String requestId) async {
@@ -968,6 +1120,12 @@ class ScheduleProvider extends ChangeNotifier {
       await _recordAbsenceTombstone(requestId);
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Abwesenheit',
+        entityId: requestId,
+        summary: 'Abwesenheitsantrag gelöscht',
+      );
       return;
     }
 
@@ -989,6 +1147,12 @@ class ScheduleProvider extends ChangeNotifier {
       await _recordAbsenceTombstone(requestId);
       _applyLocalState();
       _safeNotify();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Abwesenheit',
+        entityId: requestId,
+        summary: 'Abwesenheitsantrag gelöscht',
+      );
       return;
     }
     if (_deletedAbsenceIds.remove(requestId)) {
@@ -999,6 +1163,12 @@ class ScheduleProvider extends ChangeNotifier {
       );
     }
     _localAbsenceRequests.removeWhere((item) => item.id == requestId);
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Abwesenheit',
+      entityId: requestId,
+      summary: 'Abwesenheitsantrag gelöscht',
+    );
   }
 
   Future<void> reviewAbsenceRequest({
@@ -1161,23 +1331,6 @@ class ScheduleProvider extends ChangeNotifier {
     );
   }
 
-  /// Laedt die genehmigten Urlaubstage fuer ein bestimmtes Jahr aus Firestore.
-  Future<int> getUsedVacationDaysForYear(int year) async {
-    final user = _currentUser;
-    if (user == null) return 0;
-
-    if (usesLocalStorage) {
-      return _countVacationDays(_localAbsenceRequests, year);
-    }
-
-    final vacations = await _firestoreService.getApprovedVacationsForYear(
-      orgId: user.orgId,
-      userId: user.uid,
-      year: year,
-    );
-    return _countVacationDays(vacations, year);
-  }
-
   static int _countVacationDays(List<AbsenceRequest> requests, int year) {
     int total = 0;
     for (final request in requests) {
@@ -1286,6 +1439,12 @@ class ScheduleProvider extends ChangeNotifier {
       );
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Schicht',
+        entityId: shiftId,
+        summary: 'Schichttausch angefragt',
+      );
       return;
     }
 
@@ -1293,6 +1452,12 @@ class ScheduleProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       shiftId: shiftId,
       requestedByUid: currentUser.uid,
+    );
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Schicht',
+      entityId: shiftId,
+      summary: 'Schichttausch angefragt',
     );
   }
 
@@ -1326,44 +1491,6 @@ class ScheduleProvider extends ChangeNotifier {
       shiftId: sourceShiftId,
       status: ShiftStatus.completed,
     );
-  }
-
-  /// Gibt die Schichten fuer einen bestimmten Tag und Benutzer zurueck, die
-  /// noch offen (nicht erledigt/abgesagt) sind.
-  Future<List<Shift>> openShiftsForDay({
-    required DateTime day,
-    String? userId,
-  }) async {
-    final currentUser = _currentUser;
-    if (currentUser == null) return const [];
-
-    final dayStart = DateTime(day.year, day.month, day.day);
-    final dayEnd = dayStart.add(const Duration(days: 1));
-    final effectiveUserId = userId ?? currentUser.uid;
-
-    if (usesLocalStorage) {
-      return _localShifts
-          .where((shift) =>
-              shift.orgId == currentUser.orgId &&
-              shift.userId == effectiveUserId &&
-              shift.startTime.isBefore(dayEnd) &&
-              shift.endTime.isAfter(dayStart) &&
-              shift.status != ShiftStatus.completed &&
-              shift.status != ShiftStatus.cancelled)
-          .toList(growable: false);
-    }
-
-    final shifts = await _firestoreService.getShiftsInRange(
-      orgId: currentUser.orgId,
-      start: dayStart,
-      end: dayEnd,
-      userId: effectiveUserId,
-    );
-    return shifts
-        .where((shift) =>
-            shift.status != ShiftStatus.completed &&
-            shift.status != ShiftStatus.cancelled)
-        .toList(growable: false);
   }
 
   Future<void> reviewShiftSwap({
@@ -1584,7 +1711,6 @@ class ScheduleProvider extends ChangeNotifier {
         userId: filterUserId,
       )
           .listen((items) {
-        oldShiftsSub?.cancel();
         final visible = _withoutTombstoned(
           items,
           (shift) => shift.id,
@@ -1605,14 +1731,13 @@ class ScheduleProvider extends ChangeNotifier {
         }
         _safeNotify();
       }, onError: (Object error) {
-        oldShiftsSub?.cancel();
         _errorMessage = 'Fehler beim Laden der Schichten: $error';
         _shifts = [];
         _loading = false;
         _safeNotify();
       });
     } else {
-      oldShiftsSub?.cancel();
+      _shiftsSubscription = null;
       _loading = false;
       _errorMessage = null;
     }
@@ -1624,20 +1749,18 @@ class ScheduleProvider extends ChangeNotifier {
         userId: currentUser.uid,
       )
           .listen((items) {
-        oldTemplatesSub?.cancel();
         _shiftTemplates = items;
         if (usesHybridStorage) {
           unawaited(_storeHybridShiftTemplatesSnapshot(items));
         }
         _safeNotify();
       }, onError: (Object error) {
-        oldTemplatesSub?.cancel();
         AppLogger.warning(
           'ScheduleProvider: Fehler beim Laden der Schichtvorlagen: $error',
         );
       });
     } else {
-      oldTemplatesSub?.cancel();
+      _templatesSubscription = null;
     }
 
     _allAbsenceSubscription = _firestoreService
@@ -1646,7 +1769,6 @@ class ScheduleProvider extends ChangeNotifier {
       userId: currentUser.canManageShifts ? null : currentUser.uid,
     )
         .listen((items) {
-      oldAllAbsenceSub?.cancel();
       final visible = _withoutTombstoned(
         items,
         (request) => request.id,
@@ -1658,7 +1780,6 @@ class ScheduleProvider extends ChangeNotifier {
       }
       _safeNotify();
     }, onError: (Object error) {
-      oldAllAbsenceSub?.cancel();
       AppLogger.warning(
           'ScheduleProvider: Fehler beim Laden der kompletten Abwesenheiten: $error');
     });
@@ -1671,7 +1792,6 @@ class ScheduleProvider extends ChangeNotifier {
       userId: filterUserId,
     )
         .listen((items) {
-      oldAbsenceSub?.cancel();
       _absenceRequests = _withoutTombstoned(
         items,
         (request) => request.id,
@@ -1679,12 +1799,20 @@ class ScheduleProvider extends ChangeNotifier {
       ).toList(growable: false);
       _safeNotify();
     }, onError: (Object error) {
-      oldAbsenceSub?.cancel();
       AppLogger.warning(
           'ScheduleProvider: Fehler beim Laden der Abwesenheiten: $error');
       _absenceRequests = [];
       _safeNotify();
     });
+
+    // Alte Subscriptions GENAU EINMAL nach dem Aufbau der neuen canceln (nicht
+    // im wiederholt feuernden onData-Callback) — garantiert genau einen aktiven
+    // Listener und vermeidet die Race, dass der alte Stream weiter veraltete
+    // Daten schreibt (probleme #21, Muster aus WorkProvider).
+    await oldShiftsSub?.cancel();
+    await oldTemplatesSub?.cancel();
+    await oldAllAbsenceSub?.cancel();
+    await oldAbsenceSub?.cancel();
   }
 
   Future<void> _loadLocalState() async {
@@ -2061,6 +2189,7 @@ class ScheduleProvider extends ChangeNotifier {
     _disposed = true;
     _shiftsSubscription?.cancel();
     _absenceSubscription?.cancel();
+    _allAbsenceSubscription?.cancel();
     _templatesSubscription?.cancel();
     super.dispose();
   }

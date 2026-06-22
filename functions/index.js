@@ -559,15 +559,29 @@ async function loadShiftValidationContext(orgId, shifts) {
 }
 
 async function validateWorkEntry({callerUid, entry}) {
-  const dayStart = new Date(
+  // Fenster = ganzer Monat mit 1-Tag-Polster an beiden Raendern. Das deckt die
+  // monatliche Minijob-Aggregation und die Ruhezeit-Luecken zu Eintraegen am
+  // Vor-/Folgetag (auch ueber Monatsgrenzen) ab. Tages-/Monatsfilter in
+  // validateSingleWorkEntry schraenken die Kandidaten je Regel wieder ein.
+  const monthStart = new Date(
     entry.startTime.getFullYear(),
     entry.startTime.getMonth(),
-    entry.startTime.getDate(),
+    1,
   );
-  const nextDay = new Date(
+  const monthEndExclusive = new Date(
     entry.startTime.getFullYear(),
-    entry.startTime.getMonth(),
-    entry.startTime.getDate() + 1,
+    entry.startTime.getMonth() + 1,
+    1,
+  );
+  const windowStart = new Date(
+    monthStart.getFullYear(),
+    monthStart.getMonth(),
+    monthStart.getDate() - 1,
+  );
+  const windowEndExclusive = new Date(
+    monthEndExclusive.getFullYear(),
+    monthEndExclusive.getMonth(),
+    monthEndExclusive.getDate() + 1,
   );
 
   const collection = organizationCollection(entry.orgId, "workEntries");
@@ -577,18 +591,20 @@ async function validateWorkEntry({callerUid, entry}) {
     contractsSnap,
     assignmentsSnap,
     rulesSnap,
+    travelRulesSnap,
     memberSnapshot,
     existingSnapshot,
   ] = await Promise.all([
     collection
       .where("userId", "==", entry.userId)
-      .where("startTime", ">=", Timestamp.fromDate(dayStart))
-      .where("startTime", "<", Timestamp.fromDate(nextDay))
+      .where("startTime", ">=", Timestamp.fromDate(windowStart))
+      .where("startTime", "<", Timestamp.fromDate(windowEndExclusive))
       .orderBy("startTime")
       .get(),
     organizationCollection(entry.orgId, "employmentContracts").get(),
     organizationCollection(entry.orgId, "employeeSiteAssignments").get(),
     organizationCollection(entry.orgId, "ruleSets").get(),
+    organizationCollection(entry.orgId, "travelTimeRules").get(),
     db.collection("users").doc(entry.userId).get(),
     existingRef ? existingRef.get() : Promise.resolve(null),
   ]);
@@ -597,6 +613,7 @@ async function validateWorkEntry({callerUid, entry}) {
   const contracts = contractsSnap.docs.map(fromFirestoreContract);
   const siteAssignments = assignmentsSnap.docs.map(fromFirestoreSiteAssignment);
   const ruleSets = rulesSnap.docs.map(fromFirestoreRuleSet);
+  const travelTimeRules = travelRulesSnap.docs.map(fromFirestoreTravelTimeRule);
   const member = memberSnapshot.exists ? fromFirestoreMember(memberSnapshot) : null;
   const violations = validateSingleWorkEntry({
     entry,
@@ -604,6 +621,7 @@ async function validateWorkEntry({callerUid, entry}) {
     contracts,
     siteAssignments,
     ruleSets,
+    travelTimeRules,
     member,
   });
 
@@ -869,12 +887,17 @@ function validateSingleShift({
   return dedupeViolations(violations);
 }
 
+// Vollständiger Spiegel von validateWorkEntry in compliance_service.dart.
+// Frueher pruefte der Server nur site_required/site_assignment_missing/
+// break_required/daily_limit — Ruhezeit, Minijob-, Jugend- und Mutterschutz
+// sowie Ueberschneidungen wurden NICHT durchgesetzt (probleme/compliance.md #1).
 function validateSingleWorkEntry({
   entry,
   existingEntries,
   contracts,
   siteAssignments,
   ruleSets,
+  travelTimeRules,
   member,
 }) {
   const violations = [];
@@ -884,6 +907,16 @@ function validateSingleWorkEntry({
   const assignment = siteAssignments.find(
     (item) => item.userId === entry.userId && item.siteId === entry.siteId,
   );
+  const sameUserEntries = existingEntries.filter(
+    (candidate) => candidate.id !== entry.id,
+  );
+
+  if (!(entry.endTime > entry.startTime)) {
+    violations.push(blockingViolation(
+      "invalid_range",
+      "Das Ende muss nach dem Start liegen.",
+    ));
+  }
 
   if (!entry.siteId) {
     violations.push(blockingViolation(
@@ -897,6 +930,19 @@ function validateSingleWorkEntry({
       "site_assignment_missing",
       "Der Mitarbeiter ist dem gewaehlten Standort nicht zugeordnet.",
     ));
+  }
+
+  const overlappingEntries = sameUserEntries.filter(
+    (candidate) =>
+      candidate.startTime < entry.endTime && candidate.endTime > entry.startTime,
+  );
+  if (overlappingEntries.length > 0) {
+    violations.push({
+      code: "overlap_existing",
+      severity: "blocking",
+      message: `Dieser Eintrag ueberschneidet sich mit einem bestehenden Zeiteintrag am ${formatDateTime(overlappingEntries[0].startTime)}.`,
+      relatedEntityIds: overlappingEntries.map((item) => item.id).filter(Boolean),
+    });
   }
 
   const workedMinutes = workedMinutesFromEntry(entry);
@@ -914,8 +960,8 @@ function validateSingleWorkEntry({
     });
   }
 
-  const sameDayMinutes = existingEntries
-    .filter((candidate) => candidate.id !== entry.id && isSameDay(candidate.startTime, entry.startTime))
+  const sameDayMinutes = sameUserEntries
+    .filter((candidate) => isSameDay(candidate.startTime, entry.startTime))
     .reduce((sum, candidate) => sum + workedMinutesFromEntry(candidate), workedMinutes);
   const maxDailyMinutes = maxDailyMinutesFor(contract, ruleSet);
   if (workRuleSettings.enforceMaxDailyMinutes &&
@@ -926,6 +972,111 @@ function validateSingleWorkEntry({
       message: `Mit diesem Eintrag wird die Tagesgrenze von ${formatHours(maxDailyMinutes)} ueberschritten.`,
       relatedEntityIds: [],
     });
+  } else if (workRuleSettings.warnDailyAverageExceeded &&
+    sameDayMinutes > 8 * 60) {
+    violations.push(warningViolation(
+      "daily_average_warning",
+      "Die Tagesarbeitszeit liegt ueber 8 Stunden und sollte im Ausgleichszeitraum beobachtet werden.",
+    ));
+  }
+
+  if (workRuleSettings.enforceMinRestTime) {
+    const previous = sameUserEntries
+      .filter((candidate) => candidate.endTime < entry.startTime)
+      .sort((left, right) => right.endTime - left.endTime)[0];
+    if (previous &&
+      shouldEnforceRestGap(previous.startTime, previous.endTime, entry.startTime)) {
+      violations.push(
+        ...singleRestGapViolations({
+          earlier: previous,
+          later: entry,
+          ruleSet,
+          travelTimeRules,
+          siteAssignments,
+          contract,
+        }),
+      );
+    }
+    const next = sameUserEntries
+      .filter((candidate) => candidate.startTime > entry.endTime)
+      .sort((left, right) => left.startTime - right.startTime)[0];
+    if (next &&
+      shouldEnforceRestGap(entry.startTime, entry.endTime, next.startTime)) {
+      violations.push(
+        ...singleRestGapViolations({
+          earlier: entry,
+          later: next,
+          ruleSet,
+          travelTimeRules,
+          siteAssignments,
+          contract,
+        }),
+      );
+    }
+  }
+
+  if (workRuleSettings.enforceMinijobLimit &&
+    contract?.type === "mini_job" &&
+    Number(contract.hourlyRate || 0) > 0) {
+    const monthlyMinutes = sameUserEntries
+      .filter(
+        (candidate) =>
+          candidate.startTime.getFullYear() === entry.startTime.getFullYear() &&
+          candidate.startTime.getMonth() === entry.startTime.getMonth(),
+      )
+      .reduce((sum, candidate) => sum + workedMinutesFromEntry(candidate), workedMinutes);
+    const projectedCents = Math.round((monthlyMinutes / 60) * contract.hourlyRate * 100);
+    const monthlyLimit = contract.monthlyIncomeLimitCents || ruleSet.minijobMonthlyLimitCents;
+    if (projectedCents > monthlyLimit) {
+      violations.push({
+        code: "minijob_limit",
+        severity: "blocking",
+        message: `Die erfassten Stunden wuerden die Minijob-Grenze von ${(monthlyLimit / 100).toFixed(0)} EUR ueberschreiten.`,
+        relatedEntityIds: [],
+      });
+    }
+  }
+
+  if (contract?.isMinor === true) {
+    if (overlapsRestrictedMinorNightWindow(entry)) {
+      violations.push(blockingViolation(
+        "minor_night_work",
+        "Jugendliche duerfen in diesem Zeitfenster nicht arbeiten.",
+      ));
+    }
+    if (sameDayMinutes > 8 * 60) {
+      violations.push(blockingViolation(
+        "minor_daily_limit",
+        "Jugendliche duerfen maximal 8 Stunden pro Tag arbeiten.",
+      ));
+    }
+  }
+
+  if (contract?.isPregnant === true) {
+    if (overlapsPregnancyNightWindow(entry)) {
+      violations.push(blockingViolation(
+        "pregnancy_night_work",
+        "Nachtschichten sind fuer diesen Vertrag nicht zulaessig.",
+      ));
+    }
+    if (sameDayMinutes > 510) {
+      violations.push(blockingViolation(
+        "pregnancy_daily_limit",
+        "Fuer diesen Vertrag gilt eine Tagesgrenze von 8,5 Stunden.",
+      ));
+    }
+  }
+
+  if (workRuleSettings.warnOvertime &&
+    contract &&
+    Number(contract.dailyHours || 0) > 0) {
+    const targetMinutes = Math.round(contract.dailyHours * 60);
+    if (sameDayMinutes > targetMinutes) {
+      violations.push(warningViolation(
+        "overtime_warning",
+        `Der Eintrag fuehrt voraussichtlich zu Ueberstunden gegenueber ${Number(contract.dailyHours).toFixed(1)} Sollstunden.`,
+      ));
+    }
   }
 
   return dedupeViolations(violations);
@@ -1015,6 +1166,17 @@ function singleRestGapViolations({
   }
 
   return violations;
+}
+
+// Spiegelt _shouldEnforceRestGap in compliance_service.dart: Tagesruhe gilt
+// zwischen Arbeitstagen. Zwei getrennte Eintraege am selben Kalendertag
+// (z.B. Pause zum Mittag, danach wieder eingestempelt) werden NICHT als neue
+// Ruhezeit gewertet — sonst blockierte ein normaler geteilter Dienst faelschlich.
+function shouldEnforceRestGap(earlierStart, earlierEnd, laterStart) {
+  if (!isSameDay(earlierEnd, laterStart)) {
+    return true;
+  }
+  return !isSameDay(earlierStart, earlierEnd);
 }
 
 function activeContract(contracts, userId, at) {

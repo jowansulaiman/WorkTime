@@ -226,15 +226,15 @@ class _ClockInOutWidget extends StatelessWidget {
     final canStartClock = primaryAssignment != null && activeShift != null;
     final canUseClock = isClockedIn || canStartClock;
     final startLabel = provider.effectiveClockStartTime != null
-        ? DateFormat('HH:mm').format(provider.effectiveClockStartTime!)
+        ? DateFormat('HH:mm', 'de_DE').format(provider.effectiveClockStartTime!)
         : lastClockEntry == null
             ? '--:--'
-            : DateFormat('HH:mm').format(lastClockEntry.startTime);
+            : DateFormat('HH:mm', 'de_DE').format(lastClockEntry.startTime);
     final endLabel = isClockedIn
         ? '--:--'
         : lastClockEntry == null
             ? '--:--'
-            : DateFormat('HH:mm').format(lastClockEntry.endTime);
+            : DateFormat('HH:mm', 'de_DE').format(lastClockEntry.endTime);
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -968,26 +968,15 @@ class _AdminDashboardTab extends StatelessWidget {
                       icon: Icons.groups_outlined,
                       title: 'Team verwalten',
                       subtitle: 'Standorte, Rollen und Qualifikationen pflegen',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const TeamManagementScreen(
-                            parentLabel: 'Heute',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.team),
                     ),
                   _QuickActionCard(
                     icon: Icons.inbox_outlined,
                     title: 'Anfragen pruefen',
                     subtitle:
                         'Krankmeldungen und Tausch ohne Umwege entscheiden',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const NotificationScreen(
-                          parentLabel: 'Heute',
-                        ),
-                      ),
-                    ),
+                    // Tab-Ziel -> go (Branch wechseln), nicht push (kein Duplikat).
+                    onTap: () => context.go(shellTabPaths[ShellTab.inbox]!),
                   ),
                 ],
               ),
@@ -1693,8 +1682,8 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
         tooltip: dayAbsences
             .map(
               (absence) => '${absence.employeeName}: ${absence.type.label} '
-                  '(${DateFormat('dd.MM.yyyy').format(absence.startDate)} - '
-                  '${DateFormat('dd.MM.yyyy').format(absence.endDate)})',
+                  '(${DateFormat('dd.MM.yyyy', 'de_DE').format(absence.startDate)} - '
+                  '${DateFormat('dd.MM.yyyy', 'de_DE').format(absence.endDate)})',
             )
             .join('\n'),
       );
@@ -1712,12 +1701,12 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
             ? first.title
             : '${dayShifts.length} Schichten',
         subtitle:
-            '${DateFormat('HH:mm').format(first.startTime)} - ${DateFormat('HH:mm').format(last.endTime)} · ${totalHours.toStringAsFixed(1)} h',
+            '${DateFormat('HH:mm', 'de_DE').format(first.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(last.endTime)} · ${totalHours.toStringAsFixed(1)} h',
         tooltip: dayShifts
             .map(
               (shift) => '${shift.employeeName}: ${shift.title} '
-                  '${DateFormat('HH:mm').format(shift.startTime)} - '
-                  '${DateFormat('HH:mm').format(shift.endTime)}',
+                  '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - '
+                  '${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}',
             )
             .join('\n'),
       );
@@ -1779,7 +1768,7 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
                             ),
                             title: Text(shift.employeeName),
                             subtitle: Text(
-                              '${shift.title} · ${DateFormat('HH:mm').format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}',
+                              '${shift.title} · ${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}',
                             ),
                             trailing: Text(
                               shift.status.label,
@@ -1816,7 +1805,7 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
                             leading: Icon(icon, color: accent),
                             title: Text(absence.employeeName),
                             subtitle: Text(
-                              '${absence.type.label} · ${DateFormat('dd.MM.').format(absence.startDate)} - ${DateFormat('dd.MM.').format(absence.endDate)}',
+                              '${absence.type.label} · ${DateFormat('dd.MM.', 'de_DE').format(absence.startDate)} - ${DateFormat('dd.MM.', 'de_DE').format(absence.endDate)}',
                             ),
                           );
                         }).toList(),
@@ -1886,7 +1875,7 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
   }
 
   String _dayKey(DateTime day) =>
-      DateFormat('yyyyMMdd').format(_startOfDay(day));
+      DateFormat('yyyyMMdd', 'de_DE').format(_startOfDay(day));
 
   String _userDayKey(String userId, DateTime day) => '$userId|${_dayKey(day)}';
 
@@ -2139,7 +2128,7 @@ Future<bool?> _confirmPunchClockOvertime(
   BuildContext context,
   OvertimeApprovalRequired approval,
 ) {
-  final timeFmt = DateFormat('HH:mm');
+  final timeFmt = DateFormat('HH:mm', 'de_DE');
   final lines = <String>[
     'Die geplante Schicht endet um '
         '${timeFmt.format(approval.shift.endTime)}.',
@@ -2311,14 +2300,7 @@ class _TimeTrackingTabState extends State<_TimeTrackingTab> {
                                     if (currentUser.canViewReports)
                                       FilledButton.icon(
                                         onPressed: () =>
-                                            Navigator.of(context).push(
-                                          MaterialPageRoute(
-                                            builder: (_) =>
-                                                const MonthReportScreen(
-                                              parentLabel: 'Zeit',
-                                            ),
-                                          ),
-                                        ),
+                                            context.push(AppRoutes.monthReport),
                                         icon: const Icon(
                                             Icons.description_outlined),
                                         label: const Text('Monatsbericht'),

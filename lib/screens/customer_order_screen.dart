@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/money.dart';
 import '../models/customer_order.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
@@ -11,6 +12,7 @@ import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
+import '../widgets/action_fab.dart';
 import '../widgets/contact_picker_field.dart';
 
 final NumberFormat _euroFormat =
@@ -24,18 +26,7 @@ String _formatCents(int? cents) {
   return _euroFormat.format(cents / 100);
 }
 
-int? _parseEuroToCents(String value) {
-  final trimmed = value.trim().replaceAll('€', '').trim();
-  if (trimmed.isEmpty) {
-    return null;
-  }
-  final normalized = trimmed.replaceAll('.', '').replaceAll(',', '.');
-  final euros = double.tryParse(normalized);
-  if (euros == null) {
-    return null;
-  }
-  return (euros * 100).round();
-}
+int? _parseEuroToCents(String value) => Money.parseCents(value);
 
 String _centsToEuroInput(int? cents) {
   if (cents == null) {
@@ -182,10 +173,15 @@ class _CustomerOrderScreenState extends State<CustomerOrderScreen> {
         ],
       ),
       floatingActionButton: canManage
-          ? FloatingActionButton.extended(
-              onPressed: () => _addOrder(context, inventory, sites),
-              icon: const Icon(Icons.add),
-              label: const Text('Bestellung'),
+          ? ExpandableFab(
+              heroTag: 'customer_order_add_fab',
+              actions: [
+                FabAction(
+                  icon: Icons.add,
+                  label: 'Bestellung',
+                  onPressed: () => _addOrder(context, inventory, sites),
+                ),
+              ],
             )
           : null,
       body: SafeArea(

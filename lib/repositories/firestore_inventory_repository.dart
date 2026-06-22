@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import '../core/error_reporter.dart';
 import '../core/retry.dart';
 import '../models/customer_order.dart';
+import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
@@ -48,6 +49,25 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('customerOrders');
+
+  CollectionReference<Map<String, dynamic>> _orderCartCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('orderCarts');
+
+  CollectionReference<Map<String, dynamic>> _weeklyOrderListCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('weeklyOrderLists');
+
+  /// Ziel-Collection einer Bestellliste je [kind] (Korb vs. Standard-Liste).
+  CollectionReference<Map<String, dynamic>> _orderListCollection(
+    String orgId,
+    OrderListKind kind,
+  ) =>
+      kind == OrderListKind.weeklyTemplate
+          ? _weeklyOrderListCollection(orgId)
+          : _orderCartCollection(orgId);
 
   // Bewusste Entscheidung (missing-orderby-updatedat-index-delta / full-read-no-
   // delta-sync): Lieferanten/Artikel werden als vollstaendiger, nach nameLower
@@ -305,6 +325,59 @@ class FirestoreInventoryRepository implements InventoryRepository {
     required String orderId,
   }) {
     return _customerOrderCollection(orgId).doc(orderId).delete();
+  }
+
+  // --- Bestelllisten (Wochen-Bestellkorb + Standard-Wochenliste) ---------
+  // Singleton je Laden: Doc-ID = siteId, kein orderBy nötig (Collection klein).
+  // updatedByUid/updatedAt sind die einzigen Metadaten; gelesen wird der ganze
+  // (Mini-)Stream wie bei den anderen Warenwirtschafts-Listen.
+
+  @override
+  Stream<List<SiteOrderList>> watchOrderCarts(String orgId) {
+    return _orderCartCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => SiteOrderList.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Stream<List<SiteOrderList>> watchWeeklyOrderLists(String orgId) {
+    return _weeklyOrderListCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => SiteOrderList.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<void> saveOrderList(SiteOrderList list) {
+    // Leeres siteId wuerde .doc('') aufrufen -> Firestore-ArgumentError. Frueh
+    // mit klarer deutscher Meldung abbrechen (probleme #47).
+    if (list.siteId.trim().isEmpty) {
+      throw StateError(
+        'Bestellliste kann nicht gespeichert werden: Dem Artikel fehlt eine '
+        'Standortzuordnung.',
+      );
+    }
+    // Doc-ID = siteId -> idempotenter Upsert je Laden (keine Duplikate möglich).
+    return _orderListCollection(list.orgId, list.kind)
+        .doc(list.siteId)
+        .set(list.toFirestoreMap(), SetOptions(merge: true));
+  }
+
+  @override
+  Future<void> deleteOrderList({
+    required String orgId,
+    required String siteId,
+    required OrderListKind kind,
+  }) {
+    if (siteId.trim().isEmpty) {
+      throw StateError(
+        'Bestellliste kann nicht geloescht werden: Standort fehlt.',
+      );
+    }
+    return _orderListCollection(orgId, kind).doc(siteId).delete();
   }
 
   @override

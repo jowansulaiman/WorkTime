@@ -3,9 +3,11 @@ import 'dart:typed_data';
 
 import 'package:intl/intl.dart';
 
+import '../core/datev_export.dart';
 import '../core/ical_export.dart';
 import '../core/personnel_cost.dart';
 import '../models/contact.dart';
+import '../models/finance_models.dart';
 import '../models/customer_order.dart';
 import '../models/payroll_record.dart';
 import '../models/product.dart';
@@ -527,10 +529,23 @@ class ExportService {
   }
 
   static String _escapeCsv(String value) {
-    final normalized = value.replaceAll('"', '""');
+    var normalized = value;
+    // CSV-/Formel-Injection: Excel/LibreOffice fuehren Zellen, die mit
+    // = + - @ Tab oder CR beginnen, als Formel aus (z.B. =HYPERLINK(...),
+    // =cmd|...). Mit vorangestelltem Apostroph als Text neutralisieren —
+    // wichtig, da Kontakte/Notizen aus fremder CSV importiert werden koennen
+    // und unveraendert re-exportiert werden (probleme #7).
+    if (normalized.isNotEmpty &&
+        const ['=', '+', '-', '@', '\t', '\r'].contains(normalized[0])) {
+      normalized = "'$normalized";
+    }
+    normalized = normalized.replaceAll('"', '""');
     if (normalized.contains(';') ||
         normalized.contains('"') ||
-        normalized.contains('\n')) {
+        normalized.contains('\n') ||
+        // Nacktes CR (ohne LF) wuerde sonst die Datensatzstruktur zerstoeren
+        // (probleme #38).
+        normalized.contains('\r')) {
       return '"$normalized"';
     }
     return normalized;
@@ -539,5 +554,80 @@ class ExportService {
   static String _weekdayShort(int weekday) {
     const weekdays = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
     return weekdays[(weekday - 1).clamp(0, 6)];
+  }
+
+  // --- Finanzen: Journal-CSV + DATEV-EXTF-Buchungsstapel -------------------
+
+  static String _euroPlain(int cents) =>
+      (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
+
+  static String buildFinanceJournalCsv({
+    required List<JournalEntry> entries,
+    required Map<String, CostCenter> centersById,
+    required Map<String, CostType> typesById,
+    required int year,
+  }) {
+    final buffer = StringBuffer('\uFEFF');
+    buffer.writeln('Buchungsjournal $year');
+    buffer.writeln();
+    buffer.writeln(
+        'Datum;Bezeichnung;Kostenstelle;Kostenart;Betrag (€);Art;Beleg');
+    final rows = entries.where((e) => e.date.year == year).toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
+    for (final e in rows) {
+      buffer.writeln([
+        DateFormat('dd.MM.yyyy', 'de_DE').format(e.date),
+        e.description,
+        centersById[e.costCenterId]?.name ?? '',
+        typesById[e.costTypeId]?.name ?? '',
+        _euroPlain(e.amountCents),
+        e.amountCents >= 0 ? 'Kosten' : 'Gutschrift',
+        e.reference ?? '',
+      ].map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
+  }
+
+  static Future<void> exportFinanceJournalCsv({
+    required List<JournalEntry> entries,
+    required Map<String, CostCenter> centersById,
+    required Map<String, CostType> typesById,
+    required int year,
+  }) async {
+    final csv = buildFinanceJournalCsv(
+      entries: entries,
+      centersById: centersById,
+      typesById: typesById,
+      year: year,
+    );
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: 'Buchungsjournal_$year.csv',
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  /// DATEV-EXTF-Buchungsstapel (Format 700) als Datei. Encoding UTF-8 (von
+  /// aktuellen DATEV-Importen akzeptiert) – siehe [DatevExport.disclaimer].
+  static Future<void> exportDatevBuchungsstapel({
+    required List<JournalEntry> entries,
+    required Map<String, CostCenter> centersById,
+    required Map<String, CostType> typesById,
+    required int year,
+    DatevExportConfig config = const DatevExportConfig(),
+  }) async {
+    final content = DatevExport.buildBuchungsstapel(
+      entries: entries,
+      centersById: centersById,
+      typesById: typesById,
+      year: year,
+      config: config,
+      generatedAt: DateTime.now(),
+    );
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(content)),
+      fileName: 'EXTF_Buchungsstapel_$year.csv',
+      mimeType: 'text/csv;charset=utf-8',
+    );
   }
 }

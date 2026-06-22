@@ -139,6 +139,7 @@ class PurchaseOrderItem {
     String? productId,
     String? name,
     String? sku,
+    bool clearSku = false,
     String? unit,
     int? quantityOrdered,
     int? quantityReceived,
@@ -148,7 +149,9 @@ class PurchaseOrderItem {
     return PurchaseOrderItem(
       productId: productId ?? this.productId,
       name: name ?? this.name,
-      sku: sku ?? this.sku,
+      // clearSku-Flag analog zu CustomerOrderItem (CLAUDE.md copyWith/clearX-
+      // Muster fuer nullable Felder, probleme #45).
+      sku: clearSku ? null : (sku ?? this.sku),
       unit: unit ?? this.unit,
       quantityOrdered: quantityOrdered ?? this.quantityOrdered,
       quantityReceived: quantityReceived ?? this.quantityReceived,

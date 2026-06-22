@@ -1,16 +1,17 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 
 import 'core/accessibility.dart';
-import 'core/analytics_service.dart';
 import 'core/app_config.dart';
 import 'core/app_logger.dart';
 import 'core/error_reporter.dart';
@@ -20,6 +21,7 @@ import 'providers/audit_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/contact_provider.dart';
 import 'providers/feature_flag_provider.dart';
+import 'providers/finance_provider.dart';
 import 'providers/inventory_provider.dart';
 import 'providers/personal_provider.dart';
 import 'providers/schedule_provider.dart';
@@ -27,14 +29,15 @@ import 'providers/storage_mode_provider.dart';
 import 'providers/team_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/work_provider.dart';
-import 'screens/auth_screen.dart';
-import 'screens/auth_screen_v2.dart';
-import 'screens/force_update_screen.dart';
-import 'screens/home_screen.dart';
+import 'routing/app_router.dart';
+import 'screens/public/public_feedback_app.dart';
+import 'screens/public/public_legal_app.dart';
+import 'screens/public/public_legal_screen.dart';
+import 'screens/public/public_wish_app.dart';
 import 'services/auth_service.dart';
 import 'services/firestore_service.dart';
 import 'theme/app_theme.dart';
-import 'widgets/app_logo.dart';
+import 'widgets/bootstrap_frame.dart';
 
 Future<void> main() async {
   // Alles in einer einzigen bewachten Zone starten, damit auch Fehler aus
@@ -90,6 +93,21 @@ class AppBootstrap extends StatefulWidget {
 }
 
 class _AppBootstrapState extends State<AppBootstrap> {
+  // Öffentliche Modi (Web-Routen /wunsch bzw. /feedback): die App läuft dann als
+  // isolierte, login-freie Hülle OHNE Provider-Kette/_AuthGate. Einmal beim
+  // Bootstrap ausgewertet.
+  final bool _publicWishMode = isPublicWishRoute();
+  final bool _publicFeedbackMode = isPublicFeedbackRoute();
+  // Rechtliche Pflichtseiten (reine Statik, kein Firebase): /impressum,
+  // /datenschutz. Wie die anderen öffentlichen Modi login-frei und ohne
+  // Provider-Kette.
+  final bool _publicImpressumMode = isPublicImpressumRoute();
+  final bool _publicDatenschutzMode = isPublicDatenschutzRoute();
+  bool get _publicMode =>
+      _publicWishMode ||
+      _publicFeedbackMode ||
+      _publicImpressumMode ||
+      _publicDatenschutzMode;
   late Future<void> _initialization = _initializeApp();
   late final FirestoreService _firestoreService = FirestoreService();
   late final AuthService _authService = AuthService();
@@ -126,13 +144,38 @@ class _AppBootstrapState extends State<AppBootstrap> {
         Error.throwWithStackTrace(error, stackTrace);
       }
 
+      // App Check aktivieren, BEVOR der erste Firestore-Zugriff passiert —
+      // schützt v.a. den öffentlichen Schreibpfad (/wunsch) vor Bot-/Abuse.
+      // No-op ohne reCAPTCHA-Key (Dev/Test). Aktiv in beiden Modi
+      // (öffentlich + intern). Enforcement zusätzlich in der Firebase-Console.
+      if (AppConfig.appCheckEnabled) {
+        try {
+          await FirebaseAppCheck.instance.activate(
+            webProvider:
+                ReCaptchaV3Provider(AppConfig.appCheckRecaptchaKey),
+            androidProvider: AndroidProvider.playIntegrity,
+            appleProvider: AppleProvider.appAttest,
+          );
+        } catch (error, stackTrace) {
+          // App Check darf den Start nicht verhindern (fail-open im Client;
+          // der eigentliche Schutz ist das Console-Enforcement).
+          ErrorReporter.report(error, stackTrace,
+              context: 'FirebaseAppCheck.activate');
+        }
+      }
+
       // Firestore Offline-Persistence aktivieren: Daten werden lokal gecacht,
       // sodass Reads auch offline bedient werden und beim Reconnect automatisch
       // synchronisiert werden. Reduziert Cloud-Reads erheblich.
       FirebaseFirestore.instance.settings = _buildFirestoreSettings();
     }
 
-    await _authProvider.init();
+    // Im öffentlichen Wunsch-Modus KEIN authProvider.init(): keine
+    // Profil-Auflösung, kein Mitarbeiter-Login. Anonyme Auth übernimmt die
+    // öffentliche Seite selbst (lazy beim Absenden).
+    if (!_publicMode) {
+      await _authProvider.init();
+    }
   }
 
   Settings _buildFirestoreSettings() {
@@ -166,7 +209,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const _BootstrapShell(
-            child: _StartupStatusCard(
+            child: StartupStatusCard(
               title: 'Arbeitsbereich wird geladen',
               message:
                   'Zeiterfassung, Schichtplanung und Auswertungen werden vorbereitet. Bitte einen Moment warten.',
@@ -177,7 +220,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
         if (snapshot.hasError) {
           return _BootstrapShell(
-            child: _StartupStatusCard(
+            child: StartupStatusCard(
               title: 'Start fehlgeschlagen',
               message:
                   'Die Anwendung konnte nicht vollstaendig geladen werden. Bitte versuche es erneut.',
@@ -185,6 +228,22 @@ class _AppBootstrapState extends State<AppBootstrap> {
               onActionPressed: _retryInitialization,
             ),
           );
+        }
+
+        if (_publicImpressumMode) {
+          return const PublicLegalApp(page: PublicLegalPage.impressum);
+        }
+
+        if (_publicDatenschutzMode) {
+          return const PublicLegalApp(page: PublicLegalPage.datenschutz);
+        }
+
+        if (_publicFeedbackMode) {
+          return PublicFeedbackApp(firestoreService: _firestoreService);
+        }
+
+        if (_publicWishMode) {
+          return PublicWishApp(firestoreService: _firestoreService);
         }
 
         return WorkTimeApp(
@@ -196,7 +255,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 }
 
-class WorkTimeApp extends StatelessWidget {
+class WorkTimeApp extends StatefulWidget {
   const WorkTimeApp({
     super.key,
     required this.firestoreService,
@@ -207,7 +266,20 @@ class WorkTimeApp extends StatelessWidget {
   final AuthProvider authProvider;
 
   @override
+  State<WorkTimeApp> createState() => _WorkTimeAppState();
+}
+
+class _WorkTimeAppState extends State<WorkTimeApp> {
+  // Einmalig erzeugter Router (memoisiert via ??=): die Navigations-Historie
+  // überlebt die Theme-/Flag-Rebuilds des Consumer2. Erzeugung erst im ersten
+  // Consumer2-Build, weil FeatureFlag-/ThemeProvider von MultiProvider lazy
+  // (create:) entstehen und vorher nicht als Instanz vorliegen.
+  GoRouter? _router;
+
+  @override
   Widget build(BuildContext context) {
+    final firestoreService = widget.firestoreService;
+    final authProvider = widget.authProvider;
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
@@ -231,13 +303,36 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
+        // Audit-Senke FRÜH registrieren (vor allen Daten-Providern), damit jeder
+        // nachfolgende Provider sie via setAuditSink beziehen kann. Reihenfolge in
+        // der Kette ist tragend: ein ProxyProvider darf nur auf zuvor registrierte
+        // Provider zugreifen. Erfasst zentral jede Änderung aller Mitarbeiter.
         ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
-            TeamProvider>(
-          create: (_) => TeamProvider(
+            AuditProvider>(
+          create: (_) => AuditProvider(
             firestoreService: firestoreService,
           ),
           update: (_, auth, storage, provider) {
+            provider ??= AuditProvider(firestoreService: firestoreService);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'AuditProvider.updateSession',
+            );
+            return provider;
+          },
+        ),
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, TeamProvider>(
+          create: (_) => TeamProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, audit, provider) {
             provider ??= TeamProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -250,13 +345,14 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider3<AuthProvider, TeamProvider,
-            StorageModeProvider, ScheduleProvider>(
+        ChangeNotifierProxyProvider4<AuthProvider, TeamProvider,
+            StorageModeProvider, AuditProvider, ScheduleProvider>(
           create: (_) => ScheduleProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, team, storage, provider) {
+          update: (_, auth, team, storage, audit, provider) {
             provider ??= ScheduleProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -276,13 +372,14 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
-            InventoryProvider>(
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, InventoryProvider>(
           create: (_) => InventoryProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, storage, provider) {
+          update: (_, auth, storage, audit, provider) {
             provider ??= InventoryProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -295,13 +392,14 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
-            ContactProvider>(
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, ContactProvider>(
           create: (_) => ContactProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, storage, provider) {
+          update: (_, auth, storage, audit, provider) {
             provider ??= ContactProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -314,31 +412,14 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
-            AuditProvider>(
-          create: (_) => AuditProvider(
-            firestoreService: firestoreService,
-          ),
-          update: (_, auth, storage, provider) {
-            provider ??= AuditProvider(firestoreService: firestoreService);
-            _dispatchProviderUpdate(
-              provider.updateSession(
-                auth.profile,
-                localStorageOnly: storage.isLocalOnly,
-                hybridStorageEnabled: storage.isHybrid,
-              ),
-              'AuditProvider.updateSession',
-            );
-            return provider;
-          },
-        ),
-        ChangeNotifierProxyProvider3<AuthProvider, TeamProvider,
-            StorageModeProvider, PersonalProvider>(
+        ChangeNotifierProxyProvider4<AuthProvider, TeamProvider,
+            StorageModeProvider, AuditProvider, PersonalProvider>(
           create: (_) => PersonalProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, team, storage, provider) {
+          update: (_, auth, team, storage, audit, provider) {
             provider ??= PersonalProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -356,14 +437,33 @@ class WorkTimeApp extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider4<AuthProvider, TeamProvider,
-            StorageModeProvider, ScheduleProvider, WorkProvider>(
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, FinanceProvider>(
+          create: (_) => FinanceProvider(firestoreService: firestoreService),
+          update: (_, auth, storage, audit, provider) {
+            provider ??= FinanceProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'FinanceProvider.updateSession',
+              onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        ChangeNotifierProxyProvider5<AuthProvider, TeamProvider,
+            StorageModeProvider, ScheduleProvider, AuditProvider, WorkProvider>(
           create: (_) => WorkProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, team, storage, schedule, provider) {
+          update: (_, auth, team, storage, schedule, audit, provider) {
             provider ??= WorkProvider(firestoreService: firestoreService);
             provider.updateScheduleProvider(schedule);
+            provider.setAuditSink(audit.log);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -386,43 +486,55 @@ class WorkTimeApp extends StatelessWidget {
         ),
       ],
       child: Consumer2<ThemeProvider, FeatureFlagProvider>(
-        builder: (context, themeProvider, featureFlags, _) => MaterialApp(
-          title: 'timework',
-          debugShowCheckedModeBanner: false,
-          // Theme-Flip (redesign_v2): Dev-Override > org-Flag waehlt V1/V2-Optik.
-          // Die Bootstrap-Shell bleibt auf V1 gepinnt (Anti-Flash) — kein
-          // Umschalten vor Aufloesung der Remote-Config.
-          theme: AppTheme.resolveLight(
-            useV2: _resolveUseV2(featureFlags, themeProvider.redesignV2Override),
-          ),
-          darkTheme: AppTheme.resolveDark(
-            useV2: _resolveUseV2(featureFlags, themeProvider.redesignV2Override),
-          ),
-          themeMode: themeProvider.themeMode,
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          supportedLocales: const [
-            Locale('de', 'DE'),
-            Locale('en', 'US'),
-          ],
-          locale: themeProvider.locale,
-          navigatorObservers: [AnalyticsService.observer],
-          builder: (context, child) {
-            // Sehr große System-Textskalierung clampen, damit Komponenten mit
-            // fixen Höhen nicht überlaufen (no-textscaler-reduce-motion).
-            final mediaQuery = MediaQuery.of(context);
-            return MediaQuery(
-              data: mediaQuery.copyWith(
-                textScaler: clampTextScaler(mediaQuery.textScaler),
-              ),
-              child: child ?? const SizedBox.shrink(),
-            );
-          },
-          home: const _AuthGate(),
-        ),
+        builder: (context, themeProvider, featureFlags, _) {
+          // Router einmalig erzeugen; refreshListenable (Auth/Flags/Theme)
+          // übernimmt danach Auth-Redirects & V1/V2-Flips.
+          final router = _router ??= buildAppRouter(
+            auth: authProvider,
+            featureFlags: featureFlags,
+            theme: themeProvider,
+          );
+          return MaterialApp.router(
+            title: 'timework',
+            debugShowCheckedModeBanner: false,
+            // Theme-Flip (redesign_v2): Dev-Override > org-Flag waehlt V1/V2-Optik.
+            // Die Bootstrap-Shell bleibt auf V1 gepinnt (Anti-Flash) — kein
+            // Umschalten vor Aufloesung der Remote-Config.
+            theme: AppTheme.resolveLight(
+              useV2:
+                  _resolveUseV2(featureFlags, themeProvider.redesignV2Override),
+            ),
+            darkTheme: AppTheme.resolveDark(
+              useV2:
+                  _resolveUseV2(featureFlags, themeProvider.redesignV2Override),
+            ),
+            themeMode: themeProvider.themeMode,
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: const [
+              Locale('de', 'DE'),
+              Locale('en', 'US'),
+            ],
+            locale: themeProvider.locale,
+            builder: (context, child) {
+              // Sehr große System-Textskalierung clampen, damit Komponenten mit
+              // fixen Höhen nicht überlaufen (no-textscaler-reduce-motion).
+              final mediaQuery = MediaQuery.of(context);
+              return MediaQuery(
+                data: mediaQuery.copyWith(
+                  textScaler: clampTextScaler(mediaQuery.textScaler),
+                ),
+                child: child ?? const SizedBox.shrink(),
+              );
+            },
+            // Analytics-Observer liegt jetzt am GoRouter (observers:),
+            // navigatorObservers wird von MaterialApp.router ignoriert.
+            routerConfig: router,
+          );
+        },
       ),
     );
   }
@@ -486,146 +598,11 @@ class _BootstrapShell extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
-      home: _BootstrapFrame(child: child),
+      home: BootstrapFrame(child: child),
     );
   }
 }
 
-class _BootstrapFrame extends StatelessWidget {
-  const _BootstrapFrame({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: child,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StartupStatusCard extends StatelessWidget {
-  const _StartupStatusCard({
-    required this.title,
-    required this.message,
-    this.showLoader = false,
-    this.actionLabel,
-    this.onActionPressed,
-  });
-
-  final String title;
-  final String message;
-  final bool showLoader;
-  final String? actionLabel;
-  final VoidCallback? onActionPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const AppLogo(height: 78),
-            const SizedBox(height: 20),
-            if (showLoader) ...[
-              const CircularProgressIndicator.adaptive(),
-              const SizedBox(height: 20),
-            ],
-            Text(
-              title,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              message,
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-            if (actionLabel != null && onActionPressed != null) ...[
-              const SizedBox(height: 20),
-              FilledButton(
-                onPressed: onActionPressed,
-                child: Text(actionLabel!),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
-
-  @override
-  Widget build(BuildContext context) {
-    final auth = context.watch<AuthProvider>();
-    // Flag-gegateter Chooser fuer die Auth-Flow-Screens (redesign_v2). Ein
-    // Flag-Wechsel rebuildet die _AuthGate und waehlt V1/V2 neu.
-    final useV2 = RedesignFlags.isOn(context);
-
-    if (!auth.firebaseConfigured) {
-      return useV2 ? const FirebaseSetupScreenV2() : const FirebaseSetupScreen();
-    }
-
-    if (!auth.initialized) {
-      return const _BootstrapFrame(
-        child: _StartupStatusCard(
-          title: 'Arbeitsbereich wird geladen',
-          message:
-              'Zeiterfassung, Schichtplanung und Auswertungen werden vorbereitet. Bitte einen Moment warten.',
-          showLoader: true,
-        ),
-      );
-    }
-
-    if (auth.isResolvingProfile) {
-      return const _BootstrapFrame(
-        child: _StartupStatusCard(
-          title: 'Arbeitsbereich wird geladen',
-          message:
-              'Zeiterfassung, Schichtplanung und Auswertungen werden vorbereitet. Bitte einen Moment warten.',
-          showLoader: true,
-        ),
-      );
-    }
-
-    if (!auth.isAuthenticated) {
-      return useV2 ? const AuthScreenV2() : const AuthScreen();
-    }
-
-    final profile = auth.profile;
-    if (profile != null && !profile.isActive) {
-      return useV2 ? const AccessBlockedScreenV2() : const AccessBlockedScreen();
-    }
-
-    // Force-Update-Gate: nur echte Release-Builds (buildNumber > 0), die der
-    // Server explizit unterhalb der Mindest-Build-Nummer einstuft, werden
-    // blockiert (no-feature-flags-force-update, fail-open).
-    final featureFlags = context.watch<FeatureFlagProvider>();
-    if (featureFlags.requiresUpdate) {
-      return ForceUpdateScreen(
-        message: featureFlags.updateMessage,
-        minimumBuildNumber: featureFlags.minimumBuildNumber,
-        currentBuildNumber: featureFlags.currentBuildNumber,
-      );
-    }
-
-    return const HomeScreen();
-  }
-}
+// Die frühere _AuthGate-Logik lebt jetzt im go_router-Redirect (_gateRedirect
+// in lib/routing/app_router.dart) plus den Gate-Routen (/start, /anmelden,
+// /einrichtung, /gesperrt, /aktualisierung).

@@ -169,6 +169,10 @@ void main() {
       ],
     );
 
+    // In den Buchen-Modus wechseln (Standard ist jetzt Scan & Go / Bestellen).
+    await tester.tap(find.text('Buchen'));
+    await tester.pump();
+
     scanner.emit(validEan);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
@@ -176,6 +180,34 @@ void main() {
     expect(find.text('Feuerzeug Clipper'), findsOneWidget);
     expect(find.text('Wareneingang'), findsOneWidget);
     expect(find.text('Abgang'), findsOneWidget);
+  });
+
+  testWidgets('Scan & Go: Scan legt den Artikel direkt in den Warenkorb',
+      (tester) async {
+    final (scanner, inventory) = await pumpScanner(
+      tester,
+      products: const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Feuerzeug Clipper',
+          barcode: validEan,
+          currentStock: 5,
+        ),
+      ],
+    );
+
+    // Standardmodus ist Bestellen (Scan & Go) — kein Moduswechsel noetig.
+    scanner.emit(validEan);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final cart = inventory.orderCartForSite('site-1');
+    expect(cart?.items, hasLength(1));
+    expect(cart?.items.single.name, 'Feuerzeug Clipper');
+    expect(cart?.items.single.quantity, 1);
+    expect(find.textContaining('in den Warenkorb gelegt'), findsOneWidget);
+    expect(find.textContaining('Warenkorb: 1 Artikel'), findsOneWidget);
   });
 
   testWidgets('unbekannter EAN bietet „Neu anlegen" an', (tester) async {
@@ -203,6 +235,9 @@ void main() {
       ],
     );
 
+    await tester.tap(find.text('Buchen'));
+    await tester.pump();
+
     await tester.enterText(
         find.byType(TextField).first, validEan);
     await tester.tap(find.text('Suchen'));
@@ -225,6 +260,9 @@ void main() {
         ),
       ],
     );
+
+    await tester.tap(find.text('Buchen'));
+    await tester.pump();
 
     scanner.emit(validEan);
     await tester.pump();
@@ -313,6 +351,9 @@ void main() {
         ),
       ],
     );
+
+    await tester.tap(find.text('Buchen'));
+    await tester.pump();
 
     scanner.emit(validEan);
     await tester.pump();

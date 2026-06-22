@@ -415,6 +415,52 @@ void main() {
     );
 
     test(
+      'saveWorkEntry erzeugt kein Duplikat bei verlorenem Callable-Ack '
+      '(stabile Client-ID, probleme #3)',
+      () async {
+        final entries = firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('workEntries');
+        // Server committet erfolgreich (schreibt unter der vom Client
+        // gelieferten stabilen ID), aber das Ack geht als `unavailable`
+        // verloren -> Client faellt auf den direkten Pfad zurueck.
+        final lostAckService = FirestoreService(
+          firestore: firestore,
+          retryBaseDelay: Duration.zero,
+          cloudFunctionInvoker: (name, payload) async {
+            final entryMap = payload['entry'] as Map<String, dynamic>;
+            final id = entryMap['id'] as String;
+            await entries.doc(id).set({'userId': entryMap['user_id']});
+            throw FirebaseFunctionsException(
+              code: 'unavailable',
+              message: 'Ack nach Commit verloren',
+            );
+          },
+        );
+
+        await lostAckService.saveWorkEntry(
+          WorkEntry(
+            orgId: 'org-1',
+            userId: 'employee-1',
+            date: DateTime(2026, 4, 5),
+            startTime: DateTime(2026, 4, 5, 8),
+            endTime: DateTime(2026, 4, 5, 16),
+            breakMinutes: 30,
+          ),
+        );
+
+        final snapshot = await entries.get();
+        expect(
+          snapshot.docs,
+          hasLength(1),
+          reason: 'direkter Fallback schreibt dieselbe Doc-ID, kein Duplikat',
+        );
+        expect(snapshot.docs.single.data()['userId'], 'employee-1');
+      },
+    );
+
+    test(
       'adjustProductStock mit gleicher clientMutationId bucht nur einmal '
       '(no-idempotency-on-stock-mutations)',
       () async {

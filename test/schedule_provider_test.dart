@@ -28,6 +28,22 @@ class _DeleteFailingFirestoreService extends FirestoreService {
       throw Exception('offline');
 }
 
+/// Test-Komfort: Einzelschicht speichern. In Produktion gibt es nur das
+/// Batch-API [ScheduleProvider.saveShifts]; dieser dünne Wrapper hält die
+/// bestehenden Einzelschicht-Testaufrufe lesbar, ohne toten Produktionscode.
+extension _SaveSingleShift on ScheduleProvider {
+  Future<void> saveShift(
+    Shift shift, {
+    RecurrencePattern recurrencePattern = RecurrencePattern.none,
+    DateTime? recurrenceEndDate,
+  }) =>
+      saveShifts(
+        [shift],
+        recurrencePattern: recurrencePattern,
+        recurrenceEndDate: recurrenceEndDate,
+      );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 

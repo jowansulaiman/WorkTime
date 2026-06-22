@@ -6,11 +6,13 @@ import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/contact_activity.dart';
 import '../repositories/contact_repository.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
+import 'audit_sink.dart';
 
 /// Verwaltet die Kontakte (Kunden, Lieferanten, Geschaeftspartner, Behoerden, …)
 /// einer Organisation.
@@ -64,12 +66,6 @@ class ContactProvider extends ChangeNotifier {
   String? get _orgId => _currentUser?.orgId;
 
   // --- Abgeleitete Sichten ------------------------------------------------
-
-  List<Contact> get activeContacts =>
-      _items.where((contact) => contact.isActive).toList(growable: false);
-
-  List<Contact> get favorites =>
-      _items.where((contact) => contact.isFavorite).toList(growable: false);
 
   /// Anzahl Kontakte je Kategorie (fuer Filter-Badges / Statistik).
   Map<ContactType, int> get countsByType {
@@ -142,6 +138,9 @@ class ContactProvider extends ChangeNotifier {
 
   void _setError(Object error) {
     _errorMessage = error is StateError ? error.message : error.toString();
+    // Bei einem Stream-/Lade-Fehler den Ladezustand zuruecksetzen — sonst
+    // zeigt der Bereich Fehlermeldung UND Dauer-Spinner (probleme #10).
+    _loading = false;
     _safeNotify();
   }
 
@@ -159,6 +158,22 @@ class ContactProvider extends ChangeNotifier {
       _safeNotify();
     }
   }
+
+  AuditSink? _audit;
+
+  /// Senke fürs Änderungsprotokoll (best-effort). Wird in main.dart verdrahtet.
+  void setAuditSink(AuditSink sink) {
+    _audit = sink;
+  }
+
+  /// Wenn != null, unterdrückt das nächste [saveContact] das eigene Protokoll
+  /// und schreibt stattdessen DIESEN Eintrag (oder gar keinen, wenn beide null).
+  /// So loggt eine delegierende Methode (z.B. [addContactActivity], [setActive])
+  /// GENAU EINMAL mit ihrem fachlichen Text – statt einmal hier und einmal im
+  /// Blatt (Doppel-Logging). [toggleFavorite] setzt nur das Flag, ohne Eintrag.
+  bool _suppressSaveAudit = false;
+  AuditAction? _delegatedAuditAction;
+  String? _delegatedAuditSummary;
 
   String? _lastSessionKey;
 
@@ -257,10 +272,23 @@ class ContactProvider extends ChangeNotifier {
   // --- CRUD ---------------------------------------------------------------
 
   Future<void> saveContact(Contact contact) async {
+    // Übersteuerung durch delegierende Methoden (z.B. [setActive]) ZUERST einmalig
+    // entnehmen – noch VOR dem orgId-Check. Sonst würde ein Wurf (keine Org aktiv)
+    // das gesetzte Suppress-Flag stehen lassen und es in den nächsten regulären
+    // saveContact-Aufruf lecken, der dann still seinen Audit-Eintrag unterdrückt.
+    final suppress = _suppressSaveAudit;
+    final delegatedAction = _delegatedAuditAction;
+    final delegatedSummary = _delegatedAuditSummary;
+    _suppressSaveAudit = false;
+    _delegatedAuditAction = null;
+    _delegatedAuditSummary = null;
     final orgId = _orgId;
     if (orgId == null) {
       throw StateError('Keine Organisation aktiv.');
     }
+    // Vor jeder ID-Zuweisung festhalten, ob der Kontakt neu ist (created) oder
+    // bereits existiert (updated) – fürs Änderungsprotokoll.
+    final isNew = contact.id == null || contact.id!.isEmpty;
     final prepared = contact.copyWith(
       orgId: orgId,
       createdByUid: contact.createdByUid ?? _currentUser?.uid,
@@ -270,16 +298,62 @@ class ContactProvider extends ChangeNotifier {
           'saveContact',
           () => _contacts.saveContact(prepared),
         )) {
+      _logSaveAudit(
+        suppress: suppress,
+        delegatedAction: delegatedAction,
+        delegatedSummary: delegatedSummary,
+        isNew: isNew,
+        entityId: prepared.id,
+        name: prepared.name,
+      );
       return;
     }
-    _upsertLocal(
-      prepared.id == null
-          ? prepared.copyWith(id: _nextLocalId('contact'))
-          : prepared,
-    );
+    final stored = prepared.id == null
+        ? prepared.copyWith(id: _nextLocalId('contact'))
+        : prepared;
+    _upsertLocal(stored);
     _sortContacts();
     await _persistContacts();
+    _logSaveAudit(
+      suppress: suppress,
+      delegatedAction: delegatedAction,
+      delegatedSummary: delegatedSummary,
+      isNew: isNew,
+      entityId: stored.id,
+      name: stored.name,
+    );
     _safeNotify();
+  }
+
+  /// Protokolliert eine erfolgreiche [saveContact]-Ausführung (best-effort).
+  /// Bei [suppress] (Aufruf aus einer delegierenden Methode) wird – falls eine
+  /// fachliche Übersteuerung vorliegt – genau DIESER Eintrag geschrieben, sonst
+  /// gar keiner ([toggleFavorite]). Ohne Übersteuerung der Standard-Eintrag.
+  void _logSaveAudit({
+    required bool suppress,
+    required AuditAction? delegatedAction,
+    required String? delegatedSummary,
+    required bool isNew,
+    required String? entityId,
+    required String name,
+  }) {
+    if (suppress) {
+      if (delegatedAction != null && delegatedSummary != null) {
+        _audit?.call(
+          action: delegatedAction,
+          entityType: 'Kontakt',
+          entityId: entityId,
+          summary: delegatedSummary,
+        );
+      }
+      return;
+    }
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Kontakt',
+      entityId: entityId,
+      summary: 'Kontakt „$name" ${isNew ? 'angelegt' : 'aktualisiert'}',
+    );
   }
 
   /// Importiert mehrere Kontakte (z.B. aus CSV) und gibt die Anzahl der
@@ -288,8 +362,19 @@ class ContactProvider extends ChangeNotifier {
     var saved = 0;
     for (final contact in contacts) {
       if (contact.name.trim().isEmpty) continue;
+      // Pro Kontakt das Blatt-Logging unterdrücken – stattdessen unten EIN
+      // Sammel-Eintrag (sonst N+1 Einträge fürs selbe Sachgeschehen).
+      _suppressSaveAudit = true;
       await saveContact(contact);
       saved++;
+    }
+    if (saved > 0) {
+      _audit?.call(
+        action: AuditAction.created,
+        entityType: 'Kontakt',
+        entityId: null,
+        summary: '$saved Kontakte importiert',
+      );
     }
     return saved;
   }
@@ -303,6 +388,13 @@ class ContactProvider extends ChangeNotifier {
     final updated = contact.copyWith(
       activities: [activity, ...contact.activities].take(50).toList(),
     );
+    // Kontaktname bevorzugt aus der in-memory-Liste (aktueller Stand), sonst
+    // vom übergebenen Objekt. Delegiertes Logging mit fachlichem Text – das
+    // Blatt [saveContact] schreibt dann nur DIESEN Eintrag.
+    final name = contactById(contact.id)?.name ?? contact.name;
+    _suppressSaveAudit = true;
+    _delegatedAuditAction = AuditAction.updated;
+    _delegatedAuditSummary = 'Aktivität zu „$name" hinzugefügt';
     await saveContact(updated);
   }
 
@@ -311,26 +403,50 @@ class ContactProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
+    // Name VOR der Löschung aus der in-memory-Liste merken (fürs Protokoll),
+    // sonst id als Fallback.
+    final name = contactById(contactId)?.name ?? contactId;
     if (_usesFirestore &&
         await _tryFirestore(
           'deleteContact',
           () => _contacts.deleteContact(orgId: orgId, contactId: contactId),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Kontakt',
+        entityId: contactId,
+        summary: 'Kontakt „$name" gelöscht',
+      );
       return;
     }
     _items =
         _items.where((contact) => contact.id != contactId).toList(growable: false);
     await _persistContacts();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Kontakt',
+      entityId: contactId,
+      summary: 'Kontakt „$name" gelöscht',
+    );
     _safeNotify();
   }
 
   /// Schaltet die Favoriten-Markierung um (Speicherung ueber [saveContact]).
   Future<void> toggleFavorite(Contact contact) {
+    // Favorit = Rauschen → nicht protokollieren. Blatt-Logging unterdrücken,
+    // ohne einen delegierten Eintrag zu hinterlegen.
+    _suppressSaveAudit = true;
     return saveContact(contact.copyWith(isFavorite: !contact.isFavorite));
   }
 
   /// Aktiviert/Archiviert einen Kontakt (Speicherung ueber [saveContact]).
   Future<void> setActive(Contact contact, {required bool isActive}) {
+    // Delegiertes Logging mit fachlichem Text – das Blatt [saveContact]
+    // schreibt dann nur DIESEN Eintrag (kein generisches „aktualisiert").
+    _suppressSaveAudit = true;
+    _delegatedAuditAction = AuditAction.updated;
+    _delegatedAuditSummary =
+        'Kontakt „${contact.name}" ${isActive ? 'aktiviert' : 'deaktiviert'}';
     return saveContact(contact.copyWith(isActive: isActive));
   }
 

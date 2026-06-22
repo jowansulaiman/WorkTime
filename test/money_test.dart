@@ -22,12 +22,34 @@ void main() {
       expect((const Money(99) * 3).cents, 297);
     });
 
-    test('parseCents folgt der de_DE-Konvention (Punkt=Tausender)', () {
+    test('parseCents: Komma als Dezimaltrenner (de_DE)', () {
       expect(Money.parseCents('12,34'), 1234);
       expect(Money.parseCents('1.234,56'), 123456);
       expect(Money.parseCents('12,34 €'), 1234);
-      // Punkt = Tausendertrenner -> „1.234" sind 1234 € (konsistent mit der App).
+      expect(Money.parseCents('1,99'), 199);
+    });
+
+    test('parseCents: Punkt als Dezimaltrenner (1–2 Nachkommastellen)', () {
+      // Footgun-Fix: Punkt darf NICHT als Tausender verschluckt werden, sonst
+      // wird "1.99" zu 199,00 € (100×-Fehler). Siehe probleme/01-kritisch-hoch.
+      expect(Money.parseCents('1.99'), 199);
+      expect(Money.parseCents('12.34'), 1234);
+      expect(Money.parseCents('0.99'), 99);
+      expect(Money.parseCents('12.5'), 1250);
+    });
+
+    test('parseCents: Punkt mit 3 Nachkommastellen bleibt Tausender', () {
+      // „1.234" sind weiterhin 1234 € (konsistent mit der App).
       expect(Money.parseCents('1.234'), 123400);
+      expect(Money.parseCents('1.234.567'), 123456700);
+    });
+
+    test('parseCents: gemischte Trenner, letzter zählt als Dezimal', () {
+      expect(Money.parseCents('1.234,56'), 123456); // de
+      expect(Money.parseCents('1,234.56'), 123456); // en
+    });
+
+    test('parseCents: leer/ungültig -> null', () {
       expect(Money.parseCents(''), isNull);
       expect(Money.parseCents('abc'), isNull);
     });

@@ -48,6 +48,7 @@ flutter test --coverage   # erzeugt coverage/lcov.info; pragmatisches Ziel: krit
 | `APP_DEFAULT_ORG_ID` | `main-org` | `defaultOrganizationId` |
 | `APP_DEFAULT_ORG_NAME` | `Worktime` | Name des lazy angelegten Org-Docs |
 | `APP_BOOTSTRAP_ADMIN_EMAILS` | `''` | CSV; per Login selbst-provisionierende Admins (nur Dev). Lies via `AppConfig.bootstrapAdminEmailList`. |
+| `APP_LEGAL_*` | `''` | Impressum/Datenschutz-Stammdaten der öffentlichen Seiten: `_OPERATOR_NAME`, `_STREET`, `_POSTAL_CITY`, `_EMAIL`, `_PHONE`, `_REPRESENTATIVE`, `_VAT_ID`, `_REGISTER`, `_CONTENT_RESPONSIBLE` (Opt-in § 18 MStV, nur bei redaktionellen Inhalten), `_LAST_UPDATED`. Gebündelt in `LegalInfo`. Leer ⇒ Rechtsseiten zeigen sichtbaren „noch zu hinterlegen"-Hinweis (`LegalInfo.isComplete` = Name+Anschrift+E-Mail+Telefon). |
 | `FIREBASE_FUNCTIONS_REGION` | `europe-west3` | Functions-Region. **Muss** `const REGION` in `functions/index.js` entsprechen. |
 | `FIREBASE_{ANDROID,IOS,WEB}_*` | – | Creds in `lib/firebase_options.dart` (`API_KEY`, `APP_ID`, `MESSAGING_SENDER_ID`, `PROJECT_ID`, …). Platzhalter `REPLACE_ME`/`YOUR_VALUE_HERE`/leer gelten als „unset" → Firebase still deaktiviert. |
 
@@ -67,24 +68,29 @@ firestore.rules · firestore.indexes.json · docs/firebase_setup.md
 
 ## Architektur / Datenfluss
 
-**Bootstrap** (`lib/main.dart`): `main()` → `AppConfig.validateEnvironment()` → globale Error-Handler → `Firebase.initializeApp` (mit Options wenn konfiguriert, sonst nativ nur auf Android; `duplicate-app` wird geschluckt) → **Firestore-Offline-Persistence setzen (vor dem ersten Read!)** → `authProvider.init()`. `_AuthGate` wählt Root-Screen: `!firebaseConfigured`→`FirebaseSetupScreen`, `!initialized`/`isResolvingProfile`→Loader, `!isAuthenticated`→`AuthScreen`, `profile != null && !isActive`→`AccessBlockedScreen`, sonst `HomeScreen`.
+**Bootstrap** (`lib/main.dart`): `main()` → `AppConfig.validateEnvironment()` → `usePathUrlStrategy()` (saubere Web-URLs, kein `#`) → globale Error-Handler → `Firebase.initializeApp` (mit Options wenn konfiguriert, sonst nativ nur auf Android; `duplicate-app` wird geschluckt) → **Firestore-Offline-Persistence setzen (vor dem ersten Read!)** → `authProvider.init()`.
+
+**Routing = go_router** (`lib/routing/app_router.dart`; `MaterialApp.router` in `WorkTimeApp`). Der Router wird EINMALIG im `Consumer2`-Builder von `WorkTimeApp` memoisiert (`_router ??= buildAppRouter(auth, featureFlags, theme)`); `refreshListenable: Listenable.merge([auth, featureFlags, theme])`. Statt eines `_AuthGate`-Widgets reproduziert **`_gateRedirect`** die Root-Wahl als Redirect → Gate-Routen: `!firebaseConfigured`→`/einrichtung`(FirebaseSetup), `!initialized`/`isResolvingProfile`→`/start`(Loader), `!isAuthenticated`→`/anmelden`(AuthScreen), `profile && !isActive`→`/gesperrt`(AccessBlocked), `requiresUpdate`→`/aktualisierung`(ForceUpdate), sonst Shell. V1/V2 der Gate-Screens via `RedesignFlags.isOnRead`. Der Redirect macht zusätzlich URL-Permission-Gating (Deep-Link ohne Recht → `/`). Analytics-Observer hängt am `GoRouter(observers:)`, NICHT an `MaterialApp` (dort ignoriert). Pfad-Konstanten: `shellTabPaths` (Tabs) + `AppRoutes` (Gate-/Section-Routen) in `lib/routing/shell_tab.dart`.
+
+**Öffentliche Web-Routen bleiben VOR der Provider-Kette + go_router** (eigene isolierte `MaterialApp`, kein `authProvider.init()`, KEIN go_router — bewusste Sicherheits-/Kosten-Grenze): `/wunsch` (`PublicWishApp`), `/feedback` (`PublicFeedbackApp`) — beide brauchen Firebase (anonymer Schreibpfad). `/impressum` + `/datenschutz` (`PublicLegalApp`) sind **reine Statik** ohne Firebase. `_AppBootstrap` liest `Uri.base` einmalig und wählt öffentliche App vs. `WorkTimeApp` (nur Letztere bekommt go_router). Alle vier teilen das flache Signal-Teal-Design (`lib/screens/public/public_ui.dart`). Impressum/Datenschutz (§ 5 DDG / Art. 13 DSGVO) sind zusätzlich per Footer (`PublicLegalLinks`) aus Wunsch-/Feedback-Seite erreichbar; Inhalt aus `LegalInfo`/`APP_LEGAL_*`. Neue öffentliche Route → `isPublic*Route()` + Zweig in `_AppBootstrapState.build` + ins `_publicMode`-Getter (Pfad darf nicht mit einem go_router-Pfad kollidieren).
 
 **Provider-Kette** (Reihenfolge in `lib/main.dart` ist tragend, neue abhängige Provider DANACH einfügen):
 
 ```
 AuthProvider(.value, vor runApp init'd) → ThemeProvider → StorageModeProvider
-  → FeatureFlagProvider (Proxy2<Auth,Storage>)  // erster Proxy, von _AuthGate gelesen
-  → TeamProvider (Proxy2<Auth,Storage>)         // einziger Produzent von Stammdaten
-  → ScheduleProvider (Proxy3<Auth,Team,Storage>)
-  → InventoryProvider (Proxy2<Auth,Storage>)    // Warenwirtschaft + Kundenbestellungen
-  → ContactProvider (Proxy2<Auth,Storage>)      // Kontakte
-  → AuditProvider (Proxy2<Auth,Storage>)        // Änderungsprotokoll (best-effort)
-  → PersonalProvider (Proxy3<Auth,Team,Storage>)// HR (workTasks/payrollRecords/-Profiles)
-  → WorkProvider (Proxy4<Auth,Team,Storage,Schedule>)
+  → FeatureFlagProvider (Proxy2<Auth,Storage>)  // erster Proxy, vom go_router-Redirect gelesen
+  → AuditProvider (Proxy2<Auth,Storage>)        // Änderungsprotokoll (best-effort); FRÜH, da Senke aller Folgenden
+  → TeamProvider (Proxy3<Auth,Storage,Audit>)   // einziger Produzent von Stammdaten
+  → ScheduleProvider (Proxy4<Auth,Team,Storage,Audit>)
+  → InventoryProvider (Proxy3<Auth,Storage,Audit>) // Warenwirtschaft + Kundenbestellungen
+  → ContactProvider (Proxy3<Auth,Storage,Audit>)   // Kontakte
+  → PersonalProvider (Proxy4<Auth,Team,Storage,Audit>) // HR (workTasks/payrollRecords/-Profiles)
+  → WorkProvider (Proxy5<Auth,Team,Storage,Schedule,Audit>)
 ```
 > Inventory/Contact/Audit/Personal lösen ihr Cloud-Repository **lazy** auf (nie im
 > Konstruktor) — sonst Crash im `APP_DISABLE_AUTH`/Web-Modus. Neue abhängige
 > Provider weiterhin DANACH einfügen.
+- **Zentrales Änderungsprotokoll:** `AuditProvider` ist absichtlich FRÜH (vor allen Daten-Providern) registriert, damit jeder Daten-Provider via `provider.setAuditSink(audit.log)` die best-effort-Senke `AuditSink` (`lib/providers/audit_sink.dart`, fire-and-forget, wirft nie) bezieht. Jeder fachliche Mutator loggt `_audit?.call(action:, entityType:, entityId:, summary:)` NUR auf dem Erfolgs-Pfad (in JEDEM Storage-Zweig: local-return UND hybrid-catch-Fallback; NIE auf rethrow-/Permission-Deny-Pfaden, NIE doppelt bei Delegation). Akteur/Zeitstempel füllt `AuditProvider.log` selbst. Lesen ist admin-only (Rules). Deutsche Summaries. Rauschen (Vorlagen, persönliche Einstellungen, Warenkorb, Favoriten) wird bewusst NICHT geloggt. **Neuer Mutator mit fachlicher Relevanz → dort `_audit?.call(...)` ergänzen (nicht im Screen).** Cloud-erzeugte Stammdaten (saveSite/Team/Qualification/RuleSet/TravelTimeRule) bekommen beim Anlegen `entityId == null`, weil `FirestoreService` die Doc-ID intern via `collection.doc()` vergibt — Aktion/Summary/Akteur sind korrekt, nur die ID-Verknüpfung fehlt (bekannte, harmlose Einschränkung; Model-`entityId` ist nullable).
 - Jeder Proxy ruft `provider.updateSession(auth.profile, localStorageOnly: storage.isLocalOnly, hybridStorageEnabled: storage.isHybrid)`. `updateSession` ist `async`, der Proxy-Callback aber sync → wird via `_dispatchProviderUpdate` **fire-and-forget** ausgeführt; Fehler werden nur per `debugPrint` geloggt. **Nie annehmen, dass updateSession beim Rebuild fertig ist.**
 - `TeamProvider` schiebt seine Listen synchron via `updateReferenceData(...)` in Schedule/Work (die lesen Stammdaten nie selbst). Diese Setter rufen kein `notifyListeners` (sonst Rebuild-Loops).
 - `WorkProvider` bekommt zusätzlich die lebende `ScheduleProvider`-Instanz via `updateScheduleProvider` (markiert Schicht als completed bei Entry-Save). Einziger direkter Provider→Provider-Call.
@@ -139,12 +145,12 @@ Jedes Model hat **zwei** nicht austauschbare Formate:
 4. **Neuer abhängiger Provider** → nach Auth/Team/Schedule/Storage in `main.dart`-Kette einfügen.
 5. **Neue lokal-persistierte Collection** → Key in `DatabaseService` registrieren, org- vs. user-skopiert via `_orgScopedCollectionKeys` entscheiden (nur `work_templates` + Settings sind user-skopiert), über `_load/_saveCollection` laufen lassen, `toMap`/`fromMap` muss round-trippen.
 6. **Neuer Firestore-Write-Pfad** → 3 Enforcement-Punkte abgleichen: Callable (falls shift/entry), `firestore.rules` (erlauben direkte Writes!), und Payload-Format (Callable=snake_case, direkt=camelCase).
-7. **Neuer Root-UI-State** → `_AuthGate` (kein Router!). **Neuer Tab** → `_ShellDestinationId`-Enum + `_buildDestinations` in `home_screen.dart`, per `AppUserProfile`-Permission-Getter gaten; **nie per Literal-Index** (Indizes variieren mit Permissions → `destinations.indexWhere`).
+7. **Neuer Root-UI-State** → Gate-Route + Zweig in `_gateRedirect` (`lib/routing/app_router.dart`). **Neuer Tab** → `ShellTab`-Enum (`lib/routing/shell_tab.dart`, Reihenfolge = Branch-Index!) + `StatefulShellBranch` in `buildAppRouter` + `_destinationMeta`/`_isTabVisible`/`buildHomeTab` in `home_screen.dart` + Permission im Redirect (`_isLocationAllowed`); **nie per Listenposition** mappen, immer `shellBranchIndex(tab)` / `destinations.indexWhere`. **Neuer Hauptbereich-Screen mit URL** → `AppRoutes`-Konstante + `_sectionRoute` + `_isLocationAllowed`, Aufruf via `context.push(AppRoutes.x)` (Detail-/Editor-Sheets bleiben imperativ `Navigator.push`).
 8. **`FIREBASE_FUNCTIONS_REGION` ändern** → muss `const REGION` in `functions/index.js` entsprechen, sonst schlagen Callables fehl (`not-found`/`unavailable`) und triggern still den direkten Fallback (umgeht Compliance).
 
 ## UI-Konventionen
 
-- **Kein** go_router/named routes. Root nur in `_AuthGate`. In-Shell-Navigation ist index-basiert (`_navIndex` + `_navHistory` + `PopScope`), Tabs lazy via `_LazyDestinationStack`. Detail-Screens via `Navigator.push(MaterialPageRoute(...))`.
+- **Routing via go_router** (`lib/routing/app_router.dart`), deutsche Pfade in der URL. Shell = `StatefulShellRoute.indexedStack` (7 statische Branches = lazy, state-erhaltender IndexedStack; ersetzt den früheren `_LazyDestinationStack`/`_navIndex`). Tab-Wechsel via `navigationShell.goBranch(branchIndex)`; Cross-Tab-Zurück via `_navHistory` + `PopScope` + `_ShellScope`-InheritedWidget. Hauptbereiche (`/warenwirtschaft`, `/team`, …) sind Top-Level-Routen, via `context.push(AppRoutes.x)` über die Shell gepusht (Back → Hub). Tab-Ziele via `context.go`/`goBranch`. Detail-/Editor-Screens (EntryForm, PurchaseOrder-Editor, Sheets) bleiben imperativ `Navigator.push(MaterialPageRoute(...))`. Tests gegen die echte Shell laufen über `test/support/router_harness.dart` (`pumpApp`).
 - Material 3, `AppTheme.light/dark`, `fontFamily: NotoSans`. ColorScheme ist nach `fromSeed` fast komplett überschrieben → nur benannte Rollen nutzen (`surfaceContainerLow` = Card-BG, `onSurfaceVariant` = gedämpfter Text, `secondaryContainer` = ausgewählt).
 - **Status-Farben (success/warning/info) nie hardcoden** → `Theme.of(context).appColors` (ThemeExtension `AppThemeColors`).
 - Reuse-Widgets in `home_screen.dart` (`_SectionCard`, `_HeaderSection`, `_EmptyState`, `_InfoChip` …) sind **file-private** → nicht importierbar, ggf. nach `lib/widgets/` heben statt kopieren.

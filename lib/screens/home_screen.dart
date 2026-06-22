@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -7,6 +8,7 @@ import 'package:table_calendar/table_calendar.dart';
 import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
 import '../core/redesign_flags.dart';
+import '../routing/shell_tab.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/employee_site_assignment.dart';
@@ -14,15 +16,18 @@ import '../models/site_definition.dart';
 import '../models/shift.dart';
 import '../models/work_entry.dart';
 import '../providers/auth_provider.dart';
+import '../providers/inventory_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/storage_mode_provider.dart';
 import '../providers/team_provider.dart';
 import '../providers/work_provider.dart';
 import '../theme/app_theme.dart';
+import '../ui/app_card.dart';
 import '../ui/app_hero_card.dart';
 import '../ui/app_quick_action.dart';
 import '../ui/app_section_card.dart';
 import '../ui/app_stat_cards.dart';
+import '../ui/app_status.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/app_nav_menu.dart';
 import '../widgets/app_nav_rail.dart';
@@ -33,33 +38,29 @@ import '../widgets/responsive_layout.dart';
 import '../widgets/section_card.dart';
 import '../widgets/section_header.dart';
 import '../widgets/dashboard_action_items_card.dart';
-import 'audit_log_screen.dart';
 import 'entry_form_screen.dart';
 import 'contacts_screen.dart';
-import 'customer_order_screen.dart';
-import 'inventory_screen.dart';
-import 'month_report_screen.dart';
-import 'personal_screen.dart';
+import 'order_cart_screen.dart';
 import 'notification_screen.dart';
-import 'scanner_screen.dart';
-import 'settings_screen.dart';
 import 'shift_planner_screen.dart';
-import 'statistics_screen.dart';
-import 'team_management_screen.dart';
 
 part 'home_screen_helpers.dart';
 part 'home_screen_tabs.dart';
 part 'home_dashboards_v2.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, required this.navigationShell});
+
+  /// Von der `StatefulShellRoute.indexedStack` injiziert. Ist zugleich der
+  /// lazy, state-erhaltende IndexedStack der sieben Branches (ersetzt den
+  /// früheren manuellen `_LazyDestinationStack`).
+  final StatefulNavigationShell navigationShell;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _navIndex = 0;
   // Strg/Ctrl + 1..9 -> n-te Rail-Destination (no-desktop-keyboard-shortcuts).
   static const List<LogicalKeyboardKey> _navDigitKeys = [
     LogicalKeyboardKey.digit1,
@@ -72,10 +73,13 @@ class _HomeScreenState extends State<HomeScreen> {
     LogicalKeyboardKey.digit8,
     LogicalKeyboardKey.digit9,
   ];
-  final Set<_ShellDestinationId> _loadedDestinations = {
-    _ShellDestinationId.today,
-  };
-  final List<_ShellDestinationId> _navHistory = [];
+
+  /// Cross-Tab-Zurück-Verlauf: zuletzt verlassene Tabs. Speist `PopScope.canPop`
+  /// und das Zurück-Chevron im Tab-Header (via [_ShellScope]). Das ist die
+  /// In-App-Tab-Historie — getrennt von der Browser-/System-Historie.
+  final List<ShellTab> _navHistory = [];
+
+  StatefulNavigationShell get _shell => widget.navigationShell;
 
   /// Steuert das V2-Slide-in-Menü (drawer/endDrawer) von ausserhalb des
   /// Scaffold-Subtrees (mobiler ☰-Trigger, Rail-Profil-Header).
@@ -96,14 +100,23 @@ class _HomeScreenState extends State<HomeScreen> {
           );
     final canManageShifts = currentUser?.canManageShifts ?? false;
     final useV2 = RedesignFlags.isOn(context);
-    final destinations = _buildDestinations(currentUser, useV2: useV2);
-    final selectedIndex = _navIndex.clamp(0, destinations.length - 1);
-    final currentDestination = destinations[selectedIndex];
+    final destinations = _visibleDestinations(currentUser, useV2: useV2);
+    final currentBranchIndex = _shell.currentIndex;
+    // Metadaten des aktuellen Branch (auch wenn der Tab in der Nav versteckt
+    // ist, z.B. /profil unter V2) -> liefert Label + FAB-Sichtbarkeit.
+    final currentDestination =
+        _destinationMeta(ShellTab.values[currentBranchIndex]);
+    // Position des aktuellen Branch in der sichtbaren Liste; -1 (versteckter
+    // Branch) -> 0 clampen, damit NavigationBar/Rail einen gültigen Index hat.
+    final rawSelectedIndex = destinations.indexWhere(
+      (destination) => shellBranchIndex(destination.id) == currentBranchIndex,
+    );
+    final selectedIndex = rawSelectedIndex == -1 ? 0 : rawSelectedIndex;
     final railDestinations = destinations
-        .where((destination) => destination.id != _ShellDestinationId.profile)
+        .where((destination) => destination.id != ShellTab.profile)
         .toList(growable: false);
     final railSelectedIndex = railDestinations.indexWhere(
-      (destination) => destination.id == currentDestination.id,
+      (destination) => shellBranchIndex(destination.id) == currentBranchIndex,
     );
 
     // Desktop-/Web-Tastatur-Shortcuts (no-desktop-keyboard-shortcuts):
@@ -125,7 +138,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (didPop) {
               return;
             }
-            _navigateBackInShell(destinations: destinations);
+            _navigateBackInShell();
           },
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -138,10 +151,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       constraints.maxHeight >= MobileBreakpoints.mediumWindow;
               final expandedRailLabels =
                   MobileBreakpoints.useExpandedRailLabels(constraints.maxWidth);
-              final body = _LazyDestinationStack(
-                selectedId: currentDestination.id,
-                loadedDestinations: _loadedDestinations,
-                destinations: destinations,
+              final body = _ShellScope(
+                canGoBack: _navHistory.isNotEmpty,
+                onGoBack: _handleShellBackPressed,
+                child: _shell,
               );
               final shellContent = Column(
                 children: [
@@ -226,10 +239,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                       _RailProfileHeader(
                                         user: currentUser,
                                         isSelected: currentDestination.id ==
-                                            _ShellDestinationId.profile,
+                                            ShellTab.profile,
                                         onTap: () => _activateDestination(
-                                          _ShellDestinationId.profile,
-                                          destinations: destinations,
+                                          ShellTab.profile,
                                         ),
                                       ),
                                     ],
@@ -301,74 +313,53 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  _ShellDestinationId _currentDestinationId(
-      List<_ShellDestination> destinations) {
-    final selectedIndex = _navIndex.clamp(0, destinations.length - 1);
-    return destinations[selectedIndex].id;
-  }
-
-  void _activateDestination(
-    _ShellDestinationId id, {
-    required List<_ShellDestination> destinations,
-    bool recordHistory = true,
-  }) {
+  /// Wechselt auf den Branch von [id] (über `goBranch`). Re-Tap des aktiven
+  /// Tabs setzt dessen Branch auf die Wurzel zurück. Cross-Tab-Wechsel werden
+  /// für die In-App-Zurück-Geste in [_navHistory] protokolliert.
+  void _activateDestination(ShellTab id, {bool recordHistory = true}) {
     if (!mounted) {
       return;
     }
-
-    final index =
-        destinations.indexWhere((destination) => destination.id == id);
-    if (index == -1) {
+    final branchIndex = shellBranchIndex(id);
+    final currentIndex = _shell.currentIndex;
+    if (branchIndex == currentIndex) {
+      _shell.goBranch(branchIndex, initialLocation: true);
       return;
     }
-
-    final currentId = _currentDestinationId(destinations);
-    if (recordHistory && currentId != id) {
-      _navHistory.add(currentId);
+    if (recordHistory) {
+      _navHistory.add(ShellTab.values[currentIndex]);
     }
-
-    if (_navIndex == index) {
-      return;
-    }
-
-    setState(() {
-      _navIndex = index;
-      _loadedDestinations.add(destinations[index].id);
-    });
+    _shell.goBranch(branchIndex);
+    // goBranch rebuildet die Shell ohnehin; setState aktualisiert zusätzlich die
+    // von _navHistory abhängige Nav-Chrome (PopScope.canPop / Zurück-Chevron).
+    setState(() {});
 
     // Screen-Tracking (no-analytics-screen-tracking), datensparsam: nur
     // Tab-Name + Rolle, keine personenbezogenen Daten.
     AnalyticsService.logScreenView(
-      destinations[index].id.name,
+      id.name,
       role: context.read<AuthProvider>().profile?.role.name,
     );
   }
 
-  bool _navigateBackInShell({List<_ShellDestination>? destinations}) {
-    final resolvedDestinations = destinations ??
-        _buildDestinations(
-          context.read<AuthProvider>().profile,
-        );
-    final currentId = _currentDestinationId(resolvedDestinations);
-
+  bool _navigateBackInShell() {
+    var switched = false;
     while (_navHistory.isNotEmpty) {
-      final previousId = _navHistory.removeLast();
-      final index = resolvedDestinations
-          .indexWhere((destination) => destination.id == previousId);
-      if (index == -1 || previousId == currentId) {
+      final previous = _navHistory.removeLast();
+      final branchIndex = shellBranchIndex(previous);
+      if (branchIndex == _shell.currentIndex) {
         continue;
       }
-      if (!mounted) {
-        return false;
+      if (mounted) {
+        _shell.goBranch(branchIndex, initialLocation: false);
       }
-      setState(() {
-        _navIndex = index;
-        _loadedDestinations.add(previousId);
-      });
-      return true;
+      switched = true;
+      break;
     }
-
-    return false;
+    if (mounted) {
+      setState(() {});
+    }
+    return switched;
   }
 
   void _handleShellBackPressed() {
@@ -379,56 +370,7 @@ class _HomeScreenState extends State<HomeScreen> {
     int index, {
     required List<_ShellDestination> destinations,
   }) {
-    _activateDestination(
-      destinations[index].id,
-      destinations: destinations,
-    );
-  }
-
-  Future<void> _openPlanDestination() async {
-    await _activatePlanDestination();
-  }
-
-  Future<void> _openPlanDestinationForDate(DateTime focusDate) async {
-    await _activatePlanDestination(focusDate: focusDate);
-  }
-
-  Future<void> _activatePlanDestination({DateTime? focusDate}) async {
-    if (!mounted) {
-      return;
-    }
-    final currentUser = context.read<AuthProvider>().profile;
-    if (!(currentUser?.canViewSchedule ?? false)) {
-      return;
-    }
-
-    final destinations = _buildDestinations(currentUser);
-    final index = destinations.indexWhere(
-        (destination) => destination.id == _ShellDestinationId.plan);
-    if (index == -1) {
-      return;
-    }
-
-    final schedule = context.read<ScheduleProvider>();
-    final normalizedFocusDate =
-        focusDate == null ? null : DateUtils.dateOnly(focusDate);
-    if (normalizedFocusDate != null &&
-        schedule.viewMode != ScheduleViewMode.day) {
-      schedule.setViewMode(ScheduleViewMode.day);
-    }
-    if (normalizedFocusDate != null &&
-        !DateUtils.isSameDay(schedule.visibleDate, normalizedFocusDate)) {
-      schedule.setVisibleDate(normalizedFocusDate);
-    }
-
-    if (!mounted) {
-      return;
-    }
-
-    _activateDestination(
-      _ShellDestinationId.plan,
-      destinations: destinations,
-    );
+    _activateDestination(destinations[index].id);
   }
 
   Widget? _buildFab(
@@ -447,43 +389,49 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final canEditTimeEntries = work.currentUser?.canEditTimeEntries ?? false;
-    final actionsFab = canManageShifts
-        ? _ExpressiveActionsFab(
-            label: 'Aktionen',
-            icon: Icons.bolt_rounded,
-            onPressed: () => _showPlannerQuickActions(
-              destinations,
-              currentDestinationLabel: destination.label,
-            ),
-          )
-        : _ExpressiveActionsFab(
-            label: 'Schnell',
-            icon: Icons.bolt_rounded,
-            onPressed: () => _showEmployeeQuickActions(
-              currentDestinationLabel: destination.label,
-            ),
-          );
 
-    final punchClockFab = FloatingActionButton(
+    // Sekundär: Schnellaktionen (öffnet ein Sheet). Schlichter runder FAB im
+    // App-FAB-Stil – kein eigener Verlauf mehr, damit alle FABs einheitlich sind.
+    final actionsFab = FloatingActionButton(
+      heroTag: 'shell_actions_fab',
+      tooltip: canManageShifts ? 'Aktionen' : 'Schnellaktionen',
+      onPressed: canManageShifts
+          ? () => _showPlannerQuickActions(destinations)
+          : () => _showEmployeeQuickActions(
+                currentDestinationLabel: destination.label,
+              ),
+      child: const Icon(Icons.bolt_rounded),
+    );
+
+    if (!canEditTimeEntries) {
+      return actionsFab;
+    }
+
+    // Primär & dauerhaft sichtbar: die Stempeluhr als prominenter Status-Button.
+    // Grün „Einstempeln" / rot „Ausstempeln" – Farbe und Symbol spiegeln den
+    // aktuellen Zustand direkt wider.
+    final active = work.hasActiveClockSession;
+    final punchClockFab = FloatingActionButton.extended(
       heroTag: 'shell_punch_clock_fab',
-      tooltip: work.hasActiveClockSession
+      tooltip: active
           ? 'Stempeluhr oeffnen und ausstempeln'
           : 'Stempeluhr oeffnen',
       onPressed: work.currentUser == null ? null : () => _showPunchClockSheet(),
-      backgroundColor:
-          work.hasActiveClockSession ? colorScheme.error : appColors.success,
-      foregroundColor: work.hasActiveClockSession
-          ? colorScheme.onError
-          : appColors.onSuccess,
-      child: Icon(
-        work.hasActiveClockSession ? Icons.logout_rounded : Icons.login_rounded,
-      ),
+      backgroundColor: active ? colorScheme.error : appColors.success,
+      foregroundColor: active ? colorScheme.onError : appColors.onSuccess,
+      icon: Icon(active ? Icons.logout_rounded : Icons.login_rounded),
+      label: Text(active ? 'Ausstempeln' : 'Einstempeln'),
     );
 
-    return _ShellFabCluster(
-      actions: [
-        if (canEditTimeEntries) punchClockFab,
+    // Nebeneinander statt gestapelt: Die Höhe bleibt die eines einzelnen FAB,
+    // damit nicht plötzlich mehr Listeninhalt verdeckt wird. Stempeluhr ganz
+    // rechts (Primärposition), Aktionen links daneben als Sekundärbutton.
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
         actionsFab,
+        const SizedBox(width: 14),
+        punchClockFab,
       ],
     );
   }
@@ -501,22 +449,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _pushTeamManagement({required String parentLabel}) {
-    return Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => TeamManagementScreen(parentLabel: parentLabel),
-      ),
-    );
+  // Hauptbereich-Routen über die Shell pushen (Back kehrt zum Hub zurück).
+  Future<void> _pushTeamManagement() => context.push(AppRoutes.team);
+
+  Future<void> _pushMonthReport() => context.push(AppRoutes.monthReport);
+
+  /// Schließt das Slide-in-Menü und navigiert zur Section-Route — Back führt
+  /// dann zum Tab zurück, nicht in einen offenen Drawer.
+  void _openSection(String location) {
+    _closeAppMenu();
+    context.push(location);
   }
 
-  Future<void> _pushMonthReport({required String parentLabel}) {
-    return Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MonthReportScreen(parentLabel: parentLabel),
-      ),
-    );
-  }
-
+  // EntryForm bleibt imperativ (Editor-Screen ohne eigene Route).
   Future<void> _pushEntryForm({
     required String parentLabel,
     WorkEntry? entry,
@@ -533,19 +478,29 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Öffnet den Schnell-„In den Warenkorb"-Sheet aus einer Schnellaktion heraus
+  /// (schließt zuerst das Schnellaktionen-Sheet). Standorte aus dem TeamProvider,
+  /// Fallback auf den WorkProvider (gleiche Quelle wie an anderen Stellen).
+  Future<void> _openQuickAddCartFromSheet(BuildContext sheetContext) async {
+    final team = context.read<TeamProvider>();
+    final work = context.read<WorkProvider>();
+    final sites = team.sites.isNotEmpty ? team.sites : work.sites;
+    Navigator.of(sheetContext).pop();
+    await showQuickAddCartSheet(context, sites: sites);
+  }
+
   Future<void> _showPlannerQuickActions(
-    List<_ShellDestination> destinations, {
-    required String currentDestinationLabel,
-  }) async {
+    List<_ShellDestination> destinations,
+  ) async {
     if (!mounted) {
       return;
     }
     final currentUser = context.read<AuthProvider>().profile;
     final hasTimeDestination = destinations.any(
-      (destination) => destination.id == _ShellDestinationId.time,
+      (destination) => destination.id == ShellTab.time,
     );
     final hasInboxDestination = destinations.any(
-      (destination) => destination.id == _ShellDestinationId.inbox,
+      (destination) => destination.id == ShellTab.inbox,
     );
     await showModalBottomSheet<void>(
       context: context,
@@ -583,10 +538,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       title: 'Zeiterfassung und Stunden',
                       subtitle:
                           'Eigene Zeiten, Monat und Korrekturen direkt oeffnen',
-                      onTap: () => _jumpToDestination(
-                        _ShellDestinationId.time,
-                        destinations: destinations,
-                      ),
+                      onTap: () => _jumpToDestination(ShellTab.time),
                     ),
                   if (hasInboxDestination)
                     _QuickActionListTile(
@@ -594,10 +546,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       title: 'Offene Anfragen pruefen',
                       subtitle:
                           'Krankmeldungen, Urlaub und Tausch sofort sehen',
-                      onTap: () => _jumpToDestination(
-                        _ShellDestinationId.inbox,
-                        destinations: destinations,
-                      ),
+                      onTap: () => _jumpToDestination(ShellTab.inbox),
+                    ),
+                  if (currentUser?.canViewInventory ?? false)
+                    _QuickActionListTile(
+                      icon: Icons.add_shopping_cart_outlined,
+                      title: 'In den Warenkorb',
+                      subtitle: 'Ware schnell zum Bestellen in den Korb legen',
+                      onTap: () => _openQuickAddCartFromSheet(sheetContext),
                     ),
                   if (currentUser?.isTeamLead ?? false)
                     _QuickActionListTile(
@@ -650,9 +606,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     subtitle: 'Standorte, Qualifikationen und Rollen pflegen',
                     onTap: () async {
                       Navigator.of(sheetContext).pop();
-                      await _pushTeamManagement(
-                        parentLabel: currentDestinationLabel,
-                      );
+                      await _pushTeamManagement();
                     },
                   ),
                   if (currentUser?.canViewReports ?? false)
@@ -662,9 +616,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       subtitle: 'PDF und Monatsauswertung direkt aufrufen',
                       onTap: () async {
                         Navigator.of(sheetContext).pop();
-                        await _pushMonthReport(
-                          parentLabel: currentDestinationLabel,
-                        );
+                        await _pushMonthReport();
                       },
                     ),
                 ],
@@ -713,6 +665,13 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                   ),
                   const SizedBox(height: 18),
+                  if (currentUser?.canViewInventory ?? false)
+                    _QuickActionListTile(
+                      icon: Icons.add_shopping_cart_outlined,
+                      title: 'In den Warenkorb',
+                      subtitle: 'Ware schnell zum Bestellen in den Korb legen',
+                      onTap: () => _openQuickAddCartFromSheet(sheetContext),
+                    ),
                   if (currentUser?.canEditTimeEntries ?? false)
                     _QuickActionListTile(
                       icon: Icons.edit_calendar_outlined,
@@ -763,21 +722,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _jumpToDestination(
-    _ShellDestinationId id, {
-    required List<_ShellDestination> destinations,
-  }) {
-    final index =
-        destinations.indexWhere((destination) => destination.id == id);
-    if (index == -1) {
-      Navigator.of(context).pop();
-      return;
-    }
+  void _jumpToDestination(ShellTab id) {
     Navigator.of(context).pop();
-    _activateDestination(
-      id,
-      destinations: destinations,
-    );
+    _activateDestination(id);
   }
 
   /// Baut den Inhalt des V2-Slide-in-Menüs. Wird sowohl als `drawer` (links)
@@ -825,22 +772,15 @@ class _HomeScreenState extends State<HomeScreen> {
               _closeAppMenu();
               context.read<AuthProvider>().signOut();
             },
-            onOpenMonthReport: () =>
-                _pushFromMenu(const MonthReportScreen(parentLabel: 'Profil')),
-            onOpenStatistics: () =>
-                _pushFromMenu(const StatisticsScreen(parentLabel: 'Profil')),
-            onOpenPersonal: () =>
-                _pushFromMenu(const PersonalScreen(parentLabel: 'Profil')),
-            onOpenTeam: () => _pushFromMenu(
-                const TeamManagementScreen(parentLabel: 'Profil')),
-            onOpenInventory: () =>
-                _pushFromMenu(const InventoryScreen(parentLabel: 'Profil')),
-            onOpenCustomerOrders: () => _pushFromMenu(
-                const CustomerOrderScreen(parentLabel: 'Profil')),
-            onOpenScanner: () =>
-                _pushFromMenu(const ScannerScreen(parentLabel: 'Profil')),
-            onOpenSettings: () =>
-                _pushFromMenu(const SettingsScreen(parentLabel: 'Profil')),
+            onOpenMonthReport: () => _openSection(AppRoutes.monthReport),
+            onOpenStatistics: () => _openSection(AppRoutes.statistics),
+            onOpenPersonal: () => _openSection(AppRoutes.personal),
+            onOpenFinance: () => _openSection(AppRoutes.finance),
+            onOpenTeam: () => _openSection(AppRoutes.team),
+            onOpenInventory: () => _openSection(AppRoutes.inventory),
+            onOpenCustomerOrders: () => _openSection(AppRoutes.customerOrders),
+            onOpenScanner: () => _openSection(AppRoutes.scanner),
+            onOpenSettings: () => _openSection(AppRoutes.settings),
           );
         },
       ),
@@ -860,137 +800,104 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Schliesst das Menü und pusht den Detail-Screen — damit ein anschliessendes
-  /// Zurück den Detail-Screen poppt und nicht in einen offenen Drawer führt.
-  void _pushFromMenu(Widget screen) {
-    _closeAppMenu();
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => screen),
-    );
-  }
-
-  List<_ShellDestination> _buildDestinations(
-    AppUserProfile? user, {
-    bool useV2 = false,
-  }) {
-    final canNavigateBack = _navHistory.isNotEmpty;
-    final canManageShifts = user?.canManageShifts ?? false;
-    final canViewSchedule = user?.canViewSchedule ?? false;
-    final canViewTimeTracking = user?.canViewTimeTracking ?? false;
-    final canViewContacts = user?.canViewContacts ?? false;
-    final canViewInventory = user?.canViewInventory ?? false;
-    final isAdmin = user?.isAdmin ?? false;
-    final items = <_ShellDestination>[
-      _ShellDestination(
-        id: _ShellDestinationId.today,
-        label: 'Heute',
-        icon: Icons.home_outlined,
-        selectedIcon: Icons.home,
-        child: canManageShifts
-            ? (useV2
-                ? _AdminDashboardTabV2(
-                    onOpenPlan: _openPlanDestination,
-                    onOpenPlanForDate: _openPlanDestinationForDate,
-                    canNavigateBack: canNavigateBack,
-                    onNavigateBack: _handleShellBackPressed,
-                  )
-                : _AdminDashboardTab(
-                    onOpenPlan: _openPlanDestination,
-                    onOpenPlanForDate: _openPlanDestinationForDate,
-                    canNavigateBack: canNavigateBack,
-                    onNavigateBack: _handleShellBackPressed,
-                  ))
-            : useV2
-                ? _EmployeeDashboardTabV2(
-                    canNavigateBack: canNavigateBack,
-                    onNavigateBack: _handleShellBackPressed,
-                  )
-                : _EmployeeDashboardTab(
-                    canNavigateBack: canNavigateBack,
-                    onNavigateBack: _handleShellBackPressed,
-                  ),
-        showFab: true,
-      ),
-      if (canViewSchedule)
-        _ShellDestination(
-          id: _ShellDestinationId.plan,
+  /// Metadaten (Label/Icons/FAB) einer [ShellTab] — permission-unabhängig, damit
+  /// auch der aktuell aktive (ggf. in der Nav versteckte) Branch ein Label und
+  /// die richtige FAB-Sichtbarkeit hat.
+  _ShellDestination _destinationMeta(ShellTab tab) {
+    switch (tab) {
+      case ShellTab.today:
+        return const _ShellDestination(
+          id: ShellTab.today,
+          label: 'Heute',
+          icon: Icons.home_outlined,
+          selectedIcon: Icons.home,
+          showFab: true,
+        );
+      case ShellTab.plan:
+        return const _ShellDestination(
+          id: ShellTab.plan,
           label: 'Plan',
           icon: Icons.view_timeline_outlined,
           selectedIcon: Icons.view_timeline,
-          child: ShiftPlannerScreen(
-            canNavigateBack: canNavigateBack,
-            onNavigateBack: _handleShellBackPressed,
-          ),
           showFab: true,
-        ),
-      if (canViewTimeTracking)
-        _ShellDestination(
-          id: _ShellDestinationId.time,
+        );
+      case ShellTab.time:
+        return const _ShellDestination(
+          id: ShellTab.time,
           label: 'Zeit',
           icon: Icons.schedule_outlined,
           selectedIcon: Icons.schedule,
-          child: _TimeTrackingTab(
-            canNavigateBack: canNavigateBack,
-            onNavigateBack: _handleShellBackPressed,
-          ),
           showFab: true,
-        ),
-      _ShellDestination(
-        id: _ShellDestinationId.inbox,
-        label: 'Anfragen',
-        icon: Icons.inbox_outlined,
-        selectedIcon: Icons.inbox,
-        child: NotificationScreen(
-          canNavigateBack: canNavigateBack,
-          onNavigateBack: _handleShellBackPressed,
-        ),
-        showFab: true,
-      ),
-      if (canViewContacts)
-        _ShellDestination(
-          id: _ShellDestinationId.contacts,
+        );
+      case ShellTab.inbox:
+        return const _ShellDestination(
+          id: ShellTab.inbox,
+          label: 'Anfragen',
+          icon: Icons.inbox_outlined,
+          selectedIcon: Icons.inbox,
+          showFab: true,
+        );
+      case ShellTab.contacts:
+        // Kontakte bringen ihren eigenen FAB ("Neuer Kontakt") mit; der
+        // schicht-/zeitbezogene Shell-FAB ist hier bewusst aus.
+        return const _ShellDestination(
+          id: ShellTab.contacts,
           label: 'Kontakte',
           icon: Icons.contacts_outlined,
           selectedIcon: Icons.contacts,
-          child: ContactsScreen(
-            canNavigateBack: canNavigateBack,
-            onNavigateBack: _handleShellBackPressed,
-          ),
-          // Kontakte bringen ihren eigenen FAB ("Neuer Kontakt") mit; der
-          // schicht-/zeitbezogene Shell-FAB ist hier bewusst aus.
-          showFab: false,
-        ),
-      // "Laden" buendelt die Geschaefts-Module (Warenwirtschaft,
-      // Kundenbestellungen, Personal) als ein einziger Tab -> kein Bottom-Nav-
-      // Ueberlauf durch drei getrennte Tabs.
-      if (canViewInventory || isAdmin)
-        _ShellDestination(
-          id: _ShellDestinationId.shop,
+        );
+      case ShellTab.shop:
+        // "Laden" buendelt die Geschaefts-Module (Warenwirtschaft,
+        // Kundenbestellungen, Personal) als ein einziger Tab.
+        return const _ShellDestination(
+          id: ShellTab.shop,
           label: 'Laden',
           icon: Icons.storefront_outlined,
           selectedIcon: Icons.storefront,
-          child: _ShopHubTab(
-            canNavigateBack: canNavigateBack,
-            onNavigateBack: _handleShellBackPressed,
-          ),
-          showFab: false,
-        ),
-      // In V2 ersetzt das Slide-in-Menü (Scaffold.drawer/endDrawer) den
-      // Profil-Tab; die Bottom-Nav zeigt nur die 4 Kern-Tabs.
-      if (!useV2)
-        _ShellDestination(
-          id: _ShellDestinationId.profile,
+        );
+      case ShellTab.profile:
+        return const _ShellDestination(
+          id: ShellTab.profile,
           label: 'Profil',
           icon: Icons.person_outline,
           selectedIcon: Icons.person,
-          child: _ProfileHubTab(
-            canNavigateBack: canNavigateBack,
-            onNavigateBack: _handleShellBackPressed,
-          ),
-        ),
-    ];
+        );
+    }
+  }
 
-    return items;
+  /// Permission-Sichtbarkeit eines Tabs in der Nav-Bar. Der Branch existiert in
+  /// der Route IMMER (statisch) — hier wird nur entschieden, ob ein Nav-Item
+  /// gezeigt wird. In V2 ersetzt das Slide-in-Menü den Profil-Tab.
+  bool _isTabVisible(ShellTab tab, AppUserProfile? user, {required bool useV2}) {
+    switch (tab) {
+      case ShellTab.today:
+        return true;
+      case ShellTab.plan:
+        return user?.canViewSchedule ?? false;
+      case ShellTab.time:
+        return user?.canViewTimeTracking ?? false;
+      case ShellTab.inbox:
+        return true;
+      case ShellTab.contacts:
+        return user?.canViewContacts ?? false;
+      case ShellTab.shop:
+        return (user?.canViewInventory ?? false) || (user?.isAdmin ?? false);
+      case ShellTab.profile:
+        return !useV2;
+    }
+  }
+
+  /// Sichtbare Nav-Items (nach Permissions gefiltert), in kanonischer
+  /// [ShellTab]-Reihenfolge. Jedes Item trägt seine [ShellTab] → Branch-Index
+  /// immer via [shellBranchIndex], nie über die Listenposition.
+  List<_ShellDestination> _visibleDestinations(
+    AppUserProfile? user, {
+    bool useV2 = false,
+  }) {
+    return [
+      for (final tab in ShellTab.values)
+        if (_isTabVisible(tab, user, useV2: useV2)) _destinationMeta(tab),
+    ];
   }
 }
 
@@ -1000,19 +907,36 @@ class _ShellDestination {
     required this.label,
     required this.icon,
     required this.selectedIcon,
-    required this.child,
     this.showFab = false,
   });
 
-  final _ShellDestinationId id;
+  final ShellTab id;
   final String label;
   final IconData icon;
   final IconData selectedIcon;
-  final Widget child;
   final bool showFab;
 }
 
-enum _ShellDestinationId { today, plan, time, inbox, contacts, shop, profile }
+/// Reicht die Cross-Tab-Zurück-Geste der Shell an die Tab-Inhalte. Die Inhalte
+/// werden in den `StatefulShellRoute`-Branches gebaut und liegen damit im
+/// Widget-Baum UNTERHALB dieser InheritedWidget; [buildHomeTab] liest sie hier.
+class _ShellScope extends InheritedWidget {
+  const _ShellScope({
+    required this.canGoBack,
+    required this.onGoBack,
+    required super.child,
+  });
+
+  final bool canGoBack;
+  final VoidCallback onGoBack;
+
+  static _ShellScope? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_ShellScope>();
+
+  @override
+  bool updateShouldNotify(_ShellScope oldWidget) =>
+      canGoBack != oldWidget.canGoBack;
+}
 
 /// Schlanke V2-Top-Bar im Bottom-Nav-Modus: ein Avatar-Button links öffnet das
 /// Slide-in-Menü. Bewusst ohne Titel — den Abschnittstitel liefert weiterhin der
@@ -1147,34 +1071,108 @@ class _RailProfileHeader extends StatelessWidget {
   }
 }
 
-class _LazyDestinationStack extends StatelessWidget {
-  const _LazyDestinationStack({
-    required this.selectedId,
-    required this.loadedDestinations,
-    required this.destinations,
-  });
+/// Baut den Inhalt einer Shell-Branch. Wird von den
+/// `StatefulShellRoute`-Branches in `app_router.dart` aufgerufen; der `context`
+/// liegt damit unterhalb der HomeScreen-Shell und sieht [_ShellScope] (für die
+/// Cross-Tab-Zurück-Geste). V1/V2-Wahl der Dashboards via [RedesignFlags.isOn].
+Widget buildHomeTab(BuildContext context, ShellTab tab) {
+  final useV2 = RedesignFlags.isOn(context);
+  final user = context.watch<AuthProvider>().profile;
+  final scope = _ShellScope.of(context);
+  final canBack = scope?.canGoBack ?? false;
+  final onBack = scope?.onGoBack;
 
-  final _ShellDestinationId selectedId;
-  final Set<_ShellDestinationId> loadedDestinations;
-  final List<_ShellDestination> destinations;
+  switch (tab) {
+    case ShellTab.today:
+      final canManageShifts = user?.canManageShifts ?? false;
+      if (canManageShifts) {
+        return useV2
+            ? _AdminDashboardTabV2(
+                onOpenPlan: () => _openPlanFromTab(context),
+                onOpenPlanForDate: (date) =>
+                    _openPlanForDateFromTab(context, date),
+                canNavigateBack: canBack,
+                onNavigateBack: onBack,
+              )
+            : _AdminDashboardTab(
+                onOpenPlan: () => _openPlanFromTab(context),
+                onOpenPlanForDate: (date) =>
+                    _openPlanForDateFromTab(context, date),
+                canNavigateBack: canBack,
+                onNavigateBack: onBack,
+              );
+      }
+      return useV2
+          ? _EmployeeDashboardTabV2(
+              canNavigateBack: canBack,
+              onNavigateBack: onBack,
+            )
+          : _EmployeeDashboardTab(
+              canNavigateBack: canBack,
+              onNavigateBack: onBack,
+            );
+    case ShellTab.plan:
+      return ShiftPlannerScreen(
+        canNavigateBack: canBack,
+        onNavigateBack: onBack,
+      );
+    case ShellTab.time:
+      return _TimeTrackingTab(
+        canNavigateBack: canBack,
+        onNavigateBack: onBack,
+      );
+    case ShellTab.inbox:
+      return NotificationScreen(
+        canNavigateBack: canBack,
+        onNavigateBack: onBack,
+      );
+    case ShellTab.contacts:
+      return ContactsScreen(
+        canNavigateBack: canBack,
+        onNavigateBack: onBack,
+      );
+    case ShellTab.shop:
+      return _ShopHubTab(
+        canNavigateBack: canBack,
+        onNavigateBack: onBack,
+      );
+    case ShellTab.profile:
+      return _ProfileHubTab(
+        canNavigateBack: canBack,
+        onNavigateBack: onBack,
+      );
+  }
+}
 
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        for (final destination in destinations)
-          Offstage(
-            offstage: destination.id != selectedId,
-            child: TickerMode(
-              enabled: destination.id == selectedId,
-              child: loadedDestinations.contains(destination.id)
-                  ? destination.child
-                  : const SizedBox.shrink(),
-            ),
-          ),
-      ],
-    );
+/// Wechselt auf den Plan-Tab (aus einem Dashboard heraus). Nur mit Berechtigung.
+Future<void> _openPlanFromTab(BuildContext context) async {
+  final user = context.read<AuthProvider>().profile;
+  if (!(user?.canViewSchedule ?? false)) {
+    return;
+  }
+  context.go(shellTabPaths[ShellTab.plan]!);
+}
+
+/// Wechselt auf den Plan-Tab und stellt das Tagesdatum ein (gleiche Reihenfolge
+/// der ScheduleProvider-Mutationen wie zuvor in der Shell).
+Future<void> _openPlanForDateFromTab(
+  BuildContext context,
+  DateTime focusDate,
+) async {
+  final user = context.read<AuthProvider>().profile;
+  if (!(user?.canViewSchedule ?? false)) {
+    return;
+  }
+  final schedule = context.read<ScheduleProvider>();
+  final normalized = DateUtils.dateOnly(focusDate);
+  if (schedule.viewMode != ScheduleViewMode.day) {
+    schedule.setViewMode(ScheduleViewMode.day);
+  }
+  if (!DateUtils.isSameDay(schedule.visibleDate, normalized)) {
+    schedule.setVisibleDate(normalized);
+  }
+  if (context.mounted) {
+    context.go(shellTabPaths[ShellTab.plan]!);
   }
 }
 
@@ -1212,7 +1210,7 @@ Future<void> _showShiftDetailsSheet(
             const SizedBox(height: 8),
             Text(
               '${DateFormat('EEEE, dd.MM.yyyy', 'de_DE').format(shift.startTime)} · '
-              '${DateFormat('HH:mm').format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}',
+              '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}',
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: colorScheme.onSurfaceVariant,
                   ),
@@ -1447,262 +1445,6 @@ class _DayHeaderCell extends StatelessWidget {
   }
 }
 
-/// Sammelt die Shell-FABs hinter einem dauerhaft sichtbaren Toggle unten rechts
-/// (modernes vertikales Speed-Dial). Eingeklappt zeigt nur der Chevron-Toggle,
-/// dass dort Aktionen liegen; Tippen klappt die Buttons gestaffelt nach oben aus
-/// und dreht den Chevron. Standard: eingeklappt.
-class _ShellFabCluster extends StatefulWidget {
-  const _ShellFabCluster({required this.actions});
-
-  /// Buttons in Anzeigereihenfolge von oben nach unten. Der letzte Eintrag sitzt
-  /// am naechsten zum Toggle und erscheint beim Ausklappen zuerst.
-  final List<Widget> actions;
-
-  @override
-  State<_ShellFabCluster> createState() => _ShellFabClusterState();
-}
-
-class _ShellFabClusterState extends State<_ShellFabCluster>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  bool _expanded = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 300),
-    );
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Respektiert die "Bewegung reduzieren"-Systemeinstellung.
-    _controller.duration =
-        context.motionDuration(const Duration(milliseconds: 300));
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _toggle() {
-    setState(() => _expanded = !_expanded);
-    if (_expanded) {
-      _controller.forward();
-    } else {
-      _controller.reverse();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final count = widget.actions.length;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        for (var i = 0; i < count; i++)
-          _RevealSlot(
-            controller: _controller,
-            expanded: _expanded,
-            position: count - 1 - i,
-            child: widget.actions[i],
-          ),
-        _buildToggle(context),
-      ],
-    );
-  }
-
-  Widget _buildToggle(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Tooltip(
-      message: _expanded ? 'Aktionen ausblenden' : 'Aktionen anzeigen',
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: colorScheme.primary.withValues(alpha: 0.32),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          clipBehavior: Clip.antiAlias,
-          shape: const CircleBorder(),
-          child: Ink(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: LinearGradient(
-                colors: [colorScheme.primary, colorScheme.secondary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: InkWell(
-              onTap: _toggle,
-              customBorder: const CircleBorder(),
-              child: SizedBox(
-                width: 52,
-                height: 52,
-                child: AnimatedBuilder(
-                  animation: _controller,
-                  builder: (context, _) => Transform.rotate(
-                    angle: _controller.value * 3.1415926,
-                    child: Icon(
-                      Icons.chevron_left,
-                      color: colorScheme.onPrimary,
-                      size: 28,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Ein gestaffelt ein-/ausblendender Platz im [_ShellFabCluster]. Eingeklappt
-/// nimmt er keinen Platz ein und schluckt keine Taps.
-class _RevealSlot extends StatelessWidget {
-  const _RevealSlot({
-    required this.controller,
-    required this.expanded,
-    required this.position,
-    required this.child,
-  });
-
-  final AnimationController controller;
-  final bool expanded;
-
-  /// 0 = naechster am Toggle (erscheint zuerst), groesser = weiter oben/spaeter.
-  final int position;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final start = (position * 0.14).clamp(0.0, 0.4);
-    final end = (start + 0.6).clamp(0.0, 1.0);
-    return AnimatedBuilder(
-      animation: controller,
-      child: child,
-      builder: (context, child) {
-        final t = ((controller.value - start) / (end - start)).clamp(0.0, 1.0);
-        final eased = Curves.easeOutCubic.transform(t);
-        if (eased <= 0.001 && !expanded) {
-          return const SizedBox.shrink();
-        }
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Opacity(
-            opacity: eased,
-            child: Transform.translate(
-              offset: Offset(0, (1 - eased) * 18),
-              child: Transform.scale(
-                scale: 0.85 + 0.15 * eased,
-                alignment: Alignment.bottomRight,
-                child: IgnorePointer(
-                  ignoring: !expanded,
-                  child: child,
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// Markanter, gebrandeter Aktions-FAB (Signal-Teal-Verlauf) der Shell. Bewusst
-/// als eigenes Widget statt `FloatingActionButton.extended`, damit der Verlauf
-/// und der weiche Marken-Schatten moeglich sind und sich der Button klar vom
-/// gruen/roten Stempeluhr-FAB darueber absetzt. Verhalten bleibt: oeffnet das
-/// Schnellaktionen-Sheet.
-class _ExpressiveActionsFab extends StatelessWidget {
-  const _ExpressiveActionsFab({
-    required this.label,
-    required this.icon,
-    required this.onPressed,
-  });
-
-  final String label;
-  final IconData icon;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Tooltip(
-      message: label,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(999),
-          boxShadow: [
-            BoxShadow(
-              color: colorScheme.primary.withValues(alpha: 0.32),
-              blurRadius: 18,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          clipBehavior: Clip.antiAlias,
-          shape: const StadiumBorder(),
-          child: Ink(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [colorScheme.primary, colorScheme.secondary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: InkWell(
-              onTap: onPressed,
-              customBorder: const StadiumBorder(),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 56),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon, color: colorScheme.onPrimary, size: 22),
-                      const SizedBox(width: 10),
-                      Text(
-                        label,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: colorScheme.onPrimary,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _QuickActionListTile extends StatelessWidget {
   const _QuickActionListTile({
     required this.icon,
@@ -1744,6 +1486,8 @@ class _QuickActionCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.badge,
+    this.badgeTone = AppStatusTone.neutral,
   });
 
   final IconData icon;
@@ -1751,69 +1495,159 @@ class _QuickActionCard extends StatelessWidget {
   final String subtitle;
   final VoidCallback onTap;
 
+  /// Optionaler Live-Status (z. B. knappe Bestaende, offene Bestellungen).
+  /// `null`/leer = kein Pill. Bewusst optional: alle bestehenden Aufrufstellen
+  /// (inkl. _ProfileHubTab) bleiben dadurch unveraendert.
+  final String? badge;
+  final AppStatusTone badgeTone;
+
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    final hasBadge = badge != null && badge!.isNotEmpty;
+
+    // [AppCard] liefert die einheitliche Karten-Optik (surfaceContainerLow,
+    // Hairline-Rand aus dem CardTheme, weicher Schatten, geclippte Ripple) —
+    // damit traegt der Laden-Hub denselben Look wie die uebrigen V2-Screens.
+    return AppCard(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(24),
-      child: Ink(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              colorScheme.surface,
-              colorScheme.surfaceContainerLow,
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Icon-Chip links, Chevron rechts oben. Der Chevron liegt bewusst
+          // hier (nicht in der Titel-Zeile), damit der Titel die volle Breite
+          // hat und nicht mitten im Wort umbricht.
+          Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(10),
+                padding: EdgeInsets.all(spacing.sm + spacing.xxs),
                 decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withValues(alpha: 0.8),
-                  borderRadius: BorderRadius.circular(14),
+                  color: colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(context.radii.md),
                 ),
-                child: Icon(icon, color: colorScheme.primary),
+                child: Icon(
+                  icon,
+                  color: colorScheme.onPrimaryContainer,
+                  size: context.iconSizes.md,
+                ),
               ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                  ),
-                  Icon(
-                    Icons.arrow_forward_rounded,
-                    color: colorScheme.onSurfaceVariant,
-                    size: 18,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Text(
-                subtitle,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
+              const Spacer(),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: colorScheme.onSurfaceVariant,
+                size: context.iconSizes.sm,
               ),
             ],
           ),
-        ),
+          SizedBox(height: spacing.md),
+          Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              height: 1.2,
+            ),
+          ),
+          SizedBox(height: spacing.xs + spacing.xxs),
+          Text(
+            subtitle,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+              height: 1.3,
+            ),
+          ),
+          if (hasBadge) ...[
+            SizedBox(height: spacing.sm + spacing.xxs),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: AppStatusBadge(label: badge!, tone: badgeTone),
+            ),
+          ],
+        ],
       ),
+    );
+  }
+}
+
+/// Kachel-Raster mit ausgewogener Spaltenzahl und zeilenweise gleicher Hoehe.
+///
+/// Bewusst eigenstaendig statt der gemeinsamen [AdaptiveCardGrid] (deren
+/// `gridColumns` auf 4 clamped und so bei 5 Kacheln eine 4+1-Waisenzeile
+/// erzeugt):
+/// - Die Spaltenzahl wird so gewaehlt, dass keine Zeile mit nur EINER Kachel
+///   uebrig bleibt (5 Items bei Platz fuer 3 Spalten ⇒ 3+2 statt 4+1).
+/// - Jede Zeile liegt in einem [IntrinsicHeight] mit
+///   [CrossAxisAlignment.stretch] ⇒ alle Karten einer Zeile sind gleich hoch
+///   und schliessen buendig ab (keine ausgefranste Unterkante).
+/// - Die letzte unvollstaendige Zeile wird mit unsichtbaren Platzhaltern auf
+///   die Spaltenbreite aufgefuellt, damit die Karten gleich breit und
+///   linksbuendig bleiben.
+class _BalancedTileGrid extends StatelessWidget {
+  const _BalancedTileGrid({required this.children});
+
+  final List<Widget> children;
+
+  /// Mindestbreite je Kachel (⇒ 2 Spalten auf dem Handy, bis zu [_maxColumns]
+  /// auf breiten Layouts).
+  static const double _minItemWidth = 160;
+
+  /// Spalten-Obergrenze: bei 5 Kacheln eine ausgewogene 3+2-Aufteilung statt
+  /// kleiner 4+1-Kacheln mit Waisenzeile.
+  static const int _maxColumns = 3;
+
+  int _balancedColumns(double width) {
+    final n = children.length;
+    if (n <= 1) return 1;
+    final fit = (width / _minItemWidth).floor().clamp(1, _maxColumns);
+    if (fit <= 1) return 1;
+    var cols = fit > n ? n : fit;
+    // Vermeide eine Zeile mit nur einer Kachel: Spalten reduzieren, bis der
+    // Rest (n % cols) 0 oder >= 2 ist (⇒ 3+2 statt 4+1).
+    while (cols > 1 && n % cols == 1) {
+      cols -= 1;
+    }
+    return cols;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cols = _balancedColumns(constraints.maxWidth);
+        final rows = <Widget>[];
+        for (var i = 0; i < children.length; i += cols) {
+          final end = (i + cols) < children.length ? i + cols : children.length;
+          final slice = children.sublist(i, end);
+          final cells = <Widget>[];
+          for (var c = 0; c < cols; c++) {
+            if (c > 0) cells.add(SizedBox(width: spacing.md));
+            cells.add(
+              Expanded(
+                child: c < slice.length ? slice[c] : const SizedBox.shrink(),
+              ),
+            );
+          }
+          if (rows.isNotEmpty) rows.add(SizedBox(height: spacing.md));
+          rows.add(
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: cells,
+              ),
+            ),
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: rows,
+        );
+      },
     );
   }
 }
@@ -1926,7 +1760,7 @@ class _EmployeeHeroCard extends StatelessWidget {
             else ...[
               Text(
                 '${DateFormat('EEEE, dd.MM.', 'de_DE').format(nextShift.startTime)} · '
-                '${DateFormat('HH:mm').format(nextShift.startTime)} - ${DateFormat('HH:mm').format(nextShift.endTime)}',
+                '${DateFormat('HH:mm', 'de_DE').format(nextShift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(nextShift.endTime)}',
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                       color: colorScheme.onSurfaceVariant,
                     ),
@@ -1993,7 +1827,7 @@ class _EmployeeHeroCard extends StatelessWidget {
                     ? 'Bitte zuerst in der Teamverwaltung einen Primaerstandort hinterlegen.'
                     : nextShift != null &&
                             nextShift.startTime.isAfter(DateTime.now())
-                        ? 'Einstempeln ist erst ab ${DateFormat('HH:mm').format(nextShift.startTime)} innerhalb deiner geplanten Schicht moeglich.'
+                        ? 'Einstempeln ist erst ab ${DateFormat('HH:mm', 'de_DE').format(nextShift.startTime)} innerhalb deiner geplanten Schicht moeglich.'
                         : 'Aktuell liegt keine laufende Schicht fuer die Stempeluhr vor.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: primaryAssignment == null
@@ -2057,7 +1891,7 @@ class _EmployeeWeekStrip extends StatelessWidget {
             final detail = dayAbsences.isNotEmpty
                 ? dayAbsences.first.type.label
                 : dayShifts.isNotEmpty
-                    ? DateFormat('HH:mm').format(dayShifts.first.startTime)
+                    ? DateFormat('HH:mm', 'de_DE').format(dayShifts.first.startTime)
                     : 'Frei';
             return Container(
               width: 88,
@@ -2082,7 +1916,7 @@ class _EmployeeWeekStrip extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    DateFormat('dd.MM.').format(day),
+                    DateFormat('dd.MM.', 'de_DE').format(day),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
@@ -2667,7 +2501,20 @@ class _ShopHubTab extends StatelessWidget {
     final currentUser = context.watch<AuthProvider>().profile;
     final canViewInventory = currentUser?.canViewInventory ?? false;
     final isAdmin = currentUser?.isAdmin ?? false;
+    final canManageFeedback = currentUser?.canManageFeedback ?? false;
     final screenPad = MobileBreakpoints.screenPadding(context);
+
+    // Live-Status fuer die Warenwirtschafts-Kacheln: knappe Bestaende +
+    // offene Kundenbestellungen. Beides liest nur In-Memory-Listen (leer ⇒ 0,
+    // also kein Pill) — sicher auch im Offline-/Demo-Modus.
+    var lowStockCount = 0;
+    var openCustomerOrderCount = 0;
+    if (canViewInventory) {
+      final inventory = context.watch<InventoryProvider>();
+      lowStockCount = inventory.lowStockProducts().length;
+      openCustomerOrderCount = inventory.openCustomerOrders.length;
+    }
+
     return SafeArea(
       child: Align(
         alignment: Alignment.topCenter,
@@ -2687,8 +2534,7 @@ class _ShopHubTab extends StatelessWidget {
                 onBack: canNavigateBack ? onNavigateBack : null,
               ),
               const SizedBox(height: 20),
-              AdaptiveCardGrid(
-                minItemWidth: 180,
+              _BalancedTileGrid(
                 children: [
                   if (canViewInventory)
                     _QuickActionCard(
@@ -2696,24 +2542,20 @@ class _ShopHubTab extends StatelessWidget {
                       title: 'Warenwirtschaft',
                       subtitle:
                           'Bestand, Lieferanten und Bestellungen verwalten',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              const InventoryScreen(parentLabel: 'Laden'),
-                        ),
-                      ),
+                      badge: lowStockCount > 0 ? '$lowStockCount knapp' : null,
+                      badgeTone: AppStatusTone.warning,
+                      onTap: () => context.push(AppRoutes.inventory),
                     ),
                   if (canViewInventory)
                     _QuickActionCard(
                       icon: Icons.shopping_bag_outlined,
                       title: 'Kundenbestellungen',
                       subtitle: 'Sonderbestellungen von Kunden verwalten',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              const CustomerOrderScreen(parentLabel: 'Laden'),
-                        ),
-                      ),
+                      badge: openCustomerOrderCount > 0
+                          ? '$openCustomerOrderCount offen'
+                          : null,
+                      badgeTone: AppStatusTone.info,
+                      onTap: () => context.push(AppRoutes.customerOrders),
                     ),
                   if (isAdmin)
                     _QuickActionCard(
@@ -2721,12 +2563,15 @@ class _ShopHubTab extends StatelessWidget {
                       title: 'Personal',
                       subtitle:
                           'Auftraege, Lohn-Richtwerte, Finanzen und Statistik',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              const PersonalScreen(parentLabel: 'Laden'),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.personal),
+                    ),
+                  if (canManageFeedback)
+                    _QuickActionCard(
+                      icon: Icons.feedback_outlined,
+                      title: 'Kundenfeedback',
+                      subtitle:
+                          'Beschwerden, Vorschlaege und Lob von der Webseite',
+                      onTap: () => context.push(AppRoutes.feedbackInbox),
                     ),
                   if (isAdmin)
                     _QuickActionCard(
@@ -2734,12 +2579,7 @@ class _ShopHubTab extends StatelessWidget {
                       title: 'Änderungsprotokoll',
                       subtitle:
                           'Wer hat wann was geaendert (Lohn, Kontakte, Preise)',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              const AuditLogScreen(parentLabel: 'Laden'),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.auditLog),
                     ),
                 ],
               ),
@@ -2900,13 +2740,7 @@ class _ProfileHubTab extends StatelessWidget {
                       title: 'Teamverwaltung',
                       subtitle:
                           'Mitarbeiter, Standorte und Rollen weiter pflegen',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const TeamManagementScreen(
-                            parentLabel: 'Profil',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.team),
                     ),
                   if (currentUser?.isAdmin ?? false)
                     _QuickActionCard(
@@ -2914,13 +2748,7 @@ class _ProfileHubTab extends StatelessWidget {
                       title: 'Personal',
                       subtitle:
                           'Auftraege, Lohn-Richtwerte, Finanzen und Statistik',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const PersonalScreen(
-                            parentLabel: 'Profil',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.personal),
                     ),
                   if (currentUser?.canViewInventory ?? false)
                     _QuickActionCard(
@@ -2928,13 +2756,7 @@ class _ProfileHubTab extends StatelessWidget {
                       title: 'Warenwirtschaft',
                       subtitle:
                           'Bestand, Lieferanten und Bestellungen verwalten',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const InventoryScreen(
-                            parentLabel: 'Profil',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.inventory),
                     ),
                   if (currentUser?.canViewInventory ?? false)
                     _QuickActionCard(
@@ -2942,25 +2764,13 @@ class _ProfileHubTab extends StatelessWidget {
                       title: 'Kundenbestellungen',
                       subtitle:
                           'Sonderbestellungen von Kunden verwalten',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const CustomerOrderScreen(
-                            parentLabel: 'Profil',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.customerOrders),
                     ),
                   _QuickActionCard(
                     icon: Icons.settings_outlined,
                     title: 'Einstellungen',
                     subtitle: 'Profil, Theme und Standardwerte aendern',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const SettingsScreen(
-                          parentLabel: 'Profil',
-                        ),
-                      ),
-                    ),
+                    onTap: () => context.push(AppRoutes.settings),
                   ),
                   if (currentUser?.canViewReports ?? false)
                     _QuickActionCard(
@@ -2968,13 +2778,7 @@ class _ProfileHubTab extends StatelessWidget {
                       title: 'Monatsbericht',
                       subtitle:
                           'Eigene Stunden oder Team-Bericht als PDF pruefen',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const MonthReportScreen(
-                            parentLabel: 'Profil',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.monthReport),
                     ),
                   if (currentUser?.canViewReports ?? false)
                     _QuickActionCard(
@@ -2982,13 +2786,7 @@ class _ProfileHubTab extends StatelessWidget {
                       title: 'Statistiken',
                       subtitle:
                           'Monats- und Jahresauswertungen direkt mobil einsehen',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const StatisticsScreen(
-                            parentLabel: 'Profil',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.statistics),
                     ),
                 ],
               ),
@@ -3082,7 +2880,7 @@ class _ShiftPreviewTile extends StatelessWidget {
         ),
         title: Text(shift.title),
         subtitle: Text(
-          '${shift.employeeName} · ${dateFormat.format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}'
+          '${shift.employeeName} · ${dateFormat.format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}'
           '${shift.effectiveSiteLabel == null ? '' : '\n${shift.effectiveSiteLabel}'}',
         ),
         trailing: _ShiftStatusBadge(status: shift.status),
@@ -3099,7 +2897,7 @@ class _RecentEntryTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dateFmt = DateFormat('EEE, dd.MM.', 'de_DE');
-    final timeFmt = DateFormat('HH:mm');
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
@@ -3298,7 +3096,7 @@ class _DayShiftPlanPanel extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  '${DateFormat('HH:mm').format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}'
+                                  '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}'
                                   '${shift.effectiveSiteLabel?.trim().isNotEmpty == true ? ' · ${shift.effectiveSiteLabel}' : ''}',
                                   style: theme.textTheme.bodyMedium?.copyWith(
                                     color: colorScheme.onSurfaceVariant,
@@ -3340,7 +3138,7 @@ class _DayShiftPlanPanel extends StatelessWidget {
                           linkedEntries
                               .map(
                                 (entry) =>
-                                    '${DateFormat('HH:mm').format(entry.startTime)} - ${DateFormat('HH:mm').format(entry.endTime)}'
+                                    '${DateFormat('HH:mm', 'de_DE').format(entry.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(entry.endTime)}'
                                     '${entry.breakMinutes > 0 ? ' · ${entry.breakMinutes.toInt()} min Pause' : ''}',
                               )
                               .join('\n'),
@@ -3589,7 +3387,7 @@ class _ConfirmedShiftInfoTile extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '${DateFormat('HH:mm').format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}'
+                  '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}'
                   ' · ${shift.workedHours.toStringAsFixed(1)} h',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant,
@@ -3626,7 +3424,7 @@ class _EntryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final provider = context.read<WorkProvider>();
     final dateFmt = DateFormat('EE, dd.MM.', 'de_DE');
-    final timeFmt = DateFormat('HH:mm');
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 

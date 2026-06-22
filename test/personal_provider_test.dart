@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/absence_request.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/employee_profile.dart';
 import 'package:worktime_app/models/payroll_record.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_task.dart';
@@ -159,6 +160,142 @@ void main() {
         ),
         throwsA(isA<StateError>()),
       );
+
+      await expectLater(
+        provider.saveEmployeeProfile(
+          const EmployeeProfile(orgId: 'org-1', userId: 'emp-1', city: 'Kiel'),
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('EmployeeProfile: Upsert je userId + Persistenz + Löschen', () async {
+      final provider =
+          PersonalProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      await provider.saveEmployeeProfile(
+        const EmployeeProfile(
+          orgId: 'org-1',
+          userId: 'emp-1',
+          city: 'Kiel',
+          iban: 'DE02120300000000202051',
+          confession: Confession.katholisch,
+          status: EmployeeStatus.probezeit,
+        ),
+      );
+      expect(provider.employeeProfiles.length, 1);
+      expect(provider.employeeProfileForUser('emp-1')!.iban,
+          'DE02120300000000202051');
+
+      // Erneutes Speichern überschreibt (deterministische Doc-ID = userId).
+      await provider.saveEmployeeProfile(
+        const EmployeeProfile(orgId: 'org-1', userId: 'emp-1', city: 'Hamburg'),
+      );
+      expect(provider.employeeProfiles.length, 1);
+      expect(provider.employeeProfileForUser('emp-1')!.city, 'Hamburg');
+
+      // Persistenz über Neustart.
+      final reopened =
+          PersonalProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(reopened.dispose);
+      await reopened.updateSession(_admin, localStorageOnly: true);
+      expect(reopened.employeeProfileForUser('emp-1')!.city, 'Hamburg');
+
+      // Löschen.
+      await reopened.deleteEmployeeProfile('emp-1');
+      expect(reopened.employeeProfiles, isEmpty);
+    });
+
+    test('setPayrollStatus stempelt Freigeber/Zeit und leert beim Zurücksetzen',
+        () async {
+      final provider =
+          PersonalProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      await provider.savePayrollRecord(
+        const PayrollRecord(
+          orgId: 'org-1',
+          userId: 'emp-1',
+          periodYear: 2026,
+          periodMonth: 6,
+          grossCents: 300000,
+        ),
+      );
+      final record = provider.payrollForUserPeriod('emp-1', 2026, 6)!;
+      expect(record.status, PayrollStatus.entwurf);
+
+      await provider.setPayrollStatus(record, PayrollStatus.freigegeben);
+      final freigegeben = provider.payrollForUserPeriod('emp-1', 2026, 6)!;
+      expect(freigegeben.status, PayrollStatus.freigegeben);
+      expect(freigegeben.finalizedByUid, 'admin-1');
+      expect(freigegeben.finalizedAt, isNotNull);
+      // Kein zusätzlicher Datensatz (Upsert auf dieselbe Doc-ID).
+      expect(provider.payrollRecords.length, 1);
+
+      await provider.setPayrollStatus(freigegeben, PayrollStatus.entwurf);
+      final zurueck = provider.payrollForUserPeriod('emp-1', 2026, 6)!;
+      expect(zurueck.status, PayrollStatus.entwurf);
+      expect(zurueck.finalizedByUid, isNull);
+      expect(zurueck.finalizedAt, isNull);
+    });
+
+    test('finalizeAllDrafts gibt nur Entwürfe des Monats frei (Lohnlauf)',
+        () async {
+      final provider =
+          PersonalProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      for (final uid in ['emp-1', 'emp-2', 'emp-3']) {
+        await provider.savePayrollRecord(
+          PayrollRecord(
+            orgId: 'org-1',
+            userId: uid,
+            periodYear: 2026,
+            periodMonth: 6,
+            grossCents: 300000,
+          ),
+        );
+      }
+      // emp-3 ist bereits bezahlt -> bleibt unberührt.
+      await provider.setPayrollStatus(
+        provider.payrollForUserPeriod('emp-3', 2026, 6)!,
+        PayrollStatus.bezahlt,
+      );
+      // Eine Abrechnung in einem anderen Monat -> nicht betroffen.
+      await provider.savePayrollRecord(
+        const PayrollRecord(
+          orgId: 'org-1',
+          userId: 'emp-1',
+          periodYear: 2026,
+          periodMonth: 5,
+          grossCents: 300000,
+        ),
+      );
+
+      await provider.finalizeAllDrafts(2026, 6);
+
+      final juni = provider.payrollForPeriod(2026, 6);
+      expect(
+        juni.where((r) => r.userId == 'emp-1').single.status,
+        PayrollStatus.freigegeben,
+      );
+      expect(
+        juni.where((r) => r.userId == 'emp-2').single.status,
+        PayrollStatus.freigegeben,
+      );
+      expect(
+        juni.where((r) => r.userId == 'emp-3').single.status,
+        PayrollStatus.bezahlt, // unverändert
+      );
+      // Mai-Entwurf bleibt Entwurf.
+      expect(
+        provider.payrollForUserPeriod('emp-1', 2026, 5)!.status,
+        PayrollStatus.entwurf,
+      );
     });
   });
 
@@ -202,6 +339,32 @@ void main() {
       expect(stats.sicknessCount, 1);
       expect(stats.sicknessDays, 3);
       expect(stats.vacationDays, 0);
+    });
+
+    test('streamt Personal-Stammakten aus Firestore', () async {
+      await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('employeeProfiles')
+          .doc('emp-1')
+          .set(const EmployeeProfile(
+            id: 'emp-1',
+            orgId: 'org-1',
+            userId: 'emp-1',
+            city: 'Kiel',
+            personnelNumber: 'P-1',
+          ).toFirestoreMap());
+
+      final provider = PersonalProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final profile = provider.employeeProfileForUser('emp-1');
+      expect(profile, isNotNull);
+      expect(profile!.city, 'Kiel');
+      expect(profile.personnelNumber, 'P-1');
     });
   });
 }

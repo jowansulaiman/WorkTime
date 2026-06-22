@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/payroll_record.dart';
 
 /// Parameter des deutschen Einkommensteuertarifs nach **§ 32a EStG** für ein
@@ -27,6 +29,8 @@ class TaxTariff {
     required this.zone4Subtrahend,
     required this.zone5Rate,
     required this.zone5Subtrahend,
+    this.kinderfreibetragProKindEuro = 9600,
+    this.alleinerziehendEntlastungEuro = 4260,
   });
 
   /// Bezugsjahr (informativ).
@@ -67,6 +71,14 @@ class TaxTariff {
   final double zone5Rate;
   final double zone5Subtrahend;
 
+  /// Kinderfreibetrag (Jahres-Euro) **pro Kind** (Freibetrag + BEA-Freibetrag).
+  /// Senkt nur die Bemessungsgrundlage für Zuschlagsteuern (Soli/Kirchensteuer)
+  /// nach § 51a EStG, nicht die Lohnsteuer selbst.
+  final double kinderfreibetragProKindEuro;
+
+  /// Entlastungsbetrag für Alleinerziehende (Jahres-Euro, Steuerklasse II).
+  final double alleinerziehendEntlastungEuro;
+
   /// § 32a EStG – 5-Zonen-Tarif 2026 (approximativ).
   static const TaxTariff year2026 = TaxTariff(
     year: 2026,
@@ -106,7 +118,14 @@ class GermanIncomeTax {
   /// [healthEmployeeShare]/[healthAdditionalEmployeeShare]/[careEmployeeShare]
   /// sind die AN-Bruchteile der SV-Sätze (z.B. `0.073` für KV) und speisen die
   /// Vorsorgepauschale; [bbgKvPvMonthlyCents]/[bbgRvAlvMonthlyCents] deckeln sie.
-  static ({int incomeTaxCents, int soliCents}) monthly({
+  ///
+  /// [childCount] = Anzahl Kinder: senkt die **Bemessungsgrundlage für
+  /// Zuschlagsteuern** (Soli + Kirchensteuer, § 51a EStG) über die
+  /// Kinderfreibeträge – NICHT die monatliche Lohnsteuer selbst.
+  /// `churchBaseTaxCents` ist diese (ggf. durch Kinder reduzierte) monatliche
+  /// Bemessungs-Lohnsteuer, auf die der Kirchensteuersatz anzuwenden ist; ohne
+  /// Kinder entspricht sie genau `incomeTaxCents`.
+  static ({int incomeTaxCents, int soliCents, int churchBaseTaxCents}) monthly({
     required int monthlyGrossCents,
     required TaxClass taxClass,
     required TaxTariff tariff,
@@ -115,9 +134,10 @@ class GermanIncomeTax {
     required double careEmployeeShare,
     required int bbgKvPvMonthlyCents,
     required int bbgRvAlvMonthlyCents,
+    int childCount = 0,
   }) {
     if (monthlyGrossCents <= 0) {
-      return (incomeTaxCents: 0, soliCents: 0);
+      return (incomeTaxCents: 0, soliCents: 0, churchBaseTaxCents: 0);
     }
     final annualGross = monthlyGrossCents / 100.0 * 12;
     final stk = _classNumber(taxClass);
@@ -131,21 +151,64 @@ class GermanIncomeTax {
         (healthEmployeeShare + healthAdditionalEmployeeShare + careEmployeeShare);
     final vorsorge = vorsorgeRv + vorsorgeKvPv;
 
-    final zvE = (annualGross -
+    final zvEBeforeClass = (annualGross -
             tariff.werbungskostenPauschaleEuro -
             tariff.sonderausgabenPauschaleEuro -
             vorsorge)
         .clamp(0.0, double.infinity);
 
+    // Steuerklasse II: Entlastungsbetrag für Alleinerziehende senkt die echte
+    // Lohnsteuer (anders als Kinderfreibeträge).
+    final entlastung =
+        stk == 2 ? tariff.alleinerziehendEntlastungEuro : 0.0;
+    final zvE =
+        (zvEBeforeClass - entlastung).clamp(0.0, double.infinity);
+
     final annualTax = _incomeTaxForClass(zvE, stk, tariff);
+
+    // Kinderfreibeträge senken NUR die Bemessung für Zuschlagsteuern
+    // (§ 51a EStG): die monatliche Lohnsteuer bleibt unverändert (das Kindergeld
+    // deckt die Entlastung bereits ab). Das ist genauer als eine pauschale
+    // Reduktion der Lohnsteuer.
+    final childAllowanceEuro =
+        _childAllowanceUnits(stk, childCount) * tariff.kinderfreibetragProKindEuro;
+    final annualZuschlagTax = childAllowanceEuro <= 0
+        ? annualTax
+        : _incomeTaxForClass(
+            (zvE - childAllowanceEuro).clamp(0.0, double.infinity),
+            stk,
+            tariff,
+          );
+
     final monthlyTax = annualTax / 12;
-    final monthlySoli = _soli(annualTax, tariff) / 12;
+    final monthlyZuschlagTax = annualZuschlagTax / 12;
+    final monthlySoli = _soli(annualZuschlagTax, tariff) / 12;
 
     return (
       incomeTaxCents: (monthlyTax * 100).round(),
       soliCents: (monthlySoli * 100).round(),
+      churchBaseTaxCents: (monthlyZuschlagTax * 100).round(),
     );
   }
+
+  /// Zahl der Kinderfreibetrags-Einheiten je Steuerklasse (für die
+  /// Zuschlagsteuer-Bemessung): voller Zähler (1,0/Kind) nur beim
+  /// Splittingtarif (III, der Ehepartner trägt keinen); halber Zähler
+  /// (0,5/Kind) bei II und IV (Default auf der Lohnsteuerkarte – die andere
+  /// Hälfte trägt der zweite Elternteil); keiner bei I/V/VI.
+  static double _childAllowanceUnits(int steuerklasse, int childCount) {
+    if (childCount <= 0) return 0;
+    return switch (steuerklasse) {
+      3 => childCount.toDouble(),
+      2 || 4 => childCount / 2,
+      _ => 0,
+    };
+  }
+
+  /// Testbarer Zugang zur Kinderfreibetrags-Zählerlogik ([_childAllowanceUnits]).
+  @visibleForTesting
+  static double childAllowanceUnitsForTesting(int steuerklasse, int childCount) =>
+      _childAllowanceUnits(steuerklasse, childCount);
 
   /// Jahres-Lohnsteuer in Abhängigkeit der Steuerklasse.
   static double _incomeTaxForClass(double zvE, int steuerklasse, TaxTariff t) {

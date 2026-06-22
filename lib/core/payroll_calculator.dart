@@ -128,6 +128,12 @@ class PayrollResult {
 class PayrollCalculator {
   const PayrollCalculator._();
 
+  /// [childCount] (Anzahl Kinder) senkt über Kinderfreibeträge die
+  /// Bemessungsgrundlage für Soli/Kirchensteuer (nicht die Lohnsteuer selbst).
+  /// [pvChildless] aktiviert den PV-Kinderlosenzuschlag (nur AN).
+  /// [healthAdditionalRateOverride] ersetzt den pauschalen KV-Zusatzbeitrag
+  /// durch den kassenindividuellen Satz aus der Stammakte (als Bruchteil, z. B.
+  /// `0.017`).
   static PayrollResult calculate({
     required int grossCents,
     required TaxClass taxClass,
@@ -135,6 +141,9 @@ class PayrollCalculator {
     String? federalState,
     required PayrollEmploymentKind kind,
     required PayrollSettings settings,
+    int childCount = 0,
+    bool pvChildless = false,
+    double? healthAdditionalRateOverride,
   }) {
     final gross = grossCents < 0 ? 0 : grossCents;
 
@@ -163,6 +172,10 @@ class PayrollCalculator {
       );
     }
 
+    // Kassenindividueller KV-Zusatzbeitrag (Stammakte) statt pauschalem Default.
+    final healthAdditionalRate =
+        healthAdditionalRateOverride ?? settings.healthAdditionalRate;
+
     // --- Lohnsteuer / Soli / Kirchensteuer (Richtwert) ---------------------
     // Lohnsteuer nach § 32a EStG (Grundfreibetrag + Progression statt Pauschal-%):
     // Monatsbrutto wird annualisiert, der Tarif angewandt und durch 12 geteilt.
@@ -171,15 +184,18 @@ class PayrollCalculator {
       taxClass: taxClass,
       tariff: settings.taxTariff,
       healthEmployeeShare: settings.healthRate / 2,
-      healthAdditionalEmployeeShare: settings.healthAdditionalRate / 2,
+      healthAdditionalEmployeeShare: healthAdditionalRate / 2,
       careEmployeeShare: settings.careRate / 2,
       bbgKvPvMonthlyCents: settings.bbgKvPvMonthlyCents,
       bbgRvAlvMonthlyCents: settings.bbgRvAlvMonthlyCents,
+      childCount: childCount,
     );
     final incomeTax = tax.incomeTaxCents;
     final soli = tax.soliCents;
+    // Kirchensteuer auf die (durch Kinderfreibeträge ggf. reduzierte) Bemessungs-
+    // Lohnsteuer nach § 51a EStG – ohne Kinder identisch zur Lohnsteuer.
     final churchTaxCents = churchTax
-        ? _round(incomeTax * settings.churchTaxRateFor(federalState))
+        ? _round(tax.churchBaseTaxCents * settings.churchTaxRateFor(federalState))
         : 0;
 
     // --- Bemessungsgrundlagen ----------------------------------------------
@@ -194,13 +210,16 @@ class PayrollCalculator {
     final employerBaseKvPv = _capped(gross, settings.bbgKvPvMonthlyCents);
     final employerBaseRvAlv = _capped(gross, settings.bbgRvAlvMonthlyCents);
 
-    final kvHalf = (settings.healthRate + settings.healthAdditionalRate) / 2;
+    final kvHalf = (settings.healthRate + healthAdditionalRate) / 2;
     final pvHalf = settings.careRate / 2;
     final rvHalf = settings.pensionRate / 2;
     final alvHalf = settings.unemploymentRate / 2;
+    // PV-Kinderlosenzuschlag trägt nur der Arbeitnehmer (AG-Anteil unverändert).
+    final pvEmployeeRate =
+        pvHalf + (pvChildless ? settings.careChildlessSurchargeRate : 0);
 
     final healthEmp = _round(employeeBaseKvPv * kvHalf);
-    final careEmp = _round(employeeBaseKvPv * pvHalf);
+    final careEmp = _round(employeeBaseKvPv * pvEmployeeRate);
     final pensionEmp = _round(employeeBaseRvAlv * rvHalf);
     final unemploymentEmp = _round(employeeBaseRvAlv * alvHalf);
 

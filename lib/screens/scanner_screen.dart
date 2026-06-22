@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../core/ean.dart';
 import '../models/app_user.dart';
+import '../models/order_cart.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
@@ -19,6 +20,19 @@ import '../theme/theme_extensions.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/price_history_sheet.dart';
 import 'inventory_screen.dart' show formatCents, parseEuroToCents, showProductDialog;
+
+/// Betriebsart des Scanners.
+enum _ScanMode {
+  /// „Scan & Go": jeder Scan landet sofort im Bestellkorb (Standard) — schnelles
+  /// Durchscannen wie an einer Selbstscan-Kasse, mit laufendem Warenkorb.
+  order,
+
+  /// Bestand buchen (Wareneingang/Abgang/Inventur/Preis je Artikel).
+  book,
+
+  /// Inventur-Sammelzaehlung.
+  stocktake,
+}
 
 /// Barcode/EAN-Scanner der Warenwirtschaft. Sucht Artikel ueber ihren Barcode,
 /// bucht Bestand, erkennt Preisabweichungen und legt unbekannte Artikel neu an.
@@ -72,10 +86,15 @@ class _ScannerScreenState extends State<ScannerScreen>
   int _bookingSeq = 0;
   int _quantity = 1;
 
+  // Scan-Modus: Bestellen (Scan & Go, Standard) / Buchen / Inventur.
+  _ScanMode _mode = _ScanMode.order;
+
   // Inventurmodus: Dauer-Scan in eine Zaehl-Session (productId -> Menge).
-  bool _inventoryMode = false;
   final Map<String, int> _countByProduct = {};
   final Map<String, Product> _countedProducts = {};
+
+  // Scan & Go: kurze Bestaetigung des zuletzt in den Korb gelegten Artikels.
+  String? _lastAddedName;
 
   // Visueller Blitz (Erfolg/Fehler), weil Ton/Haptik auf Web/Desktop stumm sind.
   Color? _flashColor;
@@ -157,7 +176,14 @@ class _ScannerScreenState extends State<ScannerScreen>
   void _startScanner() {
     if (_scanning || !_scanner.isAvailable) return;
     _scanning = true;
-    _scanner.start().catchError((Object error) {
+    _scanner.start().then((_) {
+      // Erfolgreicher (Neu-)Start raeumt eine alte Fehleranzeige weg — sonst
+      // bleibt die "Kamera nicht verfuegbar"-Box ueber dem laufenden Kamerabild
+      // stehen, obwohl die Kamera laeuft (probleme #12).
+      if (mounted && _cameraError != null) {
+        setState(() => _cameraError = null);
+      }
+    }).catchError((Object error) {
       _scanning = false;
       if (mounted) {
         setState(() {
@@ -222,29 +248,18 @@ class _ScannerScreenState extends State<ScannerScreen>
     final inventory = context.read<InventoryProvider>();
     final matches = inventory.productsByBarcode(code, siteId: siteId);
 
-    // Inventurmodus: jeder Scan zaehlt ein Stueck; Sammelliste statt Buchungskarte.
-    if (_inventoryMode) {
-      if (matches.length == 1) {
-        final product = matches.first;
-        _flash(true);
-        unawaited(_feedback.success());
-        setState(() {
-          _countedProducts[product.id!] = product;
-          _countByProduct[product.id!] =
-              (_countByProduct[product.id!] ?? 0) + 1;
-        });
-      } else if (matches.length > 1) {
-        _flash(false);
-        unawaited(_feedback.failure());
-        _showSnack('Mehrere Artikel mit diesem Barcode — im Buchen-Modus zaehlen.');
-      } else {
-        _flash(false);
-        unawaited(_feedback.failure());
-        _showSnack('Artikel nicht vorhanden — Inventur nur fuer bekannte Artikel.');
-      }
-      return;
+    switch (_mode) {
+      case _ScanMode.stocktake:
+        _handleStocktakeScan(matches);
+        return;
+      case _ScanMode.order:
+        await _handleOrderScan(inventory, code, siteId, matches);
+        return;
+      case _ScanMode.book:
+        break; // Buchen-Modus weiter unten
     }
 
+    // --- Buchen-Modus: Artikel-Karte mit Buchungs-Buttons zeigen ---
     if (matches.isNotEmpty) {
       _flash(true);
       unawaited(_feedback.success());
@@ -270,6 +285,129 @@ class _ScannerScreenState extends State<ScannerScreen>
       _inactiveMatch = inactive.isNotEmpty ? inactive.first : null;
       _notFoundCode = code;
     });
+  }
+
+  // --- Scan & Go (Bestellen) ----------------------------------------------
+
+  /// Inventur: jeder Scan zaehlt +1 in die Sammelliste.
+  void _handleStocktakeScan(List<Product> matches) {
+    if (matches.length == 1) {
+      final product = matches.first;
+      _flash(true);
+      unawaited(_feedback.success());
+      setState(() {
+        _countedProducts[product.id!] = product;
+        _countByProduct[product.id!] = (_countByProduct[product.id!] ?? 0) + 1;
+      });
+    } else if (matches.length > 1) {
+      _flash(false);
+      unawaited(_feedback.failure());
+      _showSnack('Mehrere Artikel mit diesem Barcode — im Buchen-Modus zaehlen.');
+    } else {
+      _flash(false);
+      unawaited(_feedback.failure());
+      _showSnack('Artikel nicht vorhanden — Inventur nur fuer bekannte Artikel.');
+    }
+  }
+
+  /// Scan & Go: legt den gescannten Artikel direkt in den Bestellkorb. Bei
+  /// mehreren Treffern wird zur Auswahl gefragt, bei unbekanntem Code die
+  /// Neuanlage angeboten.
+  Future<void> _handleOrderScan(
+    InventoryProvider inventory,
+    String code,
+    String siteId,
+    List<Product> matches,
+  ) async {
+    if (matches.length == 1) {
+      await _addScannedToCart(inventory, matches.first);
+      return;
+    }
+    if (matches.length > 1) {
+      _flash(true);
+      unawaited(_feedback.success());
+      await _chooseAndAddToCart(inventory, matches);
+      return;
+    }
+    final inactive = inventory.productsByBarcode(
+      code,
+      siteId: siteId,
+      includeInactive: true,
+    );
+    _flash(false);
+    unawaited(_feedback.failure());
+    if (!mounted) return;
+    setState(() {
+      _inactiveMatch = inactive.isNotEmpty ? inactive.first : null;
+      _notFoundCode = code;
+    });
+  }
+
+  Future<void> _addScannedToCart(
+    InventoryProvider inventory,
+    Product product,
+  ) async {
+    try {
+      await inventory.addToCart(product: product, quantity: 1);
+    } catch (error) {
+      // Erst bei Fehler Misserfolgs-Feedback geben — vorher wurde Erfolgston/
+      // -blitz schon VOR dem await ausgeloest, obwohl das Hinzufuegen scheitern
+      // konnte (widerspruechliches Signal an der Kasse, probleme #49).
+      if (mounted) {
+        unawaited(_feedback.failure());
+        _showSnack('Fehler beim Hinzufuegen: $error');
+      }
+      return;
+    }
+    // Erfolgs-Feedback (wie an einer Selbstscan-Kasse) erst nach erfolgreichem
+    // Hinzufuegen.
+    _flash(true);
+    unawaited(_feedback.success());
+    if (!mounted) return;
+    setState(() {
+      _lastAddedName = product.name;
+      _notFoundCode = null;
+      _inactiveMatch = null;
+    });
+  }
+
+  Future<void> _chooseAndAddToCart(
+    InventoryProvider inventory,
+    List<Product> matches,
+  ) async {
+    final chosen = await showModalBottomSheet<Product>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('Mehrere Artikel mit diesem Barcode — bitte waehlen:'),
+            ),
+            for (final product in matches)
+              ListTile(
+                title: Text(product.name),
+                subtitle: Text(
+                  'Bestand: ${product.currentStock} ${product.unit} · '
+                  'VK ${formatCents(product.sellingPriceCents)}',
+                ),
+                onTap: () => Navigator.of(sheetContext).pop(product),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    try {
+      await inventory.addToCart(product: chosen, quantity: 1);
+    } catch (error) {
+      if (mounted) _showSnack('Fehler beim Hinzufuegen: $error');
+      return;
+    }
+    if (mounted) setState(() => _lastAddedName = chosen.name);
   }
 
   void _flash(bool success) {
@@ -803,28 +941,22 @@ class _ScannerScreenState extends State<ScannerScreen>
   }
 
   Widget _buildModeSelector(BuildContext context) {
-    return SegmentedButton<bool>(
+    return SegmentedButton<_ScanMode>(
+      showSelectedIcon: false,
       segments: const [
-        ButtonSegment(
-          value: false,
-          label: Text('Buchen'),
-          icon: Icon(Icons.swap_vert),
-        ),
-        ButtonSegment(
-          value: true,
-          label: Text('Inventur'),
-          icon: Icon(Icons.checklist_outlined),
-        ),
+        ButtonSegment(value: _ScanMode.order, label: Text('Bestellen')),
+        ButtonSegment(value: _ScanMode.book, label: Text('Buchen')),
+        ButtonSegment(value: _ScanMode.stocktake, label: Text('Inventur')),
       ],
-      selected: {_inventoryMode},
+      selected: {_mode},
       onSelectionChanged: (selection) => _setMode(selection.first),
     );
   }
 
-  Future<void> _setMode(bool inventoryMode) async {
-    if (inventoryMode == _inventoryMode) return;
+  Future<void> _setMode(_ScanMode mode) async {
+    if (mode == _mode) return;
     // Beim Verlassen des Inventurmodus mit offener Zaehlung nachfragen.
-    if (!inventoryMode && _countByProduct.isNotEmpty) {
+    if (_mode == _ScanMode.stocktake && _countByProduct.isNotEmpty) {
       final discard = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -847,13 +979,19 @@ class _ScannerScreenState extends State<ScannerScreen>
       if (discard != true || !mounted) return;
     }
     setState(() {
-      _inventoryMode = inventoryMode;
+      _mode = mode;
       _countByProduct.clear();
       _countedProducts.clear();
       _match = null;
       _multiMatches = const [];
       _inactiveMatch = null;
       _notFoundCode = null;
+      _lastAddedName = null;
+      // Entprell-Zustand zuruecksetzen, damit derselbe Artikel direkt nach
+      // einem Moduswechsel erneut gescannt werden kann (sonst 2s verschluckt,
+      // probleme #50).
+      _lastCode = '';
+      _lastCodeAt = null;
     });
   }
 
@@ -1036,8 +1174,13 @@ class _ScannerScreenState extends State<ScannerScreen>
   }
 
   Widget _buildResult(BuildContext context, InventoryProvider inventory) {
-    if (_inventoryMode) {
-      return _buildInventorySession(context, inventory);
+    switch (_mode) {
+      case _ScanMode.stocktake:
+        return _buildInventorySession(context, inventory);
+      case _ScanMode.order:
+        return _buildOrderSession(context, inventory);
+      case _ScanMode.book:
+        break;
     }
     if (_multiMatches.isNotEmpty) {
       return _buildMultiMatches(context);
@@ -1054,6 +1197,150 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
     return const _CenteredHint(
       'Richte die Kamera auf einen Barcode oder gib ihn manuell ein.',
+    );
+  }
+
+  // --- Scan & Go: laufender Warenkorb -------------------------------------
+
+  Widget _buildOrderSession(BuildContext context, InventoryProvider inventory) {
+    final cart = inventory.orderCartForSite(_selectedSiteId);
+    final items = cart?.items ?? const <OrderListItem>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_lastAddedName != null) ...[
+          _LastAddedBanner(name: _lastAddedName!),
+          const SizedBox(height: 8),
+        ],
+        if (_notFoundCode != null) ...[
+          _buildNotFoundCard(context, _notFoundCode!),
+          const SizedBox(height: 8),
+        ] else if (_inactiveMatch != null) ...[
+          _buildInactiveCard(context, _inactiveMatch!),
+          const SizedBox(height: 8),
+        ],
+        _buildCartCard(context, inventory, items),
+      ],
+    );
+  }
+
+  Widget _buildCartCard(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<OrderListItem> items,
+  ) {
+    final theme = Theme.of(context);
+    final totalQty = items.fold<int>(0, (sum, item) => sum + item.quantity);
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            child: Row(
+              children: [
+                Icon(Icons.shopping_cart_outlined,
+                    color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    items.isEmpty
+                        ? 'Warenkorb'
+                        : 'Warenkorb: ${items.length} Artikel · $totalQty Stueck',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (items.isEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 20),
+              child: Text(
+                'Scanne Artikel — sie landen direkt im Warenkorb. Den gleichen '
+                'Artikel erneut scannen erhoeht die Menge.',
+              ),
+            )
+          else ...[
+            for (final item in items) _buildCartRow(context, inventory, item),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: FilledButton.icon(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.check),
+                label: Text('Fertig — Warenkorb ($totalQty)'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCartRow(
+    BuildContext context,
+    InventoryProvider inventory,
+    OrderListItem item,
+  ) {
+    final theme = Theme.of(context);
+    final productId = item.productId;
+    final siteId = _selectedSiteId;
+    final canEdit = productId != null && siteId != null;
+    return ListTile(
+      title: Text(item.name),
+      subtitle: Text(
+        [
+          if (item.category?.isNotEmpty ?? false) item.category!,
+          item.unit,
+        ].join(' · '),
+        style: theme.textTheme.bodySmall,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.remove),
+            tooltip: 'Weniger',
+            onPressed: canEdit
+                ? () => inventory.setCartItemQuantity(
+                      siteId: siteId,
+                      productId: productId,
+                      quantity: item.quantity - 1,
+                    )
+                : null,
+          ),
+          SizedBox(
+            width: 28,
+            child: Text(
+              '${item.quantity}',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleMedium,
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Mehr',
+            onPressed: canEdit
+                ? () => inventory.setCartItemQuantity(
+                      siteId: siteId,
+                      productId: productId,
+                      quantity: item.quantity + 1,
+                    )
+                : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'Entfernen',
+            onPressed: canEdit
+                ? () => inventory.removeCartItem(
+                      siteId: siteId,
+                      productId: productId,
+                    )
+                : null,
+          ),
+        ],
+      ),
     );
   }
 
@@ -1276,6 +1563,30 @@ class _InfoChip extends StatelessWidget {
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
         Text(value, style: theme.textTheme.titleMedium),
       ],
+    );
+  }
+}
+
+class _LastAddedBanner extends StatelessWidget {
+  const _LastAddedBanner({required this.name});
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).appColors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.success.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.check_circle_outline, color: colors.success),
+          const SizedBox(width: 8),
+          Expanded(child: Text('„$name" in den Warenkorb gelegt')),
+        ],
+      ),
     );
   }
 }

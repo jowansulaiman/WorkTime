@@ -26,6 +26,7 @@ class AppNavMenu extends StatelessWidget {
     required this.onOpenMonthReport,
     required this.onOpenStatistics,
     required this.onOpenPersonal,
+    required this.onOpenFinance,
     required this.onOpenTeam,
     required this.onOpenInventory,
     required this.onOpenCustomerOrders,
@@ -44,6 +45,7 @@ class AppNavMenu extends StatelessWidget {
   final VoidCallback onOpenMonthReport;
   final VoidCallback onOpenStatistics;
   final VoidCallback onOpenPersonal;
+  final VoidCallback onOpenFinance;
   final VoidCallback onOpenTeam;
   final VoidCallback onOpenInventory;
   final VoidCallback onOpenCustomerOrders;
@@ -96,6 +98,13 @@ class AppNavMenu extends StatelessWidget {
           title: 'Personal',
           subtitle: 'Aufträge, Gehälter, Finanzen & Statistiken',
           onTap: onOpenPersonal,
+        ),
+      if (isAdmin)
+        AppQuickActionTile(
+          icon: Icons.account_balance_outlined,
+          title: 'Buchhaltung',
+          subtitle: 'Kostenstellen, Buchungen, Budgets & DATEV',
+          onTap: onOpenFinance,
         ),
       if (isAdmin)
         AppQuickActionTile(

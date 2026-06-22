@@ -16,7 +16,11 @@ import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
 import '../models/product.dart';
 import '../models/customer_order.dart';
+import '../models/customer_feedback.dart';
+import '../models/customer_wish.dart';
 import '../models/audit_log_entry.dart';
+import '../models/employee_profile.dart';
+import '../models/finance_models.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
 import '../models/purchase_order.dart';
@@ -146,6 +150,27 @@ class FirestoreService {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('payrollProfiles');
+
+  CollectionReference<Map<String, dynamic>> _employeeProfileCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('employeeProfiles');
+
+  CollectionReference<Map<String, dynamic>> _costCenterCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('costCenters');
+
+  CollectionReference<Map<String, dynamic>> _costTypeCollection(String orgId) =>
+      _organizationDoc(orgId).collection('costTypes');
+
+  CollectionReference<Map<String, dynamic>> _journalEntryCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('journalEntries');
+
+  CollectionReference<Map<String, dynamic>> _budgetCollection(String orgId) =>
+      _organizationDoc(orgId).collection('budgets');
 
   // Warenwirtschafts-Datenzugriff ist in eine eigene Repository-Klasse
   // ausgelagert (firestore-service-god-object); FirestoreService delegiert nur
@@ -597,18 +622,26 @@ class FirestoreService {
   }
 
   Future<void> saveWorkEntry(WorkEntry entry) async {
+    // Stabile Client-ID fuer Neuanlagen: Der Server schreibt unter
+    // `entry.id ?? hash`, der direkte Fallback unter derselben ID. Geht das
+    // Callable-Ack verloren (deadline-exceeded/unavailable NACH dem Commit),
+    // schreibt der Fallback denselben Doc statt eines zufaelligen Duplikats
+    // (probleme #3). Zwei fachlich identische Eintraege erhalten verschiedene
+    // IDs und ueberschreiben sich nicht mehr (probleme #8).
+    final isNew = entry.id == null;
+    final stableEntry = isNew ? entry.copyWith(id: _uuid.v4()) : entry;
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'upsertWorkEntry',
         {
-          'entry': entry.toMap(),
+          'entry': stableEntry.toMap(),
         },
       );
       if (handledByFunction) {
         return;
       }
     }
-    await _saveWorkEntryDirect(entry);
+    await _saveWorkEntryDirect(stableEntry, isNew: isNew);
   }
 
   /// Max. Anzahl Elemente pro Callable-Aufruf (Server lehnt groessere Batches
@@ -635,46 +668,65 @@ class FirestoreService {
   }
 
   Future<void> _saveWorkEntryBatchChunk(List<WorkEntry> entries) async {
+    // Stabile Client-IDs fuer Neuanlagen (siehe saveWorkEntry, probleme #3/#8).
+    final stableEntries = entries
+        .map((entry) =>
+            entry.id == null ? entry.copyWith(id: _uuid.v4()) : entry)
+        .toList(growable: false);
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'upsertWorkEntryBatch',
         {
-          'orgId': entries.first.orgId,
-          'entries':
-              entries.map((entry) => entry.toMap()).toList(growable: false),
+          'orgId': stableEntries.first.orgId,
+          'entries': stableEntries
+              .map((entry) => entry.toMap())
+              .toList(growable: false),
         },
       );
       if (handledByFunction) {
         return;
       }
     }
-    await _saveWorkEntryBatchDirect(entries);
+    await _saveWorkEntryBatchDirect(stableEntries);
   }
 
-  Future<void> _saveWorkEntryDirect(WorkEntry entry) async {
+  Future<void> _saveWorkEntryDirect(
+    WorkEntry entry, {
+    required bool isNew,
+  }) async {
     final collection = _entryCollection(entry.orgId);
     final docRef =
         entry.id == null ? collection.doc() : collection.doc(entry.id);
     await docRef.set({
       ...entry.copyWith(id: docRef.id).toFirestoreMap(),
-      if (entry.id == null) 'createdAt': FieldValue.serverTimestamp(),
+      // createdAt nur fuer Neuanlagen stempeln (entry traegt jetzt eine
+      // stabile ID, daher kann `id == null` das nicht mehr signalisieren).
+      if (isNew) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
   Future<void> _saveWorkEntryBatchDirect(List<WorkEntry> entries) async {
     final collection = _entryCollection(entries.first.orgId);
     final batch = _firestore.batch();
-    for (final entry in entries) {
-      final docRef =
-          entry.id == null ? collection.doc() : collection.doc(entry.id);
-      // Neue Docs (id == null) erhalten createdAt. Bei bestehenden Docs
-      // wird createdAt durch merge: true nicht ueberschrieben, sofern es
-      // bereits existiert — kein separater Existenz-Check noetig.
+    final refs = entries
+        .map((entry) =>
+            entry.id == null ? collection.doc() : collection.doc(entry.id))
+        .toList(growable: false);
+    // createdAt nur fuer noch nicht existierende Docs stempeln. Da Eintraege
+    // jetzt stabile IDs tragen, signalisiert `id == null` keine Neuanlage mehr
+    // — daher echter Existenz-Check (analog _saveShiftBatchDirect).
+    final existingSnapshots = refs.isEmpty
+        ? const <DocumentSnapshot<Map<String, dynamic>>>[]
+        : await Future.wait(refs.map((ref) => ref.get()));
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      final docRef = refs[index];
       batch.set(
         docRef,
         {
           ...entry.copyWith(id: docRef.id).toFirestoreMap(),
-          if (entry.id == null) 'createdAt': FieldValue.serverTimestamp(),
+          if (!existingSnapshots[index].exists)
+            'createdAt': FieldValue.serverTimestamp(),
         },
         SetOptions(merge: true),
       );
@@ -903,6 +955,128 @@ class FirestoreService {
     return _payrollProfileCollection(orgId).doc(userId).delete();
   }
 
+  Stream<List<EmployeeProfile>> watchEmployeeProfiles(String orgId) {
+    return _employeeProfileCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => EmployeeProfile.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert die Personal-Stammakte unter der deterministischen Doc-ID
+  /// (`userId`), damit sie je Mitarbeiter genau einmal existiert.
+  Future<void> saveEmployeeProfile(EmployeeProfile profile) async {
+    final collection = _employeeProfileCollection(profile.orgId);
+    final docId = profile.id ?? profile.documentId;
+    await collection.doc(docId).set(
+          profile.copyWith(id: docId).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  Future<void> deleteEmployeeProfile({
+    required String orgId,
+    required String userId,
+  }) {
+    return _employeeProfileCollection(orgId).doc(userId).delete();
+  }
+
+  // --- Finanzen: Kostenstellen/Kostenarten/Journal/Budgets (nur Admin) ------
+
+  Stream<List<CostCenter>> watchCostCenters(String orgId) {
+    return _costCenterCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((d) => CostCenter.fromFirestore(d.id, d.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveCostCenter(CostCenter center) async {
+    final collection = _costCenterCollection(center.orgId);
+    final docRef =
+        center.id == null ? collection.doc() : collection.doc(center.id);
+    await docRef.set({
+      ...center.copyWith(id: docRef.id).toFirestoreMap(),
+      if (center.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteCostCenter({
+    required String orgId,
+    required String id,
+  }) {
+    return _costCenterCollection(orgId).doc(id).delete();
+  }
+
+  Stream<List<CostType>> watchCostTypes(String orgId) {
+    return _costTypeCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((d) => CostType.fromFirestore(d.id, d.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveCostType(CostType type) async {
+    final collection = _costTypeCollection(type.orgId);
+    final docRef = type.id == null ? collection.doc() : collection.doc(type.id);
+    await docRef.set({
+      ...type.copyWith(id: docRef.id).toFirestoreMap(),
+      if (type.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteCostType({required String orgId, required String id}) {
+    return _costTypeCollection(orgId).doc(id).delete();
+  }
+
+  Stream<List<JournalEntry>> watchJournalEntries(String orgId) {
+    return _journalEntryCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((d) => JournalEntry.fromFirestore(d.id, d.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveJournalEntry(JournalEntry entry) async {
+    final collection = _journalEntryCollection(entry.orgId);
+    final docRef =
+        entry.id == null ? collection.doc() : collection.doc(entry.id);
+    await docRef.set({
+      ...entry.copyWith(id: docRef.id).toFirestoreMap(),
+      if (entry.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteJournalEntry({
+    required String orgId,
+    required String id,
+  }) {
+    return _journalEntryCollection(orgId).doc(id).delete();
+  }
+
+  Stream<List<Budget>> watchBudgets(String orgId) {
+    return _budgetCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((d) => Budget.fromFirestore(d.id, d.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert ein Budget unter der deterministischen Doc-ID
+  /// (`<costCenterId>-<costTypeId|all>-<year>`).
+  Future<void> saveBudget(Budget budget) async {
+    final collection = _budgetCollection(budget.orgId);
+    final docId = budget.id ?? budget.documentId;
+    await collection.doc(docId).set(
+          budget.copyWith(id: docId).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  Future<void> deleteBudget({required String orgId, required String id}) {
+    return _budgetCollection(orgId).doc(id).delete();
+  }
+
   CollectionReference<Map<String, dynamic>> _auditLogCollection(String orgId) =>
       _organizationDoc(orgId).collection('auditLog');
 
@@ -1045,6 +1219,135 @@ class FirestoreService {
     required String orderId,
   }) =>
       _inventoryRepository.deleteCustomerOrder(orgId: orgId, orderId: orderId);
+
+  // --- Öffentliche Kundenwünsche (Webseite) ----------------------------
+  // Kein InventoryRepository: Wünsche entstehen anonym über die öffentliche
+  // Seite und sind reine Cloud-Daten (kein lokaler/Hybrid-Spiegel). Der
+  // öffentliche Create-Pfad ist in firestore.rules streng allowlisted.
+
+  CollectionReference<Map<String, dynamic>> _customerWishCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('customerWishes');
+
+  /// Schreibt einen öffentlich abgegebenen Kundenwunsch (anonymer Aufrufer).
+  /// Erwartet, dass der Aufrufer zuvor (anonym) authentifiziert ist —
+  /// `firestore.rules` verlangt `request.auth != null`. `createdAt` wird als
+  /// `serverTimestamp` gesetzt (Regel verlangt `== request.time`); es werden
+  /// ausschließlich die allowlisteten Felder geschrieben.
+  Future<String> submitCustomerWish(CustomerWish wish) async {
+    final docRef = _customerWishCollection(wish.orgId).doc();
+    await docRef.set({
+      ...wish.toPublicSubmissionMap(),
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    return docRef.id;
+  }
+
+  /// Eingang der Kundenwünsche (neueste zuerst). Single-Field-orderBy →
+  /// kein Composite-Index nötig; Statusfilter macht der Client. [limit]
+  /// begrenzt die geladene Menge (Schutz vor Flut über den öffentlichen
+  /// Schreibpfad → Client-Speicher/Lesekosten).
+  Stream<List<CustomerWish>> watchCustomerWishes(String orgId,
+      {int limit = 300}) {
+    return _customerWishCollection(orgId)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => CustomerWish.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Setzt den Bearbeitungsstatus eines Wunsches (interner, gegateter Pfad).
+  Future<void> updateCustomerWishStatus({
+    required String orgId,
+    required String wishId,
+    required CustomerWishStatus status,
+    String? handledByUid,
+    String? notes,
+  }) {
+    return _customerWishCollection(orgId).doc(wishId).set({
+      'status': status.value,
+      if (notes != null) 'notes': notes,
+      'handledByUid': handledByUid,
+      'handledAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteCustomerWish({
+    required String orgId,
+    required String wishId,
+  }) =>
+      _customerWishCollection(orgId).doc(wishId).delete();
+
+  // --- Öffentliches Kundenfeedback (Webseite) --------------------------
+  // Analog zu den Kundenwünschen: anonym über die öffentliche Seite (/feedback)
+  // erzeugt, reine Cloud-Daten (kein lokaler/Hybrid-Spiegel). Der öffentliche
+  // Create-Pfad ist in firestore.rules streng allowlisted; der Eingang ist —
+  // anders als Wünsche — NUR für Manager lesbar (canManageFeedback).
+
+  CollectionReference<Map<String, dynamic>> _customerFeedbackCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('customerFeedback');
+
+  /// Schreibt eine öffentlich abgegebene Rückmeldung (anonymer Aufrufer).
+  /// Erwartet, dass der Aufrufer zuvor (anonym) authentifiziert ist —
+  /// `firestore.rules` verlangt `request.auth != null`. `createdAt` wird als
+  /// `serverTimestamp` gesetzt (Regel verlangt `== request.time`); es werden
+  /// ausschließlich die allowlisteten Felder geschrieben.
+  Future<String> submitCustomerFeedback(CustomerFeedback feedback) async {
+    final docRef = _customerFeedbackCollection(feedback.orgId).doc();
+    await docRef.set({
+      ...feedback.toPublicSubmissionMap(),
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    return docRef.id;
+  }
+
+  /// Eingang der Rückmeldungen (neueste zuerst). Single-Field-orderBy →
+  /// kein Composite-Index nötig; Statusfilter macht der Client. [limit]
+  /// begrenzt die geladene Menge (Schutz vor Flut über den öffentlichen
+  /// Schreibpfad → Client-Speicher/Lesekosten).
+  Stream<List<CustomerFeedback>> watchCustomerFeedback(String orgId,
+      {int limit = 300}) {
+    return _customerFeedbackCollection(orgId)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => CustomerFeedback.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Setzt den Bearbeitungsstatus einer Rückmeldung (interner, gegateter Pfad).
+  Future<void> updateCustomerFeedbackStatus({
+    required String orgId,
+    required String feedbackId,
+    required FeedbackStatus status,
+    String? handledByUid,
+    String? notes,
+  }) {
+    return _customerFeedbackCollection(orgId).doc(feedbackId).set({
+      'status': status.value,
+      if (notes != null) 'notes': notes,
+      'handledByUid': handledByUid,
+      'handledAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteCustomerFeedback({
+    required String orgId,
+    required String feedbackId,
+  }) =>
+      _customerFeedbackCollection(orgId).doc(feedbackId).delete();
 
   /// Bucht den Wareneingang fuer eine Bestellung atomar (delegiert).
   Future<void> receivePurchaseOrder({
@@ -1219,20 +1522,27 @@ class FirestoreService {
   }
 
   Future<void> _saveShiftBatchChunk(List<Shift> shifts) async {
+    // Stabile Client-IDs fuer Neuanlagen (siehe saveWorkEntry, probleme #3/#8):
+    // Callable (Server: `shift.id ?? hash`) und direkter Fallback schreiben
+    // dieselbe Doc-ID -> kein Duplikat bei verlorenem Ack.
+    final stableShifts = shifts
+        .map((shift) => shift.id == null ? shift.copyWith(id: _uuid.v4()) : shift)
+        .toList(growable: false);
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'upsertShiftBatch',
         {
-          'orgId': shifts.first.orgId,
-          'shifts':
-              shifts.map((shift) => shift.toMap()).toList(growable: false),
+          'orgId': stableShifts.first.orgId,
+          'shifts': stableShifts
+              .map((shift) => shift.toMap())
+              .toList(growable: false),
         },
       );
       if (handledByFunction) {
         return;
       }
     }
-    await _saveShiftBatchDirect(shifts);
+    await _saveShiftBatchDirect(stableShifts);
   }
 
   Future<void> publishShiftBatch({
@@ -1253,14 +1563,20 @@ class FirestoreService {
     required List<Shift> shifts,
     required ShiftStatus status,
   }) async {
+    // Stabile Client-IDs fuer etwaige Neuanlagen (siehe saveWorkEntry,
+    // probleme #3/#8); bestehende Schichten behalten ihre ID.
+    final stableShifts = shifts
+        .map((shift) => shift.id == null ? shift.copyWith(id: _uuid.v4()) : shift)
+        .toList(growable: false);
     if (!AppConfig.disableAuthentication) {
       final handledByFunction = await _callCloudFunctionIfAvailable(
         'publishShiftBatch',
         {
           'orgId': orgId,
           'status': status.value,
-          'shifts':
-              shifts.map((shift) => shift.toMap()).toList(growable: false),
+          'shifts': stableShifts
+              .map((shift) => shift.toMap())
+              .toList(growable: false),
         },
       );
       if (handledByFunction) {
@@ -1268,7 +1584,7 @@ class FirestoreService {
       }
     }
     await _saveShiftBatchDirect(
-      shifts
+      stableShifts
           .map((shift) => shift.copyWith(status: status))
           .toList(growable: false),
     );
@@ -1499,8 +1815,9 @@ class FirestoreService {
       'apiVersion': clientApiVersion,
       '_request_id': _uuid.v4(),
     };
-    if (_cloudFunctionInvoker != null) {
-      return _cloudFunctionInvoker!(name, enriched);
+    final invoker = _cloudFunctionInvoker;
+    if (invoker != null) {
+      return invoker(name, enriched);
     }
     // Timeout, damit ein hängender Aufruf bei schlechter Verbindung nicht
     // unbegrenzt blockiert; bei Überschreitung greift der Hybrid-Fallback.
@@ -1530,7 +1847,19 @@ class FirestoreService {
       );
       return true;
     } on FirebaseFunctionsException catch (error) {
-      if (error.code == 'not-found' || error.code == 'unavailable') {
+      // Fallback-faehige (transiente/Infrastruktur-)Codes: hier soll der
+      // direkte/Hybrid-Pfad greifen statt hart zu scheitern. deadline-exceeded
+      // tritt beim 30s-Callable-Timeout auf schlechter Verbindung auf; da der
+      // direkte Pfad dieselbe stabile Doc-ID schreibt (siehe saveWorkEntry/
+      // saveShiftBatch), bleibt der Fallback duplikatfrei (probleme #3/#9).
+      const fallbackCodes = {
+        'not-found',
+        'unavailable',
+        'deadline-exceeded',
+        'internal',
+        'cancelled',
+      };
+      if (fallbackCodes.contains(error.code)) {
         return false;
       }
       // Blockierende Compliance-Ablehnung: strukturierte Verstöße bewahren,

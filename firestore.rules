@@ -290,6 +290,14 @@ service cloud.firestore {
       return isAdmin() || canManageShifts();
     }
 
+    // Kundenfeedback (Beschwerden/Vorschläge/Lob von der öffentlichen /feedback-
+    // Seite) verwalten: Admins und Schichtleiter — spiegelt
+    // AppUserProfile.canManageFeedback. Anders als Kundenwünsche ist der Eingang
+    // NICHT für alle Mitglieder sichtbar (Beschwerden können sensibel sein).
+    function canManageFeedback() {
+      return isAdmin() || canManageShifts();
+    }
+
     function canReviewAbsenceRequestData(data) {
       return sameOrg(dataOrgId(data))
           && canManageShifts()
@@ -351,6 +359,15 @@ service cloud.firestore {
 
     function sameOrg(orgId) {
       return isActiveUser() && currentOrgId() == orgId;
+    }
+
+    // Org, deren öffentliche Seiten (/wunsch UND /feedback) anonyme
+    // Schreibzugriffe annehmen dürfen. MUSS mit AppConfig.defaultOrganizationId
+    // (dart-define APP_DEFAULT_ORG_ID) übereinstimmen — sonst werden anonyme
+    // Submissions still abgewiesen. Nur DIESE Org ist öffentlich beschreibbar;
+    // alle anderen Org-Pfade nicht.
+    function publicWishOrg() {
+      return 'main-org';
     }
 
     function inviteIdForCurrentUser() {
@@ -703,6 +720,47 @@ service cloud.firestore {
         allow delete: if isAdmin() && sameOrg(orgId);
       }
 
+      // Personal-Stammakte je Mitarbeiter (HR-Stammdaten: Anschrift, SV-/Bank-
+      // /Steuerdaten, Eintritt/Austritt) -> Admin-only (personenbezogene Daten).
+      match /employeeProfiles/{userId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Finanzen (Kostenrechnung): Kostenstellen, Kostenarten, Buchungsjournal
+      // und Budgets -> Admin-only (betriebswirtschaftliche Daten).
+      match /costCenters/{id} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /costTypes/{id} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /journalEntries/{id} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /budgets/{id} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
       // Änderungsprotokoll (Audit-Trail): append-only. Lesen nur Admins;
       // anlegen darf jedes aktive Org-Mitglied für sich selbst; nie ändern/löschen.
       match /auditLog/{entryId} {
@@ -779,6 +837,183 @@ service cloud.firestore {
         allow create, update: if sameOrg(orgId)
             && canManageInventory()
             && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Öffentliche Kundenwünsche (über die Webseite /wunsch). EINZIGER
+      // öffentlicher Schreibpfad der App: anonyme Kunden (request.auth != null,
+      // anonymes Sign-in) dürfen ANLEGEN, aber nichts lesen/ändern. Streng
+      // allowlisted (wie stockMovements) gegen Mass Assignment (BOPLA):
+      //  - orgId an den publizierenden Laden gepinnt,
+      //  - status fest 'neu', source fest 'public_web',
+      //  - createdAt == request.time (Serverzeit, nicht fälschbar),
+      //  - Längen-/Typgrenzen gegen Müll/Abuse.
+      // Spam-Schutz darüber hinaus = App Check (im Projekt aktivieren!).
+      // Lesen/Verwalten wie Kundenbestellungen (aktive Mitglieder / Manager).
+      match /customerWishes/{wishId} {
+        allow read: if sameOrg(orgId);
+        allow update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+
+        allow create: if request.auth != null
+            && request.resource.data.orgId == publicWishOrg()
+            && orgId == publicWishOrg()
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'referenceCode', 'storeName', 'category', 'wishText',
+                 'quantity', 'desiredDate', 'customerName', 'customerContact',
+                 'status', 'source', 'createdAt'
+               ])
+            && request.resource.data.keys().hasAll([
+                 'orgId', 'referenceCode', 'category', 'wishText', 'quantity',
+                 'status', 'source', 'createdAt'
+               ])
+            && request.resource.data.status == 'neu'
+            && request.resource.data.source == 'public_web'
+            && request.resource.data.category in
+                 ['magazine', 'cigarettes', 'tobacco', 'other']
+            && request.resource.data.referenceCode is string
+            && request.resource.data.referenceCode.size() >= 1
+            && request.resource.data.referenceCode.size() <= 40
+            && request.resource.data.wishText is string
+            && request.resource.data.wishText.size() >= 1
+            && request.resource.data.wishText.size() <= 2000
+            // Bewusst `is int` (strenger als `is number` bei oldCents/
+            // quantityDelta): der reale cloud_firestore-Client serialisiert den
+            // Dart-int als Firestore-Integer; gegen rohe REST-Angreifer ist die
+            // Ganzzahl-Pflicht zusätzlicher Schutz.
+            && request.resource.data.quantity is int
+            && request.resource.data.quantity >= 1
+            && request.resource.data.quantity <= 100000
+            && request.resource.data.storeName is string
+            && request.resource.data.storeName.size() <= 120
+            && (!('customerName' in request.resource.data)
+                 || request.resource.data.customerName == null
+                 || (request.resource.data.customerName is string
+                     && request.resource.data.customerName.size() <= 200))
+            && (!('customerContact' in request.resource.data)
+                 || request.resource.data.customerContact == null
+                 || (request.resource.data.customerContact is string
+                     && request.resource.data.customerContact.size() <= 200))
+            && (!('desiredDate' in request.resource.data)
+                 || request.resource.data.desiredDate == null
+                 || request.resource.data.desiredDate is timestamp)
+            && request.resource.data.createdAt == request.time;
+      }
+
+      // Öffentliches Kundenfeedback (über die Webseite /feedback): Beschwerden,
+      // Verbesserungsvorschläge und Lob. Zweiter öffentlicher Schreibpfad neben
+      // customerWishes — gleiche Härtung: anonyme Kunden (request.auth != null)
+      // dürfen ANLEGEN, aber nichts lesen/ändern. Streng allowlisted gegen Mass
+      // Assignment (BOPLA):
+      //  - orgId an den publizierenden Laden gepinnt (publicWishOrg),
+      //  - status fest 'neu', source fest 'public_web',
+      //  - createdAt == request.time (Serverzeit, nicht fälschbar),
+      //  - Längen-/Typ-/Wertgrenzen gegen Müll/Abuse (rating 1–5).
+      // Spam-Schutz darüber hinaus = App Check (im Projekt aktivieren!).
+      // Lesen/Verwalten NUR Manager (canManageFeedback) — Beschwerden können
+      // sensibel sein, daher KEIN read=sameOrg wie bei customerWishes.
+      match /customerFeedback/{feedbackId} {
+        allow read: if sameOrg(orgId) && canManageFeedback();
+        allow update: if sameOrg(orgId)
+            && canManageFeedback()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageFeedback();
+
+        allow create: if request.auth != null
+            && request.resource.data.orgId == publicWishOrg()
+            && orgId == publicWishOrg()
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'referenceCode', 'type', 'message', 'storeName',
+                 'rating', 'incidentDate', 'customerName', 'customerContact',
+                 'status', 'source', 'createdAt'
+               ])
+            && request.resource.data.keys().hasAll([
+                 'orgId', 'referenceCode', 'type', 'message', 'status',
+                 'source', 'createdAt'
+               ])
+            && request.resource.data.status == 'neu'
+            && request.resource.data.source == 'public_web'
+            && request.resource.data.type in
+                 ['complaint', 'suggestion', 'praise']
+            && request.resource.data.referenceCode is string
+            && request.resource.data.referenceCode.size() >= 1
+            && request.resource.data.referenceCode.size() <= 40
+            && request.resource.data.message is string
+            && request.resource.data.message.size() >= 1
+            && request.resource.data.message.size() <= 2000
+            && request.resource.data.storeName is string
+            && request.resource.data.storeName.size() <= 120
+            // rating ist optional (int?) -> null/absent zulassen, sonst 1..5.
+            && (!('rating' in request.resource.data)
+                 || request.resource.data.rating == null
+                 || (request.resource.data.rating is int
+                     && request.resource.data.rating >= 1
+                     && request.resource.data.rating <= 5))
+            && (!('customerName' in request.resource.data)
+                 || request.resource.data.customerName == null
+                 || (request.resource.data.customerName is string
+                     && request.resource.data.customerName.size() <= 200))
+            && (!('customerContact' in request.resource.data)
+                 || request.resource.data.customerContact == null
+                 || (request.resource.data.customerContact is string
+                     && request.resource.data.customerContact.size() <= 200))
+            && (!('incidentDate' in request.resource.data)
+                 || request.resource.data.incidentDate == null
+                 || request.resource.data.incidentDate is timestamp)
+            && request.resource.data.createdAt == request.time;
+      }
+
+      // Wochen-Bestellkorb je Laden (Doc-ID = siteId, Singleton). BEWUSST
+      // breiterer Schreibpfad als der Rest der Warenwirtschaft: JEDES aktive
+      // Mitglied (auch Mitarbeiter ohne Verwaltungsrecht) darf Positionen in den
+      // gemeinsamen Korb legen/aendern – das ist der Kern des Features ("Sorte
+      // ist leer -> in den Korb"). sameOrg() verlangt bereits ein aktives
+      // Org-Mitglied. Loeschen (Korb-Doc entfernen) bleibt Managern vorbehalten;
+      // das Leeren nach dem Checkout laeuft als Update auf leere items.
+      match /orderCarts/{siteId} {
+        allow read: if sameOrg(orgId);
+        // Body an den Pfad binden: orgId muss passen UND das siteId-Feld muss
+        // der Doc-ID entsprechen (keine Korb-Docs mit abweichender/fremder
+        // siteId). Feld-Allowlist + Typ-/Groessengrenzen gegen Mass Assignment
+        // (BOPLA), kind fest auf 'cart', und updatedByUid an den Aufrufer
+        // gebunden (Audit-Spoofing) — analog zu stockMovements/customerWishes
+        // (probleme #11/#60/#61). Pro-Item-addedByUid ist in Rules nicht
+        // pruefbar und gilt als nicht sicherheitsrelevant.
+        allow create, update: if sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && request.resource.data.siteId == siteId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'siteName', 'kind', 'items',
+                 'updatedByUid', 'updatedAt'
+               ])
+            && request.resource.data.kind == 'cart'
+            && request.resource.data.items is list
+            && request.resource.data.items.size() <= 500
+            && (request.resource.data.updatedByUid == request.auth.uid
+                 || request.resource.data.updatedByUid == null);
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Standard-Wochenliste je Laden (Doc-ID = siteId): Manager-kuratierte
+      // Grundbestellung, die den Korb vorbefuellt. Nur Verwaltung schreibt.
+      match /weeklyOrderLists/{siteId} {
+        allow read: if sameOrg(orgId);
+        // Gleiche BOPLA-Haertung wie orderCarts; kind fest 'weekly_template'.
+        allow create, update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.siteId == siteId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'siteName', 'kind', 'items',
+                 'updatedByUid', 'updatedAt'
+               ])
+            && request.resource.data.kind == 'weekly_template'
+            && request.resource.data.items is list
+            && request.resource.data.items.size() <= 500
+            && (request.resource.data.updatedByUid == request.auth.uid
+                 || request.resource.data.updatedByUid == null);
         allow delete: if sameOrg(orgId) && canManageInventory();
       }
 

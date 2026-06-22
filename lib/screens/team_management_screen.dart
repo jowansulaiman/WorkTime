@@ -2560,7 +2560,7 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
               child: ListTile(
                 leading: const Icon(Icons.calendar_today_outlined),
                 title: const Text('Gueltig ab'),
-                subtitle: Text(DateFormat('dd.MM.yyyy').format(_validFrom)),
+                subtitle: Text(DateFormat('dd.MM.yyyy', 'de_DE').format(_validFrom)),
                 onTap: _pickValidFrom,
               ),
             ),

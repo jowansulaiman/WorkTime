@@ -5,16 +5,15 @@ import 'package:provider/provider.dart';
 import '../core/contact_csv_import.dart';
 import '../core/contact_dedup.dart';
 import '../models/app_user.dart';
-import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/contact_activity.dart';
 import '../models/site_definition.dart';
-import '../providers/audit_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/contact_provider.dart';
 import '../providers/team_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
+import '../widgets/action_fab.dart';
 
 /// Sentinel-Wert fuer den Standort-Filter „Allgemein" (Kontakte ohne Laden).
 const String _kGeneralSite = '__general__';
@@ -75,11 +74,15 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
     return Scaffold(
       floatingActionButton: canManage
-          ? FloatingActionButton.extended(
+          ? ExpandableFab(
               heroTag: 'contacts_add_fab',
-              onPressed: () => _openEditor(),
-              icon: const Icon(Icons.person_add_alt_1),
-              label: const Text('Kontakt'),
+              actions: [
+                FabAction(
+                  icon: Icons.person_add_alt_1,
+                  label: 'Kontakt',
+                  onPressed: () => _openEditor(),
+                ),
+              ],
             )
           : null,
       body: SafeArea(
@@ -670,15 +673,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (!confirmed || !mounted || contact.id == null) {
       return;
     }
-    final audit = context.read<AuditProvider>();
     try {
+      // Audit-Logging erfolgt zentral in ContactProvider.deleteContact.
       await context.read<ContactProvider>().deleteContact(contact.id!);
-      await audit.log(
-        action: AuditAction.deleted,
-        entityType: 'Kontakt',
-        entityId: contact.id,
-        summary: 'Kontakt „${contact.name}" gelöscht.',
-      );
       _snack('Kontakt gelöscht.');
     } catch (error) {
       _snack('Löschen fehlgeschlagen: $error', isError: true);

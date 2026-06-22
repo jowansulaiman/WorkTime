@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/money.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
@@ -10,12 +12,14 @@ import '../models/supplier.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
+import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
+import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/responsive_layout.dart';
+import 'order_cart_screen.dart';
 import 'purchase_order_screens.dart';
-import 'scanner_screen.dart';
 
 final NumberFormat _euroFormat =
     NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
@@ -29,18 +33,10 @@ String formatCents(int? cents) {
 }
 
 /// Wandelt eine Euro-Eingabe ("1,99" oder "1.99") in Cent. Null bei leer.
-int? parseEuroToCents(String value) {
-  final trimmed = value.trim().replaceAll('€', '').trim();
-  if (trimmed.isEmpty) {
-    return null;
-  }
-  final normalized = trimmed.replaceAll('.', '').replaceAll(',', '.');
-  final euros = double.tryParse(normalized);
-  if (euros == null) {
-    return null;
-  }
-  return (euros * 100).round();
-}
+///
+/// Delegiert an [Money.parseCents] (gemeinsamer, robuster Parser), damit
+/// Punkt-vs-Komma-Dezimaltrenner überall identisch behandelt werden.
+int? parseEuroToCents(String value) => Money.parseCents(value);
 
 String _centsToEuroInput(int? cents) {
   if (cents == null) {
@@ -91,6 +87,13 @@ class InventoryScreen extends StatefulWidget {
 
 class _InventoryScreenState extends State<InventoryScreen>
     with SingleTickerProviderStateMixin {
+  // Tab-Reihenfolge (benannte Indizes statt Literale, damit FAB/Badge/Navigation
+  // bei künftigem Umsortieren nicht auseinanderlaufen).
+  static const int _stockTabIndex = 0;
+  static const int _suppliersTabIndex = 1;
+  static const int _cartTabIndex = 2;
+  static const int _ordersTabIndex = 3;
+
   late final TabController _tabController;
   String? _selectedSiteId;
   String _search = '';
@@ -98,7 +101,7 @@ class _InventoryScreenState extends State<InventoryScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
       if (mounted) {
         setState(() {});
@@ -139,6 +142,10 @@ class _InventoryScreenState extends State<InventoryScreen>
     final canManage = profile.canManageInventory;
     final sites = team.sites;
     final lowStockCount = inventory.lowStockProducts(siteId: _selectedSiteId).length;
+    // Bestellkorb/Wochenliste sind je Laden. Bei genau einem Laden ist der
+    // effektive Laden eindeutig, auch wenn kein Filter aktiv ist.
+    final effectiveSiteId =
+        _selectedSiteId ?? (sites.length == 1 ? sites.first.id : null);
 
     return Scaffold(
       appBar: BreadcrumbAppBar(
@@ -149,11 +156,17 @@ class _InventoryScreenState extends State<InventoryScreen>
           ),
           const BreadcrumbItem(label: 'Warenwirtschaft'),
         ],
-        actions: [_buildExportMenu(context, inventory, sites)],
+        actions: [
+          IconButton(
+            tooltip: 'Kundenwünsche',
+            icon: const Icon(Icons.inbox_outlined),
+            onPressed: () => context.push(AppRoutes.customerWishes),
+          ),
+          _buildExportMenu(context, inventory, sites),
+        ],
       ),
-      floatingActionButton: canManage
-          ? _buildFab(context, inventory, sites)
-          : null,
+      floatingActionButton:
+          _buildFab(context, inventory, sites, canManage, effectiveSiteId),
       body: SafeArea(
         top: false,
         child: Align(
@@ -187,6 +200,18 @@ class _InventoryScreenState extends State<InventoryScreen>
                     ),
                     Tab(
                       child: _TabLabel(
+                        icon: Icons.shopping_cart_outlined,
+                        label: 'Bestellkorb',
+                        // Badge konsistent zum Tab-Inhalt: ohne eindeutigen Laden
+                        // (Mehr-Laden, kein Filter) zeigt der Tab einen
+                        // "Laden wählen"-Hinweis -> dann auch kein Summen-Badge.
+                        badgeCount: effectiveSiteId == null
+                            ? 0
+                            : inventory.cartItemCount(effectiveSiteId),
+                      ),
+                    ),
+                    Tab(
+                      child: _TabLabel(
                         icon: Icons.receipt_long_outlined,
                         label: 'Bestellungen',
                         badgeCount: inventory.openOrders
@@ -216,6 +241,14 @@ class _InventoryScreenState extends State<InventoryScreen>
                         sites: sites,
                       ),
                       _SuppliersTab(canManage: canManage),
+                      OrderCartTab(
+                        siteId: effectiveSiteId,
+                        canManage: canManage,
+                        sites: sites,
+                        onCheckoutDone: () => _tabController.animateTo(
+                          _ordersTabIndex,
+                        ),
+                      ),
                       _OrdersTab(
                         siteId: _selectedSiteId,
                         canManage: canManage,
@@ -286,51 +319,77 @@ class _InventoryScreenState extends State<InventoryScreen>
     BuildContext context,
     InventoryProvider inventory,
     List<SiteDefinition> sites,
+    bool canManage,
+    String? effectiveSiteId,
   ) {
+    // Schnell-„In den Warenkorb"-Aktion: für JEDEN aktiven Mitarbeiter. Öffnet
+    // den gefilterten Schnell-Sheet (Laden + Kategorie) und legt Artikel live in
+    // den Korb.
+    final cartAction = FabAction(
+      icon: Icons.add_shopping_cart,
+      label: 'In den Warenkorb',
+      emphasized: true,
+      onPressed: () => showQuickAddCartSheet(
+        context,
+        sites: sites,
+        initialSiteId: effectiveSiteId,
+        onGoToCart: () => _tabController.animateTo(_cartTabIndex),
+      ),
+    );
+
     switch (_tabController.index) {
-      case 0:
-        final addFab = FloatingActionButton.extended(
-          heroTag: 'inv-add-product',
-          onPressed: () => _addProduct(context, inventory, sites),
-          icon: const Icon(Icons.add),
-          label: const Text('Artikel'),
-        );
-        // Scan-FAB auf echten Mobil-Plattformen (Handy + Tablet, Android/iOS).
-        final showScanner = MobileBreakpoints.isNativeMobile;
-        if (!showScanner) {
-          return addFab;
-        }
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            FloatingActionButton.small(
-              heroTag: 'inv-scan',
-              tooltip: 'Scanner',
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) =>
-                      const ScannerScreen(parentLabel: 'Warenwirtschaft'),
-                ),
+      case _stockTabIndex:
+        // Verwaltung fächert Scanner + Artikel über die prominente Korb-Aktion
+        // auf; Mitarbeiter sehen nur den einzelnen Korb-FAB.
+        return ExpandableFab(
+          heroTag: 'inv-fab-stock',
+          actions: [
+            if (canManage && MobileBreakpoints.isNativeMobile)
+              FabAction(
+                icon: Icons.qr_code_scanner_outlined,
+                label: 'Scanner',
+                onPressed: () => context.push(AppRoutes.scanner),
               ),
-              child: const Icon(Icons.qr_code_scanner_outlined),
-            ),
-            const SizedBox(height: 12),
-            addFab,
+            if (canManage)
+              FabAction(
+                icon: Icons.add,
+                label: 'Artikel',
+                onPressed: () => _addProduct(context, inventory, sites),
+              ),
+            cartAction,
           ],
         );
-      case 1:
-        return FloatingActionButton.extended(
-          onPressed: () => _addSupplier(context, inventory),
-          icon: const Icon(Icons.add),
-          label: const Text('Lieferant'),
+      case _suppliersTabIndex:
+        return canManage
+            ? ExpandableFab(
+                heroTag: 'inv-fab-suppliers',
+                actions: [
+                  FabAction(
+                    icon: Icons.add,
+                    label: 'Lieferant',
+                    onPressed: () => _addSupplier(context, inventory),
+                  ),
+                ],
+              )
+            : null;
+      case _cartTabIndex:
+        return ExpandableFab(
+          heroTag: 'inv-fab-cart',
+          actions: [cartAction],
         );
-      case 2:
-        return FloatingActionButton.extended(
-          onPressed: () => _addOrder(context, sites),
-          icon: const Icon(Icons.add),
-          label: const Text('Bestellung'),
-        );
+      case _ordersTabIndex:
+        return canManage
+            ? ExpandableFab(
+                heroTag: 'inv-fab-orders',
+                actions: [
+                  FabAction(
+                    icon: Icons.add,
+                    label: 'Bestellung',
+                    onPressed: () => _addOrder(context, sites),
+                  ),
+                ],
+              )
+            : null;
       default:
         return null;
     }
@@ -580,6 +639,8 @@ class _StockTab extends StatelessWidget {
           if (valueCents <= 0) {
             return const SizedBox.shrink();
           }
+          final sellingCents =
+              inventory.totalStockValueSellingCents(siteId: siteId);
           final marginCents = inventory.totalStockMarginCents(siteId: siteId);
           final theme = Theme.of(context);
           return Padding(
@@ -589,23 +650,34 @@ class _StockTab extends StatelessWidget {
                 Icon(Icons.account_balance_wallet_outlined,
                     size: 18, color: theme.colorScheme.primary),
                 const SizedBox(width: 8),
-                Text(
-                  'Warenwert: ${formatCents(valueCents)}',
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(fontWeight: FontWeight.w600),
-                ),
-                if (marginCents > 0) ...[
-                  const SizedBox(width: 12),
-                  Flexible(
-                    child: Text(
-                      'Spanne: ${formatCents(marginCents)}',
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
+                Expanded(
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 2,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        'Warenwert (EK): ${formatCents(valueCents)}',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
-                    ),
+                      if (sellingCents > 0)
+                        Text(
+                          'VK: ${formatCents(sellingCents)}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      if (marginCents > 0)
+                        Text(
+                          'Spanne: ${formatCents(marginCents)}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
                   ),
-                ],
+                ),
               ],
             ),
           );
@@ -626,7 +698,7 @@ class _StockTab extends StatelessWidget {
                       'Noch keine Artikel. Lege ueber das Plus den ersten Artikel an.',
                 )
               : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, kFabSafeBottomInset),
                   itemCount: products.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 8),
                   itemBuilder: (context, index) => _ProductTile(
@@ -772,10 +844,20 @@ class _ProductTile extends StatelessWidget {
               ),
           ],
         ),
-        trailing: canManage
-            ? PopupMenuButton<String>(
-                onSelected: (value) =>
-                    _onMenu(context, inventory, value),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Schnellaktion für JEDEN aktiven Mitarbeiter: Artikel in den
+            // gemeinsamen Bestellkorb legen ("Sorte ist leer").
+            IconButton(
+              tooltip: 'In den Bestellkorb',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.add_shopping_cart_outlined),
+              onPressed: () => _addToCart(context, inventory),
+            ),
+            if (canManage)
+              PopupMenuButton<String>(
+                onSelected: (value) => _onMenu(context, inventory, value),
                 itemBuilder: (_) => const [
                   PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
                   PopupMenuItem(
@@ -787,11 +869,27 @@ class _ProductTile extends StatelessWidget {
                   PopupMenuItem(value: 'delete', child: Text('Loeschen')),
                 ],
               )
-            : (product.needsReorder
-                ? Icon(Icons.warning_amber_rounded, color: colorScheme.tertiary)
-                : null),
+            else if (product.needsReorder)
+              Icon(Icons.warning_amber_rounded, color: colorScheme.tertiary),
+          ],
+        ),
       ),
     );
+  }
+
+  Future<void> _addToCart(
+      BuildContext context, InventoryProvider inventory) async {
+    if (product.id == null) {
+      return;
+    }
+    final quantity = await showOrderQuantityDialog(context, product);
+    if (quantity == null) {
+      return;
+    }
+    await inventory.addToCart(product: product, quantity: quantity);
+    if (context.mounted) {
+      _showSnack(context, '${product.name} in den Bestellkorb gelegt.');
+    }
   }
 
   Future<void> _onMenu(
@@ -934,7 +1032,7 @@ class _SuppliersTab extends StatelessWidget {
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, kFabSafeBottomInset),
       itemCount: suppliers.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
@@ -1038,7 +1136,7 @@ class _OrdersTab extends StatelessWidget {
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, kFabSafeBottomInset),
       itemCount: orders.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
@@ -1739,56 +1837,68 @@ Future<({int quantity, String reason})?> _showStockIssueDialog(
     BuildContext context, Product product) {
   final quantityController = TextEditingController();
   final reasonController = TextEditingController(text: 'Verkauf');
+  // Live-Validierung gegen den aktuellen Bestand (gleiche Regel wie issueStock):
+  // der Nutzer sieht eine Übermenge sofort, statt erst nach dem Buchen.
+  final inventory = context.read<InventoryProvider>();
   return showDialog<({int quantity, String reason})>(
     context: context,
-    builder: (_) => AlertDialog(
-      title: Text('Abgang buchen: ${product.name}'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('Aktueller Bestand: ${product.currentStock} ${product.unit}'),
-          const SizedBox(height: 12),
-          TextField(
-            controller: quantityController,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(
-              labelText: 'Menge (Abgang)',
-              border: OutlineInputBorder(),
-            ),
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setState) {
+        final qty = int.tryParse(quantityController.text.trim());
+        final issueError = (qty == null || qty <= 0)
+            ? null
+            : inventory.validateStockIssue(product: product, quantity: qty);
+        final canBook = qty != null && qty > 0 && issueError == null;
+        return AlertDialog(
+          title: Text('Abgang buchen: ${product.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                  'Aktueller Bestand: ${product.currentStock} ${product.unit}'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: quantityController,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: 'Menge (Abgang)',
+                  border: const OutlineInputBorder(),
+                  errorText: issueError,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: reasonController,
+                decoration: const InputDecoration(
+                  labelText: 'Grund (z.B. Verkauf, Schwund, Eigenbedarf)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: reasonController,
-            decoration: const InputDecoration(
-              labelText: 'Grund (z.B. Verkauf, Schwund, Eigenbedarf)',
-              border: OutlineInputBorder(),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Abbrechen'),
             ),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Abbrechen'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final qty = int.tryParse(quantityController.text.trim());
-            if (qty == null || qty <= 0) {
-              Navigator.of(context).pop();
-              return;
-            }
-            final reason = reasonController.text.trim();
-            Navigator.of(context).pop((
-              quantity: qty,
-              reason: reason.isEmpty ? 'Verkauf' : reason,
-            ));
-          },
-          child: const Text('Buchen'),
-        ),
-      ],
+            FilledButton(
+              onPressed: canBook
+                  ? () {
+                      final reason = reasonController.text.trim();
+                      Navigator.of(dialogContext).pop((
+                        quantity: qty,
+                        reason: reason.isEmpty ? 'Verkauf' : reason,
+                      ));
+                    }
+                  : null,
+              child: const Text('Buchen'),
+            ),
+          ],
+        );
+      },
     ),
   );
 }

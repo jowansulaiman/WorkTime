@@ -1,4 +1,5 @@
 import '../models/customer_order.dart';
+import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
@@ -91,5 +92,26 @@ abstract interface class InventoryRepository {
     required Map<int, int> receivedByItemIndex,
     String? createdByUid,
     String? clientMutationId,
+  });
+
+  // --- Bestelllisten (Wochen-Bestellkorb + Standard-Wochenliste) ---------
+  // Singleton je Laden (Doc-ID = siteId), eingebettete Positionen. Bewusst kein
+  // orderBy/Index – die Collections sind klein (eine Liste je Laden).
+
+  /// Geteilte Bestellkörbe je Laden (Collection `orderCarts`).
+  Stream<List<SiteOrderList>> watchOrderCarts(String orgId);
+
+  /// Standard-Wochenlisten je Laden (Collection `weeklyOrderLists`).
+  Stream<List<SiteOrderList>> watchWeeklyOrderLists(String orgId);
+
+  /// Speichert eine Bestellliste (Doc-ID = `list.siteId`); [list.kind] bestimmt
+  /// die Ziel-Collection.
+  Future<void> saveOrderList(SiteOrderList list);
+
+  /// Löscht eine Bestellliste eines Ladens (z.B. Korb nach Checkout leeren).
+  Future<void> deleteOrderList({
+    required String orgId,
+    required String siteId,
+    required OrderListKind kind,
   });
 }

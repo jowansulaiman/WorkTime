@@ -43,4 +43,17 @@ post_install do |installer|
       config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
     end
   end
+
+  # firebase_auth and firebase_app_check import non-modular headers (Firebase.h),
+  # which Xcode 17 / iOS 26 SDK rejects inside a 'framework module'.
+  # Downgrading to a plain 'module' removes that restriction.
+  ['firebase_auth', 'firebase_app_check'].each do |pod_name|
+    modulemap_path = "#{installer.sandbox.root}/Target Support Files/#{pod_name}/#{pod_name}.modulemap"
+    if File.exist?(modulemap_path)
+      content = File.read(modulemap_path)
+      if content.include?("framework module #{pod_name}")
+        File.write(modulemap_path, content.sub("framework module #{pod_name}", "module #{pod_name}"))
+      end
+    end
+  end
 end

@@ -4,17 +4,17 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/money.dart';
 import '../core/payroll_calculator.dart';
 import '../core/personnel_cost.dart';
 import '../models/app_user.dart';
-import '../models/audit_log_entry.dart';
 import '../models/customer_order.dart';
+import '../models/employee_profile.dart';
 import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../models/payroll_settings.dart';
 import '../models/work_entry.dart';
 import '../models/work_task.dart';
-import '../providers/audit_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/personal_provider.dart';
 import '../services/export_service.dart';
@@ -144,18 +144,27 @@ String _euro(int cents) => _eurFormat.format(cents / 100);
 String _monthLabel(DateTime month) =>
     DateFormat('MMMM yyyy', 'de_DE').format(month);
 
-int? _parseEuroToCents(String raw) {
-  final cleaned = raw
-      .trim()
-      .replaceAll('€', '')
-      .replaceAll(' ', '')
-      .replaceAll('.', '')
-      .replaceAll(',', '.');
-  if (cleaned.isEmpty) return null;
-  final value = double.tryParse(cleaned);
-  if (value == null) return null;
-  return (value * 100).round();
+String _formatDate(DateTime date) =>
+    DateFormat('dd.MM.yyyy', 'de_DE').format(date);
+
+/// Formatiert einen Prozentwert mit deutschem Dezimalkomma (z. B. „1,7 %").
+/// Ganzzahlige Werte werden ohne Nachkommastelle dargestellt („15 %").
+String _formatPercent(double value) {
+  final text = value == value.roundToDouble()
+      ? value.toInt().toString()
+      : value.toString().replaceAll('.', ',');
+  return '$text %';
 }
+
+/// Farbton für den Lohn-Freigabestatus.
+AppStatusTone _payrollStatusTone(PayrollStatus status) => switch (status) {
+      PayrollStatus.entwurf => AppStatusTone.neutral,
+      PayrollStatus.freigegeben => AppStatusTone.info,
+      PayrollStatus.bezahlt => AppStatusTone.success,
+      PayrollStatus.storniert => AppStatusTone.error,
+    };
+
+int? _parseEuroToCents(String raw) => Money.parseCents(raw);
 
 String _centsToInput(int cents) =>
     (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
@@ -781,13 +790,163 @@ class _PayrollTab extends StatelessWidget {
             icon: Icons.receipt_long_outlined,
             message: 'Noch keine Abrechnungen für diesen Monat.',
           )
-        else
+        else ...[
+          _PayrollRunSummary(month: month, records: records),
+          SizedBox(height: spacing.lg),
           for (final record in records) ...[
             _PayrollTile(record: record, month: month, monthEntries: monthEntries),
             SizedBox(height: spacing.sm),
           ],
+        ],
       ],
     );
+  }
+}
+
+/// Lohnlauf-Übersicht eines Monats: Summen-KPIs über alle Abrechnungen +
+/// Statusverteilung + Batch-Freigabe aller Entwürfe.
+class _PayrollRunSummary extends StatelessWidget {
+  const _PayrollRunSummary({required this.month, required this.records});
+
+  final DateTime month;
+  final List<PayrollRecord> records;
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final appColors = Theme.of(context).appColors;
+
+    var grossSum = 0, deductionsSum = 0, netSum = 0, employerSum = 0;
+    var drafts = 0, released = 0, paid = 0, cancelled = 0;
+    for (final r in records) {
+      // Stornierte Abrechnungen zählen nicht in die Monatssummen.
+      if (r.status == PayrollStatus.storniert) {
+        cancelled++;
+        continue;
+      }
+      grossSum += r.grossCents;
+      deductionsSum += r.totalDeductionsCents;
+      netSum += r.netCents;
+      employerSum += r.employerTotalCents;
+      switch (r.status) {
+        case PayrollStatus.entwurf:
+          drafts++;
+        case PayrollStatus.freigegeben:
+          released++;
+        case PayrollStatus.bezahlt:
+          paid++;
+        case PayrollStatus.storniert:
+          break;
+      }
+    }
+
+    return AppSectionCard(
+      title: 'Lohnlauf ${_monthLabel(month)}',
+      icon: Icons.account_balance_wallet_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: AppStatCard(
+                  label: 'Brutto gesamt',
+                  value: _euro(grossSum),
+                  subtitle: '${records.length} Abrechnungen',
+                  icon: Icons.arrow_upward,
+                  color: appColors.info,
+                ),
+              ),
+              SizedBox(width: spacing.sm),
+              Expanded(
+                child: AppStatCard(
+                  label: 'Abzüge gesamt',
+                  value: _euro(deductionsSum),
+                  subtitle: 'Steuer + SV (AN)',
+                  icon: Icons.arrow_downward,
+                  color: appColors.warning,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: spacing.sm),
+          Row(
+            children: [
+              Expanded(
+                child: AppStatCard(
+                  label: 'Netto gesamt',
+                  value: _euro(netSum),
+                  subtitle: 'Auszahlung',
+                  icon: Icons.payments_outlined,
+                  color: appColors.success,
+                ),
+              ),
+              SizedBox(width: spacing.sm),
+              Expanded(
+                child: AppStatCard(
+                  label: 'AG-Kosten gesamt',
+                  value: _euro(employerSum),
+                  subtitle: 'inkl. AG-SV',
+                  icon: Icons.business_outlined,
+                  color: appColors.info,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: spacing.sm),
+          Text(
+            '${records.length} Abrechnungen · $drafts Entwurf · '
+            '$released freigegeben · $paid bezahlt'
+            '${cancelled > 0 ? ' · $cancelled storniert' : ''}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+          if (drafts > 0) ...[
+            SizedBox(height: spacing.sm),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.tonalIcon(
+                onPressed: () => _finalizeAll(context),
+                icon: const Icon(Icons.verified_outlined, size: 18),
+                label: Text('Alle Entwürfe freigeben ($drafts)'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _finalizeAll(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Alle Entwürfe freigeben'),
+        content: Text(
+          'Sollen alle noch nicht freigegebenen Lohnabrechnungen für '
+          '${_monthLabel(month)} freigegeben werden?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Freigeben'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await context
+          .read<PersonalProvider>()
+          .finalizeAllDrafts(month.year, month.month);
+    } catch (error) {
+      if (context.mounted) _showError(context, error);
+    }
   }
 }
 
@@ -832,6 +991,12 @@ class _PayrollTile extends StatelessWidget {
                 ),
               ),
               AppStatusBadge(
+                label: record.status.label,
+                tone: _payrollStatusTone(record.status),
+                filled: true,
+              ),
+              SizedBox(width: context.spacing.xs),
+              AppStatusBadge(
                 label: record.kind == PayrollEmploymentKind.minijob
                     ? 'Minijob'
                     : record.taxClass.shortLabel,
@@ -863,16 +1028,56 @@ class _PayrollTile extends StatelessWidget {
             ],
           ),
           SizedBox(height: context.spacing.sm),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: () => ExportService.exportPayrollPdf(
-                record: record,
-                employeeName: name,
+          Row(
+            children: [
+              PopupMenuButton<PayrollStatus>(
+                tooltip: 'Status ändern',
+                onSelected: (status) async {
+                  try {
+                    await personal.setPayrollStatus(record, status);
+                  } catch (error) {
+                    if (context.mounted) _showError(context, error);
+                  }
+                },
+                itemBuilder: (_) => [
+                  for (final status in PayrollStatus.values)
+                    PopupMenuItem(
+                      value: status,
+                      enabled: status != record.status,
+                      child: Row(
+                        children: [
+                          Icon(
+                            status == record.status
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_unchecked,
+                            size: 18,
+                          ),
+                          SizedBox(width: context.spacing.sm),
+                          Text(status.label),
+                        ],
+                      ),
+                    ),
+                ],
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.flag_outlined, size: 18),
+                    SizedBox(width: context.spacing.xs),
+                    Text('Status', style: theme.textTheme.labelLarge),
+                    const Icon(Icons.arrow_drop_down, size: 18),
+                  ],
+                ),
               ),
-              icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
-              label: const Text('PDF'),
-            ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: () => ExportService.exportPayrollPdf(
+                  record: record,
+                  employeeName: name,
+                ),
+                icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                label: const Text('PDF'),
+              ),
+            ],
           ),
         ],
       ),
@@ -1400,6 +1605,8 @@ class _EmployeeDetailScreen extends StatelessWidget {
             ),
           ],
           SizedBox(height: spacing.lg),
+          _EmployeeStammdatenCard(member: member),
+          SizedBox(height: spacing.lg),
           Row(
             children: [
               Expanded(
@@ -1808,9 +2015,18 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
 
   PayrollSettings get _settings => context.read<PersonalProvider>().payrollSettings;
 
+  /// Stammakte des aktuell gewählten Mitarbeiters (für genauere Lohnparameter:
+  /// Kinder, PV-Kinderlosenzuschlag, kassenindividueller KV-Zusatzbeitrag).
+  EmployeeProfile? get _employeeProfile {
+    final userId = _userId;
+    if (userId == null) return null;
+    return context.read<PersonalProvider>().employeeProfileForUser(userId);
+  }
+
   PayrollResult? get _result {
     final cents = _parseEuroToCents(_gross.text);
     if (cents == null) return null;
+    final profile = _employeeProfile;
     return PayrollCalculator.calculate(
       grossCents: cents,
       taxClass: _taxClass,
@@ -1818,7 +2034,52 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
       federalState: _federalState,
       kind: _kind,
       settings: _settings,
+      childCount: profile?.childrenCount ?? 0,
+      pvChildless: _pvChildless(profile),
+      healthAdditionalRateOverride: _kvSurchargeOverride(profile),
     );
+  }
+
+  /// PV-Kinderlosenzuschlag: nur kinderlos UND nachweislich ab 23 Jahren.
+  /// Ohne Stammakte oder ohne hinterlegtes Geburtsdatum konservativ kein
+  /// Zuschlag – wir berechnen keinen Abzug, dessen Altersvoraussetzung wir nicht
+  /// belegen können (mit Geburtsdatum greift er automatisch).
+  bool _pvChildless(EmployeeProfile? profile) {
+    if (profile == null || profile.childrenCount > 0) return false;
+    final birth = profile.birthDate;
+    if (birth == null) return false;
+    final now = DateTime.now();
+    var age = now.year - birth.year;
+    if (now.month < birth.month ||
+        (now.month == birth.month && now.day < birth.day)) {
+      age--;
+    }
+    return age >= 23;
+  }
+
+  /// Kassenindividueller KV-Zusatzbeitrag aus der Stammakte als Bruchteil.
+  double? _kvSurchargeOverride(EmployeeProfile? profile) {
+    final percent = profile?.healthInsuranceSurchargePercent;
+    if (percent == null) return null;
+    return percent / 100.0;
+  }
+
+  /// Kurzer Transparenz-Hinweis, welche Lohnparameter aus der Stammakte
+  /// stammen (oder null, wenn nichts Relevantes hinterlegt ist).
+  String? get _stammaktenHinweis {
+    final profile = _employeeProfile;
+    if (profile == null) return null;
+    final parts = <String>[];
+    if (profile.childrenCount > 0) {
+      parts.add('${profile.childrenCount} '
+          '${profile.childrenCount == 1 ? 'Kind' : 'Kinder'}');
+    } else if (_pvChildless(profile)) {
+      parts.add('PV-Kinderlosenzuschlag');
+    }
+    final kv = profile.healthInsuranceSurchargePercent;
+    if (kv != null) parts.add('KV-Zusatz ${_formatPercent(kv)}');
+    if (parts.isEmpty) return null;
+    return 'Aus Stammakte berücksichtigt: ${parts.join(' · ')}';
   }
 
   @override
@@ -1938,6 +2199,14 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
                 onChanged: (value) => setState(() => _federalState = value),
               ),
             ],
+            if (_stammaktenHinweis != null) ...[
+              SizedBox(height: spacing.sm),
+              AppStatusBanner(
+                icon: Icons.badge_outlined,
+                tone: AppStatusTone.info,
+                message: _stammaktenHinweis!,
+              ),
+            ],
             if (result != null) ...[
               SizedBox(height: spacing.sm),
               _PayrollBreakdown(result: result),
@@ -1994,10 +2263,6 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     if (result == null || _userId == null) return;
     setState(() => _saving = true);
     final personal = context.read<PersonalProvider>();
-    final audit = context.read<AuditProvider>();
-    final memberName =
-        personal.memberById(_userId!)?.displayName ?? 'Mitarbeiter';
-    final isNew = widget.existing == null;
     final record = result.buildRecord(
       id: widget.existing?.id,
       orgId: '',
@@ -2019,15 +2284,7 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
         federalState: _federalState,
         monthlyGrossCents: record.grossCents,
       );
-      // Audit-Trail: Lohn-Snapshots werden per deterministischer Doc-ID still
-      // ueberschrieben -> Aenderung protokollieren.
-      await audit.log(
-        action: isNew ? AuditAction.created : AuditAction.updated,
-        entityType: 'Lohnabrechnung',
-        entityId: record.documentId,
-        summary: '$memberName ${_monthLabel(widget.month)}: '
-            'Brutto ${_euro(record.grossCents)}, Netto ${_euro(record.netCents)}',
-      );
+      // Audit-Logging erfolgt zentral in PersonalProvider.savePayrollRecord.
       if (mounted) Navigator.of(context).pop();
     } catch (error) {
       if (mounted) {
@@ -2113,6 +2370,738 @@ class _PayrollBreakdown extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// ─────────────────────────── Stammakte (HR) ───────────────────────────────
+
+/// Read-only Stammdaten-Karte im Mitarbeiter-Detail mit „Erfassen/Bearbeiten".
+class _EmployeeStammdatenCard extends StatelessWidget {
+  const _EmployeeStammdatenCard({required this.member});
+
+  final AppUserProfile member;
+
+  @override
+  Widget build(BuildContext context) {
+    final personal = context.watch<PersonalProvider>();
+    final profile = personal.employeeProfileForUser(member.uid);
+    final hasData = profile != null && !profile.isEmpty;
+
+    return AppSectionCard(
+      title: 'Stammdaten',
+      icon: Icons.badge_outlined,
+      trailing: FilledButton.tonalIcon(
+        onPressed: () => showAppBottomSheet(
+          context: context,
+          builder: (_) =>
+              _EmployeeProfileEditorSheet(member: member, existing: profile),
+        ),
+        icon: Icon(hasData ? Icons.edit_outlined : Icons.add, size: 18),
+        label: Text(hasData ? 'Bearbeiten' : 'Erfassen'),
+      ),
+      child: hasData
+          ? _StammdatenBody(profile: profile)
+          : const _InlineEmpty(
+              icon: Icons.badge_outlined,
+              message: 'Noch keine Stammdaten hinterlegt.',
+            ),
+    );
+  }
+}
+
+class _StammdatenBody extends StatelessWidget {
+  const _StammdatenBody({required this.profile});
+
+  final EmployeeProfile profile;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = profile;
+    final spacing = context.spacing;
+    final theme = Theme.of(context);
+
+    // Gruppen aus (Überschrift, [(Label, Wert?)…]); leere Zeilen/Gruppen
+    // werden ausgeblendet, damit keine „—"-Wüsten entstehen.
+    final groups = <(String, List<(String, String?)>)>[
+      (
+        'Persönlich',
+        [
+          ('Geburtstag', p.birthDate == null ? null : _formatDate(p.birthDate!)),
+          ('Nationalität', p.nationality),
+        ],
+      ),
+      (
+        'Anschrift',
+        [
+          ('Adresse', p.formattedAddress),
+          ('Adresszusatz', p.addressExtra),
+        ],
+      ),
+      (
+        'Privater Kontakt',
+        [
+          ('Telefon', p.privatePhone),
+          ('Mobil', p.privateMobile),
+          ('E-Mail', p.privateEmail),
+        ],
+      ),
+      (
+        'Beschäftigung',
+        [
+          ('Status', p.status.label),
+          ('Personalnummer', p.personnelNumber),
+          ('Personengruppe', p.personnelGroup?.label),
+          ('Eintritt', p.hireDate == null ? null : _formatDate(p.hireDate!)),
+          (
+            'Probezeit bis',
+            p.probationEnd == null ? null : _formatDate(p.probationEnd!)
+          ),
+          (
+            'Befristet bis',
+            p.limitedUntil == null ? null : _formatDate(p.limitedUntil!)
+          ),
+          ('Austritt', p.exitDate == null ? null : _formatDate(p.exitDate!)),
+        ],
+      ),
+      (
+        'Lohn & Sozialversicherung',
+        [
+          ('Familienstand', p.maritalStatus?.label),
+          ('Konfession', p.confession?.label),
+          ('Kinder', p.childrenCount > 0 ? '${p.childrenCount}' : null),
+          ('Steuer-ID', p.taxId),
+          ('SV-Nummer', p.socialSecurityNumber),
+          ('Krankenkasse', p.healthInsurance),
+          ('Versicherungsart', p.healthInsuranceType?.label),
+          (
+            'KV-Zusatzbeitrag',
+            p.healthInsuranceSurchargePercent == null
+                ? null
+                : _formatPercent(p.healthInsuranceSurchargePercent!)
+          ),
+        ],
+      ),
+      (
+        'Bankverbindung',
+        [
+          ('IBAN', p.iban),
+          ('BIC', p.bic),
+          ('Kontoinhaber', p.accountHolder),
+        ],
+      ),
+      (
+        'Urlaub & Notfall',
+        [
+          (
+            'Urlaubsanspruch',
+            p.annualVacationDays == null
+                ? null
+                : '${p.annualVacationDays} Tage/Jahr'
+          ),
+          ('Notfallkontakt', p.emergencyContactName),
+          ('Notfall-Telefon', p.emergencyContactPhone),
+        ],
+      ),
+    ];
+
+    bool hasValue(String? v) => v != null && v.trim().isNotEmpty;
+    final visibleGroups = [
+      for (final g in groups)
+        if (g.$2.any((row) => hasValue(row.$2))) g,
+    ];
+
+    Widget heading(String text) => Text(
+          text,
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.w700,
+          ),
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < visibleGroups.length; i++) ...[
+          if (i > 0) SizedBox(height: spacing.md),
+          heading(visibleGroups[i].$1),
+          SizedBox(height: spacing.xs),
+          for (final row in visibleGroups[i].$2)
+            if (hasValue(row.$2)) _InfoRow(label: row.$1, value: row.$2!),
+        ],
+        if (hasValue(p.note)) ...[
+          SizedBox(height: spacing.md),
+          heading('Notiz'),
+          SizedBox(height: spacing.xs),
+          Text(p.note!, style: theme.textTheme.bodyMedium),
+        ],
+      ],
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: context.spacing.xxs),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(value, style: theme.textTheme.bodyMedium),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Voll-Editor der Personal-Stammakte (admin-only). Baut bei jedem Speichern
+/// eine vollständige [EmployeeProfile] frisch aus dem Formular auf (Felder, die
+/// leer sind, werden zu null), und überschreibt die Akte (deterministische ID).
+class _EmployeeProfileEditorSheet extends StatefulWidget {
+  const _EmployeeProfileEditorSheet({required this.member, this.existing});
+
+  final AppUserProfile member;
+  final EmployeeProfile? existing;
+
+  @override
+  State<_EmployeeProfileEditorSheet> createState() =>
+      _EmployeeProfileEditorSheetState();
+}
+
+class _EmployeeProfileEditorSheetState
+    extends State<_EmployeeProfileEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+
+  late final TextEditingController _salutation;
+  late final TextEditingController _title;
+  late final TextEditingController _nationality;
+  late final TextEditingController _street;
+  late final TextEditingController _houseNumber;
+  late final TextEditingController _postalCode;
+  late final TextEditingController _city;
+  late final TextEditingController _addressExtra;
+  late final TextEditingController _privatePhone;
+  late final TextEditingController _privateMobile;
+  late final TextEditingController _privateEmail;
+  late final TextEditingController _personnelNumber;
+  late final TextEditingController _childrenCount;
+  late final TextEditingController _taxId;
+  late final TextEditingController _svNumber;
+  late final TextEditingController _healthInsurance;
+  late final TextEditingController _kvSurcharge;
+  late final TextEditingController _iban;
+  late final TextEditingController _bic;
+  late final TextEditingController _accountHolder;
+  late final TextEditingController _vacationDays;
+  late final TextEditingController _emergencyName;
+  late final TextEditingController _emergencyPhone;
+  late final TextEditingController _note;
+
+  List<TextEditingController> get _controllers => [
+        _salutation,
+        _title,
+        _nationality,
+        _street,
+        _houseNumber,
+        _postalCode,
+        _city,
+        _addressExtra,
+        _privatePhone,
+        _privateMobile,
+        _privateEmail,
+        _personnelNumber,
+        _childrenCount,
+        _taxId,
+        _svNumber,
+        _healthInsurance,
+        _kvSurcharge,
+        _iban,
+        _bic,
+        _accountHolder,
+        _vacationDays,
+        _emergencyName,
+        _emergencyPhone,
+        _note,
+      ];
+
+  late EmployeeStatus _status;
+  PersonnelGroup? _personnelGroup;
+  MaritalStatus? _maritalStatus;
+  Confession? _confession;
+  HealthInsuranceType? _healthInsuranceType;
+
+  DateTime? _birthDate;
+  DateTime? _hireDate;
+  DateTime? _exitDate;
+  DateTime? _probationEnd;
+  DateTime? _limitedUntil;
+
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _salutation = TextEditingController(text: e?.salutation ?? '');
+    _title = TextEditingController(text: e?.titleAcademic ?? '');
+    _nationality = TextEditingController(text: e?.nationality ?? '');
+    _street = TextEditingController(text: e?.street ?? '');
+    _houseNumber = TextEditingController(text: e?.houseNumber ?? '');
+    _postalCode = TextEditingController(text: e?.postalCode ?? '');
+    _city = TextEditingController(text: e?.city ?? '');
+    _addressExtra = TextEditingController(text: e?.addressExtra ?? '');
+    _privatePhone = TextEditingController(text: e?.privatePhone ?? '');
+    _privateMobile = TextEditingController(text: e?.privateMobile ?? '');
+    _privateEmail = TextEditingController(text: e?.privateEmail ?? '');
+    _personnelNumber = TextEditingController(text: e?.personnelNumber ?? '');
+    _childrenCount = TextEditingController(
+      text: (e?.childrenCount ?? 0) > 0 ? '${e!.childrenCount}' : '',
+    );
+    _taxId = TextEditingController(text: e?.taxId ?? '');
+    _svNumber = TextEditingController(text: e?.socialSecurityNumber ?? '');
+    _healthInsurance = TextEditingController(text: e?.healthInsurance ?? '');
+    _kvSurcharge = TextEditingController(
+      text: e?.healthInsuranceSurchargePercent == null
+          ? ''
+          : e!.healthInsuranceSurchargePercent!.toString().replaceAll('.', ','),
+    );
+    _iban = TextEditingController(text: e?.iban ?? '');
+    _bic = TextEditingController(text: e?.bic ?? '');
+    _accountHolder = TextEditingController(text: e?.accountHolder ?? '');
+    _vacationDays = TextEditingController(
+      text: e?.annualVacationDays == null ? '' : '${e!.annualVacationDays}',
+    );
+    _emergencyName = TextEditingController(text: e?.emergencyContactName ?? '');
+    _emergencyPhone =
+        TextEditingController(text: e?.emergencyContactPhone ?? '');
+    _note = TextEditingController(text: e?.note ?? '');
+
+    _status = e?.status ?? EmployeeStatus.aktiv;
+    _personnelGroup = e?.personnelGroup;
+    _maritalStatus = e?.maritalStatus;
+    _confession = e?.confession;
+    _healthInsuranceType = e?.healthInsuranceType;
+    _birthDate = e?.birthDate;
+    _hireDate = e?.hireDate;
+    _exitDate = e?.exitDate;
+    _probationEnd = e?.probationEnd;
+    _limitedUntil = e?.limitedUntil;
+  }
+
+  @override
+  void dispose() {
+    for (final c in _controllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final theme = Theme.of(context);
+    final hasExisting = widget.existing != null && !widget.existing!.isEmpty;
+
+    Widget gap() => SizedBox(height: spacing.sm);
+
+    Widget heading(String text) => Padding(
+          padding: EdgeInsets.only(top: spacing.md, bottom: spacing.xs),
+          child: Text(
+            text,
+            style: theme.textTheme.labelLarge
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+        );
+
+    Widget field(
+      TextEditingController controller,
+      String label, {
+      TextInputType? keyboardType,
+      int maxLines = 1,
+      String? hint,
+      List<TextInputFormatter>? inputFormatters,
+      String? Function(String?)? validator,
+    }) =>
+        Padding(
+          padding: EdgeInsets.only(bottom: spacing.sm),
+          child: AppFormField(
+            controller: controller,
+            label: label,
+            hint: hint,
+            keyboardType: keyboardType,
+            maxLines: maxLines,
+            inputFormatters: inputFormatters,
+            validator: validator,
+          ),
+        );
+
+    Widget dateField(
+      String label,
+      DateTime? value,
+      ValueChanged<DateTime?> onChanged, {
+      DateTime? firstDate,
+      DateTime? lastDate,
+    }) {
+      final now = DateTime.now();
+      return Padding(
+        padding: EdgeInsets.only(bottom: spacing.sm),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () async {
+            final picked = await showDatePicker(
+              context: context,
+              initialDate: value ?? DateTime(now.year, now.month),
+              firstDate: firstDate ?? DateTime(1940),
+              lastDate: lastDate ?? DateTime(now.year + 5),
+              locale: const Locale('de', 'DE'),
+            );
+            if (picked != null) onChanged(picked);
+          },
+          child: InputDecorator(
+            decoration: InputDecoration(
+              labelText: label,
+              suffixIcon: value == null
+                  ? const Icon(Icons.calendar_today_outlined, size: 18)
+                  : IconButton(
+                      tooltip: 'Löschen',
+                      icon: const Icon(Icons.clear, size: 18),
+                      onPressed: () => onChanged(null),
+                    ),
+            ),
+            child: Text(
+              value == null ? 'Nicht gesetzt' : _formatDate(value),
+              style: value == null
+                  ? theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)
+                  : theme.textTheme.bodyMedium,
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget enumDropdown<T>(
+      String label,
+      T? selected,
+      List<T> values,
+      String Function(T) labelOf,
+      ValueChanged<T?> onChanged,
+    ) =>
+        Padding(
+          padding: EdgeInsets.only(bottom: spacing.sm),
+          child: DropdownButtonFormField<T?>(
+            initialValue: selected,
+            decoration: InputDecoration(labelText: label),
+            items: [
+              DropdownMenuItem<T?>(value: null, child: const Text('—')),
+              for (final v in values)
+                DropdownMenuItem<T?>(value: v, child: Text(labelOf(v))),
+            ],
+            onChanged: onChanged,
+          ),
+        );
+
+    return AppBottomSheetScaffold(
+      title: hasExisting ? 'Stammdaten bearbeiten' : 'Stammdaten erfassen',
+      subtitle: widget.member.displayName,
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            heading('Persönlich'),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: field(_salutation, 'Anrede')),
+                SizedBox(width: spacing.sm),
+                Expanded(child: field(_title, 'Titel')),
+              ],
+            ),
+            dateField(
+              'Geburtstag',
+              _birthDate,
+              (d) => setState(() => _birthDate = d),
+              firstDate: DateTime(1930),
+              lastDate: DateTime.now(),
+            ),
+            field(_nationality, 'Nationalität'),
+
+            heading('Anschrift'),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(flex: 3, child: field(_street, 'Straße')),
+                SizedBox(width: spacing.sm),
+                Expanded(child: field(_houseNumber, 'Nr.')),
+              ],
+            ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: field(
+                    _postalCode,
+                    'PLZ',
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                SizedBox(width: spacing.sm),
+                Expanded(flex: 3, child: field(_city, 'Ort')),
+              ],
+            ),
+            field(_addressExtra, 'Adresszusatz'),
+
+            heading('Privater Kontakt'),
+            field(_privatePhone, 'Telefon',
+                keyboardType: TextInputType.phone),
+            field(_privateMobile, 'Mobil', keyboardType: TextInputType.phone),
+            field(_privateEmail, 'E-Mail',
+                keyboardType: TextInputType.emailAddress),
+
+            heading('Beschäftigung'),
+            Padding(
+              padding: EdgeInsets.only(bottom: spacing.sm),
+              child: DropdownButtonFormField<EmployeeStatus>(
+                initialValue: _status,
+                decoration: const InputDecoration(labelText: 'Status'),
+                items: [
+                  for (final s in EmployeeStatus.values)
+                    DropdownMenuItem(value: s, child: Text(s.label)),
+                ],
+                onChanged: (v) =>
+                    setState(() => _status = v ?? EmployeeStatus.aktiv),
+              ),
+            ),
+            field(_personnelNumber, 'Personalnummer'),
+            enumDropdown<PersonnelGroup>(
+              'Personengruppe',
+              _personnelGroup,
+              PersonnelGroup.values,
+              (v) => v.label,
+              (v) => setState(() => _personnelGroup = v),
+            ),
+            dateField(
+              'Eintrittsdatum',
+              _hireDate,
+              (d) => setState(() => _hireDate = d),
+              lastDate: DateTime(DateTime.now().year + 2),
+            ),
+            dateField(
+              'Probezeit bis',
+              _probationEnd,
+              (d) => setState(() => _probationEnd = d),
+              lastDate: DateTime(DateTime.now().year + 2),
+            ),
+            dateField(
+              'Befristet bis',
+              _limitedUntil,
+              (d) => setState(() => _limitedUntil = d),
+              lastDate: DateTime(DateTime.now().year + 10),
+            ),
+            dateField(
+              'Austrittsdatum',
+              _exitDate,
+              (d) => setState(() => _exitDate = d),
+              lastDate: DateTime(DateTime.now().year + 5),
+            ),
+
+            heading('Lohn & Sozialversicherung'),
+            enumDropdown<MaritalStatus>(
+              'Familienstand',
+              _maritalStatus,
+              MaritalStatus.values,
+              (v) => v.label,
+              (v) => setState(() => _maritalStatus = v),
+            ),
+            enumDropdown<Confession>(
+              'Konfession',
+              _confession,
+              Confession.values,
+              (v) => v.label,
+              (v) => setState(() => _confession = v),
+            ),
+            field(
+              _childrenCount,
+              'Anzahl Kinder',
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            ),
+            field(_taxId, 'Steuer-ID'),
+            field(_svNumber, 'Sozialversicherungsnummer'),
+            field(_healthInsurance, 'Krankenkasse'),
+            enumDropdown<HealthInsuranceType>(
+              'Versicherungsart',
+              _healthInsuranceType,
+              HealthInsuranceType.values,
+              (v) => v.label,
+              (v) => setState(() => _healthInsuranceType = v),
+            ),
+            field(
+              _kvSurcharge,
+              'KV-Zusatzbeitrag (%)',
+              hint: 'z. B. 1,7',
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+              ],
+              validator: (value) {
+                final text = (value ?? '').trim();
+                if (text.isEmpty) return null;
+                return _parsePercent(text) == null
+                    ? 'Ungültiger Prozentwert (z. B. 1,7)'
+                    : null;
+              },
+            ),
+
+            heading('Bankverbindung'),
+            field(_iban, 'IBAN'),
+            field(_bic, 'BIC'),
+            field(_accountHolder, 'Kontoinhaber'),
+
+            heading('Urlaub & Notfall'),
+            field(
+              _vacationDays,
+              'Urlaubsanspruch (Tage/Jahr)',
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            ),
+            field(_emergencyName, 'Notfallkontakt (Name)'),
+            field(_emergencyPhone, 'Notfall-Telefon',
+                keyboardType: TextInputType.phone),
+
+            heading('Notiz'),
+            field(_note, 'Interne Notiz', maxLines: 4),
+
+            SizedBox(height: spacing.md),
+            Row(
+              children: [
+                if (hasExisting)
+                  TextButton.icon(
+                    onPressed: _saving ? null : _delete,
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Löschen'),
+                  ),
+                const Spacer(),
+                FilledButton(
+                  onPressed: _saving ? null : _save,
+                  child: _saving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Speichern'),
+                ),
+              ],
+            ),
+            gap(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String? _trimmed(TextEditingController controller) {
+    final text = controller.text.trim();
+    return text.isEmpty ? null : text;
+  }
+
+  double? _parsePercent(String raw) {
+    final cleaned =
+        raw.trim().replaceAll('%', '').replaceAll(',', '.').trim();
+    if (cleaned.isEmpty) return null;
+    return double.tryParse(cleaned);
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final existing = widget.existing;
+    final profile = EmployeeProfile(
+      id: existing?.id,
+      orgId: existing?.orgId ?? '',
+      userId: widget.member.uid,
+      salutation: _trimmed(_salutation),
+      titleAcademic: _trimmed(_title),
+      birthDate: _birthDate,
+      nationality: _trimmed(_nationality),
+      street: _trimmed(_street),
+      houseNumber: _trimmed(_houseNumber),
+      postalCode: _trimmed(_postalCode),
+      city: _trimmed(_city),
+      addressExtra: _trimmed(_addressExtra),
+      privatePhone: _trimmed(_privatePhone),
+      privateMobile: _trimmed(_privateMobile),
+      privateEmail: _trimmed(_privateEmail),
+      personnelNumber: _trimmed(_personnelNumber),
+      status: _status,
+      personnelGroup: _personnelGroup,
+      hireDate: _hireDate,
+      exitDate: _exitDate,
+      probationEnd: _probationEnd,
+      limitedUntil: _limitedUntil,
+      maritalStatus: _maritalStatus,
+      confession: _confession,
+      childrenCount: int.tryParse(_childrenCount.text.trim()) ?? 0,
+      taxId: _trimmed(_taxId),
+      socialSecurityNumber: _trimmed(_svNumber),
+      healthInsurance: _trimmed(_healthInsurance),
+      healthInsuranceType: _healthInsuranceType,
+      healthInsuranceSurchargePercent: _parsePercent(_kvSurcharge.text),
+      iban: _trimmed(_iban),
+      bic: _trimmed(_bic),
+      accountHolder: _trimmed(_accountHolder),
+      annualVacationDays: int.tryParse(_vacationDays.text.trim()),
+      emergencyContactName: _trimmed(_emergencyName),
+      emergencyContactPhone: _trimmed(_emergencyPhone),
+      note: _trimmed(_note),
+      createdByUid: existing?.createdByUid,
+      createdAt: existing?.createdAt,
+    );
+    try {
+      await personal.saveEmployeeProfile(profile);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saving = false);
+        _showError(context, error);
+      }
+    }
+  }
+
+  Future<void> _delete() async {
+    setState(() => _saving = true);
+    try {
+      await context
+          .read<PersonalProvider>()
+          .deleteEmployeeProfile(widget.member.uid);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saving = false);
+        _showError(context, error);
+      }
+    }
   }
 }
 

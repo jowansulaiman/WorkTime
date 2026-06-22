@@ -178,7 +178,7 @@ class ComplianceService {
         .toList();
     final plannedDayMinutes = shiftsSameDay.fold<int>(
       durationMinutes,
-      (sum, candidate) => sum + candidate.workedHours.round() * 60,
+      (sum, candidate) => sum + _shiftWorkedMinutes(candidate),
     );
     final maxDailyMinutes = _maxDailyMinutes(contract, ruleSet);
     if (workRuleSettings.enforceMaxDailyMinutes &&
@@ -226,7 +226,7 @@ class ComplianceService {
               candidate.startTime.year == shift.startTime.year &&
               candidate.startTime.month == shift.startTime.month)
           .fold<int>(durationMinutes,
-              (sum, candidate) => sum + candidate.workedHours.round() * 60);
+              (sum, candidate) => sum + _shiftWorkedMinutes(candidate));
       final projectedCents = ((monthlyMinutes / 60) * contract.hourlyRate * 100).round();
       final monthlyLimit =
           contract.monthlyIncomeLimitCents ?? ruleSet.minijobMonthlyLimitCents;
@@ -346,7 +346,7 @@ class ComplianceService {
       );
     }
 
-    return violations;
+    return _dedupeViolations(violations);
   }
 
   List<ComplianceViolation> validateWorkEntry({
@@ -447,7 +447,7 @@ class ComplianceService {
     final sameDayMinutes = sameUserEntries
         .where((candidate) => _isSameDay(candidate.startTime, entry.startTime))
         .fold<int>(workedMinutes,
-            (sum, candidate) => sum + candidate.workedHours.round() * 60);
+            (sum, candidate) => sum + _entryWorkedMinutes(candidate));
     final maxDailyMinutes = _maxDailyMinutes(contract, ruleSet);
     if (workRuleSettings.enforceMaxDailyMinutes &&
         sameDayMinutes > maxDailyMinutes) {
@@ -516,7 +516,7 @@ class ComplianceService {
               candidate.startTime.month == entry.startTime.month)
           .fold<int>(
             workedMinutes,
-            (sum, candidate) => sum + candidate.workedHours.round() * 60,
+            (sum, candidate) => sum + _entryWorkedMinutes(candidate),
           );
       final projectedCents = ((monthlyMinutes / 60) * contract.hourlyRate * 100).round();
       final monthlyLimit =
@@ -593,7 +593,7 @@ class ComplianceService {
       }
     }
 
-    return violations;
+    return _dedupeViolations(violations);
   }
 
   EmploymentContract? _activeContract({
@@ -977,6 +977,39 @@ class ComplianceService {
     return left.year == right.year &&
         left.month == right.month &&
         left.day == right.day;
+  }
+
+  /// Minutengenaue Netto-Arbeitszeit einer Schicht — spiegelt
+  /// `workedMinutesFromShift` in functions/index.js. Vorher wurde über
+  /// `workedHours.round() * 60` auf volle Stunden gerundet (7,5h→480 statt 450),
+  /// was Client- und Server-Grenzwertentscheidungen auseinanderlaufen ließ.
+  int _shiftWorkedMinutes(Shift shift) =>
+      shift.endTime.difference(shift.startTime).inMinutes -
+      shift.breakMinutes.round();
+
+  /// Minutengenaue Netto-Arbeitszeit eines Zeiteintrags — Pendant zu
+  /// [_shiftWorkedMinutes] für den Work-Entry-Pfad.
+  int _entryWorkedMinutes(WorkEntry entry) =>
+      entry.endTime.difference(entry.startTime).inMinutes -
+      entry.breakMinutes.round();
+
+  /// Entfernt doppelte Verletzungen (gleiche code+severity+message) und
+  /// spiegelt damit `dedupeViolations` in functions/index.js. Mehrfach
+  /// auslösbare Regeln (z.B. rest_time gegen vorigen UND nächsten Eintrag)
+  /// erscheinen sonst doppelt in der Client-Vorschau, aber einfach in der
+  /// Server-Antwort.
+  List<ComplianceViolation> _dedupeViolations(
+    List<ComplianceViolation> violations,
+  ) {
+    final seen = <String>{};
+    final result = <ComplianceViolation>[];
+    for (final violation in violations) {
+      final key = '${violation.code}|${violation.severity}|${violation.message}';
+      if (seen.add(key)) {
+        result.add(violation);
+      }
+    }
+    return result;
   }
 
   bool _shouldEnforceRestGap({

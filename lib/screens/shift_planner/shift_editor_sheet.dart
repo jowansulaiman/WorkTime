@@ -793,7 +793,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
             const SizedBox(height: 12),
             _DateTile(
               label: 'Datum',
-              value: DateFormat('dd.MM.yyyy').format(_date),
+              value: DateFormat('dd.MM.yyyy', 'de_DE').format(_date),
               icon: Icons.calendar_today,
               onTap: _pickDate,
             ),
@@ -1123,7 +1123,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                 label: 'Wiederholen bis',
                 value: _recurrenceEndDate == null
                     ? 'Enddatum waehlen'
-                    : DateFormat('dd.MM.yyyy').format(_recurrenceEndDate!),
+                    : DateFormat('dd.MM.yyyy', 'de_DE').format(_recurrenceEndDate!),
                 icon: Icons.event_repeat,
                 onTap: _pickRecurrenceEndDate,
               ),
@@ -1449,10 +1449,12 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
 
     final startMinutes = _toMinutes(_startTime);
     final endMinutes = _toMinutes(_endTime);
-    if (endMinutes <= startMinutes) {
+    // endMinutes < startMinutes ist erlaubt (Übernacht-Vorlage, wird beim
+    // Anwenden auf den Folgetag gerollt). Nur identische Zeiten sind ungültig.
+    if (endMinutes == startMinutes) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Endzeit muss nach Startzeit liegen.'),
+          content: const Text('Start- und Endzeit dürfen nicht identisch sein.'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1739,7 +1741,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       }
 
       final additionalStart = _dateTimeFor(draft.startTime);
-      final additionalEnd = _dateTimeFor(draft.endTime);
+      final additionalEnd = _endDateTimeFor(draft.startTime, draft.endTime);
       if (!additionalEnd.isAfter(additionalStart)) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1802,13 +1804,8 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         _startTime.minute,
       );
 
-  DateTime get _selectedEndDateTime => DateTime(
-        _date.year,
-        _date.month,
-        _date.day,
-        _endTime.hour,
-        _endTime.minute,
-      );
+  DateTime get _selectedEndDateTime =>
+      _endDateTimeFor(_startTime, _endTime);
 
   DateTime _dateTimeFor(TimeOfDay time) => DateTime(
         _date.year,
@@ -1817,6 +1814,19 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         time.hour,
         time.minute,
       );
+
+  /// Bildet den End-Zeitpunkt zur Start-/Endzeit. Liegt die Endzeit zeitlich
+  /// VOR der Startzeit, wird sie als Folgetag interpretiert (Übernacht-Schicht,
+  /// z.B. 22:00–06:00). Gleiche Start-/Endzeit bleibt unverändert (= 0 Minuten),
+  /// damit die nachgelagerte „Endzeit muss nach Startzeit liegen"-Prüfung greift.
+  DateTime _endDateTimeFor(TimeOfDay start, TimeOfDay end) {
+    final base = _dateTimeFor(end);
+    final startMinutes = _toMinutes(start);
+    final endMinutes = _toMinutes(end);
+    return endMinutes < startMinutes
+        ? base.add(const Duration(days: 1))
+        : base;
+  }
 
   void _addAdditionalAssignment() {
     _setDirty(() {

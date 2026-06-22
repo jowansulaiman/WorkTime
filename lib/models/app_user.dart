@@ -341,6 +341,12 @@ class AppUserProfile {
   /// Schichtleiter — analog zur Warenwirtschaft.
   bool get canManageContacts => isActive && (isAdmin || canManageShifts);
 
+  /// Kundenfeedback (Beschwerden/Vorschlaege/Lob von der oeffentlichen
+  /// /feedback-Seite) ansehen und bearbeiten duerfen NUR Manager (Admins und
+  /// Schichtleiter) — Beschwerden koennen sensibel sein. Spiegelt
+  /// canManageFeedback() in firestore.rules.
+  bool get canManageFeedback => isActive && (isAdmin || canManageShifts);
+
   bool canReviewAbsenceRequestFor(AppUserProfile requester) {
     if (!canManageShifts || !isActive) {
       return false;

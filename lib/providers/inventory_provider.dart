@@ -7,7 +7,9 @@ import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/customer_order.dart';
+import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
@@ -16,6 +18,7 @@ import '../models/supplier.dart';
 import '../repositories/inventory_repository.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
+import 'audit_sink.dart';
 
 /// Verwaltet die Warenwirtschaft: Lieferanten, Artikel, Bestellungen und
 /// Bestandsbewegungen einer Organisation.
@@ -56,6 +59,8 @@ class InventoryProvider extends ChangeNotifier {
   StreamSubscription<List<PurchaseOrder>>? _ordersSubscription;
   StreamSubscription<List<StockMovement>>? _movementsSubscription;
   StreamSubscription<List<CustomerOrder>>? _customerOrdersSubscription;
+  StreamSubscription<List<SiteOrderList>>? _orderCartsSubscription;
+  StreamSubscription<List<SiteOrderList>>? _weeklyListsSubscription;
 
   AppUserProfile? _currentUser;
   List<Supplier> _suppliers = [];
@@ -64,11 +69,20 @@ class InventoryProvider extends ChangeNotifier {
   List<StockMovement> _movements = [];
   List<PriceHistoryEntry> _priceHistory = [];
   List<CustomerOrder> _customerOrders = [];
+  List<SiteOrderList> _orderCarts = [];
+  List<SiteOrderList> _weeklyLists = [];
   bool _loading = false;
   String? _errorMessage;
   bool _disposed = false;
   bool _seededLocalDemo = false;
   int _localSeq = 0;
+
+  AuditSink? _audit;
+
+  /// Senke fuers Aenderungsprotokoll (best-effort). Wird in main.dart verdrahtet.
+  void setAuditSink(AuditSink sink) {
+    _audit = sink;
+  }
 
   List<Supplier> get suppliers => _suppliers;
   List<Product> get products => _products;
@@ -83,6 +97,8 @@ class InventoryProvider extends ChangeNotifier {
   /// cloud/hybrid via watchPriceHistory lesen.
   List<PriceHistoryEntry> get priceHistory => _priceHistory;
   List<CustomerOrder> get customerOrders => _customerOrders;
+  List<SiteOrderList> get orderCarts => _orderCarts;
+  List<SiteOrderList> get weeklyOrderLists => _weeklyLists;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
@@ -275,9 +291,6 @@ class InventoryProvider extends ChangeNotifier {
     return list;
   }
 
-  /// Anzahl der bald fälligen, nicht vorbereiteten Kundenbestellungen.
-  int dueSoonNotPreparedCount({int withinDays = 2, String? siteId}) =>
-      ordersDueSoonNotPrepared(withinDays: withinDays, siteId: siteId).length;
 
   Supplier? supplierById(String? id) {
     if (id == null || id.isEmpty) {
@@ -291,6 +304,49 @@ class InventoryProvider extends ChangeNotifier {
     return null;
   }
 
+  Product? productById(String? id) {
+    if (id == null || id.isEmpty) {
+      return null;
+    }
+    for (final product in _products) {
+      if (product.id == id) {
+        return product;
+      }
+    }
+    return null;
+  }
+
+  // --- Bestelllisten: Wochen-Bestellkorb + Standard-Wochenliste ----------
+
+  /// Der geteilte Bestellkorb eines Ladens (oder `null`, wenn leer/ungesetzt).
+  SiteOrderList? orderCartForSite(String? siteId) =>
+      _listForSite(_orderCarts, siteId);
+
+  /// Die Standard-Wochenliste eines Ladens (oder `null`).
+  SiteOrderList? weeklyListForSite(String? siteId) =>
+      _listForSite(_weeklyLists, siteId);
+
+  SiteOrderList? _listForSite(List<SiteOrderList> lists, String? siteId) {
+    if (siteId == null || siteId.isEmpty) {
+      // Einzel-Laden-Fallback: genau eine Liste vorhanden -> diese.
+      return lists.length == 1 ? lists.first : null;
+    }
+    for (final list in lists) {
+      if (list.siteId == siteId) {
+        return list;
+      }
+    }
+    return null;
+  }
+
+  /// Anzahl der Positionen im Bestellkorb (über alle Läden, wenn [siteId] null).
+  int cartItemCount([String? siteId]) {
+    if (siteId == null || siteId.isEmpty) {
+      return _orderCarts.fold(0, (sum, cart) => sum + cart.itemCount);
+    }
+    return orderCartForSite(siteId)?.itemCount ?? 0;
+  }
+
   Set<String> get categories {
     final result = <String>{};
     for (final product in _products) {
@@ -302,46 +358,6 @@ class InventoryProvider extends ChangeNotifier {
     return result;
   }
 
-  /// Erstellt Bestellpositionen aus den nachzubestellenden Artikeln eines
-  /// Lieferanten (fuer einen Laden) – Grundlage fuer einen Bestellvorschlag.
-  List<PurchaseOrderItem> buildReorderItems({
-    required String siteId,
-    required String supplierId,
-  }) {
-    // Mindestbestellmenge des Lieferanten (falls gepflegt) -> Vorschlag darauf
-    // anheben, damit die Bestellung die Vorgabe des Lieferanten erfüllt.
-    var minOrder = 0;
-    for (final supplier in _suppliers) {
-      if (supplier.id == supplierId) {
-        minOrder = supplier.minOrderQuantity ?? 0;
-        break;
-      }
-    }
-    return _products
-        .where((product) =>
-            product.isActive &&
-            product.siteId == siteId &&
-            product.supplierId == supplierId &&
-            product.needsReorder)
-        .map(
-          (product) {
-            var quantity = product.suggestedReorderQuantity;
-            if (minOrder > quantity) {
-              quantity = minOrder;
-            }
-            return PurchaseOrderItem(
-              productId: product.id,
-              name: product.name,
-              sku: product.sku,
-              unit: product.unit,
-              quantityOrdered: quantity,
-              unitPriceCents: product.purchasePriceCents,
-            );
-          },
-        )
-        .toList(growable: false);
-  }
-
   void _safeNotify() {
     if (!_disposed) {
       notifyListeners();
@@ -350,6 +366,9 @@ class InventoryProvider extends ChangeNotifier {
 
   void _setError(Object error) {
     _errorMessage = error is StateError ? error.message : error.toString();
+    // Bei einem Stream-/Lade-Fehler den Ladezustand zuruecksetzen — sonst
+    // zeigt der Bereich Fehlermeldung UND Dauer-Spinner (probleme #10).
+    _loading = false;
     _safeNotify();
   }
 
@@ -422,6 +441,9 @@ class InventoryProvider extends ChangeNotifier {
     _priceHistory = await DatabaseService.loadLocalPriceHistory(scope: scope);
     _customerOrders =
         await DatabaseService.loadLocalCustomerOrders(scope: scope);
+    _orderCarts = await DatabaseService.loadLocalOrderCarts(scope: scope);
+    _weeklyLists =
+        await DatabaseService.loadLocalWeeklyOrderLists(scope: scope);
   }
 
   Future<void> _persistSuppliers() =>
@@ -437,6 +459,11 @@ class InventoryProvider extends ChangeNotifier {
   Future<void> _persistCustomerOrders() =>
       DatabaseService.saveLocalCustomerOrders(_customerOrders,
           scope: _localScope);
+  Future<void> _persistOrderCarts() =>
+      DatabaseService.saveLocalOrderCarts(_orderCarts, scope: _localScope);
+  Future<void> _persistWeeklyLists() =>
+      DatabaseService.saveLocalWeeklyOrderLists(_weeklyLists,
+          scope: _localScope);
 
   Future<void> _persistAllLocal() async {
     await _persistSuppliers();
@@ -445,6 +472,8 @@ class InventoryProvider extends ChangeNotifier {
     await _persistMovements();
     await _persistPriceHistory();
     await _persistCustomerOrders();
+    await _persistOrderCarts();
+    await _persistWeeklyLists();
   }
 
   /// Befuellt den lokalen Modus einmalig mit Demo-Daten, damit die
@@ -488,6 +517,8 @@ class InventoryProvider extends ChangeNotifier {
     _movements = [];
     _priceHistory = [];
     _customerOrders = [];
+    _orderCarts = [];
+    _weeklyLists = [];
     _loading = false;
   }
 
@@ -525,6 +556,18 @@ class InventoryProvider extends ChangeNotifier {
       _customerOrders = items;
       _safeNotify();
     }, onError: _setError);
+
+    _orderCartsSubscription =
+        _inventory.watchOrderCarts(orgId).listen((items) {
+      _orderCarts = items;
+      _safeNotify();
+    }, onError: _setError);
+
+    _weeklyListsSubscription =
+        _inventory.watchWeeklyOrderLists(orgId).listen((items) {
+      _weeklyLists = items;
+      _safeNotify();
+    }, onError: _setError);
   }
 
   Future<void> _cancelSubscriptions() async {
@@ -533,11 +576,15 @@ class InventoryProvider extends ChangeNotifier {
     await _ordersSubscription?.cancel();
     await _movementsSubscription?.cancel();
     await _customerOrdersSubscription?.cancel();
+    await _orderCartsSubscription?.cancel();
+    await _weeklyListsSubscription?.cancel();
     _suppliersSubscription = null;
     _productsSubscription = null;
     _ordersSubscription = null;
     _movementsSubscription = null;
     _customerOrdersSubscription = null;
+    _orderCartsSubscription = null;
+    _weeklyListsSubscription = null;
   }
 
   String _nextLocalId(String prefix) {
@@ -556,24 +603,41 @@ class InventoryProvider extends ChangeNotifier {
       orgId: orgId,
       createdByUid: supplier.createdByUid ?? _currentUser?.uid,
     );
+    // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
     if (_usesFirestore &&
         await _tryFirestore(
           'saveSupplier',
           () => _inventory.saveSupplier(prepared),
         )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Lieferant',
+        entityId: prepared.id,
+        summary:
+            'Lieferant „${prepared.name}" ${isNew ? 'angelegt' : 'aktualisiert'}',
+      );
       return;
     }
+    final stored = prepared.id == null
+        ? prepared.copyWith(id: _nextLocalId('supplier'))
+        : prepared;
     _upsertLocal(
       _suppliers,
-      prepared.id == null
-          ? prepared.copyWith(id: _nextLocalId('supplier'))
-          : prepared,
+      stored,
       (item) => item.id,
     );
     _suppliers.sort((a, b) =>
         a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     await _persistSuppliers();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Lieferant',
+      entityId: stored.id,
+      summary:
+          'Lieferant „${stored.name}" ${isNew ? 'angelegt' : 'aktualisiert'}',
+    );
   }
 
   Future<void> deleteSupplier(String supplierId) async {
@@ -581,6 +645,10 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
+    // Name VOR der Loeschung fuer eine lesbare Zusammenfassung nachschlagen.
+    final name = supplierById(supplierId)?.name;
+    final summary =
+        name == null ? 'Lieferant gelöscht' : 'Lieferant „$name" gelöscht';
     if (_usesFirestore &&
         await _tryFirestore(
           'deleteSupplier',
@@ -589,6 +657,12 @@ class InventoryProvider extends ChangeNotifier {
             supplierId: supplierId,
           ),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Lieferant',
+        entityId: supplierId,
+        summary: summary,
+      );
       return;
     }
     _suppliers = _suppliers
@@ -596,6 +670,12 @@ class InventoryProvider extends ChangeNotifier {
         .toList(growable: false);
     await _persistSuppliers();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Lieferant',
+      entityId: supplierId,
+      summary: summary,
+    );
   }
 
   // --- Artikel ------------------------------------------------------------
@@ -609,24 +689,41 @@ class InventoryProvider extends ChangeNotifier {
       orgId: orgId,
       createdByUid: product.createdByUid ?? _currentUser?.uid,
     );
+    // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
     if (_usesFirestore &&
         await _tryFirestore(
           'saveProduct',
           () => _inventory.saveProduct(prepared),
         )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Produkt',
+        entityId: prepared.id,
+        summary:
+            'Produkt „${prepared.name}" ${isNew ? 'angelegt' : 'aktualisiert'}',
+      );
       return;
     }
+    final stored = prepared.id == null
+        ? prepared.copyWith(id: _nextLocalId('product'))
+        : prepared;
     _upsertLocal(
       _products,
-      prepared.id == null
-          ? prepared.copyWith(id: _nextLocalId('product'))
-          : prepared,
+      stored,
       (item) => item.id,
     );
     _products
         .sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     await _persistProducts();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Produkt',
+      entityId: stored.id,
+      summary:
+          'Produkt „${stored.name}" ${isNew ? 'angelegt' : 'aktualisiert'}',
+    );
   }
 
   /// Aktualisiert EK-/VK-Preis eines Artikels und protokolliert jede tatsaechliche
@@ -747,6 +844,10 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       return;
     }
+    // Name VOR der Loeschung fuer eine lesbare Zusammenfassung nachschlagen.
+    final name = productById(productId)?.name;
+    final summary =
+        name == null ? 'Produkt gelöscht' : 'Produkt „$name" gelöscht';
     if (_usesFirestore &&
         await _tryFirestore(
           'deleteProduct',
@@ -755,6 +856,12 @@ class InventoryProvider extends ChangeNotifier {
             productId: productId,
           ),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Produkt',
+        entityId: productId,
+        summary: summary,
+      );
       return;
     }
     _products = _products
@@ -762,6 +869,12 @@ class InventoryProvider extends ChangeNotifier {
         .toList(growable: false);
     await _persistProducts();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Produkt',
+      entityId: productId,
+      summary: summary,
+    );
   }
 
   /// Bucht eine Bestandsaenderung (Korrektur/Abgang). [delta] positiv = Zugang.
@@ -784,6 +897,11 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null || delta == 0) {
       return;
     }
+    // Lesbare Zusammenfassung: Artikelname (falls bekannt) + vorzeichenbehaftetes
+    // Delta.
+    final productName = productById(productId)?.name ?? productId;
+    final signedDelta = delta > 0 ? '+$delta' : '$delta';
+    final summary = 'Bestand „$productName" angepasst ($signedDelta)';
     // Stabile ID pro Buchung -> ein Retry bzw. Doppel-Scan bucht den Bestand
     // nicht doppelt (no-idempotency-on-stock-mutations).
     final mutationId = clientMutationId ?? _uuid.v4();
@@ -800,6 +918,12 @@ class InventoryProvider extends ChangeNotifier {
             clientMutationId: mutationId,
           ),
         )) {
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Bestand',
+        entityId: productId,
+        summary: summary,
+      );
       return;
     }
     _applyLocalStockChange(
@@ -811,6 +935,12 @@ class InventoryProvider extends ChangeNotifier {
     await _persistProducts();
     await _persistMovements();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Bestand',
+      entityId: productId,
+      summary: summary,
+    );
   }
 
   /// Setzt den Bestand per Inventur auf [countedStock] und bucht die Differenz.
@@ -956,9 +1086,23 @@ class InventoryProvider extends ChangeNotifier {
       orgId: orgId,
       createdByUid: order.createdByUid ?? _currentUser?.uid,
     );
+    // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
+    final supplierName =
+        supplierById(prepared.supplierId)?.name ?? prepared.supplierName;
+    final summary = supplierName == null || supplierName.isEmpty
+        ? 'Bestellung gespeichert'
+        : 'Bestellung gespeichert (Lieferant „$supplierName")';
     if (_usesFirestore) {
       try {
-        return await _inventory.savePurchaseOrder(prepared);
+        final newId = await _inventory.savePurchaseOrder(prepared);
+        _audit?.call(
+          action: isNew ? AuditAction.created : AuditAction.updated,
+          entityType: 'Bestellung',
+          entityId: newId,
+          summary: summary,
+        );
+        return newId;
       } catch (error) {
         if (!usesHybridStorage) {
           rethrow;
@@ -980,6 +1124,12 @@ class InventoryProvider extends ChangeNotifier {
     _orders.sort((a, b) => (b.orderNumber ?? '').compareTo(a.orderNumber ?? ''));
     await _persistOrders();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Bestellung',
+      entityId: withId.id,
+      summary: summary,
+    );
     return withId.id!;
   }
 
@@ -1019,12 +1169,24 @@ class InventoryProvider extends ChangeNotifier {
             orderId: orderId,
           ),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Bestellung',
+        entityId: orderId,
+        summary: 'Bestellung gelöscht',
+      );
       return;
     }
     _orders =
         _orders.where((order) => order.id != orderId).toList(growable: false);
     await _persistOrders();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Bestellung',
+      entityId: orderId,
+      summary: 'Bestellung gelöscht',
+    );
   }
 
   /// Bucht den Wareneingang fuer eine Bestellung.
@@ -1038,6 +1200,9 @@ class InventoryProvider extends ChangeNotifier {
       return;
     }
     final mutationId = _uuid.v4();
+    final receivedTotal =
+        receivedByItemIndex.values.fold<int>(0, (sum, qty) => sum + qty);
+    final auditSummary = 'Wareneingang gebucht ($receivedTotal Einheiten)';
     if (_usesFirestore &&
         await _tryFirestore(
           'receiveOrder',
@@ -1049,12 +1214,24 @@ class InventoryProvider extends ChangeNotifier {
             clientMutationId: mutationId,
           ),
         )) {
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Wareneingang',
+        entityId: orderId,
+        summary: auditSummary,
+      );
       return;
     }
     _applyLocalReceipt(orderId, receivedByItemIndex);
     await _persistOrders();
     await _persistProducts();
     await _persistMovements();
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Wareneingang',
+      entityId: orderId,
+      summary: auditSummary,
+    );
     _safeNotify();
   }
 
@@ -1070,9 +1247,22 @@ class InventoryProvider extends ChangeNotifier {
       orgId: orgId,
       createdByUid: order.createdByUid ?? _currentUser?.uid,
     );
+    // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
+    final customer = prepared.customerName.trim();
+    final summary = customer.isEmpty
+        ? 'Kundenbestellung gespeichert'
+        : 'Kundenbestellung gespeichert (Kunde „$customer")';
     if (_usesFirestore) {
       try {
-        return await _inventory.saveCustomerOrder(prepared);
+        final newId = await _inventory.saveCustomerOrder(prepared);
+        _audit?.call(
+          action: isNew ? AuditAction.created : AuditAction.updated,
+          entityType: 'Kundenbestellung',
+          entityId: newId,
+          summary: summary,
+        );
+        return newId;
       } catch (error) {
         if (!usesHybridStorage) {
           rethrow;
@@ -1093,6 +1283,12 @@ class InventoryProvider extends ChangeNotifier {
     _upsertLocal(_customerOrders, withId, (item) => item.id);
     await _persistCustomerOrders();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Kundenbestellung',
+      entityId: withId.id,
+      summary: summary,
+    );
     return withId.id!;
   }
 
@@ -1109,6 +1305,12 @@ class InventoryProvider extends ChangeNotifier {
             orderId: orderId,
           ),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Kundenbestellung',
+        entityId: orderId,
+        summary: 'Kundenbestellung gelöscht',
+      );
       return;
     }
     _customerOrders = _customerOrders
@@ -1116,6 +1318,12 @@ class InventoryProvider extends ChangeNotifier {
         .toList(growable: false);
     await _persistCustomerOrders();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Kundenbestellung',
+      entityId: orderId,
+      summary: 'Kundenbestellung gelöscht',
+    );
   }
 
   /// Markiert eine Kundenbestellung als vorbereitet ([prepared] = true) bzw.
@@ -1157,6 +1365,9 @@ class InventoryProvider extends ChangeNotifier {
           siteName: order.siteName,
           customerName: order.customerName,
           customerContact: order.customerContact,
+          // Kontaktverknuepfung zur Kundenkartei mit uebernehmen, sonst geht
+          // sie bei jeder Wiederholung verloren (probleme #41).
+          contactId: order.contactId,
           status: CustomerOrderStatus.open,
           recurrence: order.recurrence,
           items: order.items,
@@ -1176,6 +1387,329 @@ class InventoryProvider extends ChangeNotifier {
     await saveCustomerOrder(
       order.copyWith(status: CustomerOrderStatus.cancelled),
     );
+  }
+
+  // --- Bestelllisten: Mutationen -----------------------------------------
+
+  /// Legt [product] mit [quantity] in den Bestellkorb des zugehörigen Ladens.
+  /// Existiert die Position schon, wird die Menge **erhöht** (kollaboratives
+  /// Sammeln über die Woche). Denormalisiert Name/Einheit/Kategorie/Lieferant
+  /// aus dem Artikel. Offen für **jeden aktiven Mitarbeiter** (nicht nur
+  /// Manager) – der entsprechende Firestore-Schreibpfad ist dafür freigegeben.
+  Future<void> addToCart({
+    required Product product,
+    int quantity = 1,
+    String? note,
+  }) async {
+    if (quantity <= 0 || product.id == null) {
+      return;
+    }
+    final cart = orderCartForSite(product.siteId) ??
+        SiteOrderList(
+          orgId: _orgId ?? product.orgId,
+          siteId: product.siteId,
+          siteName: product.siteName,
+          kind: OrderListKind.cart,
+        );
+    final items = [...cart.items];
+    final index =
+        items.indexWhere((item) => item.productId == product.id);
+    if (index >= 0) {
+      final existing = items[index];
+      items[index] = existing.copyWith(
+        name: product.name,
+        unit: product.unit,
+        category: product.category,
+        clearCategory: product.category == null,
+        supplierId: product.supplierId,
+        supplierName: product.supplierName,
+        clearSupplier: product.supplierId == null,
+        quantity: existing.quantity + quantity,
+        addedByUid: _currentUser?.uid,
+        note: note,
+      );
+    } else {
+      items.add(
+        OrderListItem(
+          productId: product.id,
+          name: product.name,
+          sku: product.sku,
+          category: product.category,
+          unit: product.unit,
+          quantity: quantity,
+          supplierId: product.supplierId,
+          supplierName: product.supplierName,
+          addedByUid: _currentUser?.uid,
+          note: note,
+        ),
+      );
+    }
+    await _persistOrderList(
+      cart.copyWith(
+        siteName: product.siteName ?? cart.siteName,
+        items: items,
+        kind: OrderListKind.cart,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Setzt die Menge einer Korb-Position. [quantity] <= 0 entfernt sie.
+  Future<void> setCartItemQuantity({
+    required String siteId,
+    required String productId,
+    required int quantity,
+  }) async {
+    final cart = orderCartForSite(siteId);
+    if (cart == null) {
+      return;
+    }
+    final items = <OrderListItem>[];
+    for (final item in cart.items) {
+      if (item.productId == productId) {
+        if (quantity > 0) {
+          items.add(item.copyWith(quantity: quantity));
+        }
+        // quantity <= 0 -> Position weglassen (entfernen)
+      } else {
+        items.add(item);
+      }
+    }
+    await _persistOrderList(
+      cart.copyWith(
+        items: items,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> removeCartItem({
+    required String siteId,
+    required String productId,
+  }) =>
+      setCartItemQuantity(siteId: siteId, productId: productId, quantity: 0);
+
+  /// Leert den Bestellkorb eines Ladens (z.B. nach dem Checkout). Speichert eine
+  /// leere Liste (Update-Pfad – funktioniert auch für Mitarbeiter ohne
+  /// Lösch-Recht).
+  Future<void> clearCart(String siteId) async {
+    final cart = orderCartForSite(siteId);
+    if (cart == null || cart.items.isEmpty) {
+      return;
+    }
+    await _persistOrderList(
+      cart.copyWith(
+        items: const [],
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Füllt den Korb mit den Positionen der Standard-Wochenliste vor. Vorhandene
+  /// Korb-Positionen (auch abweichende Mengen) bleiben **unangetastet**; nur
+  /// fehlende Artikel werden ergänzt. Gibt die Zahl der ergänzten Positionen
+  /// zurück (0, wenn keine Wochenliste existiert oder alles schon im Korb ist).
+  Future<int> prefillCartFromWeeklyList(String siteId) async {
+    final weekly = weeklyListForSite(siteId);
+    if (weekly == null || weekly.items.isEmpty) {
+      return 0;
+    }
+    final cart = orderCartForSite(siteId);
+    final items = [...(cart?.items ?? const <OrderListItem>[])];
+    var added = 0;
+    for (final templateItem in weekly.items) {
+      final alreadyInCart = templateItem.productId != null &&
+          items.any((item) => item.productId == templateItem.productId);
+      if (alreadyInCart) {
+        continue;
+      }
+      items.add(templateItem.copyWith(addedByUid: _currentUser?.uid));
+      added++;
+    }
+    if (added == 0) {
+      return 0;
+    }
+    final base = cart ??
+        SiteOrderList(
+          orgId: _orgId ?? weekly.orgId,
+          siteId: siteId,
+          siteName: weekly.siteName,
+          kind: OrderListKind.cart,
+        );
+    await _persistOrderList(
+      base.copyWith(
+        items: items,
+        kind: OrderListKind.cart,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+    return added;
+  }
+
+  /// Speichert die Standard-Wochenliste eines Ladens (Manager-Pfad).
+  Future<void> saveWeeklyList(SiteOrderList list) async {
+    // Explizite „Liste speichern"-Aktion (eigener Speichern-Button im Editor),
+    // KEIN inkrementelles Autosave -> protokollieren. Der Log sitzt hier statt im
+    // gemeinsamen _persistOrderList, weil Letzteres auch jede Korb-Mutation
+    // (Rauschen) persistiert. _persistOrderList wirft bei cloud-only-Fehlern ->
+    // der Log wird nur nach erfolgreichem await erreicht.
+    await _persistOrderList(
+      list.copyWith(
+        kind: OrderListKind.weeklyTemplate,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Bestellliste',
+      entityId: list.siteId,
+      summary: 'Wochen-Bestellliste gespeichert',
+    );
+  }
+
+  /// Löst den Bestellkorb eines Ladens als echte Bestellung(en) aus: gruppiert
+  /// nach Lieferant und legt je Gruppe eine `PurchaseOrder` (Status „Bestellt")
+  /// an – Preis/Einheit/Lieferant **live** aus dem aktuellen Artikel, sonst aus
+  /// den denormalisierten Korb-Werten. Artikel ohne Lieferant landen in einer
+  /// Sammelbestellung „Ohne Lieferant". Leert den Korb danach. Gibt die IDs der
+  /// erzeugten Bestellungen zurück. Manager-Pfad.
+  Future<List<String>> checkoutCart(String siteId) async {
+    final cart = orderCartForSite(siteId);
+    if (cart == null || cart.items.isEmpty) {
+      return const [];
+    }
+    // Gruppierung nach dem LIVE-Lieferanten des Artikels (ein zwischenzeitlicher
+    // Lieferantenwechsel greift), Fallback auf den denormalisierten Korb-Wert.
+    final groups = <String, List<OrderListItem>>{};
+    for (final item in cart.items) {
+      final liveSupplierId = productById(item.productId)?.supplierId;
+      final supplierKey = ((liveSupplierId ?? item.supplierId) ?? '').trim();
+      groups.putIfAbsent(supplierKey, () => []).add(item);
+    }
+    final createdIds = <String>[];
+    try {
+      for (final entry in groups.entries) {
+        final supplierId = entry.key;
+        final supplier = supplierById(supplierId);
+        final orderItems = entry.value.map((cartItem) {
+          final product = productById(cartItem.productId);
+          return PurchaseOrderItem(
+            productId: cartItem.productId,
+            name: product?.name ?? cartItem.name,
+            sku: product?.sku ?? cartItem.sku,
+            unit: product?.unit ?? cartItem.unit,
+            quantityOrdered: cartItem.quantity,
+            unitPriceCents: product?.purchasePriceCents,
+          );
+        }).toList(growable: false);
+        final order = PurchaseOrder(
+          orgId: _orgId ?? cart.orgId,
+          siteId: siteId,
+          siteName: cart.siteName,
+          supplierId: supplierId,
+          supplierName: supplier?.name ??
+              (supplierId.isEmpty
+                  ? 'Ohne Lieferant'
+                  : entry.value.first.supplierName),
+          status: PurchaseOrderStatus.ordered,
+          items: orderItems,
+          orderedAt: DateTime.now(),
+        );
+        createdIds.add(await savePurchaseOrder(order));
+      }
+    } catch (error) {
+      // Teilfehler (z.B. cloud-only Firestore-Fehler mitten in der Schleife):
+      // die bereits erzeugten Bestellungen best-effort zurücknehmen, damit ein
+      // Retry nichts doppelt anlegt (savePurchaseOrder ist nicht idempotent).
+      // Der Korb bleibt unverändert -> der Nutzer kann sauber neu auslösen.
+      for (final id in createdIds) {
+        try {
+          await deletePurchaseOrder(id);
+        } catch (_) {
+          // Kompensation best-effort.
+        }
+      }
+      rethrow;
+    }
+    // Nur die tatsächlich ausgelösten Positionen entfernen – gleichzeitige
+    // Mitarbeiter-Adds während des Checkouts bleiben so erhalten.
+    await _removeCartItems(siteId, cart.items);
+    return createdIds;
+  }
+
+  /// Stabiler Schlüssel einer Korb-Position für gezieltes Entfernen (per
+  /// productId; ohne id über Name+Einheit).
+  static String _cartItemKey(OrderListItem item) =>
+      (item.productId != null && item.productId!.isNotEmpty)
+          ? 'p:${item.productId}'
+          : 'n:${item.name}|${item.unit}';
+
+  /// Entfernt gezielt die [removed]-Positionen aus dem aktuellen Korb (statt ihn
+  /// komplett zu leeren), damit parallel hinzugefügte Positionen erhalten
+  /// bleiben.
+  Future<void> _removeCartItems(
+    String siteId,
+    List<OrderListItem> removed,
+  ) async {
+    final current = orderCartForSite(siteId);
+    if (current == null || current.items.isEmpty) {
+      return;
+    }
+    final removedKeys = removed.map(_cartItemKey).toSet();
+    final remaining = current.items
+        .where((item) => !removedKeys.contains(_cartItemKey(item)))
+        .toList();
+    if (remaining.length == current.items.length) {
+      return;
+    }
+    await _persistOrderList(
+      current.copyWith(
+        items: remaining,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Persistiert eine Bestellliste (Korb oder Wochenliste) nach dem
+  /// Drei-Speichermodi-Muster. Doc-ID = `siteId` (Singleton je Laden); die
+  /// Ziel-Collection ergibt sich aus [SiteOrderList.kind].
+  ///
+  /// Hinweis: Im cloud/hybrid-Modus lesen die Korb-Mutatoren den aktuellen Stand
+  /// aus dem gestreamten `_orderCarts`, ändern ihn und schreiben die **ganze**
+  /// Liste zurück. Zwei fast gleichzeitige Änderungen (vor der nächsten
+  /// Stream-Emission) sind damit „last writer wins". Für zwei Läden mit wenigen
+  /// Mitarbeitern ist das bewusst akzeptiert (keine Transaktion/kein Merge je
+  /// Position); bei echtem Mehrnutzer-Andrang müsste eine Array-Union-Transaktion
+  /// im Repository ergänzt werden.
+  Future<void> _persistOrderList(SiteOrderList list) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final prepared = list.copyWith(orgId: orgId, id: list.siteId);
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveOrderList',
+          () => _inventory.saveOrderList(prepared),
+        )) {
+      return;
+    }
+    if (prepared.kind == OrderListKind.weeklyTemplate) {
+      _upsertLocal(_weeklyLists, prepared, (item) => item.siteId);
+      _weeklyLists = [..._weeklyLists];
+      await _persistWeeklyLists();
+    } else {
+      _upsertLocal(_orderCarts, prepared, (item) => item.siteId);
+      _orderCarts = [..._orderCarts];
+      await _persistOrderCarts();
+    }
+    _safeNotify();
   }
 
   // --- Lokale Mutationen (Dev-Modus) -------------------------------------

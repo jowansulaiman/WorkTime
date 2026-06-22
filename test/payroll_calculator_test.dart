@@ -12,6 +12,9 @@ void main() {
     bool church = false,
     String? state,
     PayrollEmploymentKind kind = PayrollEmploymentKind.standard,
+    int childCount = 0,
+    bool pvChildless = false,
+    double? kvOverride,
   }) {
     return PayrollCalculator.calculate(
       grossCents: gross,
@@ -20,6 +23,9 @@ void main() {
       federalState: state,
       kind: kind,
       settings: settings,
+      childCount: childCount,
+      pvChildless: pvChildless,
+      healthAdditionalRateOverride: kvOverride,
     );
   }
 
@@ -147,6 +153,48 @@ void main() {
       final r = calc(gross: 300000);
       expect(r.isRichtwert, isTrue);
       expect(PayrollResult.disclaimer, contains('Richtwert'));
+    });
+
+    test('PV-Kinderlosenzuschlag erhöht nur den AN-PV-Anteil', () {
+      final ohne = calc(gross: 300000);
+      final mit = calc(gross: 300000, pvChildless: true);
+      // AN-PV höher (1,8 % -> 2,4 %), AG-PV unverändert.
+      expect(mit.careEmployeeCents, greaterThan(ohne.careEmployeeCents));
+      expect(mit.careEmployerCents, ohne.careEmployerCents);
+      // 0,6 % von 3000 € = 18 € = 1800 Cent zusätzlich.
+      expect(mit.careEmployeeCents - ohne.careEmployeeCents, 1800);
+      // Netto sinkt entsprechend.
+      expect(mit.netCents, lessThan(ohne.netCents));
+    });
+
+    test('kassenindividueller KV-Zusatzbeitrag (Override) wirkt auf KV', () {
+      final standard = calc(gross: 300000); // Default-Zusatz 2,5 %
+      final guenstig = calc(gross: 300000, kvOverride: 0.009); // 0,9 %
+      expect(guenstig.healthEmployeeCents,
+          lessThan(standard.healthEmployeeCents));
+      expect(guenstig.healthEmployerCents,
+          lessThan(standard.healthEmployerCents));
+      // (14,6 % + 0,9 %) / 2 = 7,75 % von 3000 € = 232,50 €.
+      expect(guenstig.healthEmployeeCents, 23250);
+    });
+
+    test('Kinder senken die Kirchensteuer, nicht die Lohnsteuer', () {
+      final ohne = calc(
+          gross: 400000, taxClass: TaxClass.iv, church: true);
+      final mit = calc(
+          gross: 400000,
+          taxClass: TaxClass.iv,
+          church: true,
+          childCount: 2);
+      expect(mit.incomeTaxCents, ohne.incomeTaxCents); // Lohnsteuer gleich
+      expect(mit.churchTaxCents, lessThan(ohne.churchTaxCents)); // KiSt niedriger
+    });
+
+    test('Default (keine neuen Parameter) bleibt unverändert', () {
+      // Sicherheitsnetz gegen versehentliche Verhaltensänderung der Altpfade.
+      final r = calc(gross: 300000);
+      expect(r.careEmployeeCents, 5400); // 1,8 %, kein Kinderlosenzuschlag
+      expect(r.churchTaxCents, 0);
     });
   });
 }

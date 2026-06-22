@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
-import '../screens/customer_order_screen.dart';
-import '../screens/inventory_screen.dart';
+import '../routing/shell_tab.dart';
 import '../ui/ui.dart';
 
 /// Eine gebuendelte „Hinweise & Aktionspunkte"-Karte fuer das Home-Dashboard.
@@ -45,16 +45,8 @@ class DashboardActionItemsCard extends StatelessWidget {
     final appColors = theme.appColors;
     final errorColor = theme.colorScheme.error;
 
-    void openOrders() => Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => CustomerOrderScreen(parentLabel: parentLabel),
-          ),
-        );
-    void openInventory() => Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => InventoryScreen(parentLabel: parentLabel),
-          ),
-        );
+    void openOrders() => context.push(AppRoutes.customerOrders);
+    void openInventory() => context.push(AppRoutes.inventory);
 
     final items = <_ActionItem>[
       if (overdue > 0)

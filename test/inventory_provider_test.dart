@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/customer_order.dart';
+import 'package:worktime_app/models/order_cart.dart';
 import 'package:worktime_app/models/price_history_entry.dart';
 import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/purchase_order.dart';
@@ -148,6 +149,26 @@ class _OfflineInventoryRepository implements InventoryRepository {
         createdByUid: createdByUid,
         clientMutationId: clientMutationId,
       );
+
+  @override
+  Stream<List<SiteOrderList>> watchOrderCarts(String orgId) =>
+      _delegate.watchOrderCarts(orgId);
+
+  @override
+  Stream<List<SiteOrderList>> watchWeeklyOrderLists(String orgId) =>
+      _delegate.watchWeeklyOrderLists(orgId);
+
+  @override
+  Future<void> saveOrderList(SiteOrderList list) =>
+      _delegate.saveOrderList(list);
+
+  @override
+  Future<void> deleteOrderList({
+    required String orgId,
+    required String siteId,
+    required OrderListKind kind,
+  }) =>
+      _delegate.deleteOrderList(orgId: orgId, siteId: siteId, kind: kind);
 }
 
 /// Fake fuer den Cloud-Stream-Fehlerpfad: der Lieferanten-Stream schlaegt fehl,
@@ -397,8 +418,7 @@ void main() {
       );
     });
 
-    test('abgeleitete Sichten: lowStockProducts, openOrders, buildReorderItems',
-        () async {
+    test('abgeleitete Sichten: lowStockProducts, openOrders', () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);
       await provider.saveProduct(
@@ -424,13 +444,6 @@ void main() {
       expect(provider.lowStockProducts(), hasLength(1));
       expect(provider.lowStockProducts().single.name, 'Knapp');
 
-      final reorder = provider.buildReorderItems(
-        siteId: 'site-1',
-        supplierId: 'sup-1',
-      );
-      expect(reorder, hasLength(1));
-      expect(reorder.single.name, 'Knapp');
-
       await provider.savePurchaseOrder(
         const PurchaseOrder(
           orgId: 'org-1',
@@ -440,33 +453,6 @@ void main() {
         ),
       );
       expect(provider.openOrders, hasLength(1));
-    });
-
-    test('buildReorderItems hebt Vorschlag auf die Mindestbestellmenge', () async {
-      final provider = newLocalProvider();
-      await provider.updateSession(user);
-      await provider.saveSupplier(
-        const Supplier(orgId: 'org-1', name: 'Nord', minOrderQuantity: 24),
-      );
-      final supplierId = provider.suppliers.single.id!;
-      await provider.saveProduct(
-        Product(
-          orgId: 'org-1',
-          siteId: 'site-1',
-          name: 'Feuerzeug',
-          currentStock: 1,
-          minStock: 5, // Vorschlag wäre minStock*2 - 1 = 9
-          supplierId: supplierId,
-        ),
-      );
-
-      final items = provider.buildReorderItems(
-        siteId: 'site-1',
-        supplierId: supplierId,
-      );
-      expect(items, hasLength(1));
-      // 9 < 24 -> auf Mindestbestellmenge angehoben.
-      expect(items.single.quantityOrdered, 24);
     });
 
     test('Warenwert/Marge: Aggregation gesamt und je Standort', () async {

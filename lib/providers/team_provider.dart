@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../core/app_config.dart';
 import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
@@ -17,6 +18,7 @@ import '../services/database_service.dart';
 import '../services/firestore_service.dart';
 import '../core/app_logger.dart';
 import '../core/error_reporter.dart';
+import 'audit_sink.dart';
 
 class TeamProvider extends ChangeNotifier {
   TeamProvider({
@@ -132,6 +134,27 @@ class TeamProvider extends ChangeNotifier {
   }
 
   String? _lastSessionKey;
+
+  AuditSink? _audit;
+
+  /// Senke fürs Änderungsprotokoll (best-effort). Wird in main.dart verdrahtet.
+  void setAuditSink(AuditSink sink) {
+    _audit = sink;
+  }
+
+  /// Schlägt den Anzeigenamen eines Mitglieds aus den in-memory-Listen nach
+  /// (für menschenlesbare Audit-Zusammenfassungen); Fallback auf die uid.
+  String _memberLabel(String uid) {
+    final matches = _members.where((member) => member.uid == uid);
+    if (matches.isNotEmpty) {
+      return matches.first.displayName;
+    }
+    final localMatches = _localMembers.where((member) => member.uid == uid);
+    if (localMatches.isNotEmpty) {
+      return localMatches.first.displayName;
+    }
+    return uid;
+  }
 
   LocalStorageScope? get _localScope {
     final currentUser = _currentUser;
@@ -433,11 +456,15 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
+    final isNew = invite.id == null || invite.id!.isEmpty;
     final preparedInvite = invite.copyWith(
       id: invite.id ?? _inviteIdForEmail(invite.email),
       orgId: currentUser.orgId,
       createdByUid: currentUser.uid,
     );
+    final auditSummary =
+        'Einladung ${preparedInvite.email} (${preparedInvite.role.label}) '
+        'gespeichert';
 
     if (usesLocalStorage) {
       _upsertLocalInvite(preparedInvite);
@@ -445,10 +472,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Einladung',
+        entityId: preparedInvite.id,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.createOrUpdateInvite(preparedInvite);
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Einladung',
+      entityId: preparedInvite.id,
+      summary: auditSummary,
+    );
   }
 
   Future<void> deleteInvite(String inviteId) async {
@@ -477,10 +516,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Einladung',
+        entityId: inviteId,
+        summary: 'Einladung gelöscht',
+      );
       return;
     }
 
     await _firestoreService.deleteInvite(inviteId);
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Einladung',
+      entityId: inviteId,
+      summary: 'Einladung gelöscht',
+    );
   }
 
   Future<void> saveTeam(TeamDefinition team) async {
@@ -490,11 +541,14 @@ class TeamProvider extends ChangeNotifier {
     }
 
     final memberIds = team.memberIds.toSet().toList(growable: false);
+    final isNew = team.id == null || team.id!.isEmpty;
     final preparedTeam = team.copyWith(
       orgId: currentUser.orgId,
       createdByUid: currentUser.uid,
       memberIds: memberIds,
     );
+    final auditAction = isNew ? AuditAction.created : AuditAction.updated;
+    final auditSummary = 'Team „${preparedTeam.name}" gespeichert';
 
     if (usesLocalStorage) {
       final localTeam = preparedTeam.copyWith(
@@ -509,10 +563,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Team',
+        entityId: localTeam.id,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.saveTeam(preparedTeam);
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Team',
+      entityId: preparedTeam.id,
+      summary: auditSummary,
+    );
   }
 
   Future<void> deleteTeam(String teamId) async {
@@ -521,11 +587,25 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
+    // Namen vor dem Loeschen nachschlagen (cloud-Liste, sonst lokale Liste).
+    final namedTeam = [..._teams, ..._localTeams].where(
+      (team) => team.id == teamId,
+    );
+    final auditSummary = namedTeam.isEmpty
+        ? 'Team gelöscht'
+        : 'Team „${namedTeam.first.name}" gelöscht';
+
     if (usesLocalStorage) {
       _localTeams.removeWhere((team) => team.id == teamId);
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Team',
+        entityId: teamId,
+        summary: auditSummary,
+      );
       return;
     }
 
@@ -533,12 +613,40 @@ class TeamProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       teamId: teamId,
     );
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Team',
+      entityId: teamId,
+      summary: auditSummary,
+    );
   }
 
   Future<void> updateMember(AppUserProfile profile) async {
     final currentUser = _currentUser;
     if (currentUser == null || !currentUser.isAdmin) {
       return;
+    }
+
+    final persisted = await _updateMemberInternal(profile);
+    if (!persisted) {
+      return;
+    }
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Mitglied',
+      entityId: profile.uid,
+      summary: 'Mitglied ${profile.displayName} aktualisiert',
+    );
+  }
+
+  /// Schreibt das Mitgliedsprofil ohne eigenes Audit-Logging und meldet, ob die
+  /// Persistierung stattfand. Geteilt von [updateMember] und Wrappern wie
+  /// [saveMemberWorkRuleSettings], damit pro oeffentlicher Aktion GENAU EINMAL
+  /// geloggt wird (kein Doppel-Logging ueber die Delegation).
+  Future<bool> _updateMemberInternal(AppUserProfile profile) async {
+    final currentUser = _currentUser;
+    if (currentUser == null || !currentUser.isAdmin) {
+      return false;
     }
 
     if (usesLocalStorage) {
@@ -551,10 +659,11 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
-      return;
+      return true;
     }
 
     await _firestoreService.upsertUserProfile(profile);
+    return true;
   }
 
   Future<void> saveMemberConfiguration({
@@ -562,9 +671,34 @@ class TeamProvider extends ChangeNotifier {
     required EmploymentContract contract,
     required List<EmployeeSiteAssignment> siteAssignments,
   }) async {
+    final persisted = await _saveMemberConfigurationInternal(
+      profile: profile,
+      contract: contract,
+      siteAssignments: siteAssignments,
+    );
+    if (!persisted) {
+      return;
+    }
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Mitglied',
+      entityId: profile.uid,
+      summary: 'Mitglied-Konfiguration ${profile.displayName} gespeichert',
+    );
+  }
+
+  /// Schreibt Profil + Vertrag + Standortzuordnungen ohne eigenes Audit-Logging
+  /// und meldet, ob persistiert wurde. Geteilt von [saveMemberConfiguration] und
+  /// [saveMemberProtectionRules], damit jede oeffentliche Aktion GENAU EINMAL
+  /// mit ihrer eigenen Zusammenfassung loggt (kein Doppel-Logging).
+  Future<bool> _saveMemberConfigurationInternal({
+    required AppUserProfile profile,
+    required EmploymentContract contract,
+    required List<EmployeeSiteAssignment> siteAssignments,
+  }) async {
     final currentUser = _currentUser;
     if (currentUser == null || !currentUser.isAdmin) {
-      return;
+      return false;
     }
 
     final preparedContract = contract.copyWith(
@@ -608,7 +742,7 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
-      return;
+      return true;
     }
 
     await _firestoreService.upsertUserProfile(profile);
@@ -618,6 +752,7 @@ class TeamProvider extends ChangeNotifier {
       userId: profile.uid,
       assignments: preparedAssignments,
     );
+    return true;
   }
 
   Future<void> saveMemberProtectionRules({
@@ -643,7 +778,10 @@ class TeamProvider extends ChangeNotifier {
     final nextIsMinor = isMinor ?? currentContract.isMinor;
     final nextIsPregnant = isPregnant ?? currentContract.isPregnant;
 
-    await saveMemberConfiguration(
+    // Direkt an den nicht-loggenden Helfer delegieren, damit hier GENAU EINMAL
+    // mit der eigenen „Schutzregeln"-Zusammenfassung geloggt wird (kein
+    // zusaetzliches „Mitglied-Konfiguration"-Log aus saveMemberConfiguration).
+    final persisted = await _saveMemberConfigurationInternal(
       profile: member,
       contract: currentContract.copyWith(
         isMinor: nextIsMinor,
@@ -657,6 +795,15 @@ class TeamProvider extends ChangeNotifier {
       siteAssignments: siteAssignments
           .where((assignment) => assignment.userId == userId)
           .toList(growable: false),
+    );
+    if (!persisted) {
+      return;
+    }
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Mitglied',
+      entityId: userId,
+      summary: 'Schutzregeln für ${member.displayName} gespeichert',
     );
   }
 
@@ -674,8 +821,21 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await updateMember(
-      memberMatches.first.copyWith(workRuleSettings: settings),
+    final member = memberMatches.first;
+    // Nicht-loggenden Helfer nutzen, damit hier GENAU EINMAL mit der eigenen
+    // „Arbeitsregeln"-Zusammenfassung geloggt wird (kein zusaetzliches
+    // „Mitglied aktualisiert"-Log aus updateMember).
+    final persisted = await _updateMemberInternal(
+      member.copyWith(workRuleSettings: settings),
+    );
+    if (!persisted) {
+      return;
+    }
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Mitglied',
+      entityId: userId,
+      summary: 'Arbeitsregeln für ${member.displayName} gespeichert',
     );
   }
 
@@ -696,6 +856,9 @@ class TeamProvider extends ChangeNotifier {
     if (validationError != null) {
       throw StateError(validationError);
     }
+    final isNew = site.id == null || site.id!.isEmpty;
+    final auditAction = isNew ? AuditAction.created : AuditAction.updated;
+    final auditSummary = 'Standort „${prepared.name}" gespeichert';
 
     if (usesLocalStorage) {
       final localSite =
@@ -710,10 +873,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Standort',
+        entityId: localSite.id,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.saveSite(prepared);
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Standort',
+      entityId: prepared.id,
+      summary: auditSummary,
+    );
   }
 
   String? _validateSiteDefinition(SiteDefinition site) {
@@ -757,6 +932,14 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
+    // Namen vor dem Loeschen nachschlagen (cloud-Liste, sonst lokale Liste).
+    final namedSite = [..._sites, ..._localSites].where(
+      (site) => site.id == siteId,
+    );
+    final auditSummary = namedSite.isEmpty
+        ? 'Standort gelöscht'
+        : 'Standort „${namedSite.first.name}" gelöscht';
+
     if (usesLocalStorage) {
       _localSites.removeWhere((item) => item.id == siteId);
       _localSiteAssignments.removeWhere((item) => item.siteId == siteId);
@@ -767,6 +950,12 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Standort',
+        entityId: siteId,
+        summary: auditSummary,
+      );
       return;
     }
 
@@ -785,6 +974,12 @@ class TeamProvider extends ChangeNotifier {
 
     await _firestoreService.deleteSite(
         orgId: currentUser.orgId, siteId: siteId);
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Standort',
+      entityId: siteId,
+      summary: auditSummary,
+    );
   }
 
   Future<void> saveQualification(QualificationDefinition qualification) async {
@@ -793,10 +988,13 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
+    final isNew = qualification.id == null || qualification.id!.isEmpty;
     final prepared = qualification.copyWith(
       orgId: currentUser.orgId,
       createdByUid: currentUser.uid,
     );
+    final auditAction = isNew ? AuditAction.created : AuditAction.updated;
+    final auditSummary = 'Qualifikation „${prepared.name}" gespeichert';
 
     if (usesLocalStorage) {
       final localQualification = prepared.copyWith(
@@ -813,10 +1011,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Qualifikation',
+        entityId: localQualification.id,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.saveQualification(prepared);
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Qualifikation',
+      entityId: prepared.id,
+      summary: auditSummary,
+    );
   }
 
   Future<void> deleteQualification(String qualificationId) async {
@@ -837,12 +1047,24 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Qualifikation',
+        entityId: qualificationId,
+        summary: 'Qualifikation gelöscht',
+      );
       return;
     }
 
     await _firestoreService.deleteQualification(
       orgId: currentUser.orgId,
       qualificationId: qualificationId,
+    );
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Qualifikation',
+      entityId: qualificationId,
+      summary: 'Qualifikation gelöscht',
     );
   }
 
@@ -852,10 +1074,13 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
+    final isNew = ruleSet.id == null || ruleSet.id!.isEmpty;
     final prepared = ruleSet.copyWith(
       orgId: currentUser.orgId,
       createdByUid: currentUser.uid,
     );
+    final auditAction = isNew ? AuditAction.created : AuditAction.updated;
+    final auditSummary = 'Regelwerk „${prepared.name}" gespeichert';
 
     if (usesLocalStorage) {
       final localRuleSet =
@@ -870,10 +1095,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Regelwerk',
+        entityId: localRuleSet.id,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.saveRuleSet(prepared);
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Regelwerk',
+      entityId: prepared.id,
+      summary: auditSummary,
+    );
   }
 
   Future<void> saveTravelTimeRule(TravelTimeRule rule) async {
@@ -902,6 +1139,11 @@ class TeamProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       createdByUid: currentUser.uid,
     );
+    // „Neu", wenn weder eine eingehende id noch eine passende bestehende Regel
+    // existiert (sonst wird eine vorhandene Regel ueberschrieben → updated).
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
+    final auditAction = isNew ? AuditAction.created : AuditAction.updated;
+    final auditSummary = _travelRuleSummary(prepared);
 
     if (usesLocalStorage) {
       final localRule =
@@ -924,10 +1166,37 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: auditAction,
+        entityType: 'Wegezeit-Regel',
+        entityId: localRule.id,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.saveTravelTimeRule(prepared);
+    _audit?.call(
+      action: auditAction,
+      entityType: 'Wegezeit-Regel',
+      entityId: prepared.id,
+      summary: auditSummary,
+    );
+  }
+
+  /// Menschlich lesbare Zusammenfassung einer Wegezeit-Regel; ersetzt die
+  /// Standort-ids durch Standortnamen, wenn verfuegbar.
+  String _travelRuleSummary(TravelTimeRule rule) {
+    final from = _siteName(rule.fromSiteId);
+    final to = _siteName(rule.toSiteId);
+    return 'Wegezeit-Regel $from → $to gespeichert';
+  }
+
+  String _siteName(String siteId) {
+    final matches = [..._sites, ..._localSites].where(
+      (site) => site.id == siteId,
+    );
+    return matches.isEmpty ? siteId : matches.first.name;
   }
 
   Future<void> deleteTravelTimeRule(String ruleId) async {
@@ -941,12 +1210,24 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Wegezeit-Regel',
+        entityId: ruleId,
+        summary: 'Wegezeit-Regel gelöscht',
+      );
       return;
     }
 
     await _firestoreService.deleteTravelTimeRule(
       orgId: currentUser.orgId,
       ruleId: ruleId,
+    );
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Wegezeit-Regel',
+      entityId: ruleId,
+      summary: 'Wegezeit-Regel gelöscht',
     );
   }
 
@@ -958,6 +1239,12 @@ class TeamProvider extends ChangeNotifier {
     if (currentUser == null || !currentUser.isAdmin) {
       return;
     }
+
+    // Zugriffssteuerung – wichtig, daher den Namen vorab nachschlagen.
+    final memberName =
+        uid == currentUser.uid ? currentUser.displayName : _memberLabel(uid);
+    final auditSummary =
+        'Mitglied $memberName ${isActive ? 'aktiviert' : 'deaktiviert'}';
 
     if (usesLocalStorage) {
       if (uid == currentUser.uid) {
@@ -974,10 +1261,22 @@ class TeamProvider extends ChangeNotifier {
       await _persistLocalState();
       _applyLocalState();
       notifyListeners();
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Mitglied',
+        entityId: uid,
+        summary: auditSummary,
+      );
       return;
     }
 
     await _firestoreService.setUserActive(uid: uid, isActive: isActive);
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Mitglied',
+      entityId: uid,
+      summary: auditSummary,
+    );
   }
 
   Future<void> cacheCloudStateLocally() async {

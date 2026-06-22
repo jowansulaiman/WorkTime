@@ -13,6 +13,7 @@ import '../models/team_definition.dart';
 import '../providers/auth_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/team_provider.dart';
+import '../services/compliance_rejected_exception.dart';
 import '../services/export_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/breadcrumb_app_bar.dart';
@@ -674,11 +675,14 @@ class ShiftPlannerScreen extends StatelessWidget {
     } on ShiftConflictException catch (error) {
       if (!context.mounted) return;
       await _showShiftConflictDialog(context, error.issues);
+    } on ComplianceRejectedException catch (error) {
+      if (!context.mounted) return;
+      await _showComplianceRejectionDialog(context, error);
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Fehler: $error'),
+          content: Text('Fehler: ${_cleanErrorText(error)}'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -833,17 +837,84 @@ class ShiftPlannerScreen extends StatelessWidget {
         return;
       }
       await _showShiftConflictDialog(context, error.issues);
+    } on ComplianceRejectedException catch (error) {
+      // Serverseitige Compliance-Ablehnung: strukturierte Verstoesse anzeigen
+      // statt der nackten 'Bad state:'-Meldung (probleme #16).
+      if (!context.mounted) {
+        return;
+      }
+      await _showComplianceRejectionDialog(context, error);
     } catch (error) {
       if (!context.mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(error.toString()),
+          content: Text(_cleanErrorText(error)),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
     }
+  }
+
+  /// Entfernt das englische 'Bad state: '-Praefix, das `StateError.toString()`
+  /// voranstellt (probleme #16).
+  String _cleanErrorText(Object error) =>
+      error.toString().replaceFirst('Bad state: ', '');
+
+  Future<void> _showComplianceRejectionDialog(
+    BuildContext context,
+    ComplianceRejectedException error,
+  ) {
+    final violations = error.violations;
+    final colorScheme = Theme.of(context).colorScheme;
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Regelverstoss'),
+        content: SizedBox(
+          width: 620,
+          child: SingleChildScrollView(
+            child: violations.isEmpty
+                ? Text(_cleanErrorText(error))
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final violation in violations)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                violation.severity ==
+                                        ComplianceSeverity.blocking
+                                    ? Icons.block_rounded
+                                    : Icons.warning_amber_rounded,
+                                size: 18,
+                                color: violation.severity ==
+                                        ComplianceSeverity.blocking
+                                    ? colorScheme.error
+                                    : Theme.of(context).appColors.warning,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(violation.message)),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Schliessen'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showShiftConflictDialog(
@@ -4141,7 +4212,7 @@ class _ShiftCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final startFmt = DateFormat('EEE, dd.MM. HH:mm', 'de_DE');
-    final endFmt = DateFormat('HH:mm');
+    final endFmt = DateFormat('HH:mm', 'de_DE');
     final borderColor = shift.color != null
         ? Color(int.parse(shift.color!.replaceFirst('#', '0xFF')))
         : null;
@@ -4342,7 +4413,7 @@ class _AbsenceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dateFmt = DateFormat('dd.MM.yyyy');
+    final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
     final colorScheme = Theme.of(context).colorScheme;
     final provider = context.read<ScheduleProvider>();
     return Card(
@@ -5243,14 +5314,14 @@ class _AbsenceEditorSheetState extends State<_AbsenceEditorSheet> {
           const SizedBox(height: 16),
           _DateTile(
             label: 'Von',
-            value: DateFormat('dd.MM.yyyy').format(_startDate),
+            value: DateFormat('dd.MM.yyyy', 'de_DE').format(_startDate),
             icon: Icons.event_available_outlined,
             onTap: () => _pickDate(true),
           ),
           const SizedBox(height: 12),
           _DateTile(
             label: 'Bis',
-            value: DateFormat('dd.MM.yyyy').format(_endDate),
+            value: DateFormat('dd.MM.yyyy', 'de_DE').format(_endDate),
             icon: Icons.event_busy_outlined,
             onTap: () => _pickDate(false),
           ),

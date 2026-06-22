@@ -8,6 +8,7 @@ import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
 import '../models/supplier.dart';
 import '../providers/inventory_provider.dart';
+import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import 'inventory_screen.dart';
 
@@ -525,10 +526,15 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
         ],
       ),
       floatingActionButton: canManage && order.status.acceptsReceipt
-          ? FloatingActionButton.extended(
-              onPressed: () => _receive(context, inventory, order),
-              icon: const Icon(Icons.move_to_inbox_outlined),
-              label: const Text('Wareneingang'),
+          ? ExpandableFab(
+              heroTag: 'purchase_order_receive_fab',
+              actions: [
+                FabAction(
+                  icon: Icons.move_to_inbox_outlined,
+                  label: 'Wareneingang',
+                  onPressed: () => _receive(context, inventory, order),
+                ),
+              ],
             )
           : null,
       body: SafeArea(

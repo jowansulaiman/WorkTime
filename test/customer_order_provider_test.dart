@@ -115,7 +115,7 @@ void main() {
       expect(names, isNot(contains('OhneTermin')));
       // Dringendste zuerst (ueberfaellig vor morgen).
       expect(due.first.customerName, 'Ueberfaellig');
-      expect(provider.dueSoonNotPreparedCount(), 2);
+      expect(provider.ordersDueSoonNotPrepared().length, 2);
     });
 
     test('markCustomerOrderPrepared setzt und entfernt preparedAt', () async {

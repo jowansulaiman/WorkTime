@@ -3,14 +3,18 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/app_logger.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
+import '../models/order_cart.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
 import '../models/audit_log_entry.dart';
+import '../models/employee_profile.dart';
+import '../models/finance_models.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
 import '../models/price_history_entry.dart';
@@ -76,12 +80,20 @@ class DatabaseService {
   static const _stockMovementsKey = 'stock_movements';
   static const _priceHistoryKey = 'price_history';
   static const _customerOrdersKey = 'customer_orders';
+  static const _orderCartsKey = 'order_carts';
+  static const _weeklyOrderListsKey = 'weekly_order_lists';
   // Kontakte (Kunden/Lieferanten/Partner): org-skopiert, ohne Legacy-Migration.
   static const _contactsKey = 'contacts';
   // Personal-Bereich (nur Admin): org-skopiert, ohne Legacy-Migration.
   static const _workTasksKey = 'work_tasks';
   static const _payrollRecordsKey = 'payroll_records';
   static const _payrollProfilesKey = 'payroll_profiles';
+  static const _employeeProfilesKey = 'employee_profiles';
+  // Finanzen (Kostenrechnung): org-skopiert, ohne Legacy-Migration.
+  static const _costCentersKey = 'cost_centers';
+  static const _costTypesKey = 'cost_types';
+  static const _journalEntriesKey = 'journal_entries';
+  static const _budgetsKey = 'budgets';
   static const _auditLogKey = 'audit_log';
   static const _localAuthUserIdKey = 'local_auth_user_id';
   static const _settingsPrefix = 'setting_';
@@ -119,12 +131,22 @@ class DatabaseService {
     _stockMovementsKey,
     _priceHistoryKey,
     _customerOrdersKey,
+    // Wochen-Bestellkorb + Standard-Wochenliste: org-skopiert (je Laden ein
+    // Eintrag), neue Collections ohne Altbestand.
+    _orderCartsKey,
+    _weeklyOrderListsKey,
     // Kontakte: org-skopiert, neue Collection ohne Altbestand.
     _contactsKey,
     // Personal-Bereich: org-skopiert, neue Collections ohne Altbestand.
     _workTasksKey,
     _payrollRecordsKey,
     _payrollProfilesKey,
+    _employeeProfilesKey,
+    // Finanzen: org-skopiert, neue Collections ohne Altbestand.
+    _costCentersKey,
+    _costTypesKey,
+    _journalEntriesKey,
+    _budgetsKey,
     _auditLogKey,
   };
   static const _legacyWorkSettingKeys = <String>[
@@ -529,6 +551,117 @@ class DatabaseService {
     );
   }
 
+  static Future<List<EmployeeProfile>> loadLocalEmployeeProfiles({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _employeeProfilesKey,
+      scope: scope,
+      fromMap: EmployeeProfile.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalEmployeeProfiles(
+    List<EmployeeProfile> profiles, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _employeeProfilesKey,
+      scope: scope,
+      items: profiles,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<CostCenter>> loadLocalCostCenters({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _costCentersKey,
+      scope: scope,
+      fromMap: CostCenter.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalCostCenters(
+    List<CostCenter> items, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _costCentersKey,
+      scope: scope,
+      items: items,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<CostType>> loadLocalCostTypes({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _costTypesKey,
+      scope: scope,
+      fromMap: CostType.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalCostTypes(
+    List<CostType> items, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _costTypesKey,
+      scope: scope,
+      items: items,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<JournalEntry>> loadLocalJournalEntries({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _journalEntriesKey,
+      scope: scope,
+      fromMap: JournalEntry.fromMap,
+      compare: (a, b) => b.date.compareTo(a.date),
+    );
+  }
+
+  static Future<void> saveLocalJournalEntries(
+    List<JournalEntry> items, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _journalEntriesKey,
+      scope: scope,
+      items: items,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<Budget>> loadLocalBudgets({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _budgetsKey,
+      scope: scope,
+      fromMap: Budget.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalBudgets(
+    List<Budget> items, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _budgetsKey,
+      scope: scope,
+      items: items,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<AuditLogEntry>> loadLocalAuditLog({
     LocalStorageScope? scope,
   }) {
@@ -714,6 +847,52 @@ class DatabaseService {
       key: _customerOrdersKey,
       scope: scope,
       items: orders,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<SiteOrderList>> loadLocalOrderCarts({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _orderCartsKey,
+      scope: scope,
+      fromMap: SiteOrderList.fromMap,
+      compare: (a, b) => a.siteId.compareTo(b.siteId),
+    );
+  }
+
+  static Future<void> saveLocalOrderCarts(
+    List<SiteOrderList> carts, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _orderCartsKey,
+      scope: scope,
+      items: carts,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<SiteOrderList>> loadLocalWeeklyOrderLists({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _weeklyOrderListsKey,
+      scope: scope,
+      fromMap: SiteOrderList.fromMap,
+      compare: (a, b) => a.siteId.compareTo(b.siteId),
+    );
+  }
+
+  static Future<void> saveLocalWeeklyOrderLists(
+    List<SiteOrderList> lists, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _weeklyOrderListsKey,
+      scope: scope,
+      items: lists,
       toMap: (item) => item.toMap(),
     );
   }
@@ -1006,10 +1185,29 @@ class DatabaseService {
       try {
         final map = jsonDecode(raw) as Map<String, dynamic>;
         items.add(fromMap(map));
-      } on FormatException {
-        // Korrupte JSON-Eintraege ueberspringen statt die App zu crashen.
+      } on FormatException catch (error, stackTrace) {
+        // Korrupte JSON-Eintraege ueberspringen statt die App zu crashen —
+        // aber protokollieren, damit ein versehentlicher Daten-Drop (z.B.
+        // bei vergessener Schema-Migration) nicht voellig unsichtbar bleibt
+        // (probleme #6).
+        AppLogger.warning(
+          'Lokaler Eintrag uebersprungen (kaputtes JSON)',
+          error: error,
+          stackTrace: stackTrace,
+          fields: {'collection': key},
+        );
         continue;
-      } on TypeError {
+      } on TypeError catch (error, stackTrace) {
+        // Typ-Inkompatibilitaet (z.B. Modell-Feld hat den Typ gewechselt ohne
+        // erhoehte currentLocalSchemaVersion + Migration) -> Eintrag faellt
+        // sonst lautlos weg. Protokollieren (probleme #6).
+        AppLogger.warning(
+          'Lokaler Eintrag uebersprungen (Typ-Inkompatibilitaet — '
+          'fehlende Schema-Migration?)',
+          error: error,
+          stackTrace: stackTrace,
+          fields: {'collection': key},
+        );
         continue;
       }
     }

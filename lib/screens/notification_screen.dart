@@ -506,7 +506,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
               ? 'Tausch-Anfrage · ${shift.employeeName}'
               : 'Tausch in Bearbeitung',
           subtitle:
-              '${shift.title} · ${shiftFmt.format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}',
+              '${shift.title} · ${shiftFmt.format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}',
           time: shift.updatedAt ?? shift.startTime,
           color: colorScheme.primary,
           badge: 'Offen',
@@ -546,7 +546,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
                 icon: Icons.schedule_outlined,
                 title: 'Kommende Schicht · ${shift.title}',
                 subtitle:
-                    '${shiftFmt.format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}'
+                    '${shiftFmt.format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}'
                     '${shift.effectiveSiteLabel == null ? '' : '\n${shift.effectiveSiteLabel}'}',
                 time: shift.startTime,
                 color: colorScheme.secondary,
@@ -1019,7 +1019,7 @@ class _InboxItemCardState extends State<_InboxItemCard> {
       if (diff.inDays.abs() == 1) {
         return 'Morgen';
       }
-      return DateFormat('dd.MM.').format(time);
+      return DateFormat('dd.MM.', 'de_DE').format(time);
     }
     if (diff.inMinutes < 60) {
       return 'vor ${diff.inMinutes} min';
@@ -1030,7 +1030,7 @@ class _InboxItemCardState extends State<_InboxItemCard> {
     if (diff.inDays < 7) {
       return 'vor ${diff.inDays} Tagen';
     }
-    return DateFormat('dd.MM.').format(time);
+    return DateFormat('dd.MM.', 'de_DE').format(time);
   }
 }
 

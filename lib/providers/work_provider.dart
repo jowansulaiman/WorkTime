@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../core/app_config.dart';
 import '../core/compliance_rule_set_utils.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/compliance_violation.dart';
 import '../models/employee_site_assignment.dart';
@@ -21,6 +22,7 @@ import '../services/compliance_service.dart';
 import '../services/database_service.dart';
 import '../services/compliance_rejected_exception.dart';
 import '../services/firestore_service.dart';
+import 'audit_sink.dart';
 import 'schedule_provider.dart';
 import '../core/app_logger.dart';
 import '../core/error_reporter.dart';
@@ -61,19 +63,6 @@ class OvertimeApprovalRequired implements Exception {
       afterShiftEnd != null &&
       afterShiftEnd!.isAfter(afterShiftStart!);
 
-  bool get hasOvertime => hasBeforeShiftOvertime || hasAfterShiftOvertime;
-
-  Duration get overtimeDuration {
-    var total = Duration.zero;
-    if (hasBeforeShiftOvertime) {
-      total += beforeShiftEnd!.difference(beforeShiftStart!);
-    }
-    if (hasAfterShiftOvertime) {
-      total += afterShiftEnd!.difference(afterShiftStart!);
-    }
-    return total;
-  }
-
   @override
   String toString() {
     return 'Der Eintrag liegt teilweise ausserhalb der geplanten Schicht '
@@ -97,6 +86,21 @@ class WorkProvider extends ChangeNotifier {
 
   void updateScheduleProvider(ScheduleProvider scheduleProvider) {
     _scheduleProvider = scheduleProvider;
+  }
+
+  AuditSink? _audit;
+
+  /// Senke fürs Änderungsprotokoll (best-effort). Wird in main.dart verdrahtet.
+  void setAuditSink(AuditSink sink) {
+    _audit = sink;
+  }
+
+  /// Formatiert ein Datum als `dd.MM.yyyy` für lesbare Audit-Zusammenfassungen
+  /// (bewusst ohne `intl`-Import, um keine neue Abhängigkeit/Lint einzuführen).
+  String _auditDate(DateTime date) {
+    final tag = date.day.toString().padLeft(2, '0');
+    final monat = date.month.toString().padLeft(2, '0');
+    return '$tag.$monat.${date.year}';
   }
 
   final FirestoreService _firestoreService;
@@ -251,17 +255,6 @@ class WorkProvider extends ChangeNotifier {
 
   double get overtimeThisMonth => _entries.fold(0, (sum, entry) {
         final diff = entry.workedHours - settings.dailyHours;
-        return sum + (diff > 0 ? diff : 0);
-      });
-
-  double get totalReportHoursThisMonth =>
-      reportEntries.fold(0, (sum, entry) => sum + entry.workedHours);
-
-  double get totalReportWageThisMonth =>
-      totalReportHoursThisMonth * reportSettings.hourlyRate;
-
-  double get reportOvertimeThisMonth => reportEntries.fold(0, (sum, entry) {
-        final diff = entry.workedHours - reportSettings.dailyHours;
         return sum + (diff > 0 ? diff : 0);
       });
 
@@ -457,6 +450,9 @@ class WorkProvider extends ChangeNotifier {
     if (currentUser == null || !currentUser.canEditTimeEntries) {
       return;
     }
+    // Vor dem Vergeben einer neuen id erfassen, ob es ein Neuanlage- oder
+    // Änderungs-Vorgang ist (fürs Änderungsprotokoll).
+    final isNew = entry.id == null;
     final preparedEntry = entry.copyWith(
       // ID bereits hier vergeben (nicht erst im local-Zweig), damit auch der
       // Cloud-Pfad eine stabile Doc-ID nutzt und Callable-Retries idempotent
@@ -474,6 +470,13 @@ class WorkProvider extends ChangeNotifier {
       _upsertLocalEntry(preparedEntry);
       await _persistLocalEntries();
       _applyLocalState();
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Zeiteintrag',
+        entityId: preparedEntry.id,
+        summary: 'Zeiteintrag am ${_auditDate(preparedEntry.date)} '
+            '(${preparedEntry.workedHours.toStringAsFixed(2)} h)',
+      );
       await _notifyShiftWorked(preparedEntry.sourceShiftId);
       notifyListeners();
       return;
@@ -496,6 +499,15 @@ class WorkProvider extends ChangeNotifier {
       _applyLocalState();
       _safeNotify();
     }
+    // Erfolgreich (Cloud-Write ODER hybrider lokaler Fallback im catch) – der
+    // rethrow-Pfad erreicht diese Stelle nie. Genau eine Log-Stelle pro Erfolg.
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Zeiteintrag',
+      entityId: preparedEntry.id,
+      summary: 'Zeiteintrag am ${_auditDate(preparedEntry.date)} '
+          '(${preparedEntry.workedHours.toStringAsFixed(2)} h)',
+    );
     await _notifyShiftWorked(preparedEntry.sourceShiftId);
   }
 
@@ -524,12 +536,22 @@ class WorkProvider extends ChangeNotifier {
       preparedEntries.add(preparedEntry);
     }
 
+    final auditSummary = preparedEntries.length == 1
+        ? 'Zeiteintrag gespeichert'
+        : '${preparedEntries.length} Zeiteinträge gespeichert';
+
     if (usesLocalStorage) {
       for (final entry in preparedEntries) {
         _upsertLocalEntry(entry);
       }
       await _persistLocalEntries();
       _applyLocalState();
+      _audit?.call(
+        action: AuditAction.created,
+        entityType: 'Zeiteintrag',
+        entityId: null,
+        summary: auditSummary,
+      );
       for (final entry in preparedEntries) {
         await _notifyShiftWorked(entry.sourceShiftId);
       }
@@ -553,6 +575,14 @@ class WorkProvider extends ChangeNotifier {
       _applyLocalState();
       _safeNotify();
     }
+    // Erfolgreich (Cloud-Batch ODER hybrider lokaler Fallback) – rethrow-Pfad
+    // erreicht diese Stelle nie.
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Zeiteintrag',
+      entityId: null,
+      summary: '${preparedEntries.length} Zeiteinträge gespeichert',
+    );
     for (final entry in preparedEntries) {
       await _notifyShiftWorked(entry.sourceShiftId);
     }
@@ -605,6 +635,16 @@ class WorkProvider extends ChangeNotifier {
     if (currentUser == null || !currentUser.canEditTimeEntries) {
       return;
     }
+    // Datum für die Audit-Zusammenfassung VOR dem Entfernen ermitteln (falls der
+    // Eintrag in einer der in-memory-Listen auffindbar ist).
+    final deletedEntry = [
+      ..._entries,
+      ..._reportEntries,
+      ..._localEntries,
+    ].firstWhereOrNull((entry) => entry.id == id);
+    final deleteSummary = deletedEntry == null
+        ? 'Zeiteintrag gelöscht'
+        : 'Zeiteintrag am ${_auditDate(deletedEntry.date)} gelöscht';
     if (usesLocalStorage) {
       _localEntries.removeWhere((entry) => entry.id == id);
       await DatabaseService.saveLocalEntries(
@@ -616,6 +656,12 @@ class WorkProvider extends ChangeNotifier {
       await _recordEntryTombstone(id);
       _applyLocalState();
       await refreshCurrentShiftStatus();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Zeiteintrag',
+        entityId: id,
+        summary: deleteSummary,
+      );
       notifyListeners();
       return;
     }
@@ -636,6 +682,12 @@ class WorkProvider extends ChangeNotifier {
       await _recordEntryTombstone(id);
       _applyLocalState();
       await refreshCurrentShiftStatus();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Zeiteintrag',
+        entityId: id,
+        summary: deleteSummary,
+      );
       _safeNotify();
       return;
     }
@@ -650,6 +702,13 @@ class WorkProvider extends ChangeNotifier {
     }
     _localEntries.removeWhere((entry) => entry.id == id);
     await refreshCurrentShiftStatus();
+    // Erfolgreiche Cloud-Löschung (rethrow im cloud-only-catch erreicht dies nie).
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Zeiteintrag',
+      entityId: id,
+      summary: deleteSummary,
+    );
   }
 
   Future<void> addTemplate(WorkTemplate template) async {

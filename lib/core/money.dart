@@ -47,15 +47,48 @@ class Money implements Comparable<Money> {
   @override
   int get hashCode => cents.hashCode;
 
-  /// Parst eine deutsche Eingabe (`"1.234,56"`, `"12,34 €"`, `"12.34"`) in Cent.
-  /// Gibt `null` bei leerer oder ungültiger Eingabe zurück.
+  /// Parst eine Euro-Eingabe (`"1.234,56"`, `"12,34 €"`, `"1,99"`, `"1.99"`,
+  /// `"12.34"`) in Cent. Gibt `null` bei leerer oder ungültiger Eingabe zurück.
+  ///
+  /// Robust gegenüber Punkt-vs-Komma als Dezimaltrenner (de_DE-Tastatur liefert
+  /// Komma, viele Hardware-/Locale-Tastaturen liefern einen Punkt):
+  /// - Sind **beide** Zeichen vorhanden, ist der zuletzt auftretende der
+  ///   Dezimaltrenner, der andere ein Tausendertrenner („1.234,56" → 1234,56;
+  ///   „1,234.56" → 1234,56).
+  /// - Nur Komma: Dezimaltrenner (de_DE-Konvention).
+  /// - Nur Punkt: ein einzelner Punkt mit 1–2 Nachkommastellen ist ein
+  ///   Dezimalpunkt („1.99" → 1,99; „12.34" → 12,34); mehrere Punkte oder genau
+  ///   3 Nachkommastellen gelten als Tausendertrenner („1.234" → 1234,00).
   static int? parseCents(String input) {
-    final trimmed = input.trim().replaceAll('€', '').trim();
+    final trimmed =
+        input.trim().replaceAll('€', '').replaceAll(' ', '').trim();
     if (trimmed.isEmpty) return null;
-    // Deutsches Format (wie der bestehende Inline-Parser): Punkt =
-    // Tausendertrenner (entfernen), Komma = Dezimaltrenner. So ist „1.234"
-    // = 1234 € und „12,34" = 12,34 € — beide konsistent zur restlichen App.
-    final normalized = trimmed.replaceAll('.', '').replaceAll(',', '.');
+
+    final hasComma = trimmed.contains(',');
+    final hasDot = trimmed.contains('.');
+
+    String normalized;
+    if (hasComma && hasDot) {
+      if (trimmed.lastIndexOf(',') > trimmed.lastIndexOf('.')) {
+        // Komma ist Dezimaltrenner, Punkt Tausender ("1.234,56").
+        normalized = trimmed.replaceAll('.', '').replaceAll(',', '.');
+      } else {
+        // Punkt ist Dezimaltrenner, Komma Tausender ("1,234.56").
+        normalized = trimmed.replaceAll(',', '');
+      }
+    } else if (hasComma) {
+      normalized = trimmed.replaceAll(',', '.');
+    } else if (hasDot) {
+      final dotCount = '.'.allMatches(trimmed).length;
+      final afterDot = trimmed.length - trimmed.lastIndexOf('.') - 1;
+      // Einzelner Punkt mit 1–2 Nachkommastellen = Dezimalpunkt; sonst Tausender.
+      normalized = (dotCount == 1 && afterDot >= 1 && afterDot <= 2)
+          ? trimmed
+          : trimmed.replaceAll('.', '');
+    } else {
+      normalized = trimmed;
+    }
+
     final euros = double.tryParse(normalized);
     if (euros == null) return null;
     return (euros * 100).round();

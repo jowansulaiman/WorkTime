@@ -252,7 +252,7 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
           else ...[
             Text(
               '${DateFormat('EEEE, dd.MM.', 'de_DE').format(nextShift.startTime)} · '
-              '${DateFormat('HH:mm').format(nextShift.startTime)} - ${DateFormat('HH:mm').format(nextShift.endTime)}',
+              '${DateFormat('HH:mm', 'de_DE').format(nextShift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(nextShift.endTime)}',
               style: theme.textTheme.bodyLarge?.copyWith(
                 color: colorScheme.onSurfaceVariant,
               ),
@@ -314,7 +314,7 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
                   ? 'Bitte zuerst in der Teamverwaltung einen Primaerstandort hinterlegen.'
                   : nextShift != null &&
                           nextShift.startTime.isAfter(DateTime.now())
-                      ? 'Einstempeln ist erst ab ${DateFormat('HH:mm').format(nextShift.startTime)} innerhalb deiner geplanten Schicht moeglich.'
+                      ? 'Einstempeln ist erst ab ${DateFormat('HH:mm', 'de_DE').format(nextShift.startTime)} innerhalb deiner geplanten Schicht moeglich.'
                       : 'Aktuell liegt keine laufende Schicht fuer die Stempeluhr vor.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: primaryAssignment == null
@@ -382,7 +382,7 @@ class _EmployeeWeekStripV2 extends StatelessWidget {
             final detail = dayAbsences.isNotEmpty
                 ? dayAbsences.first.type.label
                 : dayShifts.isNotEmpty
-                    ? DateFormat('HH:mm').format(dayShifts.first.startTime)
+                    ? DateFormat('HH:mm', 'de_DE').format(dayShifts.first.startTime)
                     : 'Frei';
             return Container(
               width: 88,
@@ -404,7 +404,7 @@ class _EmployeeWeekStripV2 extends StatelessWidget {
                   ),
                   SizedBox(height: spacing.xs),
                   Text(
-                    DateFormat('dd.MM.').format(day),
+                    DateFormat('dd.MM.', 'de_DE').format(day),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: colorScheme.onSurfaceVariant,
                     ),
@@ -663,26 +663,15 @@ class _AdminDashboardTabV2 extends StatelessWidget {
                       icon: Icons.groups_outlined,
                       title: 'Team verwalten',
                       subtitle: 'Standorte, Rollen und Qualifikationen pflegen',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const TeamManagementScreen(
-                            parentLabel: 'Heute',
-                          ),
-                        ),
-                      ),
+                      onTap: () => context.push(AppRoutes.team),
                     ),
                   AppQuickActionCard(
                     icon: Icons.inbox_outlined,
                     title: 'Anfragen pruefen',
                     subtitle:
                         'Krankmeldungen und Tausch ohne Umwege entscheiden',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const NotificationScreen(
-                          parentLabel: 'Heute',
-                        ),
-                      ),
-                    ),
+                    // Tab-Ziel -> go (Branch wechseln), nicht push (kein Duplikat).
+                    onTap: () => context.go(shellTabPaths[ShellTab.inbox]!),
                   ),
                 ],
               ),

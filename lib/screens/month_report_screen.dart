@@ -608,7 +608,7 @@ class _ReportEntryTile extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final pagePadding = MobileBreakpoints.screenPadding(context);
     final dateFmt = DateFormat('EE, dd.MM.', 'de_DE');
-    final timeFmt = DateFormat('HH:mm');
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
     final wage = entry.workedHours * settings.hourlyRate;
     final currencyFmt = NumberFormat.currency(
       locale: 'de_DE',

@@ -2,6 +2,7 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/audit_log_entry.dart';
 import 'package:worktime_app/models/contact.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/contact_provider.dart';
@@ -202,6 +203,125 @@ void main() {
 
       expect(provider.errorMessage, contains('Kontakt-Stream fehlgeschlagen'));
       expect(notified, isTrue);
+    });
+  });
+
+  group('ContactProvider – Änderungsprotokoll (Audit)', () {
+    late List<
+        ({
+          AuditAction action,
+          String entityType,
+          String? entityId,
+          String summary
+        })> logged;
+
+    ContactProvider auditedLocalProvider() {
+      final provider = newLocalProvider();
+      provider.setAuditSink((
+          {required AuditAction action,
+          required String entityType,
+          String? entityId,
+          required String summary}) {
+        logged.add((
+          action: action,
+          entityType: entityType,
+          entityId: entityId,
+          summary: summary,
+        ));
+      });
+      return provider;
+    }
+
+    setUp(() => logged = []);
+
+    test('neuer Kontakt -> genau ein created-Eintrag', () async {
+      final provider = auditedLocalProvider();
+      await provider.updateSession(user);
+
+      await provider.saveContact(const Contact(orgId: 'org-1', name: 'Neu'));
+
+      expect(logged, hasLength(1));
+      expect(logged.single.action, AuditAction.created);
+      expect(logged.single.entityType, 'Kontakt');
+      expect(logged.single.summary, contains('angelegt'));
+    });
+
+    test('toggleFavorite protokolliert NICHTS (Rauschen)', () async {
+      final provider = auditedLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveContact(const Contact(orgId: 'org-1', name: 'X'));
+      logged.clear();
+
+      await provider.toggleFavorite(provider.contacts.single);
+
+      expect(logged, isEmpty);
+    });
+
+    test('setActive schreibt genau einen fachlichen updated-Eintrag', () async {
+      final provider = auditedLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveContact(const Contact(orgId: 'org-1', name: 'X'));
+      logged.clear();
+
+      await provider.setActive(provider.contacts.single, isActive: false);
+
+      // Delegierter Eintrag (kein zusätzlicher generischer „aktualisiert").
+      expect(logged, hasLength(1));
+      expect(logged.single.action, AuditAction.updated);
+      expect(logged.single.summary, contains('deaktiviert'));
+    });
+
+    test('deleteContact -> genau ein deleted-Eintrag', () async {
+      final provider = auditedLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveContact(const Contact(orgId: 'org-1', name: 'X'));
+      logged.clear();
+
+      await provider.deleteContact(provider.contacts.single.id!);
+
+      expect(logged, hasLength(1));
+      expect(logged.single.action, AuditAction.deleted);
+      expect(logged.single.summary, contains('gelöscht'));
+    });
+
+    test('importContacts schreibt EINEN Sammel-Eintrag statt N', () async {
+      final provider = auditedLocalProvider();
+      await provider.updateSession(user);
+
+      final count = await provider.importContacts(const [
+        Contact(orgId: 'org-1', name: 'A'),
+        Contact(orgId: 'org-1', name: 'B'),
+        Contact(orgId: 'org-1', name: 'C'),
+      ]);
+
+      expect(count, 3);
+      expect(logged, hasLength(1));
+      expect(logged.single.action, AuditAction.created);
+      expect(logged.single.summary, '3 Kontakte importiert');
+    });
+
+    test('Suppress-Flag leckt nach fehlgeschlagener Delegation nicht', () async {
+      final provider = auditedLocalProvider();
+      // Kein Nutzer -> orgId null -> saveContact wirft. setActive hat zuvor das
+      // Suppress-/Delegations-Flag gesetzt; ohne Reset-VOR-dem-Wurf würde es in
+      // den nächsten regulären saveContact lecken (Regression-Schutz).
+      await expectLater(
+        provider.setActive(
+          const Contact(id: 'c1', orgId: 'org-1', name: 'X'),
+          isActive: false,
+        ),
+        throwsStateError,
+      );
+      expect(logged, isEmpty);
+
+      // Danach reguläre Speicherung mit aktiver Org -> sauberer created-Eintrag,
+      // NICHT der unterdrückte/delegierte „deaktiviert"-Eintrag.
+      await provider.updateSession(user);
+      await provider.saveContact(const Contact(orgId: 'org-1', name: 'Neu'));
+
+      expect(logged, hasLength(1));
+      expect(logged.single.action, AuditAction.created);
+      expect(logged.single.summary, contains('angelegt'));
     });
   });
 }

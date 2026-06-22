@@ -225,6 +225,19 @@ class AuthProvider extends ChangeNotifier {
       return;
     }
 
+    // Anonyme Sessions stammen von der öffentlichen Kundenwunsch-Seite
+    // (/wunsch) und haben kein Mitarbeiter-Profil. Sie dürfen den internen
+    // App-Zustand nicht verschmutzen (sonst wirft ensureProfileForSignedInUser
+    // "keine E-Mail" und blockiert den echten Login auf demselben Browser).
+    // Wie "abgemeldet" behandeln und die anonyme Session still beenden.
+    if (user.isAnonymous) {
+      _firebaseUser = null;
+      _initialized = true;
+      notifyListeners();
+      unawaited(_authService.signOut());
+      return;
+    }
+
     try {
       final ensuredProfile =
           await _firestoreService.ensureProfileForSignedInUser(user);

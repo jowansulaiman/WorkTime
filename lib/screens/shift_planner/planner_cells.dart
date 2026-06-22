@@ -173,7 +173,9 @@ class _PlannerBoardShiftCard extends StatelessWidget {
       color: baseColor,
       fontWeight: FontWeight.w700,
     );
-    final timeFmt = DateFormat('h a', 'en_US');
+    // 24h-Format mit Minuten in de_DE (vorher 'h a'/en_US -> "10 AM" und ohne
+    // Minuten; verstiess gegen die de_DE-Invariante, probleme #15).
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
     // RepaintBoundary isoliert den per-Frame neu malenden Strichrahmen-Painter
     // (no-repaintboundary-shift-cards) vom restlichen Board beim Scrollen.
     return RepaintBoundary(
@@ -305,7 +307,7 @@ class _PlannerAbsencePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final dateFmt = DateFormat('dd.MM.yyyy');
+    final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
     final colors = switch (absence.status) {
       AbsenceStatus.pending => (
           background: colorScheme.secondaryContainer,

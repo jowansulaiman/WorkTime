@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:fl_chart/fl_chart.dart';
@@ -138,10 +139,20 @@ class StatisticsScreen extends StatelessWidget {
   }
 
   static String _escapeCsvField(String value) {
-    if (value.contains(';') || value.contains('"') || value.contains('\n')) {
-      return '"${value.replaceAll('"', '""')}"';
+    var normalized = value;
+    // Formel-Injection neutralisieren (probleme #7): Zellen, die mit
+    // = + - @ Tab oder CR beginnen, koennten in Excel als Formel laufen.
+    if (normalized.isNotEmpty &&
+        const ['=', '+', '-', '@', '\t', '\r'].contains(normalized[0])) {
+      normalized = "'$normalized";
     }
-    return value;
+    if (normalized.contains(';') ||
+        normalized.contains('"') ||
+        normalized.contains('\n') ||
+        normalized.contains('\r')) {
+      return '"${normalized.replaceAll('"', '""')}"';
+    }
+    return normalized;
   }
 
   Future<void> _exportCsv(BuildContext context, WorkProvider work) async {
@@ -156,21 +167,25 @@ class StatisticsScreen extends StatelessWidget {
       return;
     }
 
-    final buffer = StringBuffer();
+    // UTF-8-BOM voranstellen, damit deutsches Excel Umlaute korrekt erkennt
+    // (Konvention wie im ExportService, probleme #13).
+    final buffer = StringBuffer('﻿');
     buffer.writeln('Datum;Start;Ende;Pause (min);Stunden;Notiz');
-    final dateFmt = DateFormat('dd.MM.yyyy');
-    final timeFmt = DateFormat('HH:mm');
+    final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
     for (final entry in entries) {
       final note = _escapeCsvField(entry.note ?? '');
       buffer.writeln(
         '${dateFmt.format(entry.date)};${timeFmt.format(entry.startTime)};${timeFmt.format(entry.endTime)};${entry.breakMinutes};${entry.workedHours.toStringAsFixed(2)};$note',
       );
     }
-    final bytes = buffer.toString().codeUnits;
+    // utf8.encode statt .codeUnits: .codeUnits liefert UTF-16-Einheiten und
+    // zerstoert Zeichen ausserhalb ASCII (Umlaute in der Notiz) (probleme #13).
+    final bytes = utf8.encode(buffer.toString());
     await downloadPdfBytes(
       bytes: Uint8List.fromList(bytes),
       fileName:
-          'arbeitszeit-${DateFormat('yyyy-MM').format(work.selectedMonth)}.csv',
+          'arbeitszeit-${DateFormat('yyyy-MM', 'de_DE').format(work.selectedMonth)}.csv',
     );
   }
 }

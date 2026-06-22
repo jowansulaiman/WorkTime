@@ -77,5 +77,51 @@ void main() {
       expect(cleared.note, isNull);
       expect(cleared.federalState, isNull);
     });
+
+    test('Status: Default Entwurf, Enum-Mapping + fromValue-Default', () {
+      expect(record.status, PayrollStatus.entwurf);
+      expect(PayrollStatus.freigegeben.value, 'freigegeben');
+      expect(PayrollStatusX.fromValue('bezahlt'), PayrollStatus.bezahlt);
+      expect(PayrollStatusX.fromValue('zzz'), PayrollStatus.entwurf);
+      expect(PayrollStatus.freigegeben.isFinalized, isTrue);
+      expect(PayrollStatus.bezahlt.isFinalized, isTrue);
+      expect(PayrollStatus.entwurf.isFinalized, isFalse);
+      expect(PayrollStatus.storniert.isFinalized, isFalse);
+    });
+
+    test('Status + finalized-Felder round-trippen (beide Formate)', () {
+      final finalized = record.copyWith(
+        status: PayrollStatus.bezahlt,
+        finalizedByUid: 'admin-1',
+        finalizedAt: DateTime(2026, 6, 30, 9, 30),
+      );
+      final local = PayrollRecord.fromMap(finalized.toMap());
+      expect(local.status, PayrollStatus.bezahlt);
+      expect(local.finalizedByUid, 'admin-1');
+      expect(local.finalizedAt, DateTime(2026, 6, 30, 9, 30));
+
+      final fsMap = finalized.toFirestoreMap();
+      expect(fsMap['status'], 'bezahlt');
+      final cloud = PayrollRecord.fromFirestore('u1-2026-06', fsMap);
+      expect(cloud.status, PayrollStatus.bezahlt);
+      expect(cloud.finalizedByUid, 'admin-1');
+      expect(cloud.finalizedAt, DateTime(2026, 6, 30, 9, 30));
+    });
+
+    test('copyWith clear-Flags für finalized-Felder', () {
+      final finalized = record.copyWith(
+        status: PayrollStatus.freigegeben,
+        finalizedByUid: 'admin-1',
+        finalizedAt: DateTime(2026, 6, 30),
+      );
+      final reverted = finalized.copyWith(
+        status: PayrollStatus.entwurf,
+        clearFinalizedBy: true,
+        clearFinalizedAt: true,
+      );
+      expect(reverted.status, PayrollStatus.entwurf);
+      expect(reverted.finalizedByUid, isNull);
+      expect(reverted.finalizedAt, isNull);
+    });
   });
 }

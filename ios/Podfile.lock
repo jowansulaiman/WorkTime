@@ -1183,6 +1183,11 @@ PODS:
   - Firebase/Functions (11.0.0):
     - Firebase/CoreOnly
     - FirebaseFunctions (~> 11.0.0)
+  - firebase_app_check (0.3.1):
+    - Firebase/CoreOnly (~> 11.0.0)
+    - firebase_core
+    - FirebaseAppCheck (~> 11.0.0)
+    - Flutter
   - firebase_auth (5.2.0):
     - Firebase/Auth (= 11.0.0)
     - firebase_core
@@ -1190,6 +1195,12 @@ PODS:
   - firebase_core (3.4.0):
     - Firebase/CoreOnly (= 11.0.0)
     - Flutter
+  - FirebaseAppCheck (11.0.0):
+    - AppCheckCore (~> 11.0)
+    - FirebaseAppCheckInterop (~> 11.0)
+    - FirebaseCore (~> 11.0)
+    - GoogleUtilities/Environment (~> 8.0)
+    - GoogleUtilities/UserDefaults (~> 8.0)
   - FirebaseAppCheckInterop (11.15.0)
   - FirebaseAuth (11.0.0):
     - FirebaseAppCheckInterop (~> 11.0)
@@ -1395,6 +1406,7 @@ DEPENDENCIES:
   - audioplayers_darwin (from `.symlinks/plugins/audioplayers_darwin/darwin`)
   - cloud_firestore (from `.symlinks/plugins/cloud_firestore/ios`)
   - cloud_functions (from `.symlinks/plugins/cloud_functions/ios`)
+  - firebase_app_check (from `.symlinks/plugins/firebase_app_check/ios`)
   - firebase_auth (from `.symlinks/plugins/firebase_auth/ios`)
   - firebase_core (from `.symlinks/plugins/firebase_core/ios`)
   - Flutter (from `Flutter`)
@@ -1411,6 +1423,7 @@ SPEC REPOS:
     - AppCheckCore
     - BoringSSL-GRPC
     - Firebase
+    - FirebaseAppCheck
     - FirebaseAppCheckInterop
     - FirebaseAuth
     - FirebaseAuthInterop
@@ -1440,6 +1453,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/cloud_firestore/ios"
   cloud_functions:
     :path: ".symlinks/plugins/cloud_functions/ios"
+  firebase_app_check:
+    :path: ".symlinks/plugins/firebase_app_check/ios"
   firebase_auth:
     :path: ".symlinks/plugins/firebase_auth/ios"
   firebase_core:
@@ -1466,8 +1481,10 @@ SPEC CHECKSUMS:
   cloud_firestore: 122e0cb42991b76ae7b79e4d6e843c2ff6299f7b
   cloud_functions: 09567d295a675f1f15c94f7dbbab0fc8b2df6e07
   Firebase: 9f574c08c2396885b5e7e100ed4293d956218af9
+  firebase_app_check: 870914f655d2b63c776373c80b9d53635b42e7d3
   firebase_auth: b420aecd42c1dca08d869475bd84b951fc679411
   firebase_core: 53cecb83c72fea329b267bb0accb06a33e9f036a
+  FirebaseAppCheck: 7cc2fe7e72d8205320734be2a98e20e24770bfd4
   FirebaseAppCheckInterop: 06fe5a3799278ae4667e6c432edd86b1030fa3df
   FirebaseAuth: d5cf28be74d7e82257f6a3f717509eff70d3cf4a
   FirebaseAuthInterop: 7087d7a4ee4bc4de019b2d0c240974ed5d89e2fd
@@ -1496,6 +1513,6 @@ SPEC CHECKSUMS:
   share_plus: 011d6fb4f9d2576b83179a3a5c5e323202cdabcf
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
 
-PODFILE CHECKSUM: 991cb4dc491b713a1cf06cb9eafc62e38f33a63b
+PODFILE CHECKSUM: 110984e0b66a4768bdb74701bfdb9936a7122720
 
 COCOAPODS: 1.16.2

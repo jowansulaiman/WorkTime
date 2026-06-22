@@ -68,6 +68,36 @@ extension PayrollEmploymentKindX on PayrollEmploymentKind {
       };
 }
 
+/// Status einer Lohnabrechnung im Freigabe-Workflow.
+enum PayrollStatus { entwurf, freigegeben, bezahlt, storniert }
+
+extension PayrollStatusX on PayrollStatus {
+  String get value => switch (this) {
+        PayrollStatus.entwurf => 'entwurf',
+        PayrollStatus.freigegeben => 'freigegeben',
+        PayrollStatus.bezahlt => 'bezahlt',
+        PayrollStatus.storniert => 'storniert',
+      };
+
+  String get label => switch (this) {
+        PayrollStatus.entwurf => 'Entwurf',
+        PayrollStatus.freigegeben => 'Freigegeben',
+        PayrollStatus.bezahlt => 'Bezahlt',
+        PayrollStatus.storniert => 'Storniert',
+      };
+
+  /// Gilt die Abrechnung als final (freigegeben oder bezahlt)?
+  bool get isFinalized =>
+      this == PayrollStatus.freigegeben || this == PayrollStatus.bezahlt;
+
+  static PayrollStatus fromValue(String? value) => switch (value) {
+        'freigegeben' => PayrollStatus.freigegeben,
+        'bezahlt' => PayrollStatus.bezahlt,
+        'storniert' => PayrollStatus.storniert,
+        _ => PayrollStatus.entwurf,
+      };
+}
+
 /// Monatlicher Lohn-Snapshot pro Mitarbeiter (Personal-Bereich, nur Admin).
 ///
 /// Org-skopiert unter `organizations/{orgId}/payrollRecords`. Alle Beträge sind
@@ -101,6 +131,9 @@ class PayrollRecord {
     this.unemploymentEmployerCents = 0,
     this.netCents = 0,
     this.employerTotalCents = 0,
+    this.status = PayrollStatus.entwurf,
+    this.finalizedByUid,
+    this.finalizedAt,
     this.note,
     this.createdByUid,
     this.createdAt,
@@ -132,6 +165,15 @@ class PayrollRecord {
   final int unemploymentEmployerCents;
   final int netCents;
   final int employerTotalCents;
+
+  /// Freigabe-Status (Default: Entwurf).
+  final PayrollStatus status;
+
+  /// Wer hat die Abrechnung freigegeben/bezahlt markiert (uid).
+  final String? finalizedByUid;
+
+  /// Zeitpunkt der Freigabe/Statusänderung.
+  final DateTime? finalizedAt;
 
   final String? note;
   final String? createdByUid;
@@ -187,6 +229,9 @@ class PayrollRecord {
           parse.toInt(map['unemploymentEmployerCents']) ?? 0,
       netCents: parse.toInt(map['netCents']) ?? 0,
       employerTotalCents: parse.toInt(map['employerTotalCents']) ?? 0,
+      status: PayrollStatusX.fromValue(map['status']?.toString()),
+      finalizedByUid: map['finalizedByUid'] as String?,
+      finalizedAt: FirestoreDateParser.readDate(map['finalizedAt']),
       note: map['note'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
@@ -221,6 +266,9 @@ class PayrollRecord {
           parse.toInt(map['unemployment_employer_cents']) ?? 0,
       netCents: parse.toInt(map['net_cents']) ?? 0,
       employerTotalCents: parse.toInt(map['employer_total_cents']) ?? 0,
+      status: PayrollStatusX.fromValue(map['status']?.toString()),
+      finalizedByUid: map['finalized_by_uid'] as String?,
+      finalizedAt: FirestoreDateParser.readLocalDate(map['finalized_at']),
       note: map['note'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
@@ -252,6 +300,10 @@ class PayrollRecord {
       'unemploymentEmployerCents': unemploymentEmployerCents,
       'netCents': netCents,
       'employerTotalCents': employerTotalCents,
+      'status': status.value,
+      'finalizedByUid': finalizedByUid,
+      'finalizedAt':
+          finalizedAt == null ? null : Timestamp.fromDate(finalizedAt!),
       'note': note,
       'createdByUid': createdByUid,
       if (id == null) 'createdAt': FieldValue.serverTimestamp(),
@@ -284,6 +336,9 @@ class PayrollRecord {
       'unemployment_employer_cents': unemploymentEmployerCents,
       'net_cents': netCents,
       'employer_total_cents': employerTotalCents,
+      'status': status.value,
+      'finalized_by_uid': finalizedByUid,
+      'finalized_at': finalizedAt?.toIso8601String(),
       'note': note,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
@@ -316,6 +371,11 @@ class PayrollRecord {
     int? unemploymentEmployerCents,
     int? netCents,
     int? employerTotalCents,
+    PayrollStatus? status,
+    String? finalizedByUid,
+    bool clearFinalizedBy = false,
+    DateTime? finalizedAt,
+    bool clearFinalizedAt = false,
     String? note,
     bool clearNote = false,
     String? createdByUid,
@@ -349,6 +409,11 @@ class PayrollRecord {
           unemploymentEmployerCents ?? this.unemploymentEmployerCents,
       netCents: netCents ?? this.netCents,
       employerTotalCents: employerTotalCents ?? this.employerTotalCents,
+      status: status ?? this.status,
+      finalizedByUid:
+          clearFinalizedBy ? null : (finalizedByUid ?? this.finalizedByUid),
+      finalizedAt:
+          clearFinalizedAt ? null : (finalizedAt ?? this.finalizedAt),
       note: clearNote ? null : (note ?? this.note),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,

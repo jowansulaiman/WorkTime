@@ -18,7 +18,7 @@ import '../models/work_entry.dart';
 import '../models/user_settings.dart';
 
 class PdfService {
-  static final _timeFormat = DateFormat('HH:mm');
+  static final _timeFormat = DateFormat('HH:mm', 'de_DE');
 
   static Future<Uint8List> generateMonthlyReport({
     required List<WorkEntry> entries,
@@ -964,7 +964,7 @@ class PdfService {
                       fontSize: 12),
                 ),
               pw.Text(
-                'Erstellt: ${DateFormat('dd.MM.yyyy').format(DateTime.now())}',
+                'Erstellt: ${DateFormat('dd.MM.yyyy', 'de_DE').format(DateTime.now())}',
                 style: const pw.TextStyle(color: PdfColors.white, fontSize: 9),
               ),
             ],
@@ -1023,7 +1023,7 @@ class PdfService {
             ],
           ),
           pw.Text(
-            'Erstellt: ${DateFormat('dd.MM.yyyy HH:mm').format(DateTime.now())}',
+            'Erstellt: ${DateFormat('dd.MM.yyyy HH:mm', 'de_DE').format(DateTime.now())}',
             style: const pw.TextStyle(color: PdfColors.white, fontSize: 9),
           ),
         ],
@@ -1275,7 +1275,7 @@ class PdfService {
               return pw.TableRow(
                 decoration: pw.BoxDecoration(color: bg),
                 children: [
-                  _cell(DateFormat('dd.MM.yy').format(e.date), cellStyle),
+                  _cell(DateFormat('dd.MM.yy', 'de_DE').format(e.date), cellStyle),
                   _cell(_weekdayShort(e.date.weekday), cellStyle),
                   _cell(_timeFormat.format(e.startTime), cellStyle),
                   _cell(_timeFormat.format(e.endTime), cellStyle),
@@ -1347,7 +1347,7 @@ class PdfService {
           ],
           data: shifts
               .map((shift) => [
-                    DateFormat('dd.MM.yyyy').format(shift.startTime),
+                    DateFormat('dd.MM.yyyy', 'de_DE').format(shift.startTime),
                     _weekdayShort(shift.startTime.weekday),
                     _timeFormat.format(shift.startTime),
                     _timeFormat.format(shift.endTime),

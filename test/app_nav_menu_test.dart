@@ -68,6 +68,7 @@ Future<void> _pump(
           onOpenMonthReport: () {},
           onOpenStatistics: () {},
           onOpenPersonal: onOpenPersonal ?? () {},
+          onOpenFinance: () {},
           onOpenTeam: () {},
           onOpenInventory: () {},
           onOpenCustomerOrders: () {},

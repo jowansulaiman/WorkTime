@@ -691,8 +691,8 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
           _shiftCoverageError =
               'Zeiten muessen die ausgewaehlte Schicht mindestens teilweise abdecken. '
               'Fuer Ueberstunden muss der Eintrag an '
-              '${DateFormat('HH:mm').format(shift.startTime)} - '
-              '${DateFormat('HH:mm').format(shift.endTime)} liegen.';
+              '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - '
+              '${DateFormat('HH:mm', 'de_DE').format(shift.endTime)} liegen.';
         }
         _checkingShiftCoverage = false;
       });
@@ -851,7 +851,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
   Future<bool?> _confirmOvertimeApproval(
     OvertimeApprovalRequired approval,
   ) {
-    final timeFmt = DateFormat('HH:mm');
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
     final lines = <String>[
       'Die geplante Schicht laeuft von '
           '${timeFmt.format(approval.shift.startTime)} bis '
@@ -1206,7 +1206,7 @@ class _ConfirmedShiftChoiceTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '${DateFormat('HH:mm').format(shift.startTime)} - ${DateFormat('HH:mm').format(shift.endTime)}'
+                      '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}'
                       ' · ${shift.workedHours.toStringAsFixed(1)} h',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: colorScheme.onSurfaceVariant,
@@ -1351,7 +1351,7 @@ class _ShiftCoverageCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(
             hasValidTimeRange
-                ? '${DateFormat('HH:mm').format(start)} - ${DateFormat('HH:mm').format(end)}'
+                ? '${DateFormat('HH:mm', 'de_DE').format(start)} - ${DateFormat('HH:mm', 'de_DE').format(end)}'
                 : 'Zeitfenster ungueltig',
             style: theme.textTheme.titleMedium?.copyWith(
               color: foreground,
@@ -1362,7 +1362,7 @@ class _ShiftCoverageCard extends StatelessWidget {
           if (shift != null && error == null)
             Text(
               info ??
-                  'Abgedeckt durch "${shift!.title}" · ${DateFormat('HH:mm').format(shift!.startTime)} - ${DateFormat('HH:mm').format(shift!.endTime)}',
+                  'Abgedeckt durch "${shift!.title}" · ${DateFormat('HH:mm', 'de_DE').format(shift!.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift!.endTime)}',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: foreground.withValues(alpha: 0.92),
               ),

@@ -6,6 +6,8 @@ import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
+import '../models/employee_profile.dart';
 import '../models/employment_contract.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
@@ -15,6 +17,7 @@ import '../models/work_entry.dart';
 import '../models/work_task.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
+import 'audit_sink.dart';
 
 /// Aggregierte Abwesenheits-Kennzahlen eines Mitarbeiters (Statistik).
 class AbsenceStats {
@@ -63,12 +66,14 @@ class PersonalProvider extends ChangeNotifier {
   StreamSubscription<List<WorkTask>>? _tasksSubscription;
   StreamSubscription<List<PayrollRecord>>? _payrollSubscription;
   StreamSubscription<List<PayrollProfile>>? _profilesSubscription;
+  StreamSubscription<List<EmployeeProfile>>? _employeeProfilesSubscription;
   StreamSubscription<List<AbsenceRequest>>? _absencesSubscription;
 
   AppUserProfile? _currentUser;
   List<WorkTask> _tasks = [];
   List<PayrollRecord> _payrollRecords = [];
   List<PayrollProfile> _payrollProfiles = [];
+  List<EmployeeProfile> _employeeProfiles = [];
   List<AbsenceRequest> _absences = [];
 
   // Stammdaten aus dem TeamProvider (org-weit, via updateReferenceData).
@@ -89,6 +94,7 @@ class PersonalProvider extends ChangeNotifier {
   List<WorkTask> get tasks => _tasks;
   List<PayrollRecord> get payrollRecords => _payrollRecords;
   List<PayrollProfile> get payrollProfiles => _payrollProfiles;
+  List<EmployeeProfile> get employeeProfiles => _employeeProfiles;
   List<AbsenceRequest> get absences => _absences;
   List<AppUserProfile> get members => _members;
   List<EmploymentContract> get contracts => _contracts;
@@ -136,6 +142,14 @@ class PersonalProvider extends ChangeNotifier {
     return null;
   }
 
+  /// Personal-Stammakte eines Mitarbeiters (HR-Stammdaten), falls vorhanden.
+  EmployeeProfile? employeeProfileForUser(String userId) {
+    for (final profile in _employeeProfiles) {
+      if (profile.userId == userId) return profile;
+    }
+    return null;
+  }
+
   /// Jüngste Abrechnung eines Mitarbeiters (nach Periode).
   PayrollRecord? latestPayrollForUser(String userId) {
     final records = payrollForUser(userId);
@@ -158,6 +172,11 @@ class PersonalProvider extends ChangeNotifier {
     }
     return null;
   }
+
+  /// Alle Abrechnungen eines Abrechnungsmonats (für den Lohnlauf).
+  List<PayrollRecord> payrollForPeriod(int year, int month) => _payrollRecords
+      .where((r) => r.periodYear == year && r.periodMonth == month)
+      .toList(growable: false);
 
   List<AbsenceRequest> absencesForUser(String userId) =>
       _absences.where((absence) => absence.userId == userId).toList();
@@ -250,6 +269,20 @@ class PersonalProvider extends ChangeNotifier {
 
   // --- Session / Reference Data -------------------------------------------
 
+  AuditSink? _audit;
+
+  /// Senke fürs Änderungsprotokoll (best-effort). Wird in main.dart verdrahtet.
+  void setAuditSink(AuditSink sink) {
+    _audit = sink;
+  }
+
+  /// Anzeigename eines Mitarbeiters aus den Stammdaten (sonst die userId).
+  String _memberLabel(String userId) =>
+      memberById(userId)?.displayName ?? userId;
+
+  /// Cent-Betrag als deutscher Euro-String (z.B. 250000 -> "2500,00").
+  String _euro(int cents) => (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
+
   void updateReferenceData({
     List<AppUserProfile> members = const [],
     List<EmploymentContract> contracts = const [],
@@ -304,6 +337,21 @@ class PersonalProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: _setError);
 
+    _absencesSubscription =
+        _firestore.watchAllAbsenceRequests(orgId: orgId).listen((items) {
+      _absences = items;
+      _safeNotify();
+    }, onError: _setError);
+
+    // Lohndaten (payrollRecords/payrollProfiles) und die HR-Stammakte
+    // (employeeProfiles) sind laut firestore.rules admin-only. Fuer
+    // Nicht-Admins werden diese Streams gar nicht erst aufgebaut, sonst
+    // erzeugt jeder regulaere Login zuverlaessig permission-denied-Fehler
+    // (Fehler-Rauschen) und der Ladespinner bliebe haengen (probleme #18).
+    if (!isAdmin) {
+      return;
+    }
+
     _payrollSubscription =
         _firestore.watchPayrollRecords(orgId).listen((items) {
       _payrollRecords = items;
@@ -316,9 +364,9 @@ class PersonalProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: _setError);
 
-    _absencesSubscription =
-        _firestore.watchAllAbsenceRequests(orgId: orgId).listen((items) {
-      _absences = items;
+    _employeeProfilesSubscription =
+        _firestore.watchEmployeeProfiles(orgId).listen((items) {
+      _employeeProfiles = items;
       _safeNotify();
     }, onError: _setError);
   }
@@ -330,6 +378,8 @@ class PersonalProvider extends ChangeNotifier {
         await DatabaseService.loadLocalPayrollRecords(scope: scope);
     _payrollProfiles =
         await DatabaseService.loadLocalPayrollProfiles(scope: scope);
+    _employeeProfiles =
+        await DatabaseService.loadLocalEmployeeProfiles(scope: scope);
     _absences = await DatabaseService.loadLocalAbsenceRequests(scope: scope);
   }
 
@@ -337,10 +387,12 @@ class PersonalProvider extends ChangeNotifier {
     await _tasksSubscription?.cancel();
     await _payrollSubscription?.cancel();
     await _profilesSubscription?.cancel();
+    await _employeeProfilesSubscription?.cancel();
     await _absencesSubscription?.cancel();
     _tasksSubscription = null;
     _payrollSubscription = null;
     _profilesSubscription = null;
+    _employeeProfilesSubscription = null;
     _absencesSubscription = null;
   }
 
@@ -348,6 +400,7 @@ class PersonalProvider extends ChangeNotifier {
     _tasks = [];
     _payrollRecords = [];
     _payrollProfiles = [];
+    _employeeProfiles = [];
     _absences = [];
     _loading = false;
   }
@@ -357,6 +410,8 @@ class PersonalProvider extends ChangeNotifier {
   Future<void> saveWorkTask(WorkTask task) async {
     _assertAdmin();
     final orgId = _requireOrg();
+    // Vor der ggf. neuen ID-Vergabe ermitteln, ob der Auftrag neu ist.
+    final isNew = task.id == null || task.id!.isEmpty;
     final prepared = task.copyWith(
       orgId: orgId,
       createdByUid: task.createdByUid ?? _currentUser?.uid,
@@ -366,6 +421,13 @@ class PersonalProvider extends ChangeNotifier {
           'saveWorkTask',
           () => _firestore.saveWorkTask(prepared),
         )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Auftrag',
+        entityId: prepared.id,
+        summary: 'Auftrag „${task.title}" '
+            '${isNew ? 'angelegt' : 'aktualisiert'}',
+      );
       return;
     }
     final withId = prepared.id == null
@@ -375,6 +437,13 @@ class PersonalProvider extends ChangeNotifier {
     _tasks = [..._tasks];
     await _persistTasks();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Auftrag',
+      entityId: withId.id,
+      summary: 'Auftrag „${task.title}" '
+          '${isNew ? 'angelegt' : 'aktualisiert'}',
+    );
   }
 
   Future<void> setTaskStatus(WorkTask task, TaskStatus status) =>
@@ -384,16 +453,40 @@ class PersonalProvider extends ChangeNotifier {
     _assertAdmin();
     final orgId = _orgId;
     if (orgId == null) return;
+    // Titel vor dem Entfernen aus der In-Memory-Liste merken (für das Protokoll).
+    final title = _taskTitleById(taskId);
+    final summary =
+        title == null ? 'Auftrag gelöscht' : 'Auftrag „$title" gelöscht';
     if (_usesFirestore &&
         await _tryFirestore(
           'deleteWorkTask',
           () => _firestore.deleteWorkTask(orgId: orgId, taskId: taskId),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Auftrag',
+        entityId: taskId,
+        summary: summary,
+      );
       return;
     }
     _tasks = _tasks.where((task) => task.id != taskId).toList(growable: false);
     await _persistTasks();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Auftrag',
+      entityId: taskId,
+      summary: summary,
+    );
+  }
+
+  /// Titel eines Auftrags aus der In-Memory-Liste (oder null, wenn unbekannt).
+  String? _taskTitleById(String taskId) {
+    for (final task in _tasks) {
+      if (task.id == taskId) return task.title;
+    }
+    return null;
   }
 
   Future<void> _persistTasks() =>
@@ -404,6 +497,8 @@ class PersonalProvider extends ChangeNotifier {
   Future<void> savePayrollRecord(PayrollRecord record) async {
     _assertAdmin();
     final orgId = _requireOrg();
+    // Vor der ID-Vergabe ermitteln, ob die Abrechnung neu ist.
+    final isNew = record.id == null || record.id!.isEmpty;
     // Deterministische ID (pro Mitarbeiter/Monat) für stabilen Upsert.
     final withMeta = record.copyWith(
       orgId: orgId,
@@ -412,17 +507,34 @@ class PersonalProvider extends ChangeNotifier {
     final prepared = withMeta.id == null
         ? withMeta.copyWith(id: withMeta.documentId)
         : withMeta;
+    final summary =
+        '${_memberLabel(prepared.userId)} '
+        '${prepared.periodMonth.toString().padLeft(2, '0')}/${prepared.periodYear}: '
+        'Brutto ${_euro(prepared.grossCents)} €, '
+        'Netto ${_euro(prepared.netCents)} €';
     if (_usesFirestore &&
         await _tryFirestore(
           'savePayrollRecord',
           () => _firestore.savePayrollRecord(prepared),
         )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Lohnabrechnung',
+        entityId: prepared.id,
+        summary: summary,
+      );
       return;
     }
     _upsertLocal(_payrollRecords, prepared, (item) => item.id);
     _payrollRecords = [..._payrollRecords];
     await _persistPayroll();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Lohnabrechnung',
+      entityId: prepared.id,
+      summary: summary,
+    );
   }
 
   Future<void> deletePayrollRecord(String recordId) async {
@@ -435,6 +547,12 @@ class PersonalProvider extends ChangeNotifier {
           () =>
               _firestore.deletePayrollRecord(orgId: orgId, recordId: recordId),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Lohnabrechnung',
+        entityId: recordId,
+        summary: 'Lohnabrechnung gelöscht',
+      );
       return;
     }
     _payrollRecords = _payrollRecords
@@ -442,6 +560,76 @@ class PersonalProvider extends ChangeNotifier {
         .toList(growable: false);
     await _persistPayroll();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Lohnabrechnung',
+      entityId: recordId,
+      summary: 'Lohnabrechnung gelöscht',
+    );
+  }
+
+  /// Setzt den Freigabe-Status einer Abrechnung (Entwurf → Freigegeben →
+  /// Bezahlt, oder Storniert). Bei Freigegeben/Bezahlt werden Freigeber + Zeit
+  /// gestempelt; sonst geleert. Protokolliert die Statusänderung im Audit-Trail.
+  Future<void> setPayrollStatus(
+    PayrollRecord record,
+    PayrollStatus status,
+  ) async {
+    _assertAdmin();
+    final orgId = _requireOrg();
+    final updated = status.isFinalized
+        ? record.copyWith(
+            orgId: orgId,
+            status: status,
+            finalizedByUid: _currentUser?.uid,
+            finalizedAt: DateTime.now(),
+          )
+        : record.copyWith(
+            orgId: orgId,
+            status: status,
+            clearFinalizedBy: true,
+            clearFinalizedAt: true,
+          );
+    final prepared = updated.id == null
+        ? updated.copyWith(id: updated.documentId)
+        : updated;
+    final summary = '${_memberLabel(prepared.userId)} '
+        '${prepared.periodMonth.toString().padLeft(2, '0')}/${prepared.periodYear}: '
+        'Status → ${status.label}';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'setPayrollStatus',
+          () => _firestore.savePayrollRecord(prepared),
+        )) {
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Lohnabrechnung',
+        entityId: prepared.id,
+        summary: summary,
+      );
+      return;
+    }
+    _upsertLocal(_payrollRecords, prepared, (item) => item.id);
+    _payrollRecords = [..._payrollRecords];
+    await _persistPayroll();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Lohnabrechnung',
+      entityId: prepared.id,
+      summary: summary,
+    );
+  }
+
+  /// Lohnlauf: gibt alle Entwurf-Abrechnungen eines Monats frei (Batch).
+  Future<void> finalizeAllDrafts(int year, int month) async {
+    _assertAdmin();
+    final drafts = payrollForPeriod(year, month)
+        .where((record) => record.status == PayrollStatus.entwurf)
+        .toList(growable: false);
+    for (final record in drafts) {
+      await setPayrollStatus(record, PayrollStatus.freigegeben);
+    }
   }
 
   Future<void> _persistPayroll() =>
@@ -526,6 +714,81 @@ class PersonalProvider extends ChangeNotifier {
 
   Future<void> _persistProfiles() =>
       DatabaseService.saveLocalPayrollProfiles(_payrollProfiles,
+          scope: _localScope);
+
+  // --- Personal-Stammakte (EmployeeProfile) --------------------------------
+
+  Future<void> saveEmployeeProfile(EmployeeProfile profile) async {
+    _assertAdmin();
+    final orgId = _requireOrg();
+    // Vor der ID-Vergabe ermitteln, ob die Stammakte neu ist.
+    final isNew = profile.id == null || profile.id!.isEmpty;
+    final withMeta = profile.copyWith(
+      orgId: orgId,
+      createdByUid: profile.createdByUid ?? _currentUser?.uid,
+    );
+    final prepared = withMeta.id == null
+        ? withMeta.copyWith(id: withMeta.documentId)
+        : withMeta;
+    final summary =
+        'Mitarbeiterprofil ${_memberLabel(prepared.userId)} gespeichert';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveEmployeeProfile',
+          () => _firestore.saveEmployeeProfile(prepared),
+        )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Mitarbeiterprofil',
+        entityId: prepared.userId,
+        summary: summary,
+      );
+      return;
+    }
+    _upsertLocal(_employeeProfiles, prepared, (item) => item.id);
+    _employeeProfiles = [..._employeeProfiles];
+    await _persistEmployeeProfiles();
+    _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Mitarbeiterprofil',
+      entityId: prepared.userId,
+      summary: summary,
+    );
+  }
+
+  Future<void> deleteEmployeeProfile(String userId) async {
+    _assertAdmin();
+    final orgId = _orgId;
+    if (orgId == null) return;
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteEmployeeProfile',
+          () => _firestore.deleteEmployeeProfile(orgId: orgId, userId: userId),
+        )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Mitarbeiterprofil',
+        entityId: userId,
+        summary: 'Mitarbeiterprofil gelöscht',
+      );
+      return;
+    }
+    _employeeProfiles = _employeeProfiles
+        .where((profile) => profile.userId != userId)
+        .toList(growable: false);
+    await _persistEmployeeProfiles();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Mitarbeiterprofil',
+      entityId: userId,
+      summary: 'Mitarbeiterprofil gelöscht',
+    );
+  }
+
+  Future<void> _persistEmployeeProfiles() =>
+      DatabaseService.saveLocalEmployeeProfiles(_employeeProfiles,
           scope: _localScope);
 
   // --- Infrastruktur -------------------------------------------------------

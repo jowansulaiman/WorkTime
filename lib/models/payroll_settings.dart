@@ -21,6 +21,7 @@ class PayrollSettings {
     this.healthRate = 0.146,
     this.healthAdditionalRate = 0.025,
     this.careRate = 0.036,
+    this.careChildlessSurchargeRate = 0.006,
     this.pensionRate = 0.186,
     this.unemploymentRate = 0.026,
     this.bbgKvPvMonthlyCents = 551250,
@@ -64,6 +65,9 @@ class PayrollSettings {
 
   /// Pflegeversicherung (Gesamtsatz, hälftige Teilung).
   final double careRate;
+
+  /// PV-Beitragszuschlag für Kinderlose (ab 23 J.) – nur Arbeitnehmer.
+  final double careChildlessSurchargeRate;
 
   /// Rentenversicherung (Gesamtsatz).
   final double pensionRate;
@@ -161,8 +165,12 @@ class PayrollSettings {
           parse.toDouble(entry.value) ?? 0.18;
     }
     final base = PayrollSettings.defaults2026();
+    final year = parse.toInt(map['year']) ?? base.year;
     return PayrollSettings(
-      year: parse.toInt(map['year']) ?? base.year,
+      year: year,
+      // taxTariff explizit aus dem Bezugsjahr ableiten, damit ein gespeichertes
+      // year den tatsaechlich angewandten Tarif bestimmt (probleme #28).
+      taxTariff: _tariffForYear(year),
       incomeTaxRateByClass:
           rates.isEmpty ? base.incomeTaxRateByClass : rates,
       soliRate: parse.toDouble(map['soli_rate']) ?? base.soliRate,
@@ -178,6 +186,9 @@ class PayrollSettings {
       healthAdditionalRate: parse.toDouble(map['health_additional_rate']) ??
           base.healthAdditionalRate,
       careRate: parse.toDouble(map['care_rate']) ?? base.careRate,
+      careChildlessSurchargeRate:
+          parse.toDouble(map['care_childless_surcharge_rate']) ??
+              base.careChildlessSurchargeRate,
       pensionRate: parse.toDouble(map['pension_rate']) ?? base.pensionRate,
       unemploymentRate:
           parse.toDouble(map['unemployment_rate']) ?? base.unemploymentRate,
@@ -228,6 +239,7 @@ class PayrollSettings {
       'health_rate': healthRate,
       'health_additional_rate': healthAdditionalRate,
       'care_rate': careRate,
+      'care_childless_surcharge_rate': careChildlessSurchargeRate,
       'pension_rate': pensionRate,
       'unemployment_rate': unemploymentRate,
       'bbg_kv_pv_monthly_cents': bbgKvPvMonthlyCents,
@@ -245,6 +257,14 @@ class PayrollSettings {
       // taxTariff wird über [year] abgeleitet (aktuell nur year2026).
     };
   }
+
+  /// Loest das Bezugsjahr explizit auf den passenden § 32a-Steuertarif auf
+  /// (probleme #28). Aktuell ist nur der 2026er-Tarif gepflegt; weitere Jahre
+  /// fallen bewusst darauf zurueck. Sobald z.B. ein year2027-Tarif existiert,
+  /// hier die zusaetzliche Zuordnung (`2027 => TaxTariff.year2027`) ergaenzen.
+  static TaxTariff _tariffForYear(int year) => switch (year) {
+        _ => TaxTariff.year2026,
+      };
 
   static String? _stateCode(String? federalState) {
     if (federalState == null) return null;
