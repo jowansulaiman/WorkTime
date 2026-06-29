@@ -4,10 +4,14 @@ import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
+import '../core/datev_export.dart';
 import '../core/finance_analytics.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
+import '../models/customer_order.dart';
 import '../models/finance_models.dart';
+import '../models/payroll_record.dart';
+import '../models/purchase_order.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
 import 'audit_sink.dart';
@@ -49,6 +53,7 @@ class FinanceProvider extends ChangeNotifier {
   List<CostType> _costTypes = [];
   List<JournalEntry> _journalEntries = [];
   List<Budget> _budgets = [];
+  DatevExportConfig _datevConfig = const DatevExportConfig();
 
   bool _loading = false;
   String? _errorMessage;
@@ -62,6 +67,7 @@ class FinanceProvider extends ChangeNotifier {
   List<CostType> get costTypes => _costTypes;
   List<JournalEntry> get journalEntries => _journalEntries;
   List<Budget> get budgets => _budgets;
+  DatevExportConfig get datevConfig => _datevConfig;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
@@ -90,6 +96,19 @@ class FinanceProvider extends ChangeNotifier {
       if (c.id == id) return c;
     }
     return null;
+  }
+
+  /// Aktive Kostenstelle, die einem Standort zugeordnet ist (H-C1). Liefert nur
+  /// eine **Vorbelegung** für die automatische Kostenstellen-Auflösung
+  /// (Personalkosten-/Wareneinsatz-Buchung); bei mehreren Treffern gewinnt die
+  /// mit der kleinsten [CostCenter.number] (deterministisch, nicht 1:1-Annahme).
+  CostCenter? costCenterForSite(String? siteId) {
+    if (siteId == null || siteId.isEmpty) return null;
+    final matches = _costCenters
+        .where((c) => c.isActive && c.siteId == siteId)
+        .toList()
+      ..sort((a, b) => a.number.compareTo(b.number));
+    return matches.isEmpty ? null : matches.first;
   }
 
   CostType? costTypeById(String id) {
@@ -155,12 +174,25 @@ class FinanceProvider extends ChangeNotifier {
       return;
     }
 
+    // DATEV-Export-Konfiguration ist lokal/gerätegebunden – in jedem
+    // Speichermodus aus den SharedPreferences laden.
+    _datevConfig = await DatabaseService.loadLocalDatevConfig(scope: _localScope) ??
+        const DatevExportConfig();
+
     if (_usesFirestore) {
       _startFirestoreSubscriptions(user.orgId);
     } else {
       await _loadLocalData();
       _safeNotify();
     }
+  }
+
+  /// Speichert die DATEV-Export-Konfiguration (lokal, admin-only).
+  Future<void> saveDatevConfig(DatevExportConfig config) async {
+    _assertAdmin();
+    _datevConfig = config;
+    await DatabaseService.saveLocalDatevConfig(config, scope: _localScope);
+    _safeNotify();
   }
 
   void _startFirestoreSubscriptions(String orgId) {
@@ -214,6 +246,7 @@ class FinanceProvider extends ChangeNotifier {
     _costTypes = [];
     _journalEntries = [];
     _budgets = [];
+    _datevConfig = const DatevExportConfig();
     _loading = false;
   }
 
@@ -366,6 +399,150 @@ class FinanceProvider extends ChangeNotifier {
     );
   }
 
+  // --- Auto-Buchung Personalkosten (H-A1) ---------------------------------
+
+  /// Bucht die Personalkosten eines freigegebenen [PayrollRecord] automatisch
+  /// als [JournalEntry]. **Idempotent**: deterministische Doc-ID
+  /// `pay-<documentId>` → erneutes Buchen überschreibt denselben Beleg statt zu
+  /// duplizieren (kein Doppelbuchungs-Risiko, auch im hybrid-Fallback). Liefert
+  /// die Journal-ID oder `null`, wenn **nicht** gebucht wurde (kein Recht/Org,
+  /// Betrag 0, oder Kostenstelle/-art nicht eindeutig auflösbar) — in dem Fall
+  /// bewusst KEINE stille Falschbuchung; der Admin bucht dann manuell.
+  Future<String?> postPersonnelCostJournal(
+    PayrollRecord record, {
+    String? primarySiteId,
+    String employeeLabel = 'Mitarbeiter',
+  }) async {
+    if (!isAdmin || _orgId == null) return null;
+    if (record.employerTotalCents <= 0) return null;
+    final costCenter = _resolveSiteCostCenter(primarySiteId);
+    final costType = _resolveCostTypeByNeedles(_personnelNeedles);
+    if (costCenter?.id == null || costType?.id == null) {
+      AppLogger.warning(
+        'Personalkosten-Buchung übersprungen: Kostenstelle/-art nicht '
+        'eindeutig (Standort-Kostenstelle via siteId hinterlegen oder eine '
+        '„Personalkosten"-Kostenart anlegen).',
+      );
+      return null;
+    }
+    final journalId = 'pay-${record.documentId}';
+    // Buchungsdatum = Monatsletzter der Abrechnungsperiode (Tag 0 des Folgemonats).
+    final monthEnd = DateTime(record.periodYear, record.periodMonth + 1, 0);
+    final period =
+        '${record.periodMonth.toString().padLeft(2, '0')}/${record.periodYear}';
+    await saveJournalEntry(JournalEntry(
+      id: journalId,
+      orgId: _orgId!,
+      date: monthEnd,
+      costCenterId: costCenter!.id!,
+      costTypeId: costType!.id!,
+      description: 'Personalkosten $employeeLabel $period',
+      amountCents: record.employerTotalCents,
+      reference: record.documentId,
+    ));
+    return journalId;
+  }
+
+  /// Kostenstelle für eine Auto-Buchung: bevorzugt die dem Standort zugeordnete
+  /// (H-C1), sonst die einzige aktive (eindeutig), sonst null.
+  CostCenter? _resolveSiteCostCenter(String? siteId) {
+    final bySite = costCenterForSite(siteId);
+    if (bySite != null) return bySite;
+    final active = _costCenters.where((c) => c.isActive).toList();
+    return active.length == 1 ? active.first : null;
+  }
+
+  /// Erste aktive Kostenart, deren Name eines der [needles] enthält. Kein
+  /// Treffer → null (keine Falschbuchung mit beliebiger Kostenart).
+  CostType? _resolveCostTypeByNeedles(List<String> needles) {
+    for (final type in _costTypes) {
+      if (!type.isActive) continue;
+      final name = type.name.toLowerCase();
+      if (needles.any(name.contains)) return type;
+    }
+    return null;
+  }
+
+  static const List<String> _personnelNeedles = [
+    'personal',
+    'lohn',
+    'löhne',
+    'gehäl',
+  ];
+  static const List<String> _goodsNeedles = [
+    'wareneinsatz',
+    'wareneingang',
+    'einkauf',
+    'waren',
+  ];
+  static const List<String> _revenueNeedles = [
+    'umsatz',
+    'erlös',
+    'erlos',
+    'verkauf',
+  ];
+
+  /// Bucht den **Wareneinsatz** einer vollständig gelieferten Bestellung
+  /// (H-A2). Kosten → positiver Betrag. Idempotent über `po-<id>`.
+  Future<String?> postPurchaseOrderCost(PurchaseOrder order) async {
+    if (order.id == null || order.totalCents <= 0) return null;
+    return _postOrderJournal(
+      journalId: 'po-${order.id}',
+      siteId: order.siteId,
+      date: order.receivedAt ?? order.createdAt,
+      amountCents: order.totalCents,
+      description: 'Wareneinkauf ${order.orderNumber ?? order.id}',
+      reference: order.id!,
+      costType: _resolveCostTypeByNeedles(_goodsNeedles),
+    );
+  }
+
+  /// Bucht den **Umsatz** einer abgeholten Kundenbestellung (H-A2). Erlös →
+  /// negativer Betrag (Gutschrift-Konvention). Idempotent über `co-<id>`.
+  Future<String?> postCustomerOrderRevenue(CustomerOrder order) async {
+    if (order.id == null || order.totalCents <= 0) return null;
+    return _postOrderJournal(
+      journalId: 'co-${order.id}',
+      siteId: order.siteId,
+      date: order.pickupDate ?? order.createdAt,
+      amountCents: -order.totalCents,
+      description: 'Umsatz Kundenbestellung ${order.orderNumber ?? order.id}',
+      reference: order.id!,
+      costType: _resolveCostTypeByNeedles(_revenueNeedles),
+    );
+  }
+
+  Future<String?> _postOrderJournal({
+    required String journalId,
+    required String siteId,
+    required DateTime? date,
+    required int amountCents,
+    required String description,
+    required String reference,
+    required CostType? costType,
+  }) async {
+    if (!isAdmin || _orgId == null) return null;
+    final costCenter = _resolveSiteCostCenter(siteId);
+    if (costCenter?.id == null || costType?.id == null) {
+      AppLogger.warning(
+        'Auto-Buchung übersprungen: Kostenstelle/-art nicht eindeutig '
+        '($description).',
+      );
+      return null;
+    }
+    await saveJournalEntry(JournalEntry(
+      id: journalId,
+      orgId: _orgId!,
+      date: date ?? DateTime.now(),
+      costCenterId: costCenter!.id!,
+      costTypeId: costType!.id!,
+      description: description,
+      amountCents: amountCents,
+      reference: reference,
+    ));
+    return journalId;
+  }
+
   // --- Budgets -------------------------------------------------------------
 
   Future<void> saveBudget(Budget budget) async {
@@ -427,6 +604,45 @@ class FinanceProvider extends ChangeNotifier {
           scope: _localScope);
   Future<void> _persistBudgets() =>
       DatabaseService.saveLocalBudgets(_budgets, scope: _localScope);
+
+  // --- Speichermodus-Migration (H-H1) -------------------------------------
+
+  /// Snapshot des aktuellen (Cloud-)Finanz-Stands in den lokalen Speicher
+  /// (cloud/hybrid → local). Die DATEV-Konfiguration ist bereits lokal-skopiert.
+  Future<void> cacheCloudStateLocally() async {
+    if (usesLocalStorage) return;
+    await _persistCostCenters();
+    await _persistCostTypes();
+    await _persistJournal();
+    await _persistBudgets();
+  }
+
+  /// Lädt die lokalen Finanz-Daten beim Wechsel local→Cloud/Hybrid hoch. Das
+  /// append-only Journal nutzt seine (deterministischen) Doc-IDs beim Upsert →
+  /// **keine** Doppelbuchung bei Re-Sync.
+  Future<void> syncLocalStateToCloud() async {
+    if (_orgId == null) return;
+    Future<void> push(String label, Future<void> Function() write) async {
+      try {
+        await write();
+      } catch (error) {
+        AppLogger.warning('syncLocalStateToCloud(finance:$label): $error');
+      }
+    }
+
+    for (final c in List<CostCenter>.from(_costCenters)) {
+      await push('costCenter', () => _firestore.saveCostCenter(c));
+    }
+    for (final t in List<CostType>.from(_costTypes)) {
+      await push('costType', () => _firestore.saveCostType(t));
+    }
+    for (final j in List<JournalEntry>.from(_journalEntries)) {
+      await push('journal', () => _firestore.saveJournalEntry(j));
+    }
+    for (final b in List<Budget>.from(_budgets)) {
+      await push('budget', () => _firestore.saveBudget(b));
+    }
+  }
 
   /// Gemeinsamer Save-Pfad: Cloud versuchen (mit Hybrid-Fallback), sonst lokal
   /// upserten + persistieren; in beiden Fällen Audit protokollieren.

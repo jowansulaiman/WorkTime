@@ -1219,8 +1219,54 @@ class _ScannerScreenState extends State<ScannerScreen>
           _buildInactiveCard(context, _inactiveMatch!),
           const SizedBox(height: 8),
         ],
+        _buildFrequentPicks(context, inventory),
         _buildCartCard(context, inventory, items),
       ],
+    );
+  }
+
+  /// Schnellwahl „Häufig bestellt": die meistbestellten Artikel des Ladens als
+  /// antippbare Chips — ein Tipp legt sie wie ein Scan in den Warenkorb. Spart
+  /// das Suchen des Barcodes für die immergleichen Sorten.
+  Widget _buildFrequentPicks(
+    BuildContext context,
+    InventoryProvider inventory,
+  ) {
+    final picks =
+        inventory.frequentlyOrderedProducts(siteId: _selectedSiteId, limit: 8);
+    if (picks.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.bolt_outlined, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text('Häufig bestellt', style: theme.textTheme.titleSmall),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                for (final product in picks)
+                  ActionChip(
+                    avatar: const Icon(Icons.add, size: 18),
+                    label: Text(product.name),
+                    onPressed: () => _addScannedToCart(inventory, product),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 

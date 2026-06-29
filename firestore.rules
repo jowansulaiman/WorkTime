@@ -529,6 +529,64 @@ service cloud.firestore {
             );
       }
 
+      // Zeitwirtschaft: Stempel-Sessions (ClockEntry, M3). Mitarbeiter lesen/
+      // schreiben eigene; Manager/Admin lesen org-weit („wer ist eingestempelt")
+      // und können fremde korrigieren. Löschen nur Admin (Buchungen werden sonst
+      // soft-deaktiviert). Wie workEntries ein direkter Schreibpfad (Callable-
+      // Härtung + {userId}-open-Concurrency später in M7).
+      match /clockEntries/{clockEntryId} {
+        allow read: if sameOrg(orgId)
+            && (
+              canManageShifts()
+              || (
+                resource.data.userId == request.auth.uid
+                && canViewTimeTracking()
+              )
+            );
+
+        allow create: if sameOrg(orgId)
+            && (
+              canManageShifts()
+              || (
+                request.resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            )
+            && request.resource.data.orgId == orgId;
+
+        allow update: if sameOrg(orgId)
+            && (
+              canManageShifts()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+              )
+            )
+            && request.resource.data.orgId == orgId;
+
+        allow delete: if sameOrg(orgId) && isAdmin();
+      }
+
+      // Zeitwirtschaft: Stundenkonto-Snapshots (ZeitkontoSnapshot, M4). Lesen:
+      // eigene + Manager/Admin. Schreiben: nur Manager/Admin (Snapshots entstehen
+      // beim Monatsabschluss/Auszahlung, nie durch den Mitarbeiter selbst).
+      match /zeitkontoSnapshots/{snapshotId} {
+        allow read: if sameOrg(orgId)
+            && (
+              canManageShifts()
+              || (
+                resource.data.userId == request.auth.uid
+                && canViewTimeTracking()
+              )
+            );
+
+        allow create, update: if sameOrg(orgId)
+            && canManageShifts()
+            && request.resource.data.orgId == orgId;
+
+        allow delete: if sameOrg(orgId) && isAdmin();
+      }
+
       match /workTemplates/{templateId} {
         allow read: if sameOrg(orgId)
             && (
@@ -599,14 +657,12 @@ service cloud.firestore {
       }
 
       match /shifts/{shiftId} {
+        // Lesen org-weit für die Schichtleitung sowie jeden Mitarbeiter mit
+        // Planungs-Einsicht (bewusst geöffnet für die Schichttausch-Auswahl:
+        // ein Mitarbeiter muss die Schichten der Kollegen sehen, um eine zum
+        // Tausch auszuwählen). Schreiben bleibt managergebunden (siehe unten).
         allow read: if sameOrg(orgId)
-            && (
-              canManageShifts()
-              || (
-                resource.data.userId == request.auth.uid
-                && canViewSchedule()
-              )
-            );
+            && (canManageShifts() || canViewSchedule());
         allow create: if sameOrg(orgId)
             && canManageShifts()
             && request.resource.data.orgId == orgId;
@@ -644,6 +700,67 @@ service cloud.firestore {
             || canDeleteOwnPendingAbsenceRequest(resource.data);
       }
 
+      // Schichttausch-Anfragen: Antragsteller stellt sie selbst, der
+      // Zielkollege nimmt an/ab, die Schichtleitung bestätigt/lehnt ab.
+      match /shiftSwapRequests/{requestId} {
+        allow read: if sameOrg(orgId) && (
+              canManageShifts()
+              || resource.data.requesterUid == request.auth.uid
+              || resource.data.targetUid == request.auth.uid
+            );
+        allow create: if sameOrg(orgId)
+            && request.resource.data.requesterUid == request.auth.uid
+            && request.resource.data.orgId == orgId
+            && request.resource.data.status == 'pending';
+        allow update: if sameOrg(orgId)
+            && request.resource.data.orgId == resource.data.orgId
+            && request.resource.data.requesterUid == resource.data.requesterUid
+            && request.resource.data.targetUid == resource.data.targetUid
+            && (
+              // Kollege nimmt an / lehnt ab (nur solange offen).
+              (resource.data.targetUid == request.auth.uid
+                  && resource.data.status == 'pending'
+                  && request.resource.data.status in ['accepted_by_colleague', 'declined_by_colleague'])
+              // Antragsteller zieht zurück (solange noch nicht bestätigt).
+              || (resource.data.requesterUid == request.auth.uid
+                  && resource.data.status in ['pending', 'accepted_by_colleague']
+                  && request.resource.data.status == 'cancelled')
+              // Chef bestätigt / lehnt eine angenommene Anfrage ab.
+              || (canManageShifts()
+                  && resource.data.status == 'accepted_by_colleague'
+                  && request.resource.data.status in ['confirmed', 'rejected_by_manager'])
+            );
+        allow delete: if sameOrg(orgId) && (
+              canManageShifts()
+              || (resource.data.requesterUid == request.auth.uid
+                  && resource.data.status == 'pending')
+            );
+      }
+
+      // Schicht-Gutschriften (einseitiger Tausch). Anlage nur durch die
+      // Schichtleitung (entsteht bei der Chef-Bestätigung); einlösen/stornieren
+      // dürfen die Schichtleitung und die beteiligten Mitarbeiter.
+      match /swapCredits/{creditId} {
+        allow read: if sameOrg(orgId) && (
+              canManageShifts()
+              || resource.data.creditorUid == request.auth.uid
+              || resource.data.debtorUid == request.auth.uid
+            );
+        allow create: if sameOrg(orgId)
+            && canManageShifts()
+            && request.resource.data.orgId == orgId;
+        allow update: if sameOrg(orgId)
+            && request.resource.data.orgId == resource.data.orgId
+            && request.resource.data.creditorUid == resource.data.creditorUid
+            && request.resource.data.debtorUid == resource.data.debtorUid
+            && (
+              canManageShifts()
+              || resource.data.creditorUid == request.auth.uid
+              || resource.data.debtorUid == request.auth.uid
+            );
+        allow delete: if sameOrg(orgId) && canManageShifts();
+      }
+
       match /sites/{siteId} {
         allow read: if sameOrg(orgId);
         allow create, update: if isAdmin()
@@ -676,6 +793,17 @@ service cloud.firestore {
         allow delete: if isAdmin() && sameOrg(orgId);
       }
 
+      // Schicht-Vorgaben je Mitarbeiter (Doc-ID = userId). Lesen: sameOrg
+      // (Verteiler/Anzeige). Schreiben: Chef/Teamleitung (defaultCanEditSchedule).
+      match /shiftPreferences/{prefUserId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if defaultCanEditSchedule()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && request.resource.data.userId == prefUserId;
+        allow delete: if defaultCanEditSchedule() && sameOrg(orgId);
+      }
+
       match /ruleSets/{ruleSetId} {
         allow read: if sameOrg(orgId);
         allow create, update: if isAdmin()
@@ -704,7 +832,14 @@ service cloud.firestore {
 
       // Lohndaten enthalten Verguetungsinformationen -> Lesen Admin-only.
       match /payrollRecords/{recordId} {
-        allow read: if isAdmin() && sameOrg(orgId);
+        // M7-Self-Read (L2): eigene Lohnabrechnung lesbar (Doc trägt userId),
+        // Schreiben bleibt admin-only.
+        allow read: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (resource.data.userId == request.auth.uid
+                  && canViewTimeTracking())
+            );
         allow create, update: if isAdmin()
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
@@ -723,6 +858,82 @@ service cloud.firestore {
       // Personal-Stammakte je Mitarbeiter (HR-Stammdaten: Anschrift, SV-/Bank-
       // /Steuerdaten, Eintritt/Austritt) -> Admin-only (personenbezogene Daten).
       match /employeeProfiles/{userId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Sollzeit-Profile (Arbeitszeitmodelle je MA, gültig-ab-versioniert).
+      // M7-Self-Read (L2): eigenes Profil lesbar (Doc trägt userId), damit
+      // Stundenkonto/Mein-Monatsabschluss das Soll berechnen; Schreiben (steuert
+      // Lohn/Stundenkonto/Urlaubsanspruch) bleibt admin-only.
+      match /sollzeitProfiles/{profileId} {
+        allow read: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (resource.data.userId == request.auth.uid
+                  && canViewTimeTracking())
+            );
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Org-/jahr-spezifische Lohn-Konfiguration (SV-/AG-Sätze inkl. U1/U2/InsO/
+      // UV) -> Admin-only (steuern Lohn-/Arbeitgeberkostenrechnung). Doc-ID = Jahr.
+      match /payrollConfig/{jahr} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // HR-Sub-Entitäten je Mitarbeiter (Kinder/Qualifikationen/Ausbildung) ->
+      // Admin-only (personenbezogene HR-Daten, teils lohnsteuerrelevant).
+      match /employeeChildren/{childId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /employeeQualifications/{qualificationId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /employeeAusbildungen/{ausbildungId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Urlaubskonto: Jahres-Vortrag (Doc-ID {userId}-{jahr}) + Korrektur-Ledger
+      // -> Admin-only (urlaubsrechtlich relevant).
+      match /urlaubskontoJahre/{kontoId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /urlaubsanpassungen/{anpassungId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      // Lohnarten-Katalog (M-L): org-weite Lohnart-Vorlagen -> Admin-only.
+      match /payLineTypes/{typeId} {
         allow read: if isAdmin() && sameOrg(orgId);
         allow create, update: if isAdmin()
             && sameOrg(orgId)
@@ -773,7 +984,7 @@ service cloud.firestore {
                 || request.resource.data.actorUid == null
                 || request.resource.data.actorUid == request.auth.uid)
             && request.resource.data.action in
-                 ['created', 'updated', 'deleted'];
+                 ['created', 'updated', 'deleted', 'corrected'];
         allow update, delete: if false;
       }
 
@@ -1010,6 +1221,30 @@ service cloud.firestore {
                  'updatedByUid', 'updatedAt'
                ])
             && request.resource.data.kind == 'weekly_template'
+            && request.resource.data.items is list
+            && request.resource.data.items.size() <= 500
+            && (request.resource.data.updatedByUid == request.auth.uid
+                 || request.resource.data.updatedByUid == null);
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Kuehlschrank-Nachfuellliste je Laden (Doc-ID = siteId): geteilte
+      // Checkliste „was muss aus dem Lager in den Kuehlschrank?". Wie der
+      // Bestellkorb darf JEDES aktive Mitglied Positionen setzen/abhaken
+      // (breiterer Schreibpfad als der Rest der Warenwirtschaft) — kein
+      // Verwaltungsrecht noetig. Loeschen (Doc entfernen) bleibt Managern
+      // vorbehalten; das Leeren laeuft als Update auf leere items. Gleiche
+      // BOPLA-Haertung wie orderCarts (Feld-Allowlist, siteId an Doc-ID,
+      // updatedByUid an den Aufrufer gebunden), aber ohne 'kind'-Feld.
+      match /fridgeRefillLists/{siteId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && request.resource.data.siteId == siteId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'siteName', 'items',
+                 'updatedByUid', 'updatedAt'
+               ])
             && request.resource.data.items is list
             && request.resource.data.items.size() <= 500
             && (request.resource.data.updatedByUid == request.auth.uid

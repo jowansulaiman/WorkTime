@@ -2,10 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../models/audit_log_entry.dart';
+import '../models/contact.dart';
+import '../models/customer_order.dart';
 import '../models/customer_wish.dart';
+import '../models/site_definition.dart';
+import '../providers/audit_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/contact_provider.dart';
+import '../providers/inventory_provider.dart';
+import '../providers/team_provider.dart';
 import '../services/firestore_service.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/contact_picker_field.dart';
 import '../widgets/empty_state.dart';
 
 /// Interner Eingang der über die öffentliche Webseite (/wunsch) abgegebenen
@@ -126,6 +135,9 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
                                 onStatus: (status) =>
                                     _updateStatus(visible[index], status),
                                 onDelete: () => _delete(visible[index]),
+                                onConvert: () => _convertToOrder(visible[index]),
+                                onLinkContact: () =>
+                                    _linkContact(visible[index]),
                               ),
                             ),
                     ),
@@ -190,6 +202,10 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
       return;
     }
     final profile = context.read<AuthProvider>().profile;
+    // Kundenwünsche haben keinen eigenen Provider (Mutation läuft direkt über
+    // FirestoreService) → der Audit-Eintrag wird hier auf dem Erfolgspfad
+    // gesetzt, sonst umginge diese interne Manager-Aktion das Änderungsprotokoll.
+    final audit = context.read<AuditProvider>();
     try {
       await _service.updateCustomerWishStatus(
         orgId: wish.orgId,
@@ -197,9 +213,148 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
         status: status,
         handledByUid: profile?.uid,
       );
+      audit.log(
+        action: AuditAction.updated,
+        entityType: 'Kundenwunsch',
+        entityId: id,
+        summary: 'Wunsch ${wish.referenceCode}: Status „${status.label}"',
+      );
     } catch (_) {
       _snack('Status konnte nicht geändert werden.');
     }
+  }
+
+  /// Verknüpft einen Wunsch mit einem Kontakt aus der Kontakte-Kartei (H-D2)
+  /// bzw. löst die Verknüpfung. Wie bei [_updateStatus] hat der Wunsch keinen
+  /// eigenen Provider → der Audit-Eintrag wird hier auf dem Erfolgspfad gesetzt.
+  Future<void> _linkContact(CustomerWish wish) async {
+    final id = wish.id;
+    if (id == null) {
+      return;
+    }
+    final audit = context.read<AuditProvider>();
+    final selection = await showContactPicker(
+      context,
+      currentContactId: wish.contactId,
+      allowedTypes: const [ContactType.customer],
+      emptyLabel: 'Kein Kontakt (Verknüpfung entfernen)',
+    );
+    if (selection == null) {
+      return; // abgebrochen
+    }
+    final contact = selection.contact;
+    if (contact?.id == wish.contactId) {
+      return; // unverändert → kein Write/Audit für einen No-op
+    }
+    try {
+      await _service.updateCustomerWishContact(
+        orgId: wish.orgId,
+        wishId: id,
+        contactId: contact?.id,
+      );
+      audit.log(
+        action: AuditAction.updated,
+        entityType: 'Kundenwunsch',
+        entityId: id,
+        summary: contact == null
+            ? 'Wunsch ${wish.referenceCode}: Kontakt-Verknüpfung entfernt'
+            : 'Wunsch ${wish.referenceCode}: Kontakt „${contact.name}" verknüpft',
+      );
+    } catch (_) {
+      _snack('Kontakt konnte nicht verknüpft werden.');
+    }
+  }
+
+  /// Übernimmt einen Kundenwunsch in eine echte [CustomerOrder] (H-E1).
+  /// Idempotent über [CustomerOrder.sourceWishId] (keine Doppel-Übernahme).
+  /// Der Wunsch trägt nur einen Klartext-Ladennamen → Standort wird ausgewählt
+  /// (mit Namens-Vorauswahl). Anschließend wird der Wunsch auf „erledigt" gesetzt.
+  Future<void> _convertToOrder(CustomerWish wish) async {
+    final wishId = wish.id;
+    if (wishId == null) return;
+    final inventory = context.read<InventoryProvider>();
+    final sites = context.read<TeamProvider>().sites;
+
+    if (inventory.customerOrders.any((o) => o.sourceWishId == wishId)) {
+      _snack('Dieser Wunsch wurde bereits in eine Bestellung übernommen.');
+      return;
+    }
+    if (sites.isEmpty) {
+      _snack('Kein Standort angelegt – bitte zuerst einen Laden einrichten.');
+      return;
+    }
+
+    final siteId = await _pickSite(wish, sites);
+    if (siteId == null) return; // abgebrochen
+    SiteDefinition? site;
+    for (final s in sites) {
+      if (s.id == siteId) {
+        site = s;
+        break;
+      }
+    }
+
+    // Zuordnung Wunsch→Bestellung zentral im Model (überträgt u. a. die
+    // CRM-Verknüpfung contactId/H-D2 und sourceWishId/H-E1, sonst gingen sie
+    // beim Übergang still verloren).
+    final order = CustomerOrder.fromCustomerWish(
+      wish,
+      siteId: siteId,
+      siteName: site?.name,
+    );
+
+    try {
+      await inventory.saveCustomerOrder(order);
+    } catch (_) {
+      _snack('Bestellung konnte nicht angelegt werden.');
+      return;
+    }
+    // Wunsch als erledigt markieren (zweiter, nicht-transaktionaler Write –
+    // schlägt er fehl, verhindert sourceWishId trotzdem eine Doppel-Übernahme).
+    await _updateStatus(wish, CustomerWishStatus.done);
+    _snack('Bestellung aus Wunsch ${wish.referenceCode} angelegt.');
+  }
+
+  /// Standort-Auswahl für die Wunsch-Übernahme. Bei genau einem Standort wird
+  /// dieser direkt genommen; sonst ein Dialog mit Namens-Vorauswahl.
+  Future<String?> _pickSite(
+    CustomerWish wish,
+    List<SiteDefinition> sites,
+  ) async {
+    if (sites.length == 1) return sites.first.id;
+    final store = wish.storeName.trim().toLowerCase();
+    String? preselect;
+    for (final s in sites) {
+      if (s.name.trim().toLowerCase() == store) {
+        preselect = s.id;
+        break;
+      }
+    }
+    return showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Standort der Bestellung'),
+        children: [
+          for (final s in sites)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(context).pop(s.id),
+              child: Row(
+                children: [
+                  Icon(
+                    s.id == preselect
+                        ? Icons.check_circle
+                        : Icons.store_outlined,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(s.name)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _delete(CustomerWish wish) async {
@@ -207,6 +362,7 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
     if (id == null) {
       return;
     }
+    final audit = context.read<AuditProvider>();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -229,6 +385,12 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
     }
     try {
       await _service.deleteCustomerWish(orgId: wish.orgId, wishId: id);
+      audit.log(
+        action: AuditAction.deleted,
+        entityType: 'Kundenwunsch',
+        entityId: id,
+        summary: 'Wunsch ${wish.referenceCode} gelöscht',
+      );
     } catch (_) {
       _snack('Wunsch konnte nicht gelöscht werden.');
     }
@@ -252,6 +414,8 @@ class _WishCard extends StatelessWidget {
     required this.dateFormat,
     required this.onStatus,
     required this.onDelete,
+    required this.onConvert,
+    required this.onLinkContact,
   });
 
   final CustomerWish wish;
@@ -260,11 +424,20 @@ class _WishCard extends StatelessWidget {
   final DateFormat dateFormat;
   final ValueChanged<CustomerWishStatus> onStatus;
   final VoidCallback onDelete;
+  final VoidCallback onConvert;
+  final VoidCallback onLinkContact;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    // Verknüpften Kontakt live aus der Kontakte-Kartei auflösen (H-D2). `null`,
+    // wenn nicht verknüpft ODER der Kontakt (noch) nicht geladen/gelöscht ist.
+    // Nur verknüpfte Karten abonnieren den ContactProvider (spart Rebuilds in
+    // einem langen Eingang, wenn sich irgendwo ein Kontakt ändert).
+    final linkedContact = wish.contactId == null
+        ? null
+        : context.watch<ContactProvider>().contactById(wish.contactId);
     return Container(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLowest,
@@ -307,6 +480,10 @@ class _WishCard extends StatelessWidget {
                   PopupMenuButton<_WishAction>(
                     onSelected: (action) {
                       switch (action) {
+                        case _WishAction.convert:
+                          onConvert();
+                        case _WishAction.linkContact:
+                          onLinkContact();
                         case _WishAction.seen:
                           onStatus(CustomerWishStatus.seen);
                         case _WishAction.done:
@@ -317,21 +494,32 @@ class _WishCard extends StatelessWidget {
                           onDelete();
                       }
                     },
-                    itemBuilder: (_) => const [
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: _WishAction.convert,
+                        child: Text('In Bestellung übernehmen'),
+                      ),
                       PopupMenuItem(
+                        value: _WishAction.linkContact,
+                        child: Text(wish.contactId == null
+                            ? 'Kontakt verknüpfen'
+                            : 'Kontakt ändern'),
+                      ),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(
                         value: _WishAction.seen,
                         child: Text('Als gesehen markieren'),
                       ),
-                      PopupMenuItem(
+                      const PopupMenuItem(
                         value: _WishAction.done,
                         child: Text('Als erledigt markieren'),
                       ),
-                      PopupMenuItem(
+                      const PopupMenuItem(
                         value: _WishAction.rejected,
                         child: Text('Ablehnen'),
                       ),
-                      PopupMenuDivider(),
-                      PopupMenuItem(
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(
                         value: _WishAction.delete,
                         child: Text('Löschen'),
                       ),
@@ -388,6 +576,27 @@ class _WishCard extends StatelessWidget {
                 ),
               ),
             ],
+            if (wish.contactId != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(Icons.link, size: 16, color: scheme.primary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      linkedContact != null
+                          ? 'Kontakt: ${linkedContact.name}'
+                          : 'Verknüpfter Kontakt (nicht gefunden)',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
             if (wish.createdAt != null) ...[
               const SizedBox(height: 10),
               Text(
@@ -403,7 +612,7 @@ class _WishCard extends StatelessWidget {
   }
 }
 
-enum _WishAction { seen, done, rejected, delete }
+enum _WishAction { convert, linkContact, seen, done, rejected, delete }
 
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status});

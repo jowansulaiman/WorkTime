@@ -4,8 +4,11 @@ import 'dart:typed_data';
 import 'package:intl/intl.dart';
 
 import '../core/datev_export.dart';
+import '../core/finance_analytics.dart';
 import '../core/ical_export.dart';
 import '../core/personnel_cost.dart';
+import '../core/shift_plan_grid.dart';
+import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/finance_models.dart';
 import '../models/customer_order.dart';
@@ -48,6 +51,8 @@ class ExportService {
   }) async {
     final bytes = await PdfService.generateShiftPlanReport(
       shifts: shifts,
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
       rangeLabel: rangeLabel,
       employeeLabel: employeeLabel,
       teamLabel: teamLabel,
@@ -73,6 +78,8 @@ class ExportService {
   }) async {
     final csv = buildShiftPlanCsv(
       shifts: shifts,
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
       rangeLabel: rangeLabel,
       employeeLabel: employeeLabel,
       teamLabel: teamLabel,
@@ -105,16 +112,18 @@ class ExportService {
     );
   }
 
+  /// Schichtplan als CSV, **nach Standort getrennt** (Matrix: Zeilen =
+  /// Mitarbeiter, Spalten = Kalendertage) \u2014 Format des echten Plans. UTF-8-BOM
+  /// + `;`-Delimiter (deutsches Excel).
   static String buildShiftPlanCsv({
     required List<Shift> shifts,
+    required DateTime rangeStart,
+    required DateTime rangeEnd,
     required String rangeLabel,
     String? employeeLabel,
     String? teamLabel,
   }) {
     final buffer = StringBuffer('\uFEFF');
-    final sortedShifts = [...shifts]
-      ..sort((a, b) => a.startTime.compareTo(b.startTime));
-
     buffer.writeln('Schichtplan Export');
     buffer.writeln('Zeitraum;${_escapeCsv(rangeLabel)}');
     if (employeeLabel != null && employeeLabel.trim().isNotEmpty) {
@@ -123,25 +132,38 @@ class ExportService {
     if (teamLabel != null && teamLabel.trim().isNotEmpty) {
       buffer.writeln('Team;${_escapeCsv(teamLabel)}');
     }
-    buffer.writeln();
-    buffer.writeln(
-      'Datum;Wochentag;Beginn;Ende;Pause (min);Stunden;Mitarbeiter;Titel;Team;Status;Notiz',
+
+    final grid = ShiftPlanGrid.build(
+      shifts: shifts,
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
     );
 
-    for (final shift in sortedShifts) {
-      buffer.writeln([
-        DateFormat('dd.MM.yyyy', 'de_DE').format(shift.startTime),
-        _weekdayShort(shift.startTime.weekday),
-        DateFormat('HH:mm', 'de_DE').format(shift.startTime),
-        DateFormat('HH:mm', 'de_DE').format(shift.endTime),
-        shift.breakMinutes.toStringAsFixed(0),
-        shift.workedHours.toStringAsFixed(2),
-        shift.employeeName,
-        shift.title,
-        shift.team ?? '',
-        shift.status.label,
-        shift.notes ?? '',
-      ].map(_escapeCsv).join(';'));
+    if (grid.sites.isEmpty) {
+      buffer.writeln();
+      buffer.writeln('Keine Schichten im Zeitraum.');
+      return buffer.toString();
+    }
+
+    final dateFmt = DateFormat('dd.MM.', 'de_DE');
+    final dayHeaders = [
+      for (final day in grid.days)
+        '${_weekdayShort(day.weekday)} ${dateFmt.format(day)}',
+    ];
+
+    for (final site in grid.sites) {
+      buffer.writeln();
+      buffer.writeln(_escapeCsv(site.siteName));
+      buffer.writeln(
+        ['Mitarbeiter', ...dayHeaders, 'Summe (h)'].map(_escapeCsv).join(';'),
+      );
+      for (final row in site.rows) {
+        buffer.writeln([
+          row.label,
+          ...row.cells,
+          row.totalHours.toStringAsFixed(2),
+        ].map(_escapeCsv).join(';'));
+      }
     }
 
     return buffer.toString();
@@ -556,6 +578,50 @@ class ExportService {
     return weekdays[(weekday - 1).clamp(0, 6)];
   }
 
+  // --- Änderungsprotokoll (Audit) -----------------------------------------
+
+  static String buildAuditLogCsv({required List<AuditLogEntry> entries}) {
+    final dateFmt = DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+    final buffer = StringBuffer('﻿');
+    buffer.writeln('Änderungsprotokoll Export');
+    buffer.writeln('Erstellt;${_escapeCsv(dateFmt.format(DateTime.now()))}');
+    buffer.writeln();
+    buffer.writeln(
+      'Zeitpunkt;Aktion;Objekttyp;Objekt-ID;Zusammenfassung;Benutzer',
+    );
+    final epoch = DateTime.fromMillisecondsSinceEpoch(0);
+    final rows = [...entries]
+      ..sort((a, b) =>
+          (b.createdAt ?? epoch).compareTo(a.createdAt ?? epoch));
+    for (final e in rows) {
+      buffer.writeln([
+        e.createdAt == null ? '' : dateFmt.format(e.createdAt!),
+        e.action.label,
+        e.entityType,
+        e.entityId ?? '',
+        e.summary,
+        e.actorName ?? e.actorUid ?? '',
+      ].map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
+  }
+
+  static Future<void> exportAuditLogCsv({
+    required List<AuditLogEntry> entries,
+  }) async {
+    final csv = buildAuditLogCsv(entries: entries);
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _auditLogFileName('csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  static String _auditLogFileName(String extension) {
+    final stamp = DateFormat('yyyy-MM-dd', 'de_DE').format(DateTime.now());
+    return 'aenderungsprotokoll-$stamp.$extension';
+  }
+
   // --- Finanzen: Journal-CSV + DATEV-EXTF-Buchungsstapel -------------------
 
   static String _euroPlain(int cents) =>
@@ -605,6 +671,29 @@ class ExportService {
       fileName: 'Buchungsjournal_$year.csv',
       mimeType: 'text/csv;charset=utf-8',
     );
+  }
+
+  static Future<void> exportFinanceReportPdf({
+    required int year,
+    required String orgName,
+    required List<CostCenterReport> reports,
+    required List<MonthBucket> months,
+    required int totalPlanned,
+    required int totalActual,
+    required int totalExpenses,
+    required int totalCredits,
+  }) async {
+    final bytes = await PdfService.generateFinanceReport(
+      year: year,
+      orgName: orgName,
+      reports: reports,
+      months: months,
+      totalPlanned: totalPlanned,
+      totalActual: totalActual,
+      totalExpenses: totalExpenses,
+      totalCredits: totalCredits,
+    );
+    await downloadPdfBytes(bytes: bytes, fileName: 'Finanzbericht_$year.pdf');
   }
 
   /// DATEV-EXTF-Buchungsstapel (Format 700) als Datei. Encoding UTF-8 (von

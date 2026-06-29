@@ -48,6 +48,37 @@ List<DateTime> calendarMonthGridDays(DateTime visibleDate) {
 /// Schichten pro Tag.
 int dayKey(DateTime day) => day.year * 10000 + day.month * 100 + day.day;
 
+/// Wie viele Schicht-Kacheln in eine Monats-Tageszelle der nutzbaren Höhe
+/// [available] passen, ohne dass die innere Column überläuft.
+///
+/// Reine Geometrie (kein BuildContext), damit der Overflow-Schutz der
+/// Monatszellen isoliert testbar bleibt: passt nicht alles, wird eine Zeile für
+/// den „+N weitere/mehr"-Hinweis reserviert und entsprechend weniger Kacheln
+/// gezeigt. [tileExtent]/[tileSpacing]/[moreHintExtent] sind die festen
+/// Layout-Maße der jeweiligen Zelle (Kachelhöhe, Abstand, Hinweiszeile).
+int monthCellVisibleShiftCount({
+  required double available,
+  required int total,
+  required double tileExtent,
+  required double tileSpacing,
+  required double moreHintExtent,
+}) {
+  if (total <= 0 || available <= 0) {
+    return 0;
+  }
+  int fit(double space) => space <= 0
+      ? 0
+      : ((space + tileSpacing) / (tileExtent + tileSpacing)).floor();
+  final capacity = fit(available);
+  if (total <= capacity) {
+    return total;
+  }
+  // Nicht alles passt -> eine Zeile für den „+N"-Hinweis (inkl. Abstand davor)
+  // abziehen und neu berechnen.
+  final withMore = fit(available - moreHintExtent - tileSpacing);
+  return withMore.clamp(0, total);
+}
+
 /// ISO-8601-Kalenderwoche (1..53) von [date].
 ///
 /// Rechnet bewusst in UTC: die Tagesdifferenz über `Duration`/`inDays` würde

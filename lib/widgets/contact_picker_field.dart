@@ -4,6 +4,47 @@ import 'package:provider/provider.dart';
 import '../models/contact.dart';
 import '../providers/contact_provider.dart';
 
+/// Ergebnis von [showContactPicker]. `contact == null` bedeutet bewusst
+/// „kein Kontakt" (Laufkunde / Verknüpfung entfernen) — zu unterscheiden von
+/// einem abgebrochenen Sheet (dann liefert [showContactPicker] selbst `null`).
+class ContactSelection {
+  const ContactSelection(this.contact);
+  final Contact? contact;
+}
+
+/// Öffnet die Kontaktauswahl (Suche + „kein Kontakt") als Bottom-Sheet und
+/// liefert das Ergebnis. Liest die **bereits gestreamte** Liste aus dem
+/// [ContactProvider] (keine zusätzlichen Firestore-Reads). Rückgabe `null` =
+/// abgebrochen; sonst eine [ContactSelection] (`contact == null` = „kein
+/// Kontakt"). Wird sowohl von [ContactPickerField] als auch direkt aus
+/// Aktions-Menüs (z. B. Kundenwünsche/-feedback, H-D2) genutzt.
+Future<ContactSelection?> showContactPicker(
+  BuildContext context, {
+  String? currentContactId,
+  List<ContactType>? allowedTypes,
+  String emptyLabel = 'Kein Kontakt',
+}) async {
+  final provider = context.read<ContactProvider>();
+  // Ein bereits verknüpfter Kontakt bleibt sichtbar, auch wenn sein Typ nicht
+  // im Filter liegt (kein stiller Verlust) — analog ContactPickerField.
+  final available = allowedTypes == null
+      ? provider.contacts
+      : provider.contacts
+          .where((c) => allowedTypes.contains(c.type) || c.id == currentContactId)
+          .toList();
+  final result = await showModalBottomSheet<_ContactPick>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (_) => _ContactPickerSheet(
+      contacts: available,
+      emptyLabel: emptyLabel,
+    ),
+  );
+  return result == null ? null : ContactSelection(result.contact);
+}
+
 /// Auswahlfeld, das eine Bestellung (o.Ä.) mit einem echten [Contact] aus der
 /// Kontakte-Kartei verknüpft. Liest die **bereits gestreamte** Liste aus dem
 /// [ContactProvider] (keine zusätzlichen Firestore-Reads) und bietet zusätzlich
@@ -15,11 +56,21 @@ class ContactPickerField extends StatelessWidget {
     required this.contactId,
     required this.onSelected,
     this.label = 'Kontakt verknüpfen',
+    this.emptyLabel = 'Laufkunde (kein Kontakt)',
+    this.allowedTypes,
   });
 
   final String? contactId;
   final ValueChanged<Contact?> onSelected;
   final String label;
+
+  /// Text fuer „kein Kontakt verknuepft" (Platzhalter + Auswahl-Eintrag).
+  final String emptyLabel;
+
+  /// Optionaler Filter auf bestimmte [ContactType]s (z. B. nur Lieferanten).
+  /// `null` = alle Kontakte. Ein bereits verknuepfter Kontakt wird auch dann
+  /// angezeigt, wenn sein Typ nicht im Filter liegt (kein stiller Verlust).
+  final List<ContactType>? allowedTypes;
 
   @override
   Widget build(BuildContext context) {
@@ -27,15 +78,14 @@ class ContactPickerField extends StatelessWidget {
     final selected = provider.contactById(contactId);
     return InkWell(
       onTap: () async {
-        final result = await showModalBottomSheet<_ContactPick>(
-          context: context,
-          showDragHandle: true,
-          isScrollControlled: true,
-          useSafeArea: true,
-          builder: (_) => _ContactPickerSheet(contacts: provider.contacts),
+        final selection = await showContactPicker(
+          context,
+          currentContactId: contactId,
+          allowedTypes: allowedTypes,
+          emptyLabel: emptyLabel,
         );
-        if (result != null) {
-          onSelected(result.contact);
+        if (selection != null) {
+          onSelected(selection.contact);
         }
       },
       child: InputDecorator(
@@ -48,7 +98,7 @@ class ContactPickerField extends StatelessWidget {
           children: [
             Expanded(
               child: Text(
-                selected?.name ?? 'Laufkunde (kein Kontakt)',
+                selected?.name ?? emptyLabel,
                 style: selected == null
                     ? TextStyle(color: Theme.of(context).hintColor)
                     : null,
@@ -71,9 +121,13 @@ class _ContactPick {
 }
 
 class _ContactPickerSheet extends StatefulWidget {
-  const _ContactPickerSheet({required this.contacts});
+  const _ContactPickerSheet({
+    required this.contacts,
+    required this.emptyLabel,
+  });
 
   final List<Contact> contacts;
+  final String emptyLabel;
 
   @override
   State<_ContactPickerSheet> createState() => _ContactPickerSheetState();
@@ -116,7 +170,7 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
             ),
             ListTile(
               leading: const Icon(Icons.person_off_outlined),
-              title: const Text('Laufkunde (kein Kontakt)'),
+              title: Text(widget.emptyLabel),
               onTap: () => Navigator.of(context).pop(const _ContactPick(null)),
             ),
             const Divider(height: 1),

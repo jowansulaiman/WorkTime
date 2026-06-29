@@ -5,14 +5,22 @@ import 'package:provider/provider.dart';
 import '../core/app_config.dart';
 import '../core/redesign_flags.dart';
 import '../models/app_user.dart';
+import '../models/audit_log_entry.dart';
 import '../models/user_settings.dart';
 import '../models/work_template.dart';
+import '../providers/audit_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/feature_flag_provider.dart';
+import '../providers/contact_provider.dart';
+import '../providers/finance_provider.dart';
+import '../providers/inventory_provider.dart';
+import '../providers/personal_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/storage_mode_provider.dart';
 import '../providers/team_provider.dart';
 import '../providers/theme_provider.dart';
 import '../providers/work_provider.dart';
+import '../providers/zeitwirtschaft_provider.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -130,6 +138,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           if (currentUser != null)
                             _AccountInfoCard(user: currentUser),
                           const SizedBox(height: 20),
+                          if (currentUser?.isAdmin == true) ...[
+                            _sectionTitle('Automatische Schichtverteilung'),
+                            const _OrgAutoPlanSettingsCard(),
+                            const SizedBox(height: 20),
+                          ],
                           _sectionTitle('Profil'),
                           Card(
                             child: Padding(
@@ -368,25 +381,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final teamProvider = context.read<TeamProvider>();
     final workProvider = context.read<WorkProvider>();
     final scheduleProvider = context.read<ScheduleProvider>();
+    final inventoryProvider = context.read<InventoryProvider>();
+    final contactProvider = context.read<ContactProvider>();
+    final personalProvider = context.read<PersonalProvider>();
+    final financeProvider = context.read<FinanceProvider>();
+    final auditProvider = context.read<AuditProvider>();
+    final zeitProvider = context.read<ZeitwirtschaftProvider>();
     if (auth.authDisabled || storage.location == location) {
       return;
+    }
+
+    // Alle migrationsfähigen Provider in kanonischer Reihenfolge. Inventory/
+    // Contact/Personal/Finance/Audit migrierten früher NICHT mit (H-H1) →
+    // stiller Daten-Silo beim Moduswechsel.
+    Future<void> cacheAll() async {
+      await teamProvider.cacheCloudStateLocally();
+      await workProvider.cacheCloudStateLocally();
+      await scheduleProvider.cacheCloudStateLocally();
+      await inventoryProvider.cacheCloudStateLocally();
+      await contactProvider.cacheCloudStateLocally();
+      await personalProvider.cacheCloudStateLocally();
+      await financeProvider.cacheCloudStateLocally();
+      await auditProvider.cacheCloudStateLocally();
+      await zeitProvider.cacheCloudStateLocally();
+    }
+
+    Future<void> syncAll() async {
+      await teamProvider.syncLocalStateToCloud();
+      await workProvider.syncLocalStateToCloud();
+      await scheduleProvider.syncLocalStateToCloud();
+      await inventoryProvider.syncLocalStateToCloud();
+      await contactProvider.syncLocalStateToCloud();
+      await personalProvider.syncLocalStateToCloud();
+      await financeProvider.syncLocalStateToCloud();
+      await auditProvider.syncLocalStateToCloud();
+      await zeitProvider.syncLocalStateToCloud();
     }
 
     setState(() => _changingStorage = true);
 
     try {
       if (location == DataStorageLocation.local) {
-        await teamProvider.cacheCloudStateLocally();
-        await workProvider.cacheCloudStateLocally();
-        await scheduleProvider.cacheCloudStateLocally();
+        await cacheAll();
       } else if (storage.isLocalOnly) {
-        await teamProvider.syncLocalStateToCloud();
-        await workProvider.syncLocalStateToCloud();
-        await scheduleProvider.syncLocalStateToCloud();
+        await syncAll();
       } else if (location == DataStorageLocation.hybrid) {
-        await teamProvider.cacheCloudStateLocally();
-        await workProvider.cacheCloudStateLocally();
-        await scheduleProvider.cacheCloudStateLocally();
+        await cacheAll();
       }
 
       await storage.setLocation(location);
@@ -1179,3 +1219,165 @@ TimeOfDay _timeOfDayFromMinutes(int minutes) {
 }
 
 int _toMinutes(TimeOfDay time) => time.hour * 60 + time.minute;
+
+/// Admin-only Org-Sektion: steuert die org-weiten Defaults der automatischen
+/// Schichtverteilung (Cap-Härte + Generator-Vorgaben). Persistiert über
+/// [FeatureFlagProvider.saveOrgSettings]; die Änderung wird ins
+/// Änderungsprotokoll geschrieben (persönliche UserSettings bleiben ungeloggt).
+class _OrgAutoPlanSettingsCard extends StatefulWidget {
+  const _OrgAutoPlanSettingsCard();
+
+  @override
+  State<_OrgAutoPlanSettingsCard> createState() =>
+      _OrgAutoPlanSettingsCardState();
+}
+
+class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
+  late bool _enforceHard;
+  late TextEditingController _shiftMinutesCtrl;
+  late TextEditingController _breakMinutesCtrl;
+  late TextEditingController _requiredCountCtrl;
+  bool _saving = false;
+  bool _initialized = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) {
+      return;
+    }
+    final settings = context.read<FeatureFlagProvider>().orgSettings;
+    _enforceHard = settings.enforceHourCapHard;
+    _shiftMinutesCtrl =
+        TextEditingController(text: settings.defaultShiftMinutes.toString());
+    _breakMinutesCtrl =
+        TextEditingController(text: settings.defaultBreakMinutes.toString());
+    _requiredCountCtrl =
+        TextEditingController(text: settings.defaultRequiredCount.toString());
+    _initialized = true;
+  }
+
+  @override
+  void dispose() {
+    _shiftMinutesCtrl.dispose();
+    _breakMinutesCtrl.dispose();
+    _requiredCountCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _enforceHard,
+              onChanged: (value) => setState(() => _enforceHard = value),
+              title: const Text('Stundengrenzen hart durchsetzen'),
+              subtitle: const Text(
+                'Aus: Grenzen dürfen bei Engpässen überschritten werden '
+                '(Warnung in der Vorschau).',
+              ),
+              secondary: const Icon(Icons.gpp_maybe_outlined),
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _shiftMinutesCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Schichtlänge',
+                      suffixText: 'min',
+                      prefixIcon: Icon(Icons.timelapse_outlined),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _breakMinutesCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Pause',
+                      suffixText: 'min',
+                      prefixIcon: Icon(Icons.free_breakfast_outlined),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _requiredCountCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Standard-Bedarf je Öffnungsfenster',
+                helperText: 'Genutzt, wenn ein Standort keinen Bedarf hinterlegt',
+                prefixIcon: Icon(Icons.groups_outlined),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save),
+                label: const Text('Speichern'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    final featureFlags = context.read<FeatureFlagProvider>();
+    final audit = context.read<AuditProvider>();
+    final updated = featureFlags.orgSettings.copyWith(
+      enforceHourCapHard: _enforceHard,
+      defaultShiftMinutes: int.tryParse(_shiftMinutesCtrl.text.trim()) ?? 480,
+      defaultBreakMinutes: int.tryParse(_breakMinutesCtrl.text.trim()) ?? 30,
+      defaultRequiredCount: int.tryParse(_requiredCountCtrl.text.trim()) ?? 1,
+    );
+    try {
+      await featureFlags.saveOrgSettings(updated);
+      // Org-Settings-Änderung IST fachlich relevant → genau einmal loggen.
+      await audit.log(
+        action: AuditAction.updated,
+        entityType: 'Organisationseinstellungen',
+        summary:
+            'Auto-Schichtverteilung angepasst (Stundengrenzen ${_enforceHard ? 'hart' : 'weich'})',
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Einstellungen gespeichert')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(error.toString().replaceFirst('Bad state: ', ''))),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+      }
+    }
+  }
+}

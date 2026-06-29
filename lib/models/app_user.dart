@@ -329,9 +329,9 @@ class AppUserProfile {
 
   /// Den Barcode-Scanner darf benutzen, wer den Bestand verwalten darf
   /// (er bucht Bestand und schreibt ggf. Preise). canManageInventory enthaelt
-  /// bereits isActive. Die Plattform-/Groessenpruefung ("nur Handy") ist eine
-  /// reine UI-Sache und gehoert NICHT ins Profil-Model
-  /// (siehe MobileBreakpoints.isNativeMobile).
+  /// bereits isActive. Der Scanner ist plattformunabhaengig erreichbar (fester
+  /// Tab in der Mitte der Bottomnav); off-mobile faellt der ScannerScreen auf
+  /// manuelle Barcode-Eingabe zurueck.
   bool get canUseScanner => canManageInventory;
 
   /// Kontakte ansehen darf jedes aktive Mitglied.

@@ -45,6 +45,7 @@ class CostCenter {
     required this.name,
     this.description,
     this.costBearerRef,
+    this.siteId,
     this.annualBudgetCents = 0,
     this.isBillable = false,
     this.isActive = true,
@@ -62,6 +63,13 @@ class CostCenter {
   /// Kostenträger-Referenz (DATEV-Export: KOST2).
   final String? costBearerRef;
 
+  /// Optionale Zuordnung zu einem Standort (`SiteDefinition.id`). `null` =
+  /// standortübergreifend / nicht zugeordnet. **Nicht-unique** und nur eine
+  /// Vorbelegungshilfe für die automatische Kostenstellen-Auflösung (H-C1,
+  /// Enabler für Personalkosten-/Wareneinsatz-Buchung). Kanonisch für den
+  /// DATEV-Export bleibt [number] (KOST1) — `siteId` ersetzt sie nie.
+  final String? siteId;
+
   /// Fallback-Jahresbudget, wenn kein explizites [Budget]-Dokument existiert.
   final int annualBudgetCents;
   final bool isBillable;
@@ -78,6 +86,7 @@ class CostCenter {
       name: (map['name'] ?? '').toString(),
       description: map['description'] as String?,
       costBearerRef: map['costBearerRef'] as String?,
+      siteId: map['siteId'] as String?,
       annualBudgetCents: parse.toInt(map['annualBudgetCents']) ?? 0,
       isBillable: parse.toBool(map['isBillable']) ?? false,
       isActive: parse.toBool(map['isActive']) ?? true,
@@ -95,6 +104,7 @@ class CostCenter {
       name: (map['name'] ?? '').toString(),
       description: map['description'] as String?,
       costBearerRef: map['cost_bearer_ref'] as String?,
+      siteId: map['site_id'] as String?,
       annualBudgetCents: parse.toInt(map['annual_budget_cents']) ?? 0,
       isBillable: parse.toBool(map['is_billable']) ?? false,
       isActive: parse.toBool(map['is_active']) ?? true,
@@ -111,6 +121,7 @@ class CostCenter {
       'name': name.trim(),
       'description': _clean(description),
       'costBearerRef': _clean(costBearerRef),
+      'siteId': _clean(siteId),
       'annualBudgetCents': annualBudgetCents,
       'isBillable': isBillable,
       'isActive': isActive,
@@ -127,6 +138,7 @@ class CostCenter {
       'name': name,
       'description': description,
       'cost_bearer_ref': costBearerRef,
+      'site_id': siteId,
       'annual_budget_cents': annualBudgetCents,
       'is_billable': isBillable,
       'is_active': isActive,
@@ -145,6 +157,8 @@ class CostCenter {
     bool clearDescription = false,
     String? costBearerRef,
     bool clearCostBearerRef = false,
+    String? siteId,
+    bool clearSiteId = false,
     int? annualBudgetCents,
     bool? isBillable,
     bool? isActive,
@@ -161,6 +175,7 @@ class CostCenter {
           clearDescription ? null : (description ?? this.description),
       costBearerRef:
           clearCostBearerRef ? null : (costBearerRef ?? this.costBearerRef),
+      siteId: clearSiteId ? null : (siteId ?? this.siteId),
       annualBudgetCents: annualBudgetCents ?? this.annualBudgetCents,
       isBillable: isBillable ?? this.isBillable,
       isActive: isActive ?? this.isActive,

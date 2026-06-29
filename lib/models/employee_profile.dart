@@ -300,6 +300,11 @@ class EmployeeProfile {
   final String? bic;
   final String? accountHolder;
 
+  /// **Deprecated (M0):** Der kanonische Jahresurlaub liegt seit M0 in
+  /// `SollzeitProfile.urlaubstageJahr`. Dieses Altfeld bleibt nur als
+  /// **Fallback** der Vorrangregel §5.1 (`resolveUrlaubstageJahr`) erhalten und
+  /// wird per `PersonalProvider.migriereUrlaubstageInSollzeit()` dorthin
+  /// übertragen. Nicht mehr als neue Quelle verwenden.
   final int? annualVacationDays;
 
   final String? emergencyContactName;

@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -173,6 +175,89 @@ void main() {
   );
 
   testWidgets(
+    'Monatsansicht: viele Schichten an einem Tag laufen nicht ueber',
+    (tester) async {
+      // Reproduziert den gemeldeten Pixel-Overflow: an einem Tag liegen mehr
+      // Schichten als in die feste Monats-Zellenhoehe passen.
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: List.generate(
+          7,
+          (i) => _SeededShift(
+            id: 'shift-many-$i',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Schicht $i',
+            siteName: 'Berlin HQ',
+          ),
+        ),
+        viewMode: ScheduleViewMode.month,
+        physicalSize: const Size(1600, 1200),
+      );
+
+      // Kein RenderFlex-Overflow in der Tageszelle.
+      expect(tester.takeException(), isNull);
+      // Overflow-Schutz greift: nicht alle Kacheln sichtbar -> "+N weitere".
+      expect(find.textContaining('weitere'), findsWidgets);
+    },
+  );
+
+  testWidgets(
+    'Kompakte Monatsansicht: viele Schichten an einem Tag laufen nicht ueber',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: List.generate(
+          6,
+          (i) => _SeededShift(
+            id: 'shift-cmany-$i',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Schicht $i',
+            siteName: 'Berlin HQ',
+          ),
+        ),
+        viewMode: ScheduleViewMode.month,
+        physicalSize: const Size(390, 844),
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(find.textContaining('mehr'), findsWidgets);
+    },
+  );
+
+  testWidgets(
+    'Monatsansicht: Tag nur mit Abwesenheit laeuft horizontal nicht ueber',
+    (tester) async {
+      // Reproduziert den zweiten Pixel-Overflow: eine Tageszelle ohne Schicht,
+      // aber mit Abwesenheit, zeigt im Fuss "Abwesenheiten vorhanden". Bei
+      // schmalen, nicht-kompakten Zellen + realer Textgroesse lief diese Zeile
+      // horizontal ueber (kein Flexible/Ellipsis).
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [
+          _SeededAbsence(
+            id: 'absence-only',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            type: 'sickness',
+            status: 'approved',
+          ),
+        ],
+        viewMode: ScheduleViewMode.month,
+        physicalSize: const Size(1280, 1000),
+        textScale: 1,
+      );
+
+      expect(tester.takeException(), isNull);
+      // Der (jetzt ellipsisfaehige) Hinweis ist weiterhin als Datentext da.
+      expect(find.text('Abwesenheiten vorhanden'), findsWidgets);
+    },
+  );
+
+  testWidgets(
     'admin planner exports only completed shifts when status filter is completed',
     (tester) async {
       late ShiftPlanExportFormat capturedFormat;
@@ -263,6 +348,210 @@ void main() {
       expect(exportedShifts.single.title, 'Fruehschicht');
     },
   );
+
+  testWidgets(
+    'Neue Schicht oeffnet Editor mit Mehrtage-Picker (kein Crash)',
+    (tester) async {
+      await _pumpAdminPlanner(tester, absences: const []);
+
+      expect(find.text('Neue Schicht'), findsOneWidget);
+      await tester.tap(find.text('Neue Schicht'));
+      await _settlePlanner(tester);
+
+      // Editor offen: Titel-Feld + Tage-Tile (statt Datum) im Anlege-Modus.
+      expect(find.text('Schichttitel'), findsOneWidget);
+      expect(find.text('Tage'), findsWidgets);
+      expect(find.text('Datum'), findsNothing);
+
+      // Mehrtage-Picker oeffnen (Tile ggf. unten im scrollbaren Sheet).
+      final tageTile = find.text('Tage').first;
+      await tester.ensureVisible(tageTile);
+      await _settlePlanner(tester);
+      await tester.tap(tageTile);
+      await _settlePlanner(tester);
+
+      expect(find.text('Tage waehlen'), findsOneWidget);
+      expect(find.text('Mo'), findsWidgets);
+      expect(find.text('Uebernehmen'), findsOneWidget);
+
+      // Wochentag waehlen + uebernehmen darf nicht werfen.
+      await tester.tap(find.text('Mo').first);
+      await _settlePlanner(tester);
+      await tester.tap(find.text('Uebernehmen'));
+      await _settlePlanner(tester);
+    },
+  );
+
+  testWidgets(
+    'Toolbar laeuft bei schmaler Breite nicht ueber',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        physicalSize: const Size(1080, 800),
+      );
+      // Kein RenderFlex-Overflow beim Rendern der erweiterten Toolbar.
+      expect(tester.takeException(), isNull);
+      expect(find.text('Neue Schicht'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Editor + Mehrtage-Picker auf Phone-Breite ohne Overflow',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        physicalSize: const Size(390, 844),
+      );
+      expect(tester.takeException(), isNull);
+
+      // Kompakte Toolbar: "+" (Neue Schicht) per Tooltip finden und tippen.
+      final addButton = find.byTooltip('Neue Schicht');
+      expect(addButton, findsOneWidget);
+      await tester.tap(addButton);
+      await _settlePlanner(tester);
+      expect(tester.takeException(), isNull);
+      expect(find.text('Schichttitel'), findsOneWidget);
+
+      // Tage-Tile sichtbar machen + Mehrtage-Picker oeffnen (kein Overflow).
+      final tageTile = find.text('Tage').first;
+      await tester.ensureVisible(tageTile);
+      await _settlePlanner(tester);
+      await tester.tap(tageTile);
+      await _settlePlanner(tester);
+      expect(tester.takeException(), isNull);
+      expect(find.text('Tage waehlen'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Editor im Bearbeiten-Modus oeffnet auf Phone-Breite ohne Overflow',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-edit',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+        physicalSize: const Size(390, 844),
+      );
+
+      await tester.tap(find.text('Fruehschicht').first);
+      await _settlePlanner(tester);
+      expect(tester.takeException(), isNull);
+      // Edit-Modus: einzelnes "Datum" (kein Mehrtage), Aktualisieren-Button.
+      expect(find.text('Datum'), findsOneWidget);
+      expect(find.text('Aktualisieren'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Long-Press-Drag einer Schichtkarte wirft keine Exception',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-drag',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+      );
+
+      final card = find.text('Fruehschicht').first;
+      final gesture = await tester.startGesture(tester.getCenter(card));
+      // Long-Press ausloesen, dann nach unten in eine andere Zeile ziehen.
+      await tester.pump(const Duration(milliseconds: 700));
+      await gesture.moveBy(const Offset(0, 220));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, 220));
+      await tester.pump();
+      await gesture.up();
+      await _settlePlanner(tester);
+
+      // Drag/Drop darf den Board nicht zum Absturz bringen (Fehler beim
+      // Kopier-Schreibpfad werden abgefangen und als Hinweis gezeigt).
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Desktop: sofortiges Klick-Drag (Draggable) wirft keine Exception',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      try {
+        await _pumpAdminPlanner(
+          tester,
+          absences: const [],
+          shifts: const [
+            _SeededShift(
+              id: 'shift-mouse',
+              userId: 'employee-anna',
+              employeeName: 'Anna',
+              title: 'Fruehschicht',
+              siteName: 'Berlin HQ',
+            ),
+          ],
+        );
+
+        final card = find.text('Fruehschicht').first;
+        // Sofortiges Ziehen OHNE Long-Press (Maus-Verhalten).
+        final gesture = await tester.startGesture(tester.getCenter(card));
+        await tester.pump(const Duration(milliseconds: 20));
+        await gesture.moveBy(const Offset(0, 220));
+        await tester.pump();
+        await gesture.moveBy(const Offset(0, 220));
+        await tester.pump();
+        await gesture.up();
+        await _settlePlanner(tester);
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
+
+  testWidgets(
+    'Karten-Menue "Kopieren" oeffnet Sheet mit Mitarbeiter-Auswahl',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-copy',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+      );
+
+      await tester.tap(find.byIcon(Icons.more_horiz).first);
+      await _settlePlanner(tester);
+      expect(find.text('Kopieren (Mitarbeiter/Tage) ...'), findsOneWidget);
+
+      await tester.tap(find.text('Kopieren (Mitarbeiter/Tage) ...'));
+      await _settlePlanner(tester);
+
+      // Kopier-Sheet: Mitarbeiter-Chips (z.B. Ben waehlbar) + Kopieren-Button.
+      expect(find.text('Schicht kopieren'), findsOneWidget);
+      expect(find.text('Ben'), findsWidgets);
+      expect(find.widgetWithText(FilledButton, 'Kopieren'), findsOneWidget);
+    },
+  );
 }
 
 Future<_PlannerHarness> _pumpAdminPlanner(
@@ -271,6 +560,7 @@ Future<_PlannerHarness> _pumpAdminPlanner(
   List<_SeededShift> shifts = const [],
   ScheduleViewMode viewMode = ScheduleViewMode.day,
   Size physicalSize = const Size(1600, 1200),
+  double textScale = 0.78,
   ShiftPlanExportCallback? onShiftPlanExport,
 }) async {
   tester.view.devicePixelRatio = 1;
@@ -392,7 +682,7 @@ Future<_PlannerHarness> _pumpAdminPlanner(
         home: Builder(
           builder: (context) => MediaQuery(
             data: MediaQuery.of(context).copyWith(
-              textScaler: const TextScaler.linear(0.78),
+              textScaler: TextScaler.linear(textScale),
             ),
             child: Scaffold(
               body: ShiftPlannerScreen(

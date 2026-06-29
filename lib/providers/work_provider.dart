@@ -251,12 +251,52 @@ class WorkProvider extends ChangeNotifier {
   double get totalHoursThisMonth =>
       _entries.fold(0, (sum, entry) => sum + entry.workedHours);
 
-  double get totalWageThisMonth => totalHoursThisMonth * settings.hourlyRate;
+  /// Lohn-Schätzung des Monats. **Quelle: `EmploymentContract`** (SSoT, H-B1) —
+  /// pro Eintrag wird der am `entry.date` gültige Vertrag aufgelöst
+  /// (`isActiveOn`), nicht `now()`. Ohne aktiven Vertrag (oder hourlyRate 0)
+  /// greift der bisherige `UserSettings.hourlyRate` als Fallback, damit nie
+  /// still 0 entsteht.
+  double get totalWageThisMonth => _entries.fold(
+      0.0, (sum, entry) => sum + entry.workedHours * _hourlyRateOn(entry.date));
 
-  double get overtimeThisMonth => _entries.fold(0, (sum, entry) {
-        final diff = entry.workedHours - settings.dailyHours;
+  double get overtimeThisMonth => _entries.fold(0.0, (sum, entry) {
+        final diff = entry.workedHours - _dailyHoursOn(entry.date);
         return sum + (diff > 0 ? diff : 0);
       });
+
+  /// Stundensatz, der am [date] für den aktuellen Nutzer gilt: Vertrag zuerst,
+  /// sonst `UserSettings`-Fallback (nie still 0).
+  double _hourlyRateOn(DateTime date) {
+    final contract = _activeContractForCurrentUser(date);
+    if (contract != null && contract.hourlyRate > 0) {
+      return contract.hourlyRate;
+    }
+    return settings.hourlyRate;
+  }
+
+  /// Tagessoll, das am [date] für den aktuellen Nutzer gilt (Vertrag zuerst).
+  double _dailyHoursOn(DateTime date) {
+    final contract = _activeContractForCurrentUser(date);
+    if (contract != null && contract.dailyHours > 0) {
+      return contract.dailyHours;
+    }
+    return settings.dailyHours;
+  }
+
+  /// Am [date] gültiger Vertrag des aktuellen Nutzers (neuester `validFrom`
+  /// gewinnt bei Überlappung). Liest die bereits via PUSH vorliegende
+  /// `_contracts`-Kopie — **keine neue Provider→Provider-Kante** (H-B1).
+  EmploymentContract? _activeContractForCurrentUser(DateTime date) {
+    final uid = _currentUser?.uid;
+    if (uid == null) {
+      return null;
+    }
+    final matches = _contracts
+        .where((c) => c.userId == uid && c.isActiveOn(date))
+        .toList(growable: false)
+      ..sort((a, b) => b.validFrom.compareTo(a.validFrom));
+    return matches.isEmpty ? null : matches.first;
+  }
 
   String? _lastSessionKey;
 
@@ -471,7 +511,7 @@ class WorkProvider extends ChangeNotifier {
       await _persistLocalEntries();
       _applyLocalState();
       _audit?.call(
-        action: isNew ? AuditAction.created : AuditAction.updated,
+        action: isNew ? AuditAction.created : AuditAction.corrected,
         entityType: 'Zeiteintrag',
         entityId: preparedEntry.id,
         summary: 'Zeiteintrag am ${_auditDate(preparedEntry.date)} '
@@ -502,13 +542,125 @@ class WorkProvider extends ChangeNotifier {
     // Erfolgreich (Cloud-Write ODER hybrider lokaler Fallback im catch) – der
     // rethrow-Pfad erreicht diese Stelle nie. Genau eine Log-Stelle pro Erfolg.
     _audit?.call(
-      action: isNew ? AuditAction.created : AuditAction.updated,
+      action: isNew ? AuditAction.created : AuditAction.corrected,
       entityType: 'Zeiteintrag',
       entityId: preparedEntry.id,
       summary: 'Zeiteintrag am ${_auditDate(preparedEntry.date)} '
           '(${preparedEntry.workedHours.toStringAsFixed(2)} h)',
     );
     await _notifyShiftWorked(preparedEntry.sourceShiftId);
+  }
+
+  // ── Zeitwirtschafts-Status-Workflow (M2) ──────────────────────────────────
+  // Reine Status-Übergänge auf einem bestehenden Eintrag. Im Gegensatz zu
+  // [_addEntry] wird userId/orgId NICHT überschrieben (ein Manager genehmigt
+  // fremde Einträge), und es läuft keine erneute Compliance-Validierung über den
+  // Client (Zeitfenster bleibt unverändert; der Callable re-validiert ohnehin).
+
+  /// Mitarbeiter reicht einen eigenen Eintrag zur Genehmigung ein
+  /// (Entwurf/abgelehnt → eingereicht).
+  Future<void> submitWorkEntry(WorkEntry entry) async {
+    final currentUser = _currentUser;
+    if (currentUser == null || entry.id == null) {
+      return;
+    }
+    if (entry.userId != currentUser.uid || !currentUser.canEditTimeEntries) {
+      return;
+    }
+    if (entry.status == WorkEntryStatus.submitted ||
+        entry.status == WorkEntryStatus.approved) {
+      return;
+    }
+    final updated = entry.copyWith(
+      status: WorkEntryStatus.submitted,
+      clearApprovedByUid: true,
+      clearApprovedAt: true,
+    );
+    await _persistEntryStatus(
+      updated,
+      summary: 'Zeiteintrag am ${_auditDate(updated.date)} eingereicht',
+    );
+  }
+
+  /// Manager/Admin genehmigt einen Zeiteintrag.
+  Future<void> approveWorkEntry(WorkEntry entry) async {
+    final currentUser = _currentUser;
+    if (currentUser == null ||
+        entry.id == null ||
+        !currentUser.canManageShifts) {
+      return;
+    }
+    final updated = entry.copyWith(
+      status: WorkEntryStatus.approved,
+      approvedByUid: currentUser.uid,
+      approvedAt: DateTime.now(),
+    );
+    await _persistEntryStatus(
+      updated,
+      summary: 'Zeiteintrag am ${_auditDate(updated.date)} genehmigt',
+    );
+  }
+
+  /// Manager/Admin lehnt einen Zeiteintrag ab (optionaler Grund landet in `note`).
+  Future<void> rejectWorkEntry(WorkEntry entry, {String? reason}) async {
+    final currentUser = _currentUser;
+    if (currentUser == null ||
+        entry.id == null ||
+        !currentUser.canManageShifts) {
+      return;
+    }
+    final trimmed = reason?.trim();
+    final updated = entry.copyWith(
+      status: WorkEntryStatus.rejected,
+      approvedByUid: currentUser.uid,
+      approvedAt: DateTime.now(),
+      note: trimmed != null && trimmed.isNotEmpty ? trimmed : entry.note,
+    );
+    await _persistEntryStatus(
+      updated,
+      summary: 'Zeiteintrag am ${_auditDate(updated.date)} abgelehnt',
+    );
+  }
+
+  /// Persistiert einen reinen Status-Übergang (lokal / Cloud+Hybrid-Fallback),
+  /// loggt genau einmal auf dem Erfolgs-Pfad. Spiegelt das Muster aus [_addEntry],
+  /// ohne aber Eigentümer-Felder zu überschreiben.
+  Future<void> _persistEntryStatus(
+    WorkEntry updated, {
+    required String summary,
+  }) async {
+    if (usesLocalStorage) {
+      _upsertLocalEntry(updated);
+      await _persistLocalEntries();
+      _applyLocalState();
+      _audit?.call(
+        action: AuditAction.corrected,
+        entityType: 'Zeiteintrag',
+        entityId: updated.id,
+        summary: summary,
+      );
+      notifyListeners();
+      return;
+    }
+    try {
+      await _firestoreService.saveWorkEntry(updated);
+    } on ComplianceRejectedException {
+      rethrow;
+    } catch (error) {
+      if (!usesHybridStorage) {
+        rethrow;
+      }
+      _upsertLocalEntry(updated);
+      await _persistLocalEntries();
+      _applyLocalState();
+      _safeNotify();
+    }
+    _audit?.call(
+      action: AuditAction.corrected,
+      entityType: 'Zeiteintrag',
+      entityId: updated.id,
+      summary: summary,
+    );
   }
 
   Future<void> addEntries(List<WorkEntry> entries) async {

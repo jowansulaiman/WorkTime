@@ -4,13 +4,24 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/de_number_input.dart';
+import '../core/lohn_herleitung.dart';
 import '../core/money.dart';
 import '../core/payroll_calculator.dart';
 import '../core/personnel_cost.dart';
+import '../core/sfn_zuschlag.dart';
+import '../core/zeitkonto_calculator.dart';
 import '../models/app_user.dart';
 import '../models/customer_order.dart';
 import '../models/employee_profile.dart';
+import '../models/employee_ausbildung.dart';
+import '../models/employee_child.dart';
+import '../models/employee_qualification.dart';
 import '../models/employment_contract.dart';
+import '../models/org_payroll_settings.dart';
+import '../models/pay_line_type.dart';
+import '../models/urlaubsanpassung.dart';
+import '../models/urlaubskonto_jahr.dart';
 import '../models/payroll_record.dart';
 import '../models/payroll_settings.dart';
 import '../models/work_entry.dart';
@@ -19,6 +30,7 @@ import '../providers/inventory_provider.dart';
 import '../providers/personal_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
+import 'abwesenheit_screen.dart';
 
 /// Personal-Bereich (nur Admin): Übersicht, Aufträge, Lohn (Richtwert),
 /// Finanzen (Personalkosten) und Statistiken – mit Monats-/Statusfilter und
@@ -144,6 +156,12 @@ String _euro(int cents) => _eurFormat.format(cents / 100);
 String _monthLabel(DateTime month) =>
     DateFormat('MMMM yyyy', 'de_DE').format(month);
 
+/// Urlaubstage ohne überflüssige Nachkommastelle, mit deutschem Komma
+/// (30.0 → „30", 12.5 → „12,5").
+String _formatTage(double tage) => tage % 1 == 0
+    ? tage.toInt().toString()
+    : tage.toStringAsFixed(1).replaceAll('.', ',');
+
 String _formatDate(DateTime date) =>
     DateFormat('dd.MM.yyyy', 'de_DE').format(date);
 
@@ -165,6 +183,11 @@ AppStatusTone _payrollStatusTone(PayrollStatus status) => switch (status) {
     };
 
 int? _parseEuroToCents(String raw) => Money.parseCents(raw);
+
+// Prozent <-> Bruchteil-Umrechnung: geteilte, getestete Util (de_number_input).
+String _rateToPercentInput(double fraction) => rateToPercentInput(fraction);
+
+double? _percentInputToRate(String raw) => percentInputToRate(raw);
 
 String _centsToInput(int cents) =>
     (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
@@ -352,6 +375,40 @@ class _OverviewTab extends StatelessWidget {
           ],
         ),
         SizedBox(height: spacing.lg),
+        const _UrlaubMigrationCard(),
+        AppCard(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const AbwesenheitScreen(),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.beach_access_outlined,
+                  color: Theme.of(context).colorScheme.primary,
+                  size: context.iconSizes.md),
+              SizedBox(width: spacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Abwesenheits-Übersicht',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w800)),
+                    Text('Urlaubskonten & §9-Hinweise je Mitarbeiter',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing.sm),
         Text(
           'Mitarbeiter',
           style: Theme.of(context)
@@ -374,6 +431,83 @@ class _OverviewTab extends StatelessWidget {
   }
 
   String get _monthShort => DateFormat('MMM', 'de_DE').format(month);
+}
+
+/// Selbst-versteckende M0-Hinweiskarte: bietet (admin) das einmalige Übernehmen
+/// der Bestands-Urlaubstage aus den deprecaten Altfeldern ins Sollzeit-Modell
+/// an. Sichtbar nur, solange es offene Übernahmen gibt.
+class _UrlaubMigrationCard extends StatefulWidget {
+  const _UrlaubMigrationCard();
+
+  @override
+  State<_UrlaubMigrationCard> createState() => _UrlaubMigrationCardState();
+}
+
+class _UrlaubMigrationCardState extends State<_UrlaubMigrationCard> {
+  bool _running = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final personal = context.watch<PersonalProvider>();
+    final offen = personal.mitarbeiterMitOffenerUrlaubsMigration;
+    if (offen.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: context.spacing.lg),
+      child: AppSectionCard(
+        title: 'Urlaubsdaten ins Sollzeit-Modell übernehmen',
+        icon: Icons.event_available_outlined,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${offen.length} Mitarbeiter haben ihren Jahresurlaub noch im '
+              'alten Feld. Übernimm die Bestandswerte unverändert ins '
+              'Sollzeit-Modell (Urlaubstage/Jahr) – das wird die künftige Quelle.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            SizedBox(height: context.spacing.sm),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.tonalIcon(
+                onPressed: _running ? null : _run,
+                icon: _running
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.move_down, size: 18),
+                label: const Text('Übernehmen'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _run() async {
+    setState(() => _running = true);
+    final personal = context.read<PersonalProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final anzahl = await personal.migriereUrlaubstageInSollzeit();
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(
+        content: Text(anzahl == 0
+            ? 'Keine Übernahme nötig.'
+            : '$anzahl Urlaubswert(e) ins Sollzeit-Modell übernommen.'),
+      ));
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Übernahme fehlgeschlagen: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
 }
 
 class _EmployeeCard extends StatelessWidget {
@@ -771,6 +905,23 @@ class _PayrollTab extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w800),
               ),
             ),
+            IconButton(
+              tooltip: 'Lohnarten-Katalog',
+              icon: const Icon(Icons.list_alt_outlined),
+              onPressed: () => showAppBottomSheet(
+                context: context,
+                builder: (_) => const _PayLineTypeKatalogSheet(),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Lohn-Einstellungen ${month.year}',
+              icon: const Icon(Icons.tune),
+              onPressed: () => showAppBottomSheet(
+                context: context,
+                builder: (_) => _OrgPayrollSettingsSheet(jahr: month.year),
+              ),
+            ),
+            SizedBox(width: spacing.xs),
             FilledButton.icon(
               onPressed: () => showAppBottomSheet(
                 context: context,
@@ -1003,6 +1154,14 @@ class _PayrollTile extends StatelessWidget {
                 tone: AppStatusTone.neutral,
                 filled: true,
               ),
+              if (record.journalEntryId != null) ...[
+                SizedBox(width: context.spacing.xs),
+                const AppStatusBadge(
+                  label: 'Gebucht',
+                  tone: AppStatusTone.success,
+                  filled: true,
+                ),
+              ],
             ],
           ),
           SizedBox(height: context.spacing.sm),
@@ -1112,6 +1271,77 @@ class _AmountColumn extends StatelessWidget {
               ?.copyWith(fontWeight: FontWeight.w800, color: color),
         ),
       ],
+    );
+  }
+}
+
+/// Read-only Soll/Ist-Zeitkonto des gewählten Mitarbeiters im Abrechnungsmonat
+/// (H-B2). Soll aus dem SollzeitProfile, Ist aus den WorkEntries (einzige
+/// Ist-Quelle — keine Mantelzeit).
+class _ZeitkontoCard extends StatelessWidget {
+  const _ZeitkontoCard({required this.result});
+
+  final ZeitkontoResult result;
+
+  String _h(double hours) => '${hours.toStringAsFixed(1)} h';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final saldo = result.saldoHours;
+    final saldoColor = saldo > 0
+        ? theme.appColors.success
+        : (saldo < 0 ? theme.appColors.warning : theme.colorScheme.onSurface);
+    final saldoText = '${saldo >= 0 ? '+' : ''}${_h(saldo)}';
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.schedule_outlined,
+                  size: 18, color: theme.colorScheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Text('Zeitkonto (Monat)',
+                  style: theme.textTheme.labelLarge),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (!result.hasSollProfile)
+            Text(
+              'Kein Sollzeit-Profil hinterlegt – nur Ist (${_h(result.istHours)}).',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            )
+          else
+            Row(
+              children: [
+                Expanded(
+                    child: _AmountColumn(label: 'Soll', value: _h(result.sollHours))),
+                Expanded(
+                    child: _AmountColumn(label: 'Ist', value: _h(result.istHours))),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Saldo',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant)),
+                      Text(saldoText,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w800, color: saldoColor)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
     );
   }
 }
@@ -1607,6 +1837,10 @@ class _EmployeeDetailScreen extends StatelessWidget {
           SizedBox(height: spacing.lg),
           _EmployeeStammdatenCard(member: member),
           SizedBox(height: spacing.lg),
+          _EmployeeHrCard(member: member),
+          SizedBox(height: spacing.lg),
+          _UrlaubskontoCard(member: member, jahr: month.year),
+          SizedBox(height: spacing.lg),
           Row(
             children: [
               Expanded(
@@ -1964,10 +2198,15 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
   String? _federalState;
   bool _saving = false;
 
+  /// Itemisierte Zusatz-Lohnzeilen (M-L): Zulagen/§3b/VwL/Einmalzahlungen.
+  /// Additiv/informativ — Brutto/Netto bleiben die Einzelfelder.
+  late List<PayrollLine> _lines;
+
   @override
   void initState() {
     super.initState();
     final existing = widget.existing;
+    _lines = [...?existing?.lines];
     _userId = existing?.userId ?? widget.presetUserId;
     _gross = TextEditingController(
       text: existing != null ? _centsToInput(existing.grossCents) : '',
@@ -1986,14 +2225,33 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
   /// Uebernimmt die gespeicherten Lohn-Stammdaten eines Mitarbeiters in die
   /// Formularfelder (nur fuer eine neue Abrechnung aufgerufen).
   void _applyProfile(String userId) {
-    final profile = context.read<PersonalProvider>().profileForUser(userId);
+    final personal = context.read<PersonalProvider>();
+    final profile = personal.profileForUser(userId);
     if (profile == null) return;
     _taxClass = profile.taxClass;
     _kind = profile.kind;
     _churchTax = profile.churchTax;
-    _federalState = profile.federalState;
+    // Bundesland: Lohn-Stammdaten zuerst, sonst aus dem Primärstandort
+    // vorbefüllen (H-C3, nur Vorschlag — der gespeicherte PayrollRecord friert
+    // den bestätigten Wert als Snapshot ein). Stabile siteId, kein siteName.
+    final profileState = profile.federalState?.trim();
+    _federalState = (profileState != null && profileState.isNotEmpty)
+        ? profile.federalState
+        : personal.federalStateForUserPrimarySite(userId);
+    if (_gross.text.trim().isNotEmpty) return;
+    // Stundenlöhner (Vertrag salaryKind == hourly): Brutto aus
+    // Stunden × Stundenlohn vorschlagen statt aus dem Festgehalt-Stammwert
+    // (H-B3). Festgehalt-Verträge nutzen weiter monthlyGrossCents.
+    final contract = personal.contractForUser(userId);
+    if (contract?.salaryKind == SalaryKind.hourly) {
+      final suggestion = _grossFromHours(userId);
+      if (suggestion != null && suggestion > 0) {
+        _gross.text = _eurosToInput(suggestion);
+        return;
+      }
+    }
     final gross = profile.monthlyGrossCents;
-    if (gross != null && gross > 0 && _gross.text.trim().isEmpty) {
+    if (gross != null && gross > 0) {
       _gross.text = _centsToInput(gross);
     }
   }
@@ -2013,7 +2271,11 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     super.dispose();
   }
 
-  PayrollSettings get _settings => context.read<PersonalProvider>().payrollSettings;
+  // Sätze des **Abrechnungs-Periodenjahres** (nicht der Wall-Clock!), damit eine
+  // rück-/vordatierte Abrechnung die org-Override + defaults<jahr> des richtigen
+  // Jahres trifft (z. B. Dezember-2025-Lauf im Januar 2026).
+  PayrollSettings get _settings =>
+      context.read<PersonalProvider>().effectivePayrollSettings(widget.month.year);
 
   /// Stammakte des aktuell gewählten Mitarbeiters (für genauere Lohnparameter:
   /// Kinder, PV-Kinderlosenzuschlag, kassenindividueller KV-Zusatzbeitrag).
@@ -2027,6 +2289,12 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     final cents = _parseEuroToCents(_gross.text);
     if (cents == null) return null;
     final profile = _employeeProfile;
+    final userId = _userId;
+    final personal = context.read<PersonalProvider>();
+    // Kinderzähler-Einzelquelle (§4.4): gepflegte Kinder schlagen childrenCount.
+    final kinderzahl = userId == null
+        ? (profile?.childrenCount ?? 0)
+        : personal.effektiveKinderzahl(userId);
     return PayrollCalculator.calculate(
       grossCents: cents,
       taxClass: _taxClass,
@@ -2034,18 +2302,30 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
       federalState: _federalState,
       kind: _kind,
       settings: _settings,
-      childCount: profile?.childrenCount ?? 0,
-      pvChildless: _pvChildless(profile),
+      childCount: kinderzahl,
+      pvChildless: _pvChildless(profile, _hatKinderEigenschaft(userId, profile)),
       healthAdditionalRateOverride: _kvSurchargeOverride(profile),
     );
+  }
+
+  /// Elterneigenschaft (für den PV-Kinderlosenzuschlag, § 55 Abs. 3 SGB XI):
+  /// entfällt der Zuschlag bei **nachgewiesener** Elternschaft – unabhängig vom
+  /// Kinderfreibetrag-Zähler (auch erwachsene Kinder ohne `zaehltFuerFreibetrag`
+  /// begründen Elternschaft). Daher NICHT an [effektiveKinderzahl] koppeln.
+  bool _hatKinderEigenschaft(String? userId, EmployeeProfile? profile) {
+    if (userId != null &&
+        context.read<PersonalProvider>().hatGepflegteKinder(userId)) {
+      return true;
+    }
+    return (profile?.childrenCount ?? 0) > 0;
   }
 
   /// PV-Kinderlosenzuschlag: nur kinderlos UND nachweislich ab 23 Jahren.
   /// Ohne Stammakte oder ohne hinterlegtes Geburtsdatum konservativ kein
   /// Zuschlag – wir berechnen keinen Abzug, dessen Altersvoraussetzung wir nicht
   /// belegen können (mit Geburtsdatum greift er automatisch).
-  bool _pvChildless(EmployeeProfile? profile) {
-    if (profile == null || profile.childrenCount > 0) return false;
+  bool _pvChildless(EmployeeProfile? profile, bool hatKinderEigenschaft) {
+    if (profile == null || hatKinderEigenschaft) return false;
     final birth = profile.birthDate;
     if (birth == null) return false;
     final now = DateTime.now();
@@ -2055,6 +2335,27 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
       age--;
     }
     return age >= 23;
+  }
+
+  /// Brutto-Herleitungs-Hinweis (§5.6/§6.5): nur für Stundenlöhner, zeigt die
+  /// Rechnung „Stunden × Stundenlohn".
+  String? get _bruttoHerleitungHinweis {
+    final userId = _userId;
+    if (userId == null) return null;
+    final contract = context.read<PersonalProvider>().contractForUser(userId);
+    if (contract == null || contract.salaryKind != SalaryKind.hourly) {
+      return null;
+    }
+    final rate = contract.hourlyRate;
+    if (rate <= 0) return null;
+    final rateStr = '${_eurosToInput(rate)} €';
+    final hours = _hoursForUser(widget.monthEntries, userId);
+    if (hours <= 0) {
+      return 'Stundenlohn $rateStr/h — noch keine erfassten Stunden in diesem Monat.';
+    }
+    final cents = (hours * rate * 100).round();
+    return 'Brutto-Herleitung (§5.6): ${hours.toStringAsFixed(2)} h × '
+        '$rateStr/h = ${_euro(cents)}';
   }
 
   /// Kassenindividueller KV-Zusatzbeitrag aus der Stammakte als Bruchteil.
@@ -2069,11 +2370,14 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
   String? get _stammaktenHinweis {
     final profile = _employeeProfile;
     if (profile == null) return null;
+    final userId = _userId;
+    final kinderzahl = userId == null
+        ? profile.childrenCount
+        : context.read<PersonalProvider>().effektiveKinderzahl(userId);
     final parts = <String>[];
-    if (profile.childrenCount > 0) {
-      parts.add('${profile.childrenCount} '
-          '${profile.childrenCount == 1 ? 'Kind' : 'Kinder'}');
-    } else if (_pvChildless(profile)) {
+    if (kinderzahl > 0) {
+      parts.add('$kinderzahl ${kinderzahl == 1 ? 'Kind' : 'Kinder'}');
+    } else if (_pvChildless(profile, _hatKinderEigenschaft(userId, profile))) {
       parts.add('PV-Kinderlosenzuschlag');
     }
     final kv = profile.healthInsuranceSurchargePercent;
@@ -2125,6 +2429,17 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
                 }
               }),
             ),
+            if (_userId != null) ...[
+              SizedBox(height: spacing.md),
+              _ZeitkontoCard(
+                result: context.read<PersonalProvider>().zeitkontoFor(
+                      _userId!,
+                      widget.month.year,
+                      widget.month.month,
+                      widget.monthEntries,
+                    ),
+              ),
+            ],
             SizedBox(height: spacing.md),
             AppFormField(
               controller: _gross,
@@ -2143,6 +2458,14 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
                 onPressed: _userId == null ? null : _prefillGross,
               ),
             ),
+            if (_bruttoHerleitungHinweis != null) ...[
+              SizedBox(height: spacing.sm),
+              AppStatusBanner(
+                icon: Icons.functions,
+                tone: AppStatusTone.info,
+                message: _bruttoHerleitungHinweis!,
+              ),
+            ],
             SizedBox(height: spacing.md),
             Text('Steuerklasse', style: Theme.of(context).textTheme.labelLarge),
             SizedBox(height: spacing.xs),
@@ -2207,9 +2530,15 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
                 message: _stammaktenHinweis!,
               ),
             ],
+            SizedBox(height: spacing.md),
+            _LohnzeilenEditor(
+              lines: _lines,
+              onAdd: _addLine,
+              onRemove: (index) => setState(() => _lines.removeAt(index)),
+            ),
             if (result != null) ...[
               SizedBox(height: spacing.sm),
-              _PayrollBreakdown(result: result),
+              _PayrollBreakdown(result: result, lines: _lines),
             ],
             SizedBox(height: spacing.md),
             Row(
@@ -2240,21 +2569,53 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
   }
 
   void _prefillGross() {
-    final personal = context.read<PersonalProvider>();
     final userId = _userId;
     if (userId == null) return;
-    final contract = personal.contractForUser(userId);
+    final gross = _grossFromHours(userId) ?? 0;
+    setState(() => _gross.text = _eurosToInput(gross));
+  }
+
+  /// Brutto-Vorschlag (Euro) aus `Stunden × Stundenlohn` des aktiven Vertrags;
+  /// ohne erfasste Stunden Fallback auf `Stundenlohn × Wochenstunden × 4,33`.
+  /// `null`, wenn kein Stundensatz hinterlegt ist (H-B3-Baustein).
+  double? _grossFromHours(String userId) {
+    final contract = context.read<PersonalProvider>().contractForUser(userId);
     final rate = contract?.hourlyRate ?? 0;
+    if (rate <= 0) return null;
     final hours = _hoursForUser(widget.monthEntries, userId);
-    double gross;
-    if (hours > 0 && rate > 0) {
-      gross = hours * rate;
-    } else if (rate > 0 && contract != null) {
-      gross = rate * contract.weeklyHours * 4.33;
-    } else {
-      gross = 0;
+    if (hours > 0) return hours * rate;
+    if (contract != null) return rate * contract.weeklyHours * 4.33;
+    return null;
+  }
+
+  String _eurosToInput(double euros) =>
+      euros.toStringAsFixed(2).replaceAll('.', ',');
+
+  /// Öffnet den Lohnzeilen-Editor und fügt die erzeugte Zeile hinzu.
+  Future<void> _addLine() async {
+    final personal = context.read<PersonalProvider>();
+    final userId = _userId;
+    final contract = userId == null ? null : personal.contractForUser(userId);
+    final line = await showAppBottomSheet<PayrollLine>(
+      context: context,
+      builder: (_) => _PayLineEditorSheet(
+        katalog: personal.activePayLineTypes,
+        defaultStundenlohnCents: ((contract?.hourlyRate ?? 0) * 100).round(),
+        // §39b-Vorschau für Einmalzahlungen braucht das laufende Brutto +
+        // Steuerparameter (Richtwert).
+        regularMonthlyGrossCents: _parseEuroToCents(_gross.text) ?? 0,
+        settings: _settings,
+        taxClass: _taxClass,
+        churchTax: _churchTax,
+        federalState: _federalState,
+        childCount:
+            userId == null ? 0 : personal.effektiveKinderzahl(userId),
+        kvSurchargeOverride: _kvSurchargeOverride(_employeeProfile),
+      ),
+    );
+    if (line != null && mounted) {
+      setState(() => _lines.add(line));
     }
-    setState(() => _gross.text = gross.toStringAsFixed(2).replaceAll('.', ','));
   }
 
   Future<void> _save() async {
@@ -2263,16 +2624,18 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     if (result == null || _userId == null) return;
     setState(() => _saving = true);
     final personal = context.read<PersonalProvider>();
-    final record = result.buildRecord(
-      id: widget.existing?.id,
-      orgId: '',
-      userId: _userId!,
-      periodYear: widget.month.year,
-      periodMonth: widget.month.month,
-      taxClass: _taxClass,
-      churchTax: _churchTax,
-      federalState: _federalState,
-    );
+    final record = result
+        .buildRecord(
+          id: widget.existing?.id,
+          orgId: '',
+          userId: _userId!,
+          periodYear: widget.month.year,
+          periodMonth: widget.month.month,
+          taxClass: _taxClass,
+          churchTax: _churchTax,
+          federalState: _federalState,
+        )
+        .copyWith(lines: _lines);
     try {
       await personal.savePayrollRecord(record);
       // Stammdaten merken -> naechste Abrechnung wird vorbefuellt.
@@ -2311,9 +2674,10 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
 }
 
 class _PayrollBreakdown extends StatelessWidget {
-  const _PayrollBreakdown({required this.result});
+  const _PayrollBreakdown({required this.result, this.lines = const []});
 
   final PayrollResult result;
+  final List<PayrollLine> lines;
 
   @override
   Widget build(BuildContext context) {
@@ -2364,7 +2728,23 @@ class _PayrollBreakdown extends StatelessWidget {
           const Divider(),
           row('Nettolohn', result.netCents,
               bold: true, color: appColors.success),
+          if (lines.isNotEmpty) ...[
+            const Divider(),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Lohnzeilen (zusätzlich, Richtwert)',
+                style: theme.textTheme.labelMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ),
+            SizedBox(height: context.spacing.xxs),
+            for (final line in lines) _PayLineRow(line: line),
+          ],
           SizedBox(height: context.spacing.xs),
+          if (result.employerLeviesTotalCents > 0)
+            row('AG-Umlagen (U1/U2/InsO/UV)', result.employerLeviesTotalCents,
+                color: theme.colorScheme.onSurfaceVariant),
           row('Arbeitgeber-Gesamtkosten', result.employerTotalCents,
               color: theme.colorScheme.onSurfaceVariant),
         ],
@@ -2373,9 +2753,1319 @@ class _PayrollBreakdown extends StatelessWidget {
   }
 }
 
+/// Eine Zeile der Lohnzeilen-Anzeige (Name + Art-Chip + steuerfrei/SV-frei-
+/// Marker + signierter Betrag).
+class _PayLineRow extends StatelessWidget {
+  const _PayLineRow({required this.line});
+
+  final PayrollLine line;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final marker = <String>[
+      if (line.effektivSteuerfreiCents > 0)
+        'st.frei ${_euro(line.effektivSteuerfreiCents)}',
+      if (line.effektivSvFreiCents > 0)
+        'SV-frei ${_euro(line.effektivSvFreiCents)}',
+    ].join(' · ');
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: context.spacing.xxs),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${line.kind.label}: ${line.name}',
+                    style: theme.textTheme.bodyMedium),
+                if (marker.isNotEmpty)
+                  Text(marker,
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: appColors.success)),
+              ],
+            ),
+          ),
+          Text(
+            _euro(line.amountCents),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              color: line.amountCents < 0 ? theme.colorScheme.error : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────── Lohn-Einstellungen ───────────────────────────
+
+/// Admin-Editor für die org-/jahr-spezifische Lohn-Konfiguration
+/// (`payrollConfig/{jahr}`): SV-/AG-Sätze **inkl. Arbeitgeber-Umlagen**
+/// (U1/U2/InsO/UV) und Grenzwerte. Ohne hinterlegtes Dokument greifen die
+/// gesetzlichen Richtwert-Defaults; Speichern legt die org-Überschreibung an.
+class _OrgPayrollSettingsSheet extends StatefulWidget {
+  const _OrgPayrollSettingsSheet({required this.jahr});
+
+  final int jahr;
+
+  @override
+  State<_OrgPayrollSettingsSheet> createState() =>
+      _OrgPayrollSettingsSheetState();
+}
+
+class _OrgPayrollSettingsSheetState extends State<_OrgPayrollSettingsSheet> {
+  final _formKey = GlobalKey<FormState>();
+
+  late final TextEditingController _minWage;
+  late final TextEditingController _bbgKvPv;
+  late final TextEditingController _bbgRvAlv;
+  late final TextEditingController _minijob;
+  late final TextEditingController _health;
+  late final TextEditingController _healthAdd;
+  late final TextEditingController _care;
+  late final TextEditingController _pension;
+  late final TextEditingController _unemployment;
+  late final TextEditingController _u1;
+  late final TextEditingController _u2;
+  late final TextEditingController _inso;
+  late final TextEditingController _uv;
+  late bool _u1Applies;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final personal = context.read<PersonalProvider>();
+    final s = personal.effectivePayrollSettings(widget.jahr);
+    _minWage = TextEditingController(text: _centsToInput(s.minimumHourlyWageCents));
+    _bbgKvPv = TextEditingController(text: _centsToInput(s.bbgKvPvMonthlyCents));
+    _bbgRvAlv = TextEditingController(text: _centsToInput(s.bbgRvAlvMonthlyCents));
+    _minijob = TextEditingController(text: _centsToInput(s.minijobCeilingCents));
+    _health = TextEditingController(text: _rateToPercentInput(s.healthRate));
+    _healthAdd =
+        TextEditingController(text: _rateToPercentInput(s.healthAdditionalRate));
+    _care = TextEditingController(text: _rateToPercentInput(s.careRate));
+    _pension = TextEditingController(text: _rateToPercentInput(s.pensionRate));
+    _unemployment =
+        TextEditingController(text: _rateToPercentInput(s.unemploymentRate));
+    _u1 = TextEditingController(text: _rateToPercentInput(s.umlageU1Rate));
+    _u2 = TextEditingController(text: _rateToPercentInput(s.umlageU2Rate));
+    _inso =
+        TextEditingController(text: _rateToPercentInput(s.insolvenzgeldumlageRate));
+    _uv = TextEditingController(text: _rateToPercentInput(s.uvRate));
+    _u1Applies = s.u1Applies;
+  }
+
+  @override
+  void dispose() {
+    for (final c in [
+      _minWage, _bbgKvPv, _bbgRvAlv, _minijob, _health, _healthAdd,
+      _care, _pension, _unemployment, _u1, _u2, _inso, _uv,
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final personal = context.watch<PersonalProvider>();
+    final hasOverride = personal.orgPayrollSettingsForYear(widget.jahr) != null;
+
+    return AppBottomSheetScaffold(
+      title: 'Lohn-Einstellungen ${widget.jahr}',
+      subtitle: hasOverride
+          ? 'Org-Überschreibung · Richtwert'
+          : 'Gesetzliche Defaults · Richtwert',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const AppStatusBanner(
+              icon: Icons.info_outline,
+              tone: AppStatusTone.warning,
+              message: 'Unverbindliche Richtwerte – Sätze vor dem Lohnlauf '
+                  'prüfen/aktualisieren. Einzelne SV-Sätze für 2026 sind noch '
+                  'Platzhalter (2025er-Werte); die Umlagen U1/U2/InsO/UV sind '
+                  'kassen-/BG-individuell.',
+            ),
+            SizedBox(height: spacing.md),
+            _sectionLabel('Arbeitgeber-Umlagen'),
+            SizedBox(height: spacing.xs),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('U1-Umlage (Lohnfortzahlung)'),
+              subtitle: const Text('i. d. R. nur Betriebe bis ~30 Mitarbeiter'),
+              value: _u1Applies,
+              onChanged: (value) => setState(() => _u1Applies = value),
+            ),
+            if (_u1Applies) _percentField('U1-Satz (%)', _u1),
+            if (_u1Applies) SizedBox(height: spacing.sm),
+            _percentField('U2-Satz – Mutterschutz (%)', _u2),
+            SizedBox(height: spacing.sm),
+            _percentField('Insolvenzgeldumlage (%)', _inso),
+            SizedBox(height: spacing.sm),
+            _percentField('UV-Beitrag – Unfallversicherung (%)', _uv),
+            SizedBox(height: spacing.lg),
+            _sectionLabel('Sozialversicherungssätze'),
+            SizedBox(height: spacing.sm),
+            _percentField('Krankenversicherung gesamt (%)', _health),
+            SizedBox(height: spacing.sm),
+            _percentField('KV-Zusatzbeitrag Ø (%)', _healthAdd),
+            SizedBox(height: spacing.sm),
+            _percentField('Pflegeversicherung gesamt (%)', _care),
+            SizedBox(height: spacing.sm),
+            _percentField('Rentenversicherung gesamt (%)', _pension),
+            SizedBox(height: spacing.sm),
+            _percentField('Arbeitslosenversicherung gesamt (%)', _unemployment),
+            SizedBox(height: spacing.lg),
+            _sectionLabel('Grenzwerte'),
+            SizedBox(height: spacing.sm),
+            _euroField('Mindestlohn (€/h)', _minWage),
+            SizedBox(height: spacing.sm),
+            _euroField('Minijob-Grenze (€/Monat)', _minijob),
+            SizedBox(height: spacing.sm),
+            _euroField('BBG KV/PV (€/Monat)', _bbgKvPv),
+            SizedBox(height: spacing.sm),
+            _euroField('BBG RV/ALV (€/Monat)', _bbgRvAlv),
+            SizedBox(height: spacing.lg),
+            Row(
+              children: [
+                if (hasOverride)
+                  TextButton.icon(
+                    onPressed: _saving ? null : _reset,
+                    icon: const Icon(Icons.restore),
+                    label: const Text('Defaults'),
+                  ),
+                const Spacer(),
+                FilledButton(
+                  onPressed: _saving ? null : _save,
+                  child: _saving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Speichern'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text) =>
+      Text(text, style: Theme.of(context).textTheme.titleSmall);
+
+  Widget _percentField(String label, TextEditingController controller) {
+    return AppFormField(
+      controller: controller,
+      label: label,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: [
+        FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+      ],
+      validator: (value) =>
+          _percentInputToRate(value ?? '') == null ? 'Ungültig' : null,
+    );
+  }
+
+  Widget _euroField(String label, TextEditingController controller) {
+    return AppFormField(
+      controller: controller,
+      label: label,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: [
+        FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+      ],
+      validator: (value) =>
+          _parseEuroToCents(value ?? '') == null ? 'Ungültig' : null,
+    );
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final existing = personal.orgPayrollSettingsForYear(widget.jahr);
+    final base = personal.effectivePayrollSettings(widget.jahr);
+    final updated = base.copyWith(
+      year: widget.jahr,
+      minimumHourlyWageCents: _parseEuroToCents(_minWage.text),
+      bbgKvPvMonthlyCents: _parseEuroToCents(_bbgKvPv.text),
+      bbgRvAlvMonthlyCents: _parseEuroToCents(_bbgRvAlv.text),
+      minijobCeilingCents: _parseEuroToCents(_minijob.text),
+      healthRate: _percentInputToRate(_health.text),
+      healthAdditionalRate: _percentInputToRate(_healthAdd.text),
+      careRate: _percentInputToRate(_care.text),
+      pensionRate: _percentInputToRate(_pension.text),
+      unemploymentRate: _percentInputToRate(_unemployment.text),
+      umlageU1Rate: _percentInputToRate(_u1.text),
+      umlageU2Rate: _percentInputToRate(_u2.text),
+      insolvenzgeldumlageRate: _percentInputToRate(_inso.text),
+      uvRate: _percentInputToRate(_uv.text),
+      u1Applies: _u1Applies,
+    );
+    final config = OrgPayrollSettings(
+      id: existing?.id,
+      orgId: existing?.orgId ?? '',
+      jahr: widget.jahr,
+      settings: updated,
+      createdByUid: existing?.createdByUid,
+      createdAt: existing?.createdAt,
+      updatedAt: existing?.updatedAt,
+    );
+    try {
+      await personal.saveOrgPayrollSettings(config);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Speichern fehlgeschlagen: $error')),
+      );
+    }
+  }
+
+  Future<void> _reset() async {
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    try {
+      await personal.deleteOrgPayrollSettings(widget.jahr);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Zurücksetzen fehlgeschlagen: $error')),
+      );
+    }
+  }
+}
+
 // ─────────────────────────── Stammakte (HR) ───────────────────────────────
 
 /// Read-only Stammdaten-Karte im Mitarbeiter-Detail mit „Erfassen/Bearbeiten".
+/// Wiederverwendbares Datums-Auswahlfeld (de_DE) mit Löschen.
+class _DateField extends StatelessWidget {
+  const _DateField({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+    this.firstDate,
+    this.lastDate,
+  });
+
+  final String label;
+  final DateTime? value;
+  final ValueChanged<DateTime?> onChanged;
+  final DateTime? firstDate;
+  final DateTime? lastDate;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final now = DateTime.now();
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () async {
+        final fd = firstDate ?? DateTime(1940);
+        final ld = lastDate ?? DateTime(now.year + 10);
+        final init = value ?? DateTime(now.year, now.month);
+        // Gespeicherten Wert ins Fenster klemmen, sonst wirft showDatePicker
+        // (z. B. Geburtstag vor firstDate bei Bestands-/Importdaten).
+        final clamped = init.isBefore(fd) ? fd : (init.isAfter(ld) ? ld : init);
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: clamped,
+          firstDate: fd,
+          lastDate: ld,
+          locale: const Locale('de', 'DE'),
+        );
+        if (picked != null) onChanged(picked);
+      },
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: label,
+          suffixIcon: value == null
+              ? const Icon(Icons.calendar_today_outlined, size: 18)
+              : IconButton(
+                  tooltip: 'Löschen',
+                  icon: const Icon(Icons.clear, size: 18),
+                  onPressed: () => onChanged(null),
+                ),
+        ),
+        child: Text(
+          value == null ? 'Nicht gesetzt' : _formatDate(value!),
+          style: value == null
+              ? theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant)
+              : theme.textTheme.bodyMedium,
+        ),
+      ),
+    );
+  }
+}
+
+/// Sub-Sektionen der Mitarbeiter-Stammakte (M-H): Kinder (lohnsteuerlich),
+/// Qualifikationen (Gültigkeit) und Ausbildung. Alle admin-only.
+class _EmployeeHrCard extends StatelessWidget {
+  const _EmployeeHrCard({required this.member});
+
+  final AppUserProfile member;
+
+  @override
+  Widget build(BuildContext context) {
+    final personal = context.watch<PersonalProvider>();
+    final spacing = context.spacing;
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final uid = member.uid;
+    final kinder = personal.childrenForUser(uid);
+    final quals = personal.qualificationsForUser(uid);
+    final ausbildungen = personal.ausbildungenForUser(uid);
+    final now = DateTime.now();
+
+    Widget addButton(VoidCallback onTap) => FilledButton.tonalIcon(
+          onPressed: onTap,
+          icon: const Icon(Icons.add, size: 18),
+          label: const Text('Neu'),
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AppSectionCard(
+          title: 'Kinder',
+          icon: Icons.child_care_outlined,
+          trailing: addButton(() => showAppBottomSheet(
+                context: context,
+                builder: (_) => _ChildEditorSheet(member: member),
+              )),
+          child: kinder.isEmpty
+              ? const _InlineEmpty(
+                  icon: Icons.child_care_outlined,
+                  message: 'Keine Kinder erfasst. Lohnsteuerlicher Kinderzähler '
+                      'kommt aus „Kinder erfasst", sobald welche angelegt sind.',
+                )
+              : Column(
+                  children: [
+                    for (final kind in kinder)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.face_outlined),
+                        title: Text(kind.anzeigeName),
+                        subtitle: Text([
+                          if (kind.geburtstag != null)
+                            '* ${_formatDate(kind.geburtstag!)}',
+                          kind.zaehltFuerFreibetrag
+                              ? 'zählt für Freibetrag'
+                              : 'ohne Freibetrag',
+                        ].join(' · ')),
+                        onTap: () => showAppBottomSheet(
+                          context: context,
+                          builder: (_) =>
+                              _ChildEditorSheet(member: member, existing: kind),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        SizedBox(height: spacing.lg),
+        AppSectionCard(
+          title: 'Qualifikationen',
+          icon: Icons.workspace_premium_outlined,
+          trailing: addButton(() => showAppBottomSheet(
+                context: context,
+                builder: (_) => _QualificationEditorSheet(member: member),
+              )),
+          child: quals.isEmpty
+              ? const _InlineEmpty(
+                  icon: Icons.workspace_premium_outlined,
+                  message: 'Keine Qualifikationen erfasst.',
+                )
+              : Column(
+                  children: [
+                    for (final quali in quals)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.verified_outlined),
+                        title: Text(quali.qualificationName.isEmpty
+                            ? 'Qualifikation'
+                            : quali.qualificationName),
+                        subtitle: Text([
+                          quali.erwerb.label,
+                          if (quali.gueltigBis != null)
+                            'gültig bis ${_formatDate(quali.gueltigBis!)}',
+                        ].join(' · ')),
+                        trailing: quali.istGueltig(now)
+                            ? null
+                            : Icon(Icons.error_outline,
+                                size: 18, color: appColors.warning),
+                        onTap: () => showAppBottomSheet(
+                          context: context,
+                          builder: (_) => _QualificationEditorSheet(
+                              member: member, existing: quali),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        SizedBox(height: spacing.lg),
+        AppSectionCard(
+          title: 'Ausbildung',
+          icon: Icons.school_outlined,
+          trailing: addButton(() => showAppBottomSheet(
+                context: context,
+                builder: (_) => _AusbildungEditorSheet(member: member),
+              )),
+          child: ausbildungen.isEmpty
+              ? const _InlineEmpty(
+                  icon: Icons.school_outlined,
+                  message: 'Keine Ausbildung erfasst.',
+                )
+              : Column(
+                  children: [
+                    for (final a in ausbildungen)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.school_outlined),
+                        title: Text(
+                            a.bezeichnung.isEmpty ? 'Ausbildung' : a.bezeichnung),
+                        subtitle: Text([
+                          if (a.beginn != null) _formatDate(a.beginn!),
+                          if (a.ende != null) '– ${_formatDate(a.ende!)}',
+                        ].join(' ')),
+                        onTap: () => showAppBottomSheet(
+                          context: context,
+                          builder: (_) => _AusbildungEditorSheet(
+                              member: member, existing: a),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Editor für ein [EmployeeChild] (anlegen/bearbeiten/löschen).
+class _ChildEditorSheet extends StatefulWidget {
+  const _ChildEditorSheet({required this.member, this.existing});
+
+  final AppUserProfile member;
+  final EmployeeChild? existing;
+
+  @override
+  State<_ChildEditorSheet> createState() => _ChildEditorSheetState();
+}
+
+class _ChildEditorSheetState extends State<_ChildEditorSheet> {
+  late final TextEditingController _vorname;
+  late final TextEditingController _name;
+  late final TextEditingController _steuerId;
+  DateTime? _geburtstag;
+  bool _zaehlt = true;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _vorname = TextEditingController(text: e?.vorname ?? '');
+    _name = TextEditingController(text: e?.name ?? '');
+    _steuerId = TextEditingController(text: e?.steuerIdKind ?? '');
+    _geburtstag = e?.geburtstag;
+    _zaehlt = e?.zaehltFuerFreibetrag ?? true;
+  }
+
+  @override
+  void dispose() {
+    _vorname.dispose();
+    _name.dispose();
+    _steuerId.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final now = DateTime.now();
+    return AppBottomSheetScaffold(
+      title: widget.existing == null ? 'Kind hinzufügen' : 'Kind bearbeiten',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppFormField(controller: _vorname, label: 'Vorname'),
+          SizedBox(height: spacing.md),
+          AppFormField(controller: _name, label: 'Nachname'),
+          SizedBox(height: spacing.md),
+          _DateField(
+            label: 'Geburtstag',
+            value: _geburtstag,
+            firstDate: DateTime(1990),
+            lastDate: now,
+            onChanged: (d) => setState(() => _geburtstag = d),
+          ),
+          SizedBox(height: spacing.md),
+          AppFormField(
+            controller: _steuerId,
+            label: 'Steuer-ID des Kindes (optional)',
+            keyboardType: TextInputType.number,
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Zählt für Kinderfreibetrag'),
+            value: _zaehlt,
+            onChanged: (v) => setState(() => _zaehlt = v),
+          ),
+          SizedBox(height: spacing.md),
+          _EditorActions(
+            saving: _saving,
+            onDelete: widget.existing == null ? null : _delete,
+            onSave: _save,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final e = widget.existing;
+    final child = EmployeeChild(
+      id: e?.id,
+      orgId: e?.orgId ?? '',
+      userId: widget.member.uid,
+      vorname: _vorname.text.trim(),
+      name: _name.text.trim(),
+      steuerIdKind:
+          _steuerId.text.trim().isEmpty ? null : _steuerId.text.trim(),
+      geburtstag: _geburtstag,
+      zaehltFuerFreibetrag: _zaehlt,
+      createdByUid: e?.createdByUid,
+      createdAt: e?.createdAt,
+      updatedAt: e?.updatedAt,
+    );
+    await _run(() => personal.saveEmployeeChild(child));
+  }
+
+  Future<void> _delete() async {
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    await _run(() => personal.deleteEmployeeChild(widget.existing!.id!));
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await action();
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      messenger
+          .showSnackBar(SnackBar(content: Text('Fehlgeschlagen: $error')));
+    }
+  }
+}
+
+/// Editor für eine [EmployeeQualification].
+class _QualificationEditorSheet extends StatefulWidget {
+  const _QualificationEditorSheet({required this.member, this.existing});
+
+  final AppUserProfile member;
+  final EmployeeQualification? existing;
+
+  @override
+  State<_QualificationEditorSheet> createState() =>
+      _QualificationEditorSheetState();
+}
+
+class _QualificationEditorSheetState extends State<_QualificationEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _name;
+  late final TextEditingController _bemerkung;
+  QualiErwerb _erwerb = QualiErwerb.vorab;
+  DateTime? _erworbenAm;
+  DateTime? _gueltigBis;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _name = TextEditingController(text: e?.qualificationName ?? '');
+    _bemerkung = TextEditingController(text: e?.bemerkung ?? '');
+    _erwerb = e?.erwerb ?? QualiErwerb.vorab;
+    _erworbenAm = e?.erworbenAm;
+    _gueltigBis = e?.gueltigBis;
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _bemerkung.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: widget.existing == null
+          ? 'Qualifikation hinzufügen'
+          : 'Qualifikation bearbeiten',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppFormField(
+              controller: _name,
+              label: 'Bezeichnung',
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Pflichtfeld' : null,
+            ),
+            SizedBox(height: spacing.md),
+            Text('Erwerb', style: Theme.of(context).textTheme.labelLarge),
+            SizedBox(height: spacing.xs),
+            AppSegmented<QualiErwerb>(
+              segments: [
+                for (final e in QualiErwerb.values)
+                  AppSegment(value: e, label: e.label),
+              ],
+              selected: _erwerb,
+              onChanged: (v) => setState(() => _erwerb = v),
+            ),
+            SizedBox(height: spacing.md),
+            _DateField(
+              label: 'Erworben am',
+              value: _erworbenAm,
+              onChanged: (d) => setState(() => _erworbenAm = d),
+            ),
+            SizedBox(height: spacing.md),
+            _DateField(
+              label: 'Gültig bis (optional)',
+              value: _gueltigBis,
+              onChanged: (d) => setState(() => _gueltigBis = d),
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(controller: _bemerkung, label: 'Bemerkung (optional)'),
+            SizedBox(height: spacing.md),
+            _EditorActions(
+              saving: _saving,
+              onDelete: widget.existing == null ? null : _delete,
+              onSave: _save,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final e = widget.existing;
+    final quali = EmployeeQualification(
+      id: e?.id,
+      orgId: e?.orgId ?? '',
+      userId: widget.member.uid,
+      qualificationId: e?.qualificationId,
+      qualificationName: _name.text.trim(),
+      erwerb: _erwerb,
+      erworbenAm: _erworbenAm,
+      gueltigBis: _gueltigBis,
+      bemerkung:
+          _bemerkung.text.trim().isEmpty ? null : _bemerkung.text.trim(),
+      createdByUid: e?.createdByUid,
+      createdAt: e?.createdAt,
+      updatedAt: e?.updatedAt,
+    );
+    await _run(() => personal.saveEmployeeQualification(quali));
+  }
+
+  Future<void> _delete() async {
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    await _run(() => personal.deleteEmployeeQualification(widget.existing!.id!));
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await action();
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      messenger
+          .showSnackBar(SnackBar(content: Text('Fehlgeschlagen: $error')));
+    }
+  }
+}
+
+/// Editor für eine [EmployeeAusbildung].
+class _AusbildungEditorSheet extends StatefulWidget {
+  const _AusbildungEditorSheet({required this.member, this.existing});
+
+  final AppUserProfile member;
+  final EmployeeAusbildung? existing;
+
+  @override
+  State<_AusbildungEditorSheet> createState() => _AusbildungEditorSheetState();
+}
+
+class _AusbildungEditorSheetState extends State<_AusbildungEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _bezeichnung;
+  late final TextEditingController _noteZwischen;
+  late final TextEditingController _noteAbschluss;
+  late final TextEditingController _bemerkung;
+  DateTime? _beginn;
+  DateTime? _ende;
+  String? _ausbilderUserId;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _bezeichnung = TextEditingController(text: e?.bezeichnung ?? '');
+    _noteZwischen = TextEditingController(text: e?.noteZwischen ?? '');
+    _noteAbschluss = TextEditingController(text: e?.noteAbschluss ?? '');
+    _bemerkung = TextEditingController(text: e?.bemerkung ?? '');
+    _beginn = e?.beginn;
+    _ende = e?.ende;
+    _ausbilderUserId = e?.ausbilderUserId;
+  }
+
+  @override
+  void dispose() {
+    _bezeichnung.dispose();
+    _noteZwischen.dispose();
+    _noteAbschluss.dispose();
+    _bemerkung.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final personal = context.read<PersonalProvider>();
+    final others =
+        personal.members.where((m) => m.uid != widget.member.uid).toList();
+    return AppBottomSheetScaffold(
+      title: widget.existing == null
+          ? 'Ausbildung hinzufügen'
+          : 'Ausbildung bearbeiten',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppFormField(
+              controller: _bezeichnung,
+              label: 'Bezeichnung',
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Pflichtfeld' : null,
+            ),
+            SizedBox(height: spacing.md),
+            _DateField(
+              label: 'Beginn',
+              value: _beginn,
+              onChanged: (d) => setState(() => _beginn = d),
+            ),
+            SizedBox(height: spacing.md),
+            _DateField(
+              label: 'Ende (optional)',
+              value: _ende,
+              onChanged: (d) => setState(() => _ende = d),
+            ),
+            SizedBox(height: spacing.md),
+            DropdownButtonFormField<String?>(
+              initialValue: _ausbilderUserId,
+              decoration:
+                  const InputDecoration(labelText: 'Ausbilder:in (optional)'),
+              items: [
+                const DropdownMenuItem(value: null, child: Text('—')),
+                for (final m in others)
+                  DropdownMenuItem(value: m.uid, child: Text(m.displayName)),
+              ],
+              onChanged: (v) => setState(() => _ausbilderUserId = v),
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(
+                controller: _noteZwischen, label: 'Zwischennote (optional)'),
+            SizedBox(height: spacing.md),
+            AppFormField(
+                controller: _noteAbschluss, label: 'Abschlussnote (optional)'),
+            SizedBox(height: spacing.md),
+            AppFormField(controller: _bemerkung, label: 'Bemerkung (optional)'),
+            SizedBox(height: spacing.md),
+            _EditorActions(
+              saving: _saving,
+              onDelete: widget.existing == null ? null : _delete,
+              onSave: _save,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final e = widget.existing;
+    String? trimmed(TextEditingController c) =>
+        c.text.trim().isEmpty ? null : c.text.trim();
+    final ausbildung = EmployeeAusbildung(
+      id: e?.id,
+      orgId: e?.orgId ?? '',
+      userId: widget.member.uid,
+      bezeichnung: _bezeichnung.text.trim(),
+      beginn: _beginn,
+      ende: _ende,
+      ausbilderUserId: _ausbilderUserId,
+      noteZwischen: trimmed(_noteZwischen),
+      noteAbschluss: trimmed(_noteAbschluss),
+      bemerkung: trimmed(_bemerkung),
+      createdByUid: e?.createdByUid,
+      createdAt: e?.createdAt,
+      updatedAt: e?.updatedAt,
+    );
+    await _run(() => personal.saveEmployeeAusbildung(ausbildung));
+  }
+
+  Future<void> _delete() async {
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    await _run(() => personal.deleteEmployeeAusbildung(widget.existing!.id!));
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await action();
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      messenger
+          .showSnackBar(SnackBar(content: Text('Fehlgeschlagen: $error')));
+    }
+  }
+}
+
+/// Speichern/Löschen-Aktionszeile für die HR-Sub-Editoren.
+class _EditorActions extends StatelessWidget {
+  const _EditorActions({
+    required this.saving,
+    required this.onSave,
+    this.onDelete,
+  });
+
+  final bool saving;
+  final VoidCallback onSave;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (onDelete != null)
+          TextButton.icon(
+            onPressed: saving ? null : onDelete,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('Löschen'),
+          ),
+        const Spacer(),
+        FilledButton(
+          onPressed: saving ? null : onSave,
+          child: saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Speichern'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Urlaubskonto-Aufstellung (M-U) im Mitarbeiter-Detail: Anspruch/Vortrag/
+/// Verfall/genommen/geplant/Resturlaub mit +/−/=-Logik, admin-Bearbeitung von
+/// Vortrag (UrlaubskontoJahr) und manuellen Anpassungen.
+class _UrlaubskontoCard extends StatelessWidget {
+  const _UrlaubskontoCard({required this.member, required this.jahr});
+
+  final AppUserProfile member;
+  final int jahr;
+
+  @override
+  Widget build(BuildContext context) {
+    final personal = context.watch<PersonalProvider>();
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final spacing = context.spacing;
+    final report = personal.urlaubsReportFor(member.uid, jahr);
+    final konto = personal.urlaubskontoFor(member.uid, jahr);
+    final anpassungen = personal.urlaubsanpassungenForUser(member.uid, jahr: jahr);
+    final krankheitImUrlaub = personal.krankheitImUrlaubFor(member.uid, jahr);
+    final krankheitTage =
+        krankheitImUrlaub.fold<double>(0, (s, k) => s + k.tage);
+
+    Widget zeile(String label, double tage,
+        {bool bold = false, Color? color, bool divider = false}) {
+      final style = (bold
+              ? theme.textTheme.titleSmall
+              : theme.textTheme.bodyMedium)
+          ?.copyWith(color: color);
+      return Padding(
+        padding: EdgeInsets.symmetric(vertical: divider ? 0 : spacing.xs / 2),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: style),
+            Text('${_formatTage(tage)} Tage', style: style),
+          ],
+        ),
+      );
+    }
+
+    final hinweisFehlt = report.vortragVorjahr > 0 &&
+        (konto == null || konto.hinweisErteiltAm == null);
+
+    return AppSectionCard(
+      title: 'Urlaubskonto $jahr',
+      icon: Icons.beach_access_outlined,
+      trailing: Wrap(
+        spacing: spacing.xs,
+        children: [
+          IconButton(
+            tooltip: 'Vortrag/Verfall bearbeiten',
+            icon: const Icon(Icons.tune),
+            onPressed: () => showAppBottomSheet(
+              context: context,
+              builder: (_) => _UrlaubskontoEditorSheet(
+                  member: member, jahr: jahr, existing: konto),
+            ),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => showAppBottomSheet(
+              context: context,
+              builder: (_) =>
+                  _UrlaubsanpassungEditorSheet(member: member, jahr: jahr),
+            ),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Anpassung'),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          zeile('Jahresanspruch', report.anspruchJahr),
+          if (report.vortragVorjahr != 0)
+            zeile('+ Vortrag Vorjahr', report.vortragVorjahr),
+          if (report.vortragVerfallen != 0)
+            zeile('− verfallen', -report.vortragVerfallen,
+                color: appColors.warning),
+          const Divider(),
+          zeile('= Gesamtanspruch', report.anspruchGesamt, bold: true),
+          zeile('− genommen', -report.genommen),
+          if (report.geplant != 0)
+            zeile('− geplant (offen)', -report.geplant,
+                color: theme.colorScheme.onSurfaceVariant),
+          const Divider(),
+          zeile('= Resturlaub', report.resturlaub,
+              bold: true,
+              color: report.resturlaub < 0
+                  ? appColors.warning
+                  : appColors.success),
+          if (hinweisFehlt) ...[
+            SizedBox(height: spacing.sm),
+            const AppStatusBanner(
+              icon: Icons.info_outline,
+              tone: AppStatusTone.info,
+              message: 'Hinweis auf Resturlaub-Verfall nicht dokumentiert → '
+                  'kein 31.3.-Verfall (EuGH/BAG). Über „Vortrag bearbeiten" '
+                  'das Hinweis-Datum hinterlegen.',
+            ),
+          ],
+          if (krankheitImUrlaub.isNotEmpty) ...[
+            SizedBox(height: spacing.sm),
+            AppStatusBanner(
+              icon: Icons.healing_outlined,
+              tone: AppStatusTone.warning,
+              message: 'Krankheit im genehmigten Urlaub (§9 BUrlG): '
+                  '${_formatTage(krankheitTage)} Tage sind nicht auf den '
+                  'Urlaub anzurechnen – über „Anpassung" gutschreiben.',
+            ),
+          ],
+          if (anpassungen.isNotEmpty) ...[
+            SizedBox(height: spacing.sm),
+            Text('Manuelle Anpassungen',
+                style: theme.textTheme.labelLarge),
+            for (final a in anpassungen)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: Text(
+                    '${a.tage >= 0 ? '+' : ''}${_formatTage(a.tage)} Tage · ${a.art.label}'),
+                subtitle: a.anmerkung == null ? null : Text(a.anmerkung!),
+                trailing: IconButton(
+                  tooltip: 'Löschen',
+                  icon: const Icon(Icons.delete_outline, size: 20),
+                  onPressed: () => personal.deleteUrlaubsanpassung(a.id!),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Editor für das Jahres-Vortragsdoc (UrlaubskontoJahr).
+class _UrlaubskontoEditorSheet extends StatefulWidget {
+  const _UrlaubskontoEditorSheet({
+    required this.member,
+    required this.jahr,
+    this.existing,
+  });
+
+  final AppUserProfile member;
+  final int jahr;
+  final UrlaubskontoJahr? existing;
+
+  @override
+  State<_UrlaubskontoEditorSheet> createState() =>
+      _UrlaubskontoEditorSheetState();
+}
+
+class _UrlaubskontoEditorSheetState extends State<_UrlaubskontoEditorSheet> {
+  late final TextEditingController _vortrag;
+  late final TextEditingController _mehrurlaub;
+  DateTime? _verfall;
+  DateTime? _hinweis;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _vortrag = TextEditingController(
+        text: e == null ? '' : _formatTage(e.vortragVorjahrTage));
+    _mehrurlaub = TextEditingController(
+        text: e == null ? '' : _formatTage(e.gewaehrterMehrurlaubTage));
+    _verfall = e?.vortragVerfaelltAm ?? UrlaubskontoJahr.defaultVerfall(widget.jahr);
+    _hinweis = e?.hinweisErteiltAm;
+  }
+
+  @override
+  void dispose() {
+    _vortrag.dispose();
+    _mehrurlaub.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: 'Urlaubskonto ${widget.jahr}',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppFormField(
+            controller: _vortrag,
+            label: 'Vortrag aus Vorjahr (Tage)',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+            ],
+          ),
+          SizedBox(height: spacing.md),
+          _DateField(
+            label: 'Vortrag verfällt am',
+            value: _verfall,
+            onChanged: (d) => setState(() => _verfall = d),
+          ),
+          SizedBox(height: spacing.md),
+          _DateField(
+            label: 'Verfall-Hinweis erteilt am',
+            value: _hinweis,
+            onChanged: (d) => setState(() => _hinweis = d),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: spacing.xs),
+            child: Text(
+              'Ohne dokumentierten Hinweis verfällt der Vortrag NICHT (EuGH/BAG).',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
+            ),
+          ),
+          SizedBox(height: spacing.md),
+          AppFormField(
+            controller: _mehrurlaub,
+            label: 'Gewährter Mehrurlaub (Tage)',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+            ],
+          ),
+          SizedBox(height: spacing.md),
+          _EditorActions(saving: _saving, onSave: _save),
+        ],
+      ),
+    );
+  }
+
+  double _parse(TextEditingController c) =>
+      double.tryParse(c.text.trim().replaceAll(',', '.')) ?? 0;
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final e = widget.existing;
+    final konto = UrlaubskontoJahr(
+      id: e?.id,
+      orgId: e?.orgId ?? '',
+      userId: widget.member.uid,
+      jahr: widget.jahr,
+      vortragVorjahrTage: _parse(_vortrag),
+      vortragVerfaelltAm: _verfall,
+      hinweisErteiltAm: _hinweis,
+      gewaehrterMehrurlaubTage: _parse(_mehrurlaub),
+      createdByUid: e?.createdByUid,
+      createdAt: e?.createdAt,
+      updatedAt: e?.updatedAt,
+    );
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await personal.saveUrlaubskontoJahr(konto);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      messenger.showSnackBar(SnackBar(content: Text('Fehlgeschlagen: $error')));
+    }
+  }
+}
+
+/// Editor für eine manuelle Urlaubs-Anpassung (Korrektur-Ledger).
+class _UrlaubsanpassungEditorSheet extends StatefulWidget {
+  const _UrlaubsanpassungEditorSheet(
+      {required this.member, required this.jahr});
+
+  final AppUserProfile member;
+  final int jahr;
+
+  @override
+  State<_UrlaubsanpassungEditorSheet> createState() =>
+      _UrlaubsanpassungEditorSheetState();
+}
+
+class _UrlaubsanpassungEditorSheetState
+    extends State<_UrlaubsanpassungEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _tage = TextEditingController();
+  final _anmerkung = TextEditingController();
+  UrlaubsAnpassungArt _art = UrlaubsAnpassungArt.allgemein;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _tage.dispose();
+    _anmerkung.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: 'Urlaubs-Anpassung ${widget.jahr}',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppFormField(
+              controller: _tage,
+              label: 'Tage (− für Abzug)',
+              keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true, signed: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9.,\-]')),
+              ],
+              validator: (v) =>
+                  double.tryParse((v ?? '').trim().replaceAll(',', '.')) == null
+                      ? 'Ungültig'
+                      : null,
+            ),
+            SizedBox(height: spacing.md),
+            Text('Art', style: Theme.of(context).textTheme.labelLarge),
+            SizedBox(height: spacing.xs),
+            AppSegmented<UrlaubsAnpassungArt>(
+              segments: [
+                for (final a in UrlaubsAnpassungArt.values)
+                  AppSegment(value: a, label: a.label),
+              ],
+              selected: _art,
+              onChanged: (v) => setState(() => _art = v),
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(controller: _anmerkung, label: 'Anmerkung (optional)'),
+            SizedBox(height: spacing.md),
+            _EditorActions(saving: _saving, onSave: _save),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final personal = context.read<PersonalProvider>();
+    final anpassung = Urlaubsanpassung(
+      orgId: '',
+      userId: widget.member.uid,
+      jahr: widget.jahr,
+      tage: double.tryParse(_tage.text.trim().replaceAll(',', '.')) ?? 0,
+      art: _art,
+      anmerkung: _anmerkung.text.trim().isEmpty ? null : _anmerkung.text.trim(),
+    );
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await personal.saveUrlaubsanpassung(anpassung);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      messenger.showSnackBar(SnackBar(content: Text('Fehlgeschlagen: $error')));
+    }
+  }
+}
+
 class _EmployeeStammdatenCard extends StatelessWidget {
   const _EmployeeStammdatenCard({required this.member});
 
@@ -2419,6 +4109,17 @@ class _StammdatenBody extends StatelessWidget {
     final p = profile;
     final spacing = context.spacing;
     final theme = Theme.of(context);
+    final personal = context.watch<PersonalProvider>();
+    // Sobald ein Sollzeit-Profil existiert, ist dessen `urlaubstageJahr`
+    // kanonisch – das alte Feld wäre stille Divergenz (Review-Fund). Dann den
+    // aufgelösten Wert (Vorrangregel §5.1) statt `annualVacationDays` zeigen.
+    final hatSollzeit = personal.sollzeitProfilesForUser(p.userId).isNotEmpty;
+    final String? urlaubAnzeige = hatSollzeit
+        ? '${_formatTage(personal.effektiveUrlaubstage(p.userId).tage)} '
+            'Tage/Jahr (Sollzeit)'
+        : (p.annualVacationDays == null
+            ? null
+            : '${p.annualVacationDays} Tage/Jahr');
 
     // Gruppen aus (Überschrift, [(Label, Wert?)…]); leere Zeilen/Gruppen
     // werden ausgeblendet, damit keine „—"-Wüsten entstehen.
@@ -2468,7 +4169,12 @@ class _StammdatenBody extends StatelessWidget {
         [
           ('Familienstand', p.maritalStatus?.label),
           ('Konfession', p.confession?.label),
-          ('Kinder', p.childrenCount > 0 ? '${p.childrenCount}' : null),
+          (
+            'Kinder',
+            personal.effektiveKinderzahl(p.userId) > 0
+                ? '${personal.effektiveKinderzahl(p.userId)}'
+                : null
+          ),
           ('Steuer-ID', p.taxId),
           ('SV-Nummer', p.socialSecurityNumber),
           ('Krankenkasse', p.healthInsurance),
@@ -2492,12 +4198,7 @@ class _StammdatenBody extends StatelessWidget {
       (
         'Urlaub & Notfall',
         [
-          (
-            'Urlaubsanspruch',
-            p.annualVacationDays == null
-                ? null
-                : '${p.annualVacationDays} Tage/Jahr'
-          ),
+          ('Urlaubsanspruch', urlaubAnzeige),
           ('Notfallkontakt', p.emergencyContactName),
           ('Notfall-Telefon', p.emergencyContactPhone),
         ],
@@ -2718,6 +4419,17 @@ class _EmployeeProfileEditorSheetState
     final spacing = context.spacing;
     final theme = Theme.of(context);
     final hasExisting = widget.existing != null && !widget.existing!.isEmpty;
+    // Migrierter Mitarbeiter (Sollzeit-Profil vorhanden) → Urlaub ist dort
+    // kanonisch; das Altfeld read-only zeigen statt editierbar driften zu lassen.
+    final personal = context.watch<PersonalProvider>();
+    final hatSollzeit =
+        personal.sollzeitProfilesForUser(widget.member.uid).isNotEmpty;
+    final urlaubKanonisch =
+        hatSollzeit ? personal.effektiveUrlaubstage(widget.member.uid) : null;
+    // Sobald Kinder als Sub-Entitäten gepflegt sind, ist der Kinderzähler dort
+    // kanonisch (§4.4) → Altfeld read-only zeigen (sonst „doppelt editierbar").
+    final kinderGepflegt = personal.hatGepflegteKinder(widget.member.uid);
+    final kinderzahl = personal.effektiveKinderzahl(widget.member.uid);
 
     Widget gap() => SizedBox(height: spacing.sm);
 
@@ -2938,12 +4650,34 @@ class _EmployeeProfileEditorSheetState
               (v) => v.label,
               (v) => setState(() => _confession = v),
             ),
-            field(
-              _childrenCount,
-              'Anzahl Kinder',
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            ),
+            if (kinderGepflegt)
+              Padding(
+                padding: EdgeInsets.symmetric(vertical: spacing.xs),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Anzahl Kinder (Freibetrag)',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant)),
+                    Text('$kinderzahl', style: theme.textTheme.bodyLarge),
+                    Padding(
+                      padding: EdgeInsets.only(top: spacing.xs),
+                      child: Text(
+                        'Aus gepflegten Kindern abgeleitet – dort bearbeiten.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              field(
+                _childrenCount,
+                'Anzahl Kinder',
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
             field(_taxId, 'Steuer-ID'),
             field(_svNumber, 'Sozialversicherungsnummer'),
             field(_healthInsurance, 'Krankenkasse'),
@@ -2978,12 +4712,50 @@ class _EmployeeProfileEditorSheetState
             field(_accountHolder, 'Kontoinhaber'),
 
             heading('Urlaub & Notfall'),
-            field(
-              _vacationDays,
-              'Urlaubsanspruch (Tage/Jahr)',
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            ),
+            if (hatSollzeit)
+              Padding(
+                padding: EdgeInsets.symmetric(vertical: spacing.xs),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Urlaubsanspruch',
+                      style: theme.textTheme.labelMedium
+                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                    Text(
+                      '${_formatTage(urlaubKanonisch!.tage)} Tage/Jahr',
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                    Padding(
+                      padding: EdgeInsets.only(top: spacing.xs),
+                      child: Text(
+                        'Im Sollzeit-Modell hinterlegt – dort bearbeiten.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              field(
+                _vacationDays,
+                'Urlaubsanspruch (Tage/Jahr)',
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
+              Padding(
+                padding: EdgeInsets.only(top: context.spacing.xs),
+                child: Text(
+                  'Wird künftig im Sollzeit-Modell geführt (Urlaubstage/Jahr). '
+                  'Bestandswerte lassen sich in der Übersicht dorthin übernehmen.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            ],
             field(_emergencyName, 'Notfallkontakt (Name)'),
             field(_emergencyPhone, 'Notfall-Telefon',
                 keyboardType: TextInputType.phone),
@@ -3037,6 +4809,13 @@ class _EmployeeProfileEditorSheetState
     setState(() => _saving = true);
     final personal = context.read<PersonalProvider>();
     final existing = widget.existing;
+    // Bei migriertem Mitarbeiter (Sollzeit-Profil) das deprecate Altfeld
+    // unverändert lassen – nicht aus dem read-only Feld zurückschreiben.
+    final hatSollzeit =
+        personal.sollzeitProfilesForUser(widget.member.uid).isNotEmpty;
+    // Bei gepflegten Kindern (§4.4) den abgeleiteten Zähler nicht aus dem
+    // read-only Feld zurückschreiben – Altwert erhalten.
+    final kinderGepflegt = personal.hatGepflegteKinder(widget.member.uid);
     final profile = EmployeeProfile(
       id: existing?.id,
       orgId: existing?.orgId ?? '',
@@ -3062,7 +4841,9 @@ class _EmployeeProfileEditorSheetState
       limitedUntil: _limitedUntil,
       maritalStatus: _maritalStatus,
       confession: _confession,
-      childrenCount: int.tryParse(_childrenCount.text.trim()) ?? 0,
+      childrenCount: kinderGepflegt
+          ? (existing?.childrenCount ?? 0)
+          : (int.tryParse(_childrenCount.text.trim()) ?? 0),
       taxId: _trimmed(_taxId),
       socialSecurityNumber: _trimmed(_svNumber),
       healthInsurance: _trimmed(_healthInsurance),
@@ -3071,7 +4852,9 @@ class _EmployeeProfileEditorSheetState
       iban: _trimmed(_iban),
       bic: _trimmed(_bic),
       accountHolder: _trimmed(_accountHolder),
-      annualVacationDays: int.tryParse(_vacationDays.text.trim()),
+      annualVacationDays: hatSollzeit
+          ? existing?.annualVacationDays
+          : int.tryParse(_vacationDays.text.trim()),
       emergencyContactName: _trimmed(_emergencyName),
       emergencyContactPhone: _trimmed(_emergencyPhone),
       note: _trimmed(_note),
@@ -3161,4 +4944,662 @@ void _showError(BuildContext context, Object error) {
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(content: Text(message)),
   );
+}
+
+// ─────────────────────────── Lohnzeilen (M-L) ─────────────────────────────
+
+/// Hours aus „1,5"-Eingabe (deutsches Dezimalkomma) tolerant parsen.
+double _parseStunden(String raw) =>
+    double.tryParse(raw.replaceAll(',', '.').trim()) ?? 0;
+
+String? _trimOrNull(String value) {
+  final t = value.trim();
+  return t.isEmpty ? null : t;
+}
+
+/// Editierbare Liste der itemisierten Lohnzeilen einer Abrechnung (additiv).
+class _LohnzeilenEditor extends StatelessWidget {
+  const _LohnzeilenEditor({
+    required this.lines,
+    required this.onAdd,
+    required this.onRemove,
+  });
+
+  final List<PayrollLine> lines;
+  final VoidCallback onAdd;
+  final void Function(int index) onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text('Lohnzeilen (optional)',
+                  style: theme.textTheme.labelLarge),
+            ),
+            TextButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Zeile'),
+            ),
+          ],
+        ),
+        if (lines.isEmpty)
+          Text(
+            'Zusätzliche Bezüge/Abzüge (Zulage, §3b-Zuschlag, VwL, '
+            'Einmalzahlung) — Brutto/Netto bleiben die Hauptfelder.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          )
+        else
+          for (var i = 0; i < lines.length; i++)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: Text('${lines[i].kind.label}: ${lines[i].name}'),
+              subtitle: lines[i].datevLohnartNr == null
+                  ? null
+                  : Text('DATEV-Lohnart ${lines[i].datevLohnartNr}'),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_euro(lines[i].amountCents),
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  IconButton(
+                    tooltip: 'Entfernen',
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => onRemove(i),
+                  ),
+                ],
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+/// Sheet zum Anlegen einer Lohnzeile (frei oder aus dem Katalog). Für
+/// §3b-Zuschläge wird die Aufteilung live aus [computeSfn3bAnteil] gerechnet.
+class _PayLineEditorSheet extends StatefulWidget {
+  const _PayLineEditorSheet({
+    required this.katalog,
+    this.defaultStundenlohnCents = 0,
+    this.regularMonthlyGrossCents = 0,
+    this.settings,
+    this.taxClass = TaxClass.i,
+    this.churchTax = false,
+    this.federalState,
+    this.childCount = 0,
+    this.kvSurchargeOverride,
+  });
+
+  final List<PayLineType> katalog;
+  final int defaultStundenlohnCents;
+
+  /// Laufendes Monatsbrutto + Steuerparameter — nur für die §39b-Vorschau einer
+  /// Einmalzahlung (Richtwert). [settings] null ⇒ keine Vorschau.
+  final int regularMonthlyGrossCents;
+  final PayrollSettings? settings;
+  final TaxClass taxClass;
+  final bool churchTax;
+  final String? federalState;
+  final int childCount;
+  final double? kvSurchargeOverride;
+
+  @override
+  State<_PayLineEditorSheet> createState() => _PayLineEditorSheetState();
+}
+
+class _PayLineEditorSheetState extends State<_PayLineEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+  PayLineType? _type;
+  PayLineKind _kind = PayLineKind.zulage;
+  bool _isAbzug = false;
+  SfnZuschlagsart _sfnArt = SfnZuschlagsart.nacht;
+  final _name = TextEditingController();
+  final _amount = TextEditingController();
+  final _datev = TextEditingController();
+  final _stunden = TextEditingController();
+  late final TextEditingController _grundlohn;
+
+  @override
+  void initState() {
+    super.initState();
+    _grundlohn = TextEditingController(
+      text: widget.defaultStundenlohnCents > 0
+          ? _centsToInput(widget.defaultStundenlohnCents)
+          : '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _amount.dispose();
+    _datev.dispose();
+    _stunden.dispose();
+    _grundlohn.dispose();
+    super.dispose();
+  }
+
+  void _applyType(PayLineType? t) {
+    setState(() {
+      _type = t;
+      if (t != null) {
+        _kind = t.kind;
+        _isAbzug = t.kind.isAbzug;
+        if (_name.text.trim().isEmpty) _name.text = t.name;
+        if (t.datevLohnartNr != null && _datev.text.trim().isEmpty) {
+          _datev.text = t.datevLohnartNr!;
+        }
+      }
+    });
+  }
+
+  Sfn3bAnteil get _preview => computeSfn3bAnteil(
+        art: _sfnArt,
+        grundlohnCentsProStunde: _parseEuroToCents(_grundlohn.text) ?? 0,
+        dauer: Duration(minutes: (_parseStunden(_stunden.text) * 60).round()),
+      );
+
+  /// §39b-Steuer-Vorschau (Richtwert) für eine Einmalzahlung — nur sichtbar,
+  /// wenn die nötigen Steuerparameter übergeben wurden.
+  String? get _einmalzahlungVorschau {
+    final settings = widget.settings;
+    final bonus = _parseEuroToCents(_amount.text) ?? 0;
+    if (_kind != PayLineKind.einmalzahlung ||
+        _isAbzug ||
+        settings == null ||
+        bonus <= 0) {
+      return null;
+    }
+    final t = LohnHerleitung.einmalzahlungSteuer(
+      regularMonthlyGrossCents: widget.regularMonthlyGrossCents,
+      einmalzahlungCents: bonus,
+      settings: settings,
+      taxClass: widget.taxClass,
+      churchTax: widget.churchTax,
+      federalState: widget.federalState,
+      childCount: widget.childCount,
+      healthAdditionalRateOverride: widget.kvSurchargeOverride,
+    );
+    final teile = <String>[
+      'LSt ${_euro(t.incomeTaxCents)}',
+      if (t.soliCents > 0) 'Soli ${_euro(t.soliCents)}',
+      if (t.churchTaxCents > 0) 'KiSt ${_euro(t.churchTaxCents)}',
+    ];
+    return '§39b-Steuer (Richtwert): ${teile.join(' · ')}';
+  }
+
+  PayrollLine? _build() {
+    final name = _name.text.trim();
+    if (_kind == PayLineKind.zuschlag3b) {
+      final grundlohn = _parseEuroToCents(_grundlohn.text) ?? 0;
+      final minutes = (_parseStunden(_stunden.text) * 60).round();
+      if (grundlohn <= 0 || minutes <= 0) return null;
+      return LohnHerleitung.sfn3bLine(
+        art: _sfnArt,
+        grundlohnCentsProStunde: grundlohn,
+        dauer: Duration(minutes: minutes),
+        name: name.isEmpty ? _sfnArt.label : name,
+        datevLohnartNr: _trimOrNull(_datev.text),
+        lineTypeId: _type?.id,
+      );
+    }
+    final magnitude = _parseEuroToCents(_amount.text);
+    if (name.isEmpty || magnitude == null || magnitude == 0) return null;
+    final signed = _isAbzug ? -magnitude.abs() : magnitude.abs();
+    return PayrollLine(
+      lineTypeId: _type?.id,
+      name: name,
+      datevLohnartNr: _trimOrNull(_datev.text),
+      amountCents: signed,
+      kind: _kind,
+      steuerfrei: _type?.steuerfrei ?? false,
+      svFrei: _type?.svFrei ?? false,
+    );
+  }
+
+  void _save() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final line = _build();
+    if (line == null) {
+      _showError(context, StateError('Bitte Betrag/Stunden vollständig angeben.'));
+      return;
+    }
+    Navigator.of(context).pop(line);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final isSfn = _kind == PayLineKind.zuschlag3b;
+    return AppBottomSheetScaffold(
+      title: 'Lohnzeile hinzufügen',
+      subtitle: 'Bezug oder Abzug · Richtwert',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (widget.katalog.isNotEmpty) ...[
+              DropdownButtonFormField<PayLineType?>(
+                initialValue: _type,
+                decoration:
+                    const InputDecoration(labelText: 'Aus Katalog (optional)'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Freie Zeile')),
+                  for (final t in widget.katalog)
+                    DropdownMenuItem(value: t, child: Text(t.name)),
+                ],
+                onChanged: _applyType,
+              ),
+              SizedBox(height: spacing.md),
+            ],
+            DropdownButtonFormField<PayLineKind>(
+              initialValue: _kind,
+              decoration: const InputDecoration(labelText: 'Art'),
+              items: [
+                for (final k in PayLineKind.values)
+                  DropdownMenuItem(value: k, child: Text(k.label)),
+              ],
+              onChanged: (value) => setState(() {
+                _kind = value ?? _kind;
+                _isAbzug = _kind.isAbzug;
+              }),
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(
+              controller: _name,
+              label: 'Bezeichnung',
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Pflichtfeld' : null,
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(
+              controller: _datev,
+              label: 'DATEV-Lohnartnummer (optional)',
+              keyboardType: TextInputType.number,
+              validator: (v) => PayLineType.isValidDatevLohnartNr(v)
+                  ? null
+                  : 'Max. 4-stellig numerisch',
+            ),
+            SizedBox(height: spacing.md),
+            if (isSfn) ...[
+              DropdownButtonFormField<SfnZuschlagsart>(
+                initialValue: _sfnArt,
+                decoration: const InputDecoration(labelText: 'Zuschlagsart'),
+                items: [
+                  for (final a in SfnZuschlagsart.values)
+                    DropdownMenuItem(value: a, child: Text(a.label)),
+                ],
+                onChanged: (value) => setState(() => _sfnArt = value ?? _sfnArt),
+              ),
+              SizedBox(height: spacing.md),
+              Row(
+                children: [
+                  Expanded(
+                    child: AppFormField(
+                      controller: _stunden,
+                      label: 'Stunden',
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                      ],
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                  SizedBox(width: spacing.md),
+                  Expanded(
+                    child: AppFormField(
+                      controller: _grundlohn,
+                      label: 'Grundlohn €/h',
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                      ],
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: spacing.sm),
+              AppStatusBanner(
+                icon: Icons.calculate_outlined,
+                tone: AppStatusTone.info,
+                message: 'Zuschlag ${_euro(_preview.gesamtCents)} · steuerfrei '
+                    '${_euro(_preview.steuerfreiCents)} · SV-frei '
+                    '${_euro(_preview.svFreiCents)}',
+              ),
+            ] else ...[
+              AppSegmented<bool>(
+                segments: const [
+                  AppSegment(value: false, label: 'Bezug (+)'),
+                  AppSegment(value: true, label: 'Abzug (−)'),
+                ],
+                selected: _isAbzug,
+                onChanged: (value) => setState(() => _isAbzug = value),
+              ),
+              SizedBox(height: spacing.md),
+              AppFormField(
+                controller: _amount,
+                label: 'Betrag (€)',
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                ],
+                onChanged: (_) => setState(() {}),
+                validator: (v) =>
+                    _parseEuroToCents(v ?? '') == null ? 'Ungültig' : null,
+              ),
+              if (_einmalzahlungVorschau != null) ...[
+                SizedBox(height: spacing.sm),
+                AppStatusBanner(
+                  icon: Icons.calculate_outlined,
+                  tone: AppStatusTone.info,
+                  message: _einmalzahlungVorschau!,
+                ),
+              ],
+            ],
+            SizedBox(height: spacing.lg),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _save,
+                child: const Text('Hinzufügen'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────── Lohnarten-Katalog (M-L) ──────────────────────
+
+/// Admin-Verwaltung des org-weiten Lohnart-Katalogs ([PayLineType]).
+class _PayLineTypeKatalogSheet extends StatelessWidget {
+  const _PayLineTypeKatalogSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final personal = context.watch<PersonalProvider>();
+    final spacing = context.spacing;
+    final types = [...personal.payLineTypes]
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    final theme = Theme.of(context);
+
+    return AppBottomSheetScaffold(
+      title: 'Lohnarten-Katalog',
+      subtitle: 'Wiederverwendbare Lohnart-Vorlagen',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              onPressed: () => showAppBottomSheet(
+                context: context,
+                builder: (_) => const _PayLineTypeEditorSheet(),
+              ),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Neue Lohnart'),
+            ),
+          ),
+          SizedBox(height: spacing.md),
+          if (types.isEmpty)
+            Padding(
+              padding: EdgeInsets.symmetric(vertical: spacing.lg),
+              child: Text(
+                'Noch keine Lohnarten angelegt.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            )
+          else
+            for (final t in types)
+              Card(
+                margin: EdgeInsets.only(bottom: spacing.sm),
+                child: ListTile(
+                  title: Text(t.name,
+                      style: t.deaktiviert
+                          ? TextStyle(
+                              decoration: TextDecoration.lineThrough,
+                              color: theme.colorScheme.onSurfaceVariant)
+                          : null),
+                  subtitle: Text(
+                    '${t.kind.label} · ${t.wertTyp.label}'
+                    '${t.datevLohnartNr != null ? ' · DATEV ${t.datevLohnartNr}' : ''}'
+                    '${t.steuerfrei ? ' · steuerfrei' : ''}'
+                    '${t.svFrei ? ' · SV-frei' : ''}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Bearbeiten',
+                        icon: const Icon(Icons.edit_outlined),
+                        onPressed: () => showAppBottomSheet(
+                          context: context,
+                          builder: (_) => _PayLineTypeEditorSheet(existing: t),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Löschen',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () => _confirmDelete(context, t),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, PayLineType type) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Lohnart löschen?'),
+        content: Text('„${type.name}" wird entfernt. Bereits abgerechnete '
+            'Zeilen bleiben unverändert.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Löschen'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && type.id != null && context.mounted) {
+      try {
+        await context.read<PersonalProvider>().deletePayLineType(type.id!);
+      } catch (error) {
+        if (context.mounted) _showError(context, error);
+      }
+    }
+  }
+}
+
+/// Editor für eine einzelne Lohnart ([PayLineType]).
+class _PayLineTypeEditorSheet extends StatefulWidget {
+  const _PayLineTypeEditorSheet({this.existing});
+
+  final PayLineType? existing;
+
+  @override
+  State<_PayLineTypeEditorSheet> createState() =>
+      _PayLineTypeEditorSheetState();
+}
+
+class _PayLineTypeEditorSheetState extends State<_PayLineTypeEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _name;
+  late final TextEditingController _datev;
+  late PayLineKind _kind;
+  late PayWertTyp _wertTyp;
+  late PayInterval _intervall;
+  late bool _steuerfrei;
+  late bool _svFrei;
+  late bool _deaktiviert;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _name = TextEditingController(text: e?.name ?? '');
+    _datev = TextEditingController(text: e?.datevLohnartNr ?? '');
+    _kind = e?.kind ?? PayLineKind.zulage;
+    _wertTyp = e?.wertTyp ?? PayWertTyp.nominal;
+    _intervall = e?.intervall ?? PayInterval.monatlich;
+    _steuerfrei = e?.steuerfrei ?? false;
+    _svFrei = e?.svFrei ?? false;
+    _deaktiviert = e?.deaktiviert ?? false;
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _datev.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final prepared = (widget.existing ??
+            const PayLineType(orgId: '', name: ''))
+        .copyWith(
+      name: _name.text.trim(),
+      datevLohnartNr: _trimOrNull(_datev.text),
+      clearDatevLohnartNr: _trimOrNull(_datev.text) == null,
+      kind: _kind,
+      wertTyp: _wertTyp,
+      intervall: _intervall,
+      steuerfrei: _steuerfrei,
+      svFrei: _svFrei,
+      deaktiviert: _deaktiviert,
+    );
+    try {
+      await context.read<PersonalProvider>().savePayLineType(prepared);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saving = false);
+        _showError(context, error);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: widget.existing == null ? 'Neue Lohnart' : 'Lohnart bearbeiten',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppFormField(
+              controller: _name,
+              label: 'Bezeichnung',
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Pflichtfeld' : null,
+            ),
+            SizedBox(height: spacing.md),
+            DropdownButtonFormField<PayLineKind>(
+              initialValue: _kind,
+              decoration: const InputDecoration(labelText: 'Art'),
+              items: [
+                for (final k in PayLineKind.values)
+                  DropdownMenuItem(value: k, child: Text(k.label)),
+              ],
+              onChanged: (value) => setState(() => _kind = value ?? _kind),
+            ),
+            SizedBox(height: spacing.md),
+            DropdownButtonFormField<PayWertTyp>(
+              initialValue: _wertTyp,
+              decoration: const InputDecoration(labelText: 'Werttyp'),
+              items: [
+                for (final w in PayWertTyp.values)
+                  DropdownMenuItem(value: w, child: Text(w.label)),
+              ],
+              onChanged: (value) => setState(() => _wertTyp = value ?? _wertTyp),
+            ),
+            SizedBox(height: spacing.md),
+            DropdownButtonFormField<PayInterval>(
+              initialValue: _intervall,
+              decoration: const InputDecoration(labelText: 'Intervall'),
+              items: [
+                for (final i in PayInterval.values)
+                  DropdownMenuItem(value: i, child: Text(i.label)),
+              ],
+              onChanged: (value) =>
+                  setState(() => _intervall = value ?? _intervall),
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(
+              controller: _datev,
+              label: 'DATEV-Lohnartnummer (optional)',
+              keyboardType: TextInputType.number,
+              validator: (v) => PayLineType.isValidDatevLohnartNr(v)
+                  ? null
+                  : 'Max. 4-stellig numerisch',
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Steuerfrei'),
+              value: _steuerfrei,
+              onChanged: (v) => setState(() => _steuerfrei = v),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('SV-frei'),
+              value: _svFrei,
+              onChanged: (v) => setState(() => _svFrei = v),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Deaktiviert'),
+              subtitle: const Text('Für neue Zeilen ausblenden'),
+              value: _deaktiviert,
+              onChanged: (v) => setState(() => _deaktiviert = v),
+            ),
+            SizedBox(height: spacing.md),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _saving ? null : _save,
+                child: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Speichern'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

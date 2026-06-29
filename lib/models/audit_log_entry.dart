@@ -3,24 +3,31 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/firestore_date_parser.dart';
 
 /// Art einer protokollierten Änderung.
-enum AuditAction { created, updated, deleted }
+///
+/// [corrected] ist eine fachliche Korrektur eines bestehenden Datensatzes
+/// (z. B. nachträglich geänderter Zeiteintrag) – bewusst getrennt vom
+/// generischen [updated], damit revisionsrelevante Korrekturen filterbar sind.
+enum AuditAction { created, updated, deleted, corrected }
 
 extension AuditActionX on AuditAction {
   String get value => switch (this) {
         AuditAction.created => 'created',
         AuditAction.updated => 'updated',
         AuditAction.deleted => 'deleted',
+        AuditAction.corrected => 'corrected',
       };
 
   String get label => switch (this) {
         AuditAction.created => 'Angelegt',
         AuditAction.updated => 'Geändert',
         AuditAction.deleted => 'Gelöscht',
+        AuditAction.corrected => 'Korrigiert',
       };
 
   static AuditAction fromValue(String? value) => switch (value) {
         'created' => AuditAction.created,
         'deleted' => AuditAction.deleted,
+        'corrected' => AuditAction.corrected,
         _ => AuditAction.updated,
       };
 }

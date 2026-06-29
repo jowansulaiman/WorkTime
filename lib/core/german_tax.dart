@@ -140,18 +140,125 @@ class GermanIncomeTax {
       return (incomeTaxCents: 0, soliCents: 0, churchBaseTaxCents: 0);
     }
     final annualGross = monthlyGrossCents / 100.0 * 12;
-    final stk = _classNumber(taxClass);
+    final annual = _annualTaxes(
+      annualGrossEuro: annualGross,
+      stk: _classNumber(taxClass),
+      tariff: tariff,
+      healthEmployeeShare: healthEmployeeShare,
+      healthAdditionalEmployeeShare: healthAdditionalEmployeeShare,
+      careEmployeeShare: careEmployeeShare,
+      bbgKvPvMonthlyCents: bbgKvPvMonthlyCents,
+      bbgRvAlvMonthlyCents: bbgRvAlvMonthlyCents,
+      childCount: childCount,
+    );
 
+    final monthlyTax = annual.annualTax / 12;
+    final monthlyZuschlagTax = annual.annualZuschlagTax / 12;
+    final monthlySoli = _soli(annual.annualZuschlagTax, tariff) / 12;
+
+    return (
+      incomeTaxCents: (monthlyTax * 100).round(),
+      soliCents: (monthlySoli * 100).round(),
+      churchBaseTaxCents: (monthlyZuschlagTax * 100).round(),
+    );
+  }
+
+  /// Lohnsteuer einer **Einmalzahlung** (sonstiger Bezug) nach dem
+  /// **§ 39b Abs. 3 EStG**-Jahresverfahren (E8, Plan §5.8a). Liefert NUR die auf
+  /// den Bezug **zusätzlich** entfallende Lohnsteuer/Soli/Zuschlagsteuer-Basis.
+  ///
+  /// Verfahren: voraussichtlicher Jahresarbeitslohn (= laufendes Monatsbrutto
+  /// × 12) **mit** und **ohne** den sonstigen Bezug; die Differenz der
+  /// Jahres-Lohnsteuer ist die Lohnsteuer auf den Bezug. Soli/Kirchensteuer
+  /// analog auf der Differenz der (durch Kinderfreibeträge ggf. reduzierten)
+  /// Zuschlag-Bemessung. Bleibt ein **Richtwert** (§32a-Näherung statt amtlicher
+  /// Tabelle); die SV auf den Bezug rechnet der `PayrollCalculator`/
+  /// `lohn_herleitung`, nicht dieser Steuerkern.
+  ///
+  /// [regularMonthlyGrossCents] darf 0 sein (dann wird der Bezug ohne laufenden
+  /// Arbeitslohn besteuert). Negative/0-Bezüge ergeben 0.
+  static ({int incomeTaxCents, int soliCents, int churchBaseTaxCents})
+      sonstigerBezug({
+    required int regularMonthlyGrossCents,
+    required int sonstigerBezugCents,
+    required TaxClass taxClass,
+    required TaxTariff tariff,
+    required double healthEmployeeShare,
+    required double healthAdditionalEmployeeShare,
+    required double careEmployeeShare,
+    required int bbgKvPvMonthlyCents,
+    required int bbgRvAlvMonthlyCents,
+    int childCount = 0,
+  }) {
+    if (sonstigerBezugCents <= 0) {
+      return (incomeTaxCents: 0, soliCents: 0, churchBaseTaxCents: 0);
+    }
+    final stk = _classNumber(taxClass);
+    final annualRegular =
+        (regularMonthlyGrossCents <= 0 ? 0 : regularMonthlyGrossCents) /
+            100.0 *
+            12;
+    final bonus = sonstigerBezugCents / 100.0;
+
+    ({double annualTax, double annualZuschlagTax}) taxesFor(double gross) =>
+        _annualTaxes(
+          annualGrossEuro: gross,
+          stk: stk,
+          tariff: tariff,
+          healthEmployeeShare: healthEmployeeShare,
+          healthAdditionalEmployeeShare: healthAdditionalEmployeeShare,
+          careEmployeeShare: careEmployeeShare,
+          bbgKvPvMonthlyCents: bbgKvPvMonthlyCents,
+          bbgRvAlvMonthlyCents: bbgRvAlvMonthlyCents,
+          childCount: childCount,
+        );
+
+    final ohne = taxesFor(annualRegular);
+    final mit = taxesFor(annualRegular + bonus);
+
+    final bezugTax = (mit.annualTax - ohne.annualTax).clamp(0.0, double.infinity);
+    final bezugSoli =
+        (_soli(mit.annualZuschlagTax, tariff) - _soli(ohne.annualZuschlagTax, tariff))
+            .clamp(0.0, double.infinity);
+    final bezugZuschlagBase = (mit.annualZuschlagTax - ohne.annualZuschlagTax)
+        .clamp(0.0, double.infinity);
+
+    return (
+      incomeTaxCents: (bezugTax * 100).round(),
+      soliCents: (bezugSoli * 100).round(),
+      churchBaseTaxCents: (bezugZuschlagBase * 100).round(),
+    );
+  }
+
+  /// Jahres-Lohnsteuer + Jahres-Zuschlag-Bemessung für einen Jahresarbeitslohn.
+  /// Gemeinsamer Kern von [monthly] (÷12) und [sonstigerBezug] (Differenz).
+  /// `annualZuschlagTax` ist die durch Kinderfreibeträge (§ 51a EStG) ggf.
+  /// reduzierte Bemessung für Soli/Kirchensteuer.
+  static ({double annualTax, double annualZuschlagTax}) _annualTaxes({
+    required double annualGrossEuro,
+    required int stk,
+    required TaxTariff tariff,
+    required double healthEmployeeShare,
+    required double healthAdditionalEmployeeShare,
+    required double careEmployeeShare,
+    required int bbgKvPvMonthlyCents,
+    required int bbgRvAlvMonthlyCents,
+    required int childCount,
+  }) {
+    if (annualGrossEuro <= 0) {
+      return (annualTax: 0, annualZuschlagTax: 0);
+    }
     // Vorsorgepauschale (RV-Anteil + KV/PV-Anteil), je auf BBG gedeckelt.
     final rvBbgAnnual = bbgRvAlvMonthlyCents / 100.0 * 12;
     final kvBbgAnnual = bbgKvPvMonthlyCents / 100.0 * 12;
-    final vorsorgeRv =
-        _min(annualGross, rvBbgAnnual) * tariff.vorsorgePauschaleRvPercent / 100.0;
-    final vorsorgeKvPv = _min(annualGross, kvBbgAnnual) *
+    final vorsorgeRv = _min(annualGrossEuro, rvBbgAnnual) *
+        tariff.vorsorgePauschaleRvPercent /
+        100.0;
+    final vorsorgeKvPv = _min(annualGrossEuro, kvBbgAnnual) *
         (healthEmployeeShare + healthAdditionalEmployeeShare + careEmployeeShare);
     final vorsorge = vorsorgeRv + vorsorgeKvPv;
 
-    final zvEBeforeClass = (annualGross -
+    final zvEBeforeClass = (annualGrossEuro -
             tariff.werbungskostenPauschaleEuro -
             tariff.sonderausgabenPauschaleEuro -
             vorsorge)
@@ -159,17 +266,14 @@ class GermanIncomeTax {
 
     // Steuerklasse II: Entlastungsbetrag für Alleinerziehende senkt die echte
     // Lohnsteuer (anders als Kinderfreibeträge).
-    final entlastung =
-        stk == 2 ? tariff.alleinerziehendEntlastungEuro : 0.0;
-    final zvE =
-        (zvEBeforeClass - entlastung).clamp(0.0, double.infinity);
+    final entlastung = stk == 2 ? tariff.alleinerziehendEntlastungEuro : 0.0;
+    final zvE = (zvEBeforeClass - entlastung).clamp(0.0, double.infinity);
 
     final annualTax = _incomeTaxForClass(zvE, stk, tariff);
 
     // Kinderfreibeträge senken NUR die Bemessung für Zuschlagsteuern
-    // (§ 51a EStG): die monatliche Lohnsteuer bleibt unverändert (das Kindergeld
-    // deckt die Entlastung bereits ab). Das ist genauer als eine pauschale
-    // Reduktion der Lohnsteuer.
+    // (§ 51a EStG): die Lohnsteuer selbst bleibt unverändert (das Kindergeld
+    // deckt die Entlastung bereits ab).
     final childAllowanceEuro =
         _childAllowanceUnits(stk, childCount) * tariff.kinderfreibetragProKindEuro;
     final annualZuschlagTax = childAllowanceEuro <= 0
@@ -180,15 +284,7 @@ class GermanIncomeTax {
             tariff,
           );
 
-    final monthlyTax = annualTax / 12;
-    final monthlyZuschlagTax = annualZuschlagTax / 12;
-    final monthlySoli = _soli(annualZuschlagTax, tariff) / 12;
-
-    return (
-      incomeTaxCents: (monthlyTax * 100).round(),
-      soliCents: (monthlySoli * 100).round(),
-      churchBaseTaxCents: (monthlyZuschlagTax * 100).round(),
-    );
+    return (annualTax: annualTax, annualZuschlagTax: annualZuschlagTax);
   }
 
   /// Zahl der Kinderfreibetrags-Einheiten je Steuerklasse (für die

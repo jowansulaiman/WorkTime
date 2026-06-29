@@ -35,6 +35,11 @@ class PayrollSettings {
     this.midijobUpperCents = 200000,
     this.midijobFactorF = 0.6683,
     this.minimumHourlyWageCents = 1282,
+    this.umlageU1Rate = 0.011,
+    this.umlageU2Rate = 0.0024,
+    this.insolvenzgeldumlageRate = 0.0015,
+    this.uvRate = 0.013,
+    this.u1Applies = true,
     this.taxTariff = TaxTariff.year2026,
   });
 
@@ -113,6 +118,26 @@ class PayrollSettings {
   final int midijobUpperCents;
   final double midijobFactorF;
 
+  /// **Arbeitgeber-Umlagen** (nur AG-Kosten, kein AN-Abzug) für reguläre
+  /// Beschäftigte – beim Minijob sind sie bereits im Pauschalsatz
+  /// ([minijobEmployerLevyRate]) enthalten. Alle als Bruchteil (z. B. `0.011`).
+  ///
+  /// U1 (Lohnfortzahlung im Krankheitsfall, nur Betriebe mit i. d. R. ≤ 30 MA)
+  /// und U2 (Mutterschutz, immer) sind **kassenindividuell**, der UV-Beitrag
+  /// (Unfallversicherung) ist **BG-/gefahrtarif-individuell** – alle drei sind
+  /// Richtwerte und org-/jahr-überschreibbar. Die **Insolvenzgeldumlage** ist
+  /// dagegen ein **bundeseinheitlicher, gesetzlich fixierter** Satz (§ 360
+  /// SGB III): seit 2025 wieder 0,15 % (2023/2024 abgesenkt auf 0,06 %), auch
+  /// 2026 unverändert.
+  final double umlageU1Rate;
+  final double umlageU2Rate;
+  final double insolvenzgeldumlageRate;
+  final double uvRate;
+
+  /// Ob die U1-Umlage greift (i. d. R. nur Betriebe bis ~30 MA). Schaltet die
+  /// U1-Belastung ab, ohne den hinterlegten [umlageU1Rate] zu verlieren.
+  final bool u1Applies;
+
   double incomeTaxRateFor(TaxClass taxClass) =>
       incomeTaxRateByClass[taxClass] ?? 0.18;
 
@@ -142,19 +167,29 @@ class PayrollSettings {
         bbgRvAlvMonthlyCents: 805000, // 8.050,00 €
         minijobCeilingCents: 55600, // 556 €
         midijobUpperCents: 200000, // 2.000 €
+        minimumHourlyWageCents: 1282, // 12,82 €/h (explizit, nicht aus Default erben)
         careRate: 0.036,
       );
 
-  /// Richtwerte (vorläufig) für 2026 – als Default verwendet, bis offizielle
-  /// Werte gepflegt sind. Konservativ identisch zu 2025 gehalten.
+  /// Richtwerte für 2026. Die gesetzlich fixen Werte sind aktualisiert
+  /// (Mindestlohn 13,90 €/h, Minijob-Grenze 603 €/Monat). Die Minijob-Grenze ist
+  /// zugleich die **Midijob-Untergrenze `g`** in [PayrollCalculator] – daher
+  /// rechnerisch relevant, nicht nur ein Anzeige-Label.
+  ///
+  /// **Platzhalter (noch 2025-Werte):** SV-Beitragssätze (KV-Zusatz, PV) und die
+  /// Beitragsbemessungsgrenzen bleiben vorläufig, bis die amtlichen 2026-Werte
+  /// gepflegt bzw. über `OrgPayrollSettings` (M-Settings) org-individuell
+  /// überschrieben werden. `midijobFactorF` (0,6683) anpassen, sobald der
+  /// SV-Gesamtsatz 2026 final ist.
   factory PayrollSettings.defaults2026() => const PayrollSettings(
         year: 2026,
         incomeTaxRateByClass: _defaultTaxRates,
-        bbgKvPvMonthlyCents: 551250,
-        bbgRvAlvMonthlyCents: 805000,
-        minijobCeilingCents: 55600,
-        midijobUpperCents: 200000,
-        careRate: 0.036,
+        bbgKvPvMonthlyCents: 551250, // Platzhalter (2025), bis amtlich 2026
+        bbgRvAlvMonthlyCents: 805000, // Platzhalter (2025), bis amtlich 2026
+        minijobCeilingCents: 60300, // 603 € (= Midijob-Untergrenze g)
+        midijobUpperCents: 200000, // 2.000 €
+        minimumHourlyWageCents: 1390, // 13,90 €/h (gesetzlich 2026)
+        careRate: 0.036, // Platzhalter (2025)
       );
 
   factory PayrollSettings.fromMap(Map<String, dynamic> map) {
@@ -219,6 +254,14 @@ class PayrollSettings {
           parse.toDouble(map['midijob_factor_f']) ?? base.midijobFactorF,
       minimumHourlyWageCents: parse.toInt(map['minimum_hourly_wage_cents']) ??
           base.minimumHourlyWageCents,
+      umlageU1Rate:
+          parse.toDouble(map['umlage_u1_rate']) ?? base.umlageU1Rate,
+      umlageU2Rate:
+          parse.toDouble(map['umlage_u2_rate']) ?? base.umlageU2Rate,
+      insolvenzgeldumlageRate: parse.toDouble(map['insolvenzgeldumlage_rate']) ??
+          base.insolvenzgeldumlageRate,
+      uvRate: parse.toDouble(map['uv_rate']) ?? base.uvRate,
+      u1Applies: parse.toBool(map['u1_applies']) ?? base.u1Applies,
       reducedChurchTaxStates:
           (map['reduced_church_tax_states'] as List?)?.cast<String>().toSet() ??
               base.reducedChurchTaxStates,
@@ -253,9 +296,91 @@ class PayrollSettings {
       'midijob_upper_cents': midijobUpperCents,
       'midijob_factor_f': midijobFactorF,
       'minimum_hourly_wage_cents': minimumHourlyWageCents,
+      'umlage_u1_rate': umlageU1Rate,
+      'umlage_u2_rate': umlageU2Rate,
+      'insolvenzgeldumlage_rate': insolvenzgeldumlageRate,
+      'uv_rate': uvRate,
+      'u1_applies': u1Applies,
       'reduced_church_tax_states': reducedChurchTaxStates.toList(),
       // taxTariff wird über [year] abgeleitet (aktuell nur year2026).
     };
+  }
+
+  PayrollSettings copyWith({
+    int? year,
+    Map<TaxClass, double>? incomeTaxRateByClass,
+    double? soliRate,
+    int? soliThresholdCents,
+    double? churchTaxRateDefault,
+    double? churchTaxRateReduced,
+    Set<String>? reducedChurchTaxStates,
+    double? healthRate,
+    double? healthAdditionalRate,
+    double? careRate,
+    double? careChildlessSurchargeRate,
+    double? pensionRate,
+    double? unemploymentRate,
+    int? bbgKvPvMonthlyCents,
+    int? bbgRvAlvMonthlyCents,
+    int? minijobCeilingCents,
+    double? minijobEmployerFlatRate,
+    double? minijobEmployerHealthRate,
+    double? minijobEmployerPensionRate,
+    double? minijobEmployerLevyRate,
+    double? minijobEmployerFlatTaxRate,
+    int? midijobUpperCents,
+    double? midijobFactorF,
+    int? minimumHourlyWageCents,
+    double? umlageU1Rate,
+    double? umlageU2Rate,
+    double? insolvenzgeldumlageRate,
+    double? uvRate,
+    bool? u1Applies,
+    TaxTariff? taxTariff,
+  }) {
+    final resolvedYear = year ?? this.year;
+    return PayrollSettings(
+      year: resolvedYear,
+      incomeTaxRateByClass: incomeTaxRateByClass ?? this.incomeTaxRateByClass,
+      soliRate: soliRate ?? this.soliRate,
+      soliThresholdCents: soliThresholdCents ?? this.soliThresholdCents,
+      churchTaxRateDefault: churchTaxRateDefault ?? this.churchTaxRateDefault,
+      churchTaxRateReduced: churchTaxRateReduced ?? this.churchTaxRateReduced,
+      reducedChurchTaxStates:
+          reducedChurchTaxStates ?? this.reducedChurchTaxStates,
+      healthRate: healthRate ?? this.healthRate,
+      healthAdditionalRate: healthAdditionalRate ?? this.healthAdditionalRate,
+      careRate: careRate ?? this.careRate,
+      careChildlessSurchargeRate:
+          careChildlessSurchargeRate ?? this.careChildlessSurchargeRate,
+      pensionRate: pensionRate ?? this.pensionRate,
+      unemploymentRate: unemploymentRate ?? this.unemploymentRate,
+      bbgKvPvMonthlyCents: bbgKvPvMonthlyCents ?? this.bbgKvPvMonthlyCents,
+      bbgRvAlvMonthlyCents: bbgRvAlvMonthlyCents ?? this.bbgRvAlvMonthlyCents,
+      minijobCeilingCents: minijobCeilingCents ?? this.minijobCeilingCents,
+      minijobEmployerFlatRate:
+          minijobEmployerFlatRate ?? this.minijobEmployerFlatRate,
+      minijobEmployerHealthRate:
+          minijobEmployerHealthRate ?? this.minijobEmployerHealthRate,
+      minijobEmployerPensionRate:
+          minijobEmployerPensionRate ?? this.minijobEmployerPensionRate,
+      minijobEmployerLevyRate:
+          minijobEmployerLevyRate ?? this.minijobEmployerLevyRate,
+      minijobEmployerFlatTaxRate:
+          minijobEmployerFlatTaxRate ?? this.minijobEmployerFlatTaxRate,
+      midijobUpperCents: midijobUpperCents ?? this.midijobUpperCents,
+      midijobFactorF: midijobFactorF ?? this.midijobFactorF,
+      minimumHourlyWageCents:
+          minimumHourlyWageCents ?? this.minimumHourlyWageCents,
+      umlageU1Rate: umlageU1Rate ?? this.umlageU1Rate,
+      umlageU2Rate: umlageU2Rate ?? this.umlageU2Rate,
+      insolvenzgeldumlageRate:
+          insolvenzgeldumlageRate ?? this.insolvenzgeldumlageRate,
+      uvRate: uvRate ?? this.uvRate,
+      u1Applies: u1Applies ?? this.u1Applies,
+      // Tarif folgt dem (ggf. geänderten) Bezugsjahr, sofern nicht explizit gesetzt.
+      taxTariff: taxTariff ?? _tariffForYear(resolvedYear),
+    );
   }
 
   /// Loest das Bezugsjahr explizit auf den passenden § 32a-Steuertarif auf

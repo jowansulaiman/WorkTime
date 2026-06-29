@@ -3,10 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/datev_export.dart';
 import '../core/finance_analytics.dart';
 import '../core/money.dart';
 import '../models/finance_models.dart';
+import '../models/site_definition.dart';
 import '../providers/finance_provider.dart';
+import '../providers/team_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 
@@ -38,6 +41,13 @@ class _FinanceScreenState extends State<FinanceScreen> {
     FinanceProvider finance,
     String kind,
   ) async {
+    if (kind == 'datev_config') {
+      showAppBottomSheet(
+        context: context,
+        builder: (_) => _DatevConfigSheet(config: finance.datevConfig),
+      );
+      return;
+    }
     final centersById = {
       for (final c in finance.costCenters)
         if (c.id != null) c.id!: c,
@@ -48,12 +58,24 @@ class _FinanceScreenState extends State<FinanceScreen> {
     };
     final messenger = ScaffoldMessenger.of(context);
     try {
-      if (kind == 'datev') {
+      if (kind == 'pdf') {
+        await ExportService.exportFinanceReportPdf(
+          year: _year,
+          orgName: 'Kostenrechnung',
+          reports: finance.costCenterReports(_year),
+          months: finance.monthlyBreakdown(_year),
+          totalPlanned: finance.totalPlanned(_year),
+          totalActual: finance.totalActual(_year),
+          totalExpenses: finance.totalExpenses(_year),
+          totalCredits: finance.totalCredits(_year),
+        );
+      } else if (kind == 'datev') {
         await ExportService.exportDatevBuchungsstapel(
           entries: finance.journalEntries,
           centersById: centersById,
           typesById: typesById,
           year: _year,
+          config: finance.datevConfig,
         );
         messenger.showSnackBar(
           const SnackBar(
@@ -117,12 +139,20 @@ class _FinanceScreenState extends State<FinanceScreen> {
               onSelected: (value) => _export(context, finance, value),
               itemBuilder: (_) => const [
                 PopupMenuItem(
+                  value: 'pdf',
+                  child: Text('Finanzbericht (PDF)'),
+                ),
+                PopupMenuItem(
                   value: 'journal_csv',
                   child: Text('Buchungsjournal (CSV)'),
                 ),
                 PopupMenuItem(
                   value: 'datev',
                   child: Text('DATEV-Buchungsstapel (EXTF)'),
+                ),
+                PopupMenuItem(
+                  value: 'datev_config',
+                  child: Text('DATEV-Einstellungen …'),
                 ),
               ],
             ),
@@ -1104,6 +1134,7 @@ class _CostCenterEditorSheetState extends State<_CostCenterEditorSheet> {
   late final TextEditingController _annualBudget;
   late bool _isBillable;
   late bool _isActive;
+  String? _siteId;
   bool _saving = false;
 
   @override
@@ -1120,6 +1151,7 @@ class _CostCenterEditorSheetState extends State<_CostCenterEditorSheet> {
             : '');
     _isBillable = e?.isBillable ?? false;
     _isActive = e?.isActive ?? true;
+    _siteId = e?.siteId;
   }
 
   @override
@@ -1182,6 +1214,12 @@ class _CostCenterEditorSheetState extends State<_CostCenterEditorSheet> {
               controller: _costBearer,
               label: 'Kostenträger (DATEV KOST2, optional)',
             ),
+            SizedBox(height: spacing.md),
+            _SiteDropdown(
+              siteId: _siteId,
+              sites: context.watch<TeamProvider>().sites,
+              onChanged: (value) => setState(() => _siteId = value),
+            ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Abrechenbar (Kostenträger)'),
@@ -1234,6 +1272,7 @@ class _CostCenterEditorSheetState extends State<_CostCenterEditorSheet> {
       name: _name.text.trim(),
       description: desc.isEmpty ? null : desc,
       costBearerRef: bearer.isEmpty ? null : bearer,
+      siteId: _siteId,
       annualBudgetCents: Money.parseCents(_annualBudget.text) ?? 0,
       isBillable: _isBillable,
       isActive: _isActive,
@@ -1264,6 +1303,47 @@ class _CostCenterEditorSheetState extends State<_CostCenterEditorSheet> {
         _showError(context, error);
       }
     }
+  }
+}
+
+/// Standort-Auswahl für die Kostenstelle (H-C1). Tolerant gegenüber einer
+/// `siteId`, deren Standort nicht mehr existiert (zeigt „Standortübergreifend",
+/// wirft nicht).
+class _SiteDropdown extends StatelessWidget {
+  const _SiteDropdown({
+    required this.siteId,
+    required this.sites,
+    required this.onChanged,
+  });
+
+  final String? siteId;
+  final List<SiteDefinition> sites;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final knownIds = sites.map((s) => s.id).toSet();
+    final value =
+        (siteId != null && knownIds.contains(siteId)) ? siteId : null;
+    return DropdownButtonFormField<String?>(
+      initialValue: value,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'Standort (optional)',
+        helperText: 'Für automatische Kostenstellen-Zuordnung',
+        border: OutlineInputBorder(),
+        isDense: true,
+      ),
+      items: [
+        const DropdownMenuItem(
+          value: null,
+          child: Text('Standortübergreifend'),
+        ),
+        for (final site in sites)
+          DropdownMenuItem(value: site.id, child: Text(site.name)),
+      ],
+      onChanged: onChanged,
+    );
   }
 }
 
@@ -1574,6 +1654,168 @@ class _BudgetEditorSheetState extends State<_BudgetEditorSheet> {
     setState(() => _saving = true);
     try {
       await context.read<FinanceProvider>().deleteBudget(id);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saving = false);
+        _showError(context, error);
+      }
+    }
+  }
+}
+
+class _DatevConfigSheet extends StatefulWidget {
+  const _DatevConfigSheet({required this.config});
+
+  final DatevExportConfig config;
+
+  @override
+  State<_DatevConfigSheet> createState() => _DatevConfigSheetState();
+}
+
+class _DatevConfigSheetState extends State<_DatevConfigSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _consultant;
+  late final TextEditingController _client;
+  late final TextEditingController _accountLength;
+  late final TextEditingController _contraAccount;
+  late final TextEditingController _designation;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final c = widget.config;
+    _consultant = TextEditingController(text: c.consultantNumber);
+    _client = TextEditingController(text: c.clientNumber);
+    _accountLength = TextEditingController(text: '${c.accountLength}');
+    _contraAccount = TextEditingController(text: c.defaultContraAccount);
+    _designation = TextEditingController(text: c.designation);
+  }
+
+  @override
+  void dispose() {
+    _consultant.dispose();
+    _client.dispose();
+    _accountLength.dispose();
+    _contraAccount.dispose();
+    _designation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: 'DATEV-Einstellungen',
+      subtitle: 'Vorgaben des Steuerberaters für den EXTF-Buchungsstapel',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: AppFormField(
+                    controller: _consultant,
+                    label: 'Beraternummer',
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                  ),
+                ),
+                SizedBox(width: spacing.sm),
+                Expanded(
+                  child: AppFormField(
+                    controller: _client,
+                    label: 'Mandantennummer',
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: spacing.md),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: AppFormField(
+                    controller: _accountLength,
+                    label: 'Sachkontenlänge (4–8)',
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                    validator: (v) {
+                      final n = int.tryParse((v ?? '').trim());
+                      if (n == null || n < 4 || n > 8) return '4 bis 8';
+                      return null;
+                    },
+                  ),
+                ),
+                SizedBox(width: spacing.sm),
+                Expanded(
+                  child: AppFormField(
+                    controller: _contraAccount,
+                    label: 'Gegenkonto',
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: spacing.md),
+            AppFormField(
+              controller: _designation,
+              label: 'Bezeichnung des Stapels (optional)',
+            ),
+            SizedBox(height: spacing.md),
+            const AppStatusBanner(
+              tone: AppStatusTone.info,
+              icon: Icons.info_outline,
+              message: DatevExport.disclaimer,
+            ),
+            SizedBox(height: spacing.md),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _saving ? null : _save,
+                child: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Speichern'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    final config = DatevExportConfig(
+      consultantNumber: _consultant.text.trim(),
+      clientNumber: _client.text.trim(),
+      accountLength: int.tryParse(_accountLength.text.trim()) ?? 4,
+      defaultContraAccount: _contraAccount.text.trim().isEmpty
+          ? '9000'
+          : _contraAccount.text.trim(),
+      designation: _designation.text.trim(),
+    );
+    try {
+      await context.read<FinanceProvider>().saveDatevConfig(config);
       if (mounted) Navigator.of(context).pop();
     } catch (error) {
       if (mounted) {

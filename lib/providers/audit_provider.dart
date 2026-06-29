@@ -29,14 +29,25 @@ class AuditProvider extends ChangeNotifier {
   bool _localStorageOnly = false;
   bool _hybridStorageEnabled = false;
 
+  /// Seitengröße / aktuelles Stream-Limit. Wird über [loadMore] erhöht.
+  static const int pageSize = 200;
+
   AppUserProfile? _currentUser;
   List<AuditLogEntry> _entries = [];
   StreamSubscription<List<AuditLogEntry>>? _subscription;
   bool _disposed = false;
   int _localSeq = 0;
   String? _lastSessionKey;
+  int _limit = pageSize;
+  bool _hasMore = false;
 
   List<AuditLogEntry> get entries => _entries;
+
+  /// Aktuell geladenes Limit des Cloud-Streams (nur im Firestore-Modus aktiv).
+  int get limit => _limit;
+
+  /// `true`, wenn der letzte Stream genau das Limit füllte (mehr ladbar).
+  bool get hasMore => _hasMore;
 
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get _usesFirestore => !usesLocalStorage;
@@ -73,6 +84,10 @@ class AuditProvider extends ChangeNotifier {
     _currentUser = user;
     await _subscription?.cancel();
     _subscription = null;
+    // Beim Sessionwechsel die Seitengröße zurücksetzen (kein „Mehr laden"-Leck
+    // in eine andere Org/Modus).
+    _limit = pageSize;
+    _hasMore = false;
 
     if (user == null) {
       _entries = [];
@@ -81,16 +96,35 @@ class AuditProvider extends ChangeNotifier {
     }
     // Protokoll nur für Admins streamen (Rules erlauben Lesen nur Admins).
     if (_usesFirestore && user.isAdmin) {
-      _subscription = _firestore.watchAuditLog(user.orgId).listen((items) {
-        _entries = items;
-        _safeNotify();
-      }, onError: (Object error) {
-        AppLogger.warning('Audit: Stream-Fehler', error: error);
-      });
+      _subscribeFirestore(user.orgId);
     } else {
       _entries = await DatabaseService.loadLocalAuditLog(scope: _localScope);
       _safeNotify();
     }
+  }
+
+  void _subscribeFirestore(String orgId) {
+    _subscription?.cancel();
+    _subscription =
+        _firestore.watchAuditLog(orgId, limit: _limit).listen((items) {
+      _entries = items;
+      // Wenn der Stream das Limit exakt füllt, gibt es vermutlich mehr.
+      _hasMore = items.length >= _limit;
+      _safeNotify();
+    }, onError: (Object error) {
+      AppLogger.warning('Audit: Stream-Fehler', error: error);
+    });
+  }
+
+  /// Lädt die nächste Seite (erhöht das Cloud-Stream-Limit). Nur im
+  /// Firestore-Admin-Modus wirksam; im lokalen Modus liegt ohnehin alles vor.
+  Future<void> loadMore() async {
+    final user = _currentUser;
+    if (user == null || !_usesFirestore || !user.isAdmin || !_hasMore) {
+      return;
+    }
+    _limit += pageSize;
+    _subscribeFirestore(user.orgId);
   }
 
   /// Protokolliert eine Änderung (best-effort – wirft nie).
@@ -136,6 +170,25 @@ class AuditProvider extends ChangeNotifier {
       _safeNotify();
     }
   }
+
+  // --- Speichermodus-Migration (H-H1) -------------------------------------
+
+  /// Snapshot des aktuellen (Cloud-)Protokolls in den lokalen Speicher, damit
+  /// der Verlauf nach dem Wechsel in den local-Modus sichtbar bleibt.
+  Future<void> cacheCloudStateLocally() async {
+    if (usesLocalStorage) return;
+    try {
+      await DatabaseService.saveLocalAuditLog(_entries, scope: _localScope);
+    } catch (error) {
+      AppLogger.warning('cacheCloudStateLocally(audit): $error');
+    }
+  }
+
+  /// Das Protokoll ist **append-only**: ein erneutes Hochladen lokaler Einträge
+  /// würde duplizieren. Lokale Audit-Einträge bleiben daher bewusst lokal (kein
+  /// Up-Sync). Methode existiert nur für einen einheitlichen Aufruf in
+  /// settings_screen.
+  Future<void> syncLocalStateToCloud() async {}
 
   void _safeNotify() {
     if (!_disposed) notifyListeners();

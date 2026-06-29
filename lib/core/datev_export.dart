@@ -24,6 +24,45 @@ class DatevExportConfig {
 
   /// Freie Bezeichnung des Stapels.
   final String designation;
+
+  Map<String, dynamic> toMap() => {
+        'consultant_number': consultantNumber,
+        'client_number': clientNumber,
+        'account_length': accountLength,
+        'default_contra_account': defaultContraAccount,
+        'designation': designation,
+      };
+
+  factory DatevExportConfig.fromMap(Map<String, dynamic> map) {
+    final lengthRaw = map['account_length'];
+    final length = lengthRaw is int
+        ? lengthRaw
+        : int.tryParse('${lengthRaw ?? ''}') ?? 4;
+    return DatevExportConfig(
+      consultantNumber: (map['consultant_number'] ?? '').toString(),
+      clientNumber: (map['client_number'] ?? '').toString(),
+      accountLength: length.clamp(4, 8),
+      defaultContraAccount:
+          (map['default_contra_account'] ?? '9000').toString(),
+      designation: (map['designation'] ?? '').toString(),
+    );
+  }
+
+  DatevExportConfig copyWith({
+    String? consultantNumber,
+    String? clientNumber,
+    int? accountLength,
+    String? defaultContraAccount,
+    String? designation,
+  }) {
+    return DatevExportConfig(
+      consultantNumber: consultantNumber ?? this.consultantNumber,
+      clientNumber: clientNumber ?? this.clientNumber,
+      accountLength: accountLength ?? this.accountLength,
+      defaultContraAccount: defaultContraAccount ?? this.defaultContraAccount,
+      designation: designation ?? this.designation,
+    );
+  }
 }
 
 /// Erzeugt einen **DATEV-EXTF-Buchungsstapel** (Format 700) aus dem

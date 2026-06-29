@@ -23,6 +23,9 @@ class AppNavMenu extends StatelessWidget {
     required this.user,
     required this.authDisabled,
     required this.onSignOut,
+    required this.onOpenTime,
+    required this.onOpenContacts,
+    required this.onOpenShop,
     required this.onOpenMonthReport,
     required this.onOpenStatistics,
     required this.onOpenPersonal,
@@ -30,9 +33,11 @@ class AppNavMenu extends StatelessWidget {
     required this.onOpenTeam,
     required this.onOpenInventory,
     required this.onOpenCustomerOrders,
+    required this.onOpenOrderAnalytics,
     required this.onOpenScanner,
     required this.onOpenSettings,
     this.showScanner = false,
+    this.showAreas = false,
     this.siteName,
     this.dailyHours,
     this.vacationDays,
@@ -42,6 +47,13 @@ class AppNavMenu extends StatelessWidget {
   final bool authDisabled;
 
   final VoidCallback onSignOut;
+
+  /// Wechsel auf die aus der Bottomnav ausgelagerten Shell-Tabs (Branch-Wechsel,
+  /// kein Push). Nur sichtbar, wenn [showAreas] und das jeweilige Recht passt.
+  final VoidCallback onOpenTime;
+  final VoidCallback onOpenContacts;
+  final VoidCallback onOpenShop;
+
   final VoidCallback onOpenMonthReport;
   final VoidCallback onOpenStatistics;
   final VoidCallback onOpenPersonal;
@@ -49,6 +61,7 @@ class AppNavMenu extends StatelessWidget {
   final VoidCallback onOpenTeam;
   final VoidCallback onOpenInventory;
   final VoidCallback onOpenCustomerOrders;
+  final VoidCallback onOpenOrderAnalytics;
   final VoidCallback onOpenScanner;
   final VoidCallback onOpenSettings;
 
@@ -56,6 +69,11 @@ class AppNavMenu extends StatelessWidget {
   /// (Plattform + Breite) trifft die Shell und reicht das Ergebnis hier herein —
   /// das Menü bleibt rein präsentational.
   final bool showScanner;
+
+  /// Ob die Gruppe „Bereiche" (Zeit/Kontakte/Laden) gezeigt wird. Diese Tabs
+  /// wurden aus der mobilen Bottomnav ausgelagert und sind nur dort nötig; in
+  /// der Rail (endDrawer) stehen sie schon in der Seitenleiste → `false`.
+  final bool showAreas;
 
   /// Name des Stammstandorts; `null` → „Kein Stammstandort".
   final String? siteName;
@@ -73,6 +91,35 @@ class AppNavMenu extends StatelessWidget {
     final canViewReports = user?.canViewReports ?? false;
     final canViewInventory = user?.canViewInventory ?? false;
     final canManageInventory = user?.canManageInventory ?? false;
+    final canViewTimeTracking = user?.canViewTimeTracking ?? false;
+    final canViewContacts = user?.canViewContacts ?? false;
+
+    // „Bereiche": die aus der mobilen Bottomnav (Heute · Plan · Scanner ·
+    // Anfragen · Mehr) ausgelagerten Tabs. Jeder Eintrag wechselt den Shell-
+    // Branch; Sichtbarkeit folgt denselben Rechten wie der jeweilige Tab.
+    final areaItems = <Widget>[
+      if (canViewTimeTracking)
+        AppQuickActionTile(
+          icon: Icons.schedule_outlined,
+          title: 'Zeit',
+          subtitle: 'Arbeitszeiten erfassen & Stempeluhr',
+          onTap: onOpenTime,
+        ),
+      if (canViewContacts)
+        AppQuickActionTile(
+          icon: Icons.contacts_outlined,
+          title: 'Kontakte',
+          subtitle: 'Kunden, Lieferanten & Partner',
+          onTap: onOpenContacts,
+        ),
+      if (canViewInventory)
+        AppQuickActionTile(
+          icon: Icons.storefront_outlined,
+          title: 'Laden',
+          subtitle: 'Laden-Übersicht & Geschäftsbereiche',
+          onTap: onOpenShop,
+        ),
+    ];
 
     final reportItems = <Widget>[
       if (canViewReports) ...[
@@ -134,6 +181,13 @@ class AppNavMenu extends StatelessWidget {
           subtitle: 'Sonderbestellungen von Kunden verwalten',
           onTap: onOpenCustomerOrders,
         ),
+      if (canViewInventory)
+        AppQuickActionTile(
+          icon: Icons.insights_outlined,
+          title: 'Bestell-Auswertung',
+          subtitle: 'Wie oft welcher Artikel bestellt wird',
+          onTap: onOpenOrderAnalytics,
+        ),
     ];
 
     return SafeArea(
@@ -147,6 +201,10 @@ class AppNavMenu extends StatelessWidget {
             vacationDays: vacationDays,
           ),
           SizedBox(height: spacing.lg),
+          if (showAreas && areaItems.isNotEmpty) ...[
+            _MenuGroup(title: 'Bereiche', children: areaItems),
+            SizedBox(height: spacing.md),
+          ],
           if (reportItems.isNotEmpty) ...[
             _MenuGroup(title: 'Auswertungen', children: reportItems),
             SizedBox(height: spacing.md),

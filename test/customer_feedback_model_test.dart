@@ -61,6 +61,8 @@ void main() {
         rating: 2,
         // Status absichtlich abweichend -> Payload muss trotzdem 'neu' sein.
         status: FeedbackStatus.done,
+        // Internes Feld: darf NIE in den öffentlichen Payload (Allowlist).
+        contactId: 'kontakt-1',
       );
 
       final map = feedback.toPublicSubmissionMap();
@@ -81,6 +83,10 @@ void main() {
           'source',
         },
       );
+      // Tripwire: contactId (H-D2, internes Feld) darf NICHT im öffentlichen
+      // Create-Payload landen — die `firestore.rules`-hasOnly-Allowlist kennt
+      // es nicht, sonst bräche der anonyme /feedback-Schreibpfad still.
+      expect(map.containsKey('contactId'), isFalse);
       // Invarianten, die die Rule serverseitig erzwingt:
       expect(map['status'], 'neu');
       expect(map['source'], CustomerFeedback.publicWebSource);
@@ -117,6 +123,7 @@ void main() {
         incidentDate: DateTime(2026, 6, 1, 12),
         customerName: 'Max Muster',
         customerContact: 'max@example.com',
+        contactId: 'kontakt-7',
         status: FeedbackStatus.seen,
         notes: 'ans Team weitergegeben',
       );
@@ -131,8 +138,39 @@ void main() {
       expect(restored.incidentDate, DateTime(2026, 6, 1, 12));
       expect(restored.customerName, 'Max Muster');
       expect(restored.customerContact, 'max@example.com');
+      expect(restored.contactId, 'kontakt-7');
       expect(restored.status, FeedbackStatus.seen);
       expect(restored.notes, 'ans Team weitergegeben');
+    });
+
+    test('toFirestoreMap/fromFirestore (camelCase) trippt contactId rund', () {
+      const feedback = CustomerFeedback(
+        id: 'f1',
+        orgId: 'main-org',
+        referenceCode: 'K7Q-9X2',
+        type: FeedbackType.praise,
+        message: 'Super freundliches Personal!',
+        contactId: 'kontakt-7',
+      );
+
+      final restored =
+          CustomerFeedback.fromFirestore('f1', feedback.toFirestoreMap());
+
+      expect(restored.contactId, 'kontakt-7');
+    });
+
+    test('clearContactId löst die Verknüpfung in copyWith', () {
+      const feedback = CustomerFeedback(
+        orgId: 'main-org',
+        referenceCode: 'K7Q-9X2',
+        type: FeedbackType.praise,
+        message: 'Super freundliches Personal!',
+        contactId: 'kontakt-7',
+      );
+
+      expect(feedback.copyWith(contactId: 'kontakt-9').contactId, 'kontakt-9');
+      expect(feedback.copyWith(clearContactId: true).contactId, isNull);
+      expect(feedback.copyWith().contactId, 'kontakt-7');
     });
   });
 }

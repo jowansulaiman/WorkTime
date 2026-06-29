@@ -41,10 +41,14 @@ Future<void> _pump(
   required AppUserProfile user,
   bool authDisabled = false,
   bool showScanner = false,
+  bool showAreas = false,
   VoidCallback? onSignOut,
   VoidCallback? onOpenSettings,
   VoidCallback? onOpenPersonal,
   VoidCallback? onOpenScanner,
+  VoidCallback? onOpenTime,
+  VoidCallback? onOpenContacts,
+  VoidCallback? onOpenShop,
 }) async {
   // Hoher Viewport, damit die (lazy) ListView alle Menue-Eintraege baut.
   tester.view.devicePixelRatio = 1;
@@ -61,10 +65,14 @@ Future<void> _pump(
           user: user,
           authDisabled: authDisabled,
           showScanner: showScanner,
+          showAreas: showAreas,
           siteName: 'Strichmaennchen',
           dailyHours: 8,
           vacationDays: 30,
           onSignOut: onSignOut ?? () {},
+          onOpenTime: onOpenTime ?? () {},
+          onOpenContacts: onOpenContacts ?? () {},
+          onOpenShop: onOpenShop ?? () {},
           onOpenMonthReport: () {},
           onOpenStatistics: () {},
           onOpenPersonal: onOpenPersonal ?? () {},
@@ -72,6 +80,7 @@ Future<void> _pump(
           onOpenTeam: () {},
           onOpenInventory: () {},
           onOpenCustomerOrders: () {},
+          onOpenOrderAnalytics: () {},
           onOpenScanner: onOpenScanner ?? () {},
           onOpenSettings: onOpenSettings ?? () {},
         ),
@@ -179,6 +188,36 @@ void main() {
 
     await tester.ensureVisible(find.text('Personal'));
     await tester.tap(find.text('Personal'));
+    await tester.pump();
+    expect(opened, isTrue);
+  });
+
+  testWidgets('Bereiche-Gruppe: nur bei showAreas (mobiler Drawer)',
+      (tester) async {
+    // Default (Rail/endDrawer): keine Bereiche-Gruppe.
+    await _pump(tester, user: _admin);
+    expect(find.text('Bereiche'), findsNothing);
+
+    // Mobiler Drawer: Zeit/Kontakte/Laden sind die aus der Bottomnav
+    // ausgelagerten Tabs und tauchen hier auf.
+    await _pump(tester, user: _admin, showAreas: true);
+    expect(find.text('Bereiche'), findsOneWidget);
+    expect(find.text('Zeit'), findsOneWidget);
+    expect(find.text('Kontakte'), findsOneWidget);
+    expect(find.text('Laden'), findsOneWidget);
+  });
+
+  testWidgets('Tap Zeit (Bereiche) ruft onOpenTime', (tester) async {
+    var opened = false;
+    await _pump(
+      tester,
+      user: _admin,
+      showAreas: true,
+      onOpenTime: () => opened = true,
+    );
+
+    await tester.ensureVisible(find.text('Zeit'));
+    await tester.tap(find.text('Zeit'));
     await tester.pump();
     expect(opened, isTrue);
   });

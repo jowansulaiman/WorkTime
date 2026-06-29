@@ -15,6 +15,7 @@ import 'package:worktime_app/providers/storage_mode_provider.dart';
 import 'package:worktime_app/providers/team_provider.dart';
 import 'package:worktime_app/providers/theme_provider.dart';
 import 'package:worktime_app/providers/work_provider.dart';
+import 'package:worktime_app/providers/zeitwirtschaft_provider.dart';
 import 'package:worktime_app/routing/app_router.dart';
 import 'package:worktime_app/services/auth_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
@@ -136,6 +137,8 @@ Future<AppHarness> pumpApp(
   final personal = PersonalProvider(firestoreService: firestoreService);
   final work = WorkProvider(firestoreService: firestoreService);
   work.updateScheduleProvider(schedule);
+  final zeitwirtschaft =
+      ZeitwirtschaftProvider(firestoreService: firestoreService);
 
   if (profile != null) {
     await flags.updateSession(profile, localStorageOnly: false);
@@ -146,6 +149,7 @@ Future<AppHarness> pumpApp(
     await audit.updateSession(profile);
     await personal.updateSession(profile);
     await work.updateSession(profile);
+    await zeitwirtschaft.updateSession(profile);
   }
 
   final router = buildAppRouter(
@@ -169,6 +173,8 @@ Future<AppHarness> pumpApp(
         ChangeNotifierProvider<AuditProvider>.value(value: audit),
         ChangeNotifierProvider<PersonalProvider>.value(value: personal),
         ChangeNotifierProvider<WorkProvider>.value(value: work),
+        ChangeNotifierProvider<ZeitwirtschaftProvider>.value(
+            value: zeitwirtschaft),
       ],
       child: MaterialApp.router(
         theme: AppTheme.resolveLight(useV2: flagOn),
@@ -195,6 +201,7 @@ Future<AppHarness> pumpApp(
       // pending Timer der WorkProvider übrig bleiben.
       await tester.pumpWidget(const SizedBox());
       router.dispose();
+      zeitwirtschaft.dispose();
       work.dispose();
       personal.dispose();
       audit.dispose();

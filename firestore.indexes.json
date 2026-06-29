@@ -1,6 +1,20 @@
 {
   "indexes": [
     {
+      "collectionGroup": "clockEntries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "kommen",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "workEntries",
       "queryScope": "COLLECTION",
       "fields": [

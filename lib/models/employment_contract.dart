@@ -5,6 +5,30 @@ import '../core/firestore_num_parser.dart' as parse;
 
 enum EmploymentType { fullTime, partTime, miniJob, trainee }
 
+/// Vergütungsart: Festgehalt (monatlich) vs. Stundenlohn. Steuert, ob das
+/// Monats-Brutto aus `workedHours × hourlyRate` **vorgeschlagen** werden kann
+/// (H-B3). Default [SalaryKind.monthly] → bestehende Verträge ohne Feld
+/// verhalten sich wie bisher (Brutto manuell).
+enum SalaryKind { monthly, hourly }
+
+extension SalaryKindX on SalaryKind {
+  String get value => switch (this) {
+        SalaryKind.monthly => 'monthly',
+        SalaryKind.hourly => 'hourly',
+      };
+
+  String get label => switch (this) {
+        SalaryKind.monthly => 'Festgehalt',
+        SalaryKind.hourly => 'Stundenlohn',
+      };
+
+  /// Default-Branch wirft nie (Enum-Kopplungsregel).
+  static SalaryKind fromValue(String? value) => switch (value) {
+        'hourly' => SalaryKind.hourly,
+        _ => SalaryKind.monthly,
+      };
+}
+
 extension EmploymentTypeX on EmploymentType {
   String get value => switch (this) {
         EmploymentType.fullTime => 'full_time',
@@ -40,10 +64,14 @@ class EmploymentContract {
     this.weeklyHours = 40,
     this.dailyHours = 8,
     this.hourlyRate = 0,
+    this.salaryKind = SalaryKind.monthly,
+    this.monthlyGrossCents,
     this.currency = 'EUR',
     this.vacationDays = 30,
     this.maxDailyMinutes,
     this.monthlyIncomeLimitCents,
+    this.monthlyMaxHours,
+    this.weeklyMaxHours,
     this.isMinor = false,
     this.isPregnant = false,
     this.createdByUid,
@@ -61,10 +89,34 @@ class EmploymentContract {
   final double weeklyHours;
   final double dailyHours;
   final double hourlyRate;
+
+  /// Vergütungsart (Festgehalt vs. Stundenlohn) — siehe [SalaryKind].
+  final SalaryKind salaryKind;
+
+  /// **Kanonisches Festgehalt** (Monatsbrutto in Cent) bei
+  /// [SalaryKind.monthly] (M1, Plan §4.1/M-B0). Versioniert über den Vertrag
+  /// (gültig-ab) und hat **Vorrang** vor dem `PayrollProfile.monthlyGrossCents`-
+  /// Prefill-Cache. `null` = nicht hinterlegt → Fallback auf den Cache.
+  final int? monthlyGrossCents;
   final String currency;
+
+  /// **Deprecated (M0):** Der kanonische Jahresurlaub liegt seit M0 in
+  /// `SollzeitProfile.urlaubstageJahr`. Dieses Feld bleibt nur als unterster
+  /// **Fallback** der Vorrangregel §5.1 (`resolveUrlaubstageJahr`) und für die
+  /// M0-Migration erhalten. Nicht mehr als neue Quelle verwenden.
   final int vacationDays;
   final int? maxDailyMinutes;
   final int? monthlyIncomeLimitCents;
+
+  /// Vertragliche **Monats-Stundenobergrenze** (Planungsschranke im
+  /// Auto-Verteiler, KEINE Compliance-Violation). `null` = keine vertragliche
+  /// Grenze; nur Compliance/Minijob greifen. Hart vs. weich steuert
+  /// `OrgSettings.enforceHourCapHard`.
+  final double? monthlyMaxHours;
+
+  /// Vertragliche **Wochen-Stundenobergrenze** (Planungsschranke, analog
+  /// [monthlyMaxHours]). `null` = keine vertragliche Grenze.
+  final double? weeklyMaxHours;
   final bool isMinor;
   final bool isPregnant;
   final String? createdByUid;
@@ -98,11 +150,15 @@ class EmploymentContract {
       weeklyHours: parse.toDouble(map['weeklyHours']) ?? 40,
       dailyHours: parse.toDouble(map['dailyHours']) ?? 8,
       hourlyRate: parse.toDouble(map['hourlyRate']) ?? 0,
+      salaryKind: SalaryKindX.fromValue(map['salaryKind']?.toString()),
+      monthlyGrossCents: parse.toInt(map['monthlyGrossCents']),
       currency: (map['currency'] ?? 'EUR').toString(),
       vacationDays: parse.toInt(map['vacationDays']) ?? 30,
       maxDailyMinutes: parse.toInt(map['maxDailyMinutes']),
       monthlyIncomeLimitCents:
           parse.toInt(map['monthlyIncomeLimitCents']),
+      monthlyMaxHours: parse.toDouble(map['monthlyMaxHours']),
+      weeklyMaxHours: parse.toDouble(map['weeklyMaxHours']),
       isMinor: parse.toBool(map['isMinor']) ?? false,
       isPregnant: parse.toBool(map['isPregnant']) ?? false,
       createdByUid: map['createdByUid'] as String?,
@@ -124,11 +180,15 @@ class EmploymentContract {
       weeklyHours: parse.toDouble(map['weekly_hours']) ?? 40,
       dailyHours: parse.toDouble(map['daily_hours']) ?? 8,
       hourlyRate: parse.toDouble(map['hourly_rate']) ?? 0,
+      salaryKind: SalaryKindX.fromValue(map['salary_kind']?.toString()),
+      monthlyGrossCents: parse.toInt(map['monthly_gross_cents']),
       currency: (map['currency'] ?? 'EUR').toString(),
       vacationDays: parse.toInt(map['vacation_days']) ?? 30,
       maxDailyMinutes: parse.toInt(map['max_daily_minutes']),
       monthlyIncomeLimitCents:
           parse.toInt(map['monthly_income_limit_cents']),
+      monthlyMaxHours: parse.toDouble(map['monthly_max_hours']),
+      weeklyMaxHours: parse.toDouble(map['weekly_max_hours']),
       isMinor: parse.toBool(map['is_minor']) ?? false,
       isPregnant: parse.toBool(map['is_pregnant']) ?? false,
       createdByUid: map['created_by_uid'] as String?,
@@ -154,10 +214,14 @@ class EmploymentContract {
       'weeklyHours': weeklyHours,
       'dailyHours': dailyHours,
       'hourlyRate': hourlyRate,
+      'salaryKind': salaryKind.value,
+      'monthlyGrossCents': monthlyGrossCents,
       'currency': currency,
       'vacationDays': vacationDays,
       'maxDailyMinutes': maxDailyMinutes,
       'monthlyIncomeLimitCents': monthlyIncomeLimitCents,
+      'monthlyMaxHours': monthlyMaxHours,
+      'weeklyMaxHours': weeklyMaxHours,
       'isMinor': isMinor,
       'isPregnant': isPregnant,
       'createdByUid': createdByUid,
@@ -178,10 +242,14 @@ class EmploymentContract {
       'weekly_hours': weeklyHours,
       'daily_hours': dailyHours,
       'hourly_rate': hourlyRate,
+      'salary_kind': salaryKind.value,
+      'monthly_gross_cents': monthlyGrossCents,
       'currency': currency,
       'vacation_days': vacationDays,
       'max_daily_minutes': maxDailyMinutes,
       'monthly_income_limit_cents': monthlyIncomeLimitCents,
+      'monthly_max_hours': monthlyMaxHours,
+      'weekly_max_hours': weeklyMaxHours,
       'is_minor': isMinor,
       'is_pregnant': isPregnant,
       'created_by_uid': createdByUid,
@@ -202,12 +270,19 @@ class EmploymentContract {
     double? weeklyHours,
     double? dailyHours,
     double? hourlyRate,
+    SalaryKind? salaryKind,
+    int? monthlyGrossCents,
+    bool clearMonthlyGrossCents = false,
     String? currency,
     int? vacationDays,
     int? maxDailyMinutes,
     int? monthlyIncomeLimitCents,
+    double? monthlyMaxHours,
+    double? weeklyMaxHours,
     bool clearMaxDailyMinutes = false,
     bool clearMonthlyIncomeLimitCents = false,
+    bool clearMonthlyMaxHours = false,
+    bool clearWeeklyMaxHours = false,
     bool? isMinor,
     bool? isPregnant,
     String? createdByUid,
@@ -225,6 +300,10 @@ class EmploymentContract {
       weeklyHours: weeklyHours ?? this.weeklyHours,
       dailyHours: dailyHours ?? this.dailyHours,
       hourlyRate: hourlyRate ?? this.hourlyRate,
+      salaryKind: salaryKind ?? this.salaryKind,
+      monthlyGrossCents: clearMonthlyGrossCents
+          ? null
+          : (monthlyGrossCents ?? this.monthlyGrossCents),
       currency: currency ?? this.currency,
       vacationDays: vacationDays ?? this.vacationDays,
       maxDailyMinutes: clearMaxDailyMinutes
@@ -233,6 +312,11 @@ class EmploymentContract {
       monthlyIncomeLimitCents: clearMonthlyIncomeLimitCents
           ? null
           : (monthlyIncomeLimitCents ?? this.monthlyIncomeLimitCents),
+      monthlyMaxHours: clearMonthlyMaxHours
+          ? null
+          : (monthlyMaxHours ?? this.monthlyMaxHours),
+      weeklyMaxHours:
+          clearWeeklyMaxHours ? null : (weeklyMaxHours ?? this.weeklyMaxHours),
       isMinor: isMinor ?? this.isMinor,
       isPregnant: isPregnant ?? this.isPregnant,
       createdByUid: createdByUid ?? this.createdByUid,

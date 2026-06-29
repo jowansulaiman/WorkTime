@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -9,7 +8,15 @@ import 'package:worktime_app/screens/auth_screen.dart';
 import 'package:worktime_app/screens/force_update_screen.dart';
 import 'package:worktime_app/screens/inventory_screen.dart';
 import 'package:worktime_app/screens/team_management_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/lohnlauf_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/mitarbeiterabschluss_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/monatsabschluss_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/stempel_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/stundenkonto_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/zeit_section_placeholder.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/zeiterfassung_screen.dart';
 import 'package:worktime_app/services/database_service.dart';
+import 'package:worktime_app/routing/shell_tab.dart';
 
 import 'support/router_harness.dart';
 
@@ -147,24 +154,121 @@ void main() {
     await h.cleanup();
   });
 
-  testWidgets('/scanner ausserhalb echter Mobil-Plattform wird umgeleitet',
+  testWidgets(
+      'Deep-Link /zeit/erfassung (Sub-Route) rendert die Zeiterfassung',
       (tester) async {
-    // Desktop-Plattform erzwingen -> MobileBreakpoints.isNativeMobile == false,
-    // der Scanner-Deep-Link ist dann nicht erlaubt und landet wieder auf '/'.
-    // (Unter `flutter test` meldet die Umgebung sonst Android.) Der Override muss
-    // im Test-Body zurückgesetzt werden (vor dem Invarianten-Check, nicht erst im
-    // tearDown).
-    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-    try {
-      final h = await pumpApp(
-        tester,
-        profile: _admin,
-        initialLocation: '/scanner',
-      );
-      expect(_loc(h.router), '/');
-      await h.cleanup();
-    } finally {
-      debugDefaultTargetPlatformOverride = null;
-    }
+    // Verifiziert, dass die `/zeit/*`-Section-Routen NICHT vom `/zeit`-Tab-
+    // Branch verschluckt werden (geteiltes Pfad-Präfix).
+    final h = await pumpApp(
+      tester,
+      profile: _admin,
+      initialLocation: AppRoutes.zeitErfassung,
+    );
+    expect(find.byType(ZeiterfassungScreen), findsOneWidget);
+    expect(_loc(h.router), '/zeit/erfassung');
+    await h.cleanup();
+  });
+
+  testWidgets('Deep-Link /zeit/stempeln rendert den Stempel-Screen',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitStempeln,
+    );
+    expect(find.byType(StempelScreen), findsOneWidget);
+    expect(_loc(h.router), '/zeit/stempeln');
+    await h.cleanup();
+  });
+
+  testWidgets('Deep-Link /zeit/stundenkonto rendert das Stundenkonto',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitStundenkonto,
+    );
+    expect(find.byType(StundenkontoScreen), findsOneWidget);
+    expect(_loc(h.router), '/zeit/stundenkonto');
+    await h.cleanup();
+  });
+
+  testWidgets(
+      'Deep-Link /zeit/lohnlauf ohne Admin-Recht wird auf / umgeleitet',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitLohnlauf,
+    );
+    expect(find.byType(ZeitSectionPlaceholder), findsNothing);
+    expect(_loc(h.router), '/');
+    await h.cleanup();
+  });
+
+  testWidgets('Deep-Link /zeit/lohnlauf (Admin) rendert den Lohnlauf',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _admin,
+      initialLocation: AppRoutes.zeitLohnlauf,
+    );
+    expect(find.byType(LohnlaufScreen), findsOneWidget);
+    expect(find.byType(ZeitSectionPlaceholder), findsNothing);
+    expect(_loc(h.router), '/zeit/lohnlauf');
+    await h.cleanup();
+  });
+
+  testWidgets('Deep-Link /zeit/monatsabschluss rendert „Mein Monatsabschluss"',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitMonatsabschluss,
+    );
+    expect(find.byType(MonatsabschlussScreen), findsOneWidget);
+    expect(find.byType(ZeitSectionPlaceholder), findsNothing);
+    expect(_loc(h.router), '/zeit/monatsabschluss');
+    await h.cleanup();
+  });
+
+  testWidgets(
+      'Deep-Link /zeit/mitarbeiterabschluss (Admin) rendert den Hub',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _admin,
+      initialLocation: AppRoutes.zeitMitarbeiterabschluss,
+    );
+    expect(find.byType(MitarbeiterabschlussScreen), findsOneWidget);
+    expect(_loc(h.router), '/zeit/mitarbeiterabschluss');
+    await h.cleanup();
+  });
+
+  testWidgets(
+      'Deep-Link /zeit/mitarbeiterabschluss ohne Admin wird auf / umgeleitet',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitMitarbeiterabschluss,
+    );
+    expect(find.byType(MitarbeiterabschlussScreen), findsNothing);
+    expect(_loc(h.router), '/');
+    await h.cleanup();
+  });
+
+  testWidgets('/scanner ohne Inventar-Recht wird auf / umgeleitet',
+      (tester) async {
+    // Der Scanner ist plattformunabhaengig erreichbar (fester Bottomnav-Tab),
+    // aber an canUseScanner gebunden: ein Mitarbeiter ohne Inventar-Verwaltung
+    // (canManageShifts == false) wird vom Deep-Link auf '/' zurueckgeleitet.
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: '/scanner',
+    );
+    expect(_loc(h.router), '/');
+    await h.cleanup();
   });
 }

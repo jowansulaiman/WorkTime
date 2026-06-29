@@ -21,6 +21,7 @@ class Supplier {
     this.minOrderQuantity,
     this.packagingUnit,
     this.notes,
+    this.contactId,
     this.isActive = true,
     this.createdByUid,
     this.createdAt,
@@ -50,6 +51,12 @@ class Supplier {
   /// Gebindegroesse / Verpackungseinheit (z.B. "Karton à 10").
   final String? packagingUnit;
   final String? notes;
+
+  /// Optionale Verknuepfung zu einem [Contact] aus der zentralen Kontakte-Kartei
+  /// (kanonische Adressquelle). `null` = kein Kontakt verknuepft. Der Lieferant
+  /// bleibt das Bestellprofil (Lieferzeit, Mindestmenge, Bestell-E-Mail); der
+  /// Kontakt traegt Stammadresse/Historie.
+  final String? contactId;
   final bool isActive;
   final String? createdByUid;
   final DateTime? createdAt;
@@ -82,6 +89,7 @@ class Supplier {
       minOrderQuantity: parse.toInt(map['minOrderQuantity']),
       packagingUnit: map['packagingUnit'] as String?,
       notes: map['notes'] as String?,
+      contactId: map['contactId'] as String?,
       isActive: parse.toBool(map['isActive']) ?? true,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
@@ -103,6 +111,7 @@ class Supplier {
       minOrderQuantity: parse.toInt(map['min_order_quantity']),
       packagingUnit: map['packaging_unit'] as String?,
       notes: map['notes'] as String?,
+      contactId: map['contact_id'] as String?,
       isActive: parse.toBool(map['is_active']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
@@ -124,6 +133,7 @@ class Supplier {
       'minOrderQuantity': minOrderQuantity,
       'packagingUnit': _trimmedOrNull(packagingUnit),
       'notes': _trimmedOrNull(notes),
+      'contactId': _trimmedOrNull(contactId),
       'isActive': isActive,
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -144,6 +154,7 @@ class Supplier {
       'min_order_quantity': minOrderQuantity,
       'packaging_unit': packagingUnit,
       'notes': notes,
+      'contact_id': contactId,
       'is_active': isActive,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
@@ -164,6 +175,7 @@ class Supplier {
     int? minOrderQuantity,
     String? packagingUnit,
     String? notes,
+    String? contactId,
     bool? isActive,
     bool clearContactPerson = false,
     bool clearEmail = false,
@@ -174,6 +186,7 @@ class Supplier {
     bool clearMinOrderQuantity = false,
     bool clearPackagingUnit = false,
     bool clearNotes = false,
+    bool clearContactId = false,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -197,6 +210,7 @@ class Supplier {
       packagingUnit:
           clearPackagingUnit ? null : (packagingUnit ?? this.packagingUnit),
       notes: clearNotes ? null : (notes ?? this.notes),
+      contactId: clearContactId ? null : (contactId ?? this.contactId),
       isActive: isActive ?? this.isActive,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,

@@ -7,8 +7,10 @@ import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
+import '../core/finance_analytics.dart';
 import '../core/payroll_calculator.dart';
 import '../core/personnel_cost.dart';
+import '../core/shift_plan_grid.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
 import '../models/payroll_record.dart';
@@ -97,6 +99,8 @@ class PdfService {
   static Future<Uint8List> generateShiftPlanReport({
     required List<Shift> shifts,
     required String rangeLabel,
+    DateTime? rangeStart,
+    DateTime? rangeEnd,
     String? employeeLabel,
     String? teamLabel,
   }) async {
@@ -122,14 +126,30 @@ class PdfService {
       ..sort((a, b) => a.startTime.compareTo(b.startTime));
     final totalHours =
         sortedShifts.fold<double>(0, (sum, shift) => sum + shift.workedHours);
-    final employeeCount =
-        sortedShifts.map((shift) => shift.userId).toSet().length;
+    final employeeCount = sortedShifts
+        .where((shift) => !shift.isUnassigned)
+        .map((shift) => shift.userId)
+        .toSet()
+        .length;
     final teamCount = sortedShifts
         .map((shift) => shift.team?.trim())
         .whereType<String>()
         .where((team) => team.isNotEmpty)
         .toSet()
         .length;
+
+    // Bereich für die Matrix: explizit übergeben, sonst aus den Schichten.
+    final effectiveStart = rangeStart ??
+        (sortedShifts.isEmpty ? DateTime.now() : sortedShifts.first.startTime);
+    final effectiveEnd = rangeEnd ??
+        (sortedShifts.isEmpty
+            ? DateTime.now().add(const Duration(days: 1))
+            : sortedShifts.last.startTime.add(const Duration(days: 1)));
+    final grid = ShiftPlanGrid.build(
+      shifts: shifts,
+      rangeStart: effectiveStart,
+      rangeEnd: effectiveEnd,
+    );
 
     const primary = PdfColor.fromInt(0xFF1E3A5F);
     const accent = PdfColor.fromInt(0xFF2E86AB);
@@ -158,9 +178,10 @@ class PdfService {
             lightBg: lightBg,
           ),
           pw.SizedBox(height: 16),
-          _buildShiftPlanTable(
-            shifts: sortedShifts,
+          ..._buildShiftPlanSiteSections(
+            grid: grid,
             primary: primary,
+            accent: accent,
             lightBg: lightBg,
           ),
         ],
@@ -1291,78 +1312,100 @@ class PdfService {
     );
   }
 
-  static pw.Widget _buildShiftPlanTable({
-    required List<Shift> shifts,
+  /// Schichtplan **nach Standort getrennt** als Matrix (Zeilen = Mitarbeiter,
+  /// Spalten = Kalendertage) — Format des echten Plans. Lange Zeiträume werden
+  /// in Wochen-Blöcke (max. 7 Spalten) geschnitten, damit nichts horizontal
+  /// überläuft.
+  static List<pw.Widget> _buildShiftPlanSiteSections({
+    required ShiftPlanGridResult grid,
     required PdfColor primary,
+    required PdfColor accent,
     required PdfColor lightBg,
   }) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
+    if (grid.sites.isEmpty) {
+      return [
         pw.Text(
-          'Planansicht',
-          style: pw.TextStyle(
-            fontSize: 14,
-            fontWeight: pw.FontWeight.bold,
-            color: primary,
+          'Keine Schichten im Zeitraum.',
+          style: pw.TextStyle(fontSize: 11, color: primary),
+        ),
+      ];
+    }
+
+    const maxDaysPerTable = 7;
+    final dateFmt = DateFormat('dd.MM.', 'de_DE');
+    final widgets = <pw.Widget>[];
+
+    for (final site in grid.sites) {
+      widgets.add(
+        pw.Container(
+          width: double.infinity,
+          margin: const pw.EdgeInsets.only(top: 6, bottom: 4),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          decoration: pw.BoxDecoration(
+            color: accent,
+            borderRadius: pw.BorderRadius.circular(4),
+          ),
+          child: pw.Text(
+            site.siteName,
+            style: pw.TextStyle(
+              fontSize: 12,
+              fontWeight: pw.FontWeight.bold,
+              color: PdfColors.white,
+            ),
           ),
         ),
-        pw.SizedBox(height: 6),
-        pw.TableHelper.fromTextArray(
-          headerStyle: pw.TextStyle(
-            fontSize: 9,
-            fontWeight: pw.FontWeight.bold,
-            color: PdfColors.white,
+      );
+
+      for (var start = 0;
+          start < grid.days.length;
+          start += maxDaysPerTable) {
+        final endIdx = (start + maxDaysPerTable) > grid.days.length
+            ? grid.days.length
+            : start + maxDaysPerTable;
+        final dayIdx = [for (var i = start; i < endIdx; i++) i];
+
+        final headers = <String>[
+          'Mitarbeiter',
+          for (final i in dayIdx)
+            '${_weekdayShort(grid.days[i].weekday)}\n${dateFmt.format(grid.days[i])}',
+        ];
+        final data = [
+          for (final row in site.rows)
+            <String>[
+              row.label,
+              for (final i in dayIdx) row.cells[i],
+            ],
+        ];
+        final columnWidths = <int, pw.TableColumnWidth>{
+          0: const pw.FixedColumnWidth(72),
+          for (var c = 1; c <= dayIdx.length; c++)
+            c: const pw.FlexColumnWidth(),
+        };
+
+        widgets.add(
+          pw.TableHelper.fromTextArray(
+            headerStyle: pw.TextStyle(
+              fontSize: 7.5,
+              fontWeight: pw.FontWeight.bold,
+              color: PdfColors.white,
+            ),
+            headerDecoration: pw.BoxDecoration(color: primary),
+            headerAlignment: pw.Alignment.center,
+            cellStyle: const pw.TextStyle(fontSize: 7.5),
+            rowDecoration: const pw.BoxDecoration(color: PdfColors.white),
+            oddRowDecoration: pw.BoxDecoration(color: lightBg),
+            cellAlignment: pw.Alignment.center,
+            cellAlignments: const {0: pw.Alignment.centerLeft},
+            columnWidths: columnWidths,
+            headers: headers,
+            data: data,
           ),
-          headerDecoration: pw.BoxDecoration(color: primary),
-          cellStyle: const pw.TextStyle(fontSize: 8.5),
-          rowDecoration: const pw.BoxDecoration(color: PdfColors.white),
-          oddRowDecoration: pw.BoxDecoration(color: lightBg),
-          cellAlignment: pw.Alignment.centerLeft,
-          columnWidths: {
-            0: const pw.FixedColumnWidth(58),
-            1: const pw.FixedColumnWidth(58),
-            2: const pw.FixedColumnWidth(44),
-            3: const pw.FixedColumnWidth(44),
-            4: const pw.FixedColumnWidth(44),
-            5: const pw.FixedColumnWidth(46),
-            6: const pw.FixedColumnWidth(78),
-            7: const pw.FlexColumnWidth(1.1),
-            8: const pw.FixedColumnWidth(76),
-            9: const pw.FixedColumnWidth(58),
-            10: const pw.FlexColumnWidth(),
-          },
-          headers: const [
-            'Datum',
-            'Wochentag',
-            'Beginn',
-            'Ende',
-            'Pause',
-            'Stunden',
-            'Mitarbeiter',
-            'Titel',
-            'Team',
-            'Status',
-            'Notiz',
-          ],
-          data: shifts
-              .map((shift) => [
-                    DateFormat('dd.MM.yyyy', 'de_DE').format(shift.startTime),
-                    _weekdayShort(shift.startTime.weekday),
-                    _timeFormat.format(shift.startTime),
-                    _timeFormat.format(shift.endTime),
-                    shift.breakMinutes.toStringAsFixed(0),
-                    shift.workedHours.toStringAsFixed(2),
-                    shift.employeeName,
-                    shift.title,
-                    shift.team ?? '–',
-                    shift.status.label,
-                    shift.notes ?? '–',
-                  ])
-              .toList(growable: false),
-        ),
-      ],
-    );
+        );
+        widgets.add(pw.SizedBox(height: 8));
+      }
+    }
+
+    return widgets;
   }
 
   static pw.Widget _cell(String text, pw.TextStyle style) => pw.Padding(
@@ -1639,6 +1682,185 @@ class PdfService {
             money: money,
             primary: primary,
             lightBg: lightBg,
+          ),
+        ],
+      ),
+    );
+    return pdf.save();
+  }
+
+  static Future<Uint8List> generateFinanceReport({
+    required int year,
+    required String orgName,
+    required List<CostCenterReport> reports,
+    required List<MonthBucket> months,
+    required int totalPlanned,
+    required int totalActual,
+    required int totalExpenses,
+    required int totalCredits,
+  }) async {
+    final pdf = pw.Document(theme: await _loadFonts());
+    final eur =
+        NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    String money(int cents) => eur.format(cents / 100);
+
+    const primary = PdfColor.fromInt(0xFF1E3A5F);
+    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const lightBg = PdfColor.fromInt(0xFFF5F7FA);
+    const headerStyle = pw.TextStyle(fontSize: 9, color: PdfColors.white);
+    const cellStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);
+
+    pw.TableRow headerRow(List<String> headers) => pw.TableRow(
+          decoration: const pw.BoxDecoration(color: primary),
+          children: headers
+              .map((h) => pw.Padding(
+                    padding: const pw.EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 8),
+                    child: pw.Text(h, style: headerStyle),
+                  ))
+              .toList(),
+        );
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(28),
+        header: (context) => _buildSimpleHeader(
+          title: 'Finanzbericht $year',
+          subtitle: orgName,
+          primary: primary,
+          accent: accent,
+        ),
+        footer: (context) =>
+            _buildFooter(context, primary, label: 'Finanzbericht'),
+        build: (context) => [
+          pw.Row(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Expanded(
+                child: _summaryCard(
+                  badge: 'PLAN',
+                  label: 'Jahresbudget',
+                  value: money(totalPlanned),
+                  color: accent,
+                  lightBg: lightBg,
+                ),
+              ),
+              pw.SizedBox(width: 10),
+              pw.Expanded(
+                child: _summaryCard(
+                  badge: 'IST',
+                  label: 'Ist gebucht',
+                  value: money(totalActual),
+                  color: primary,
+                  lightBg: lightBg,
+                ),
+              ),
+              pw.SizedBox(width: 10),
+              pw.Expanded(
+                child: _summaryCard(
+                  badge: 'KOST',
+                  label: 'Kosten',
+                  value: money(totalExpenses),
+                  color: const PdfColor.fromInt(0xFFA76E00),
+                  lightBg: lightBg,
+                ),
+              ),
+              pw.SizedBox(width: 10),
+              pw.Expanded(
+                child: _summaryCard(
+                  badge: 'GUT',
+                  label: 'Gutschriften',
+                  value: money(totalCredits),
+                  color: const PdfColor.fromInt(0xFF2E7D32),
+                  lightBg: lightBg,
+                ),
+              ),
+            ],
+          ),
+          pw.SizedBox(height: 18),
+          pw.Text('Plan / Ist je Kostenstelle',
+              style: pw.TextStyle(
+                  fontSize: 13, fontWeight: pw.FontWeight.bold, color: primary)),
+          pw.SizedBox(height: 8),
+          pw.Table(
+            columnWidths: {
+              0: const pw.FixedColumnWidth(44),
+              1: const pw.FlexColumnWidth(2.0),
+              2: const pw.FlexColumnWidth(1.2),
+              3: const pw.FlexColumnWidth(1.2),
+              4: const pw.FlexColumnWidth(1.2),
+              5: const pw.FixedColumnWidth(64),
+            },
+            border: const pw.TableBorder(
+              horizontalInside:
+                  pw.BorderSide(color: PdfColors.grey200, width: 0.5),
+            ),
+            children: [
+              headerRow(const [
+                'Nr.',
+                'Kostenstelle',
+                'Plan',
+                'Ist',
+                'Rest',
+                'Auslastung'
+              ]),
+              ...reports.asMap().entries.map((e) {
+                final r = e.value;
+                final bg = e.key.isEven ? PdfColors.white : lightBg;
+                return pw.TableRow(
+                  decoration: pw.BoxDecoration(color: bg),
+                  children: [
+                    _cell(r.center.number, cellStyle),
+                    _cell(r.center.name, cellStyle),
+                    _cell(money(r.plannedCents), cellStyle),
+                    _cell(money(r.actualCents), cellStyle),
+                    _cell(money(r.remainingCents), cellStyle),
+                    _cell(
+                        r.plannedCents > 0
+                            ? '${(r.utilization * 100).round()} %'
+                            : '–',
+                        cellStyle),
+                  ],
+                );
+              }),
+            ],
+          ),
+          pw.SizedBox(height: 18),
+          pw.Text('Monatsverlauf',
+              style: pw.TextStyle(
+                  fontSize: 13, fontWeight: pw.FontWeight.bold, color: primary)),
+          pw.SizedBox(height: 8),
+          pw.Table(
+            columnWidths: {
+              0: const pw.FlexColumnWidth(1.4),
+              1: const pw.FlexColumnWidth(1.0),
+              2: const pw.FlexColumnWidth(1.0),
+              3: const pw.FlexColumnWidth(1.0),
+            },
+            border: const pw.TableBorder(
+              horizontalInside:
+                  pw.BorderSide(color: PdfColors.grey200, width: 0.5),
+            ),
+            children: [
+              headerRow(const ['Monat', 'Kosten', 'Gutschriften', 'Netto']),
+              ...months.asMap().entries.map((e) {
+                final m = e.value;
+                final bg = e.key.isEven ? PdfColors.white : lightBg;
+                return pw.TableRow(
+                  decoration: pw.BoxDecoration(color: bg),
+                  children: [
+                    _cell(
+                        DateFormat('MMMM', 'de_DE')
+                            .format(DateTime(2000, m.month)),
+                        cellStyle),
+                    _cell(money(m.expenseCents), cellStyle),
+                    _cell(money(m.creditCents), cellStyle),
+                    _cell(money(m.netCents), cellStyle),
+                  ],
+                );
+              }),
+            ],
           ),
         ],
       ),

@@ -135,6 +135,9 @@ class _ProductPickerSheetState extends State<_ProductPickerSheet> {
           (product.sku?.toLowerCase().contains(query) ?? false) ||
           (product.barcode?.toLowerCase().contains(query) ?? false);
     }).toList();
+    // Häufig bestellte Artikel zuerst (siehe InventoryProvider.sortByOrderFrequency).
+    final ordered =
+        context.read<InventoryProvider>().sortByOrderFrequency(filtered);
 
     return Padding(
       padding: EdgeInsets.only(
@@ -193,17 +196,17 @@ class _ProductPickerSheetState extends State<_ProductPickerSheet> {
                 ),
               ),
             Expanded(
-              child: filtered.isEmpty
+              child: ordered.isEmpty
                   ? const EmptyState(
                       icon: Icons.inventory_2_outlined,
                       message: 'Keine passenden Artikel.',
                     )
                   : ListView.separated(
                       padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
-                      itemCount: filtered.length,
+                      itemCount: ordered.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
                       itemBuilder: (context, index) {
-                        final product = filtered[index];
+                        final product = ordered[index];
                         return ListTile(
                           title: Text(product.name),
                           subtitle: Text(
@@ -316,6 +319,8 @@ class _QuickAddCartSheetState extends State<_QuickAddCartSheet> {
           (product.sku?.toLowerCase().contains(query) ?? false) ||
           (product.barcode?.toLowerCase().contains(query) ?? false);
     }).toList();
+    // Häufig bestellte Artikel zuerst.
+    final ordered = inventory.sortByOrderFrequency(filtered, siteId: _siteId);
 
     final totalInCart = inventory.cartItemCount(_siteId);
 
@@ -404,17 +409,17 @@ class _QuickAddCartSheetState extends State<_QuickAddCartSheet> {
                 ),
               ),
             Expanded(
-              child: filtered.isEmpty
+              child: ordered.isEmpty
                   ? const EmptyState(
                       icon: Icons.inventory_2_outlined,
                       message: 'Keine passenden Artikel.',
                     )
                   : ListView.separated(
                       padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-                      itemCount: filtered.length,
+                      itemCount: ordered.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
                       itemBuilder: (context, index) {
-                        final product = filtered[index];
+                        final product = ordered[index];
                         final inCart = inventory
                                 .orderCartForSite(product.siteId)
                                 ?.itemForProduct(product.id)

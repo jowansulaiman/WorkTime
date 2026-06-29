@@ -11,21 +11,35 @@ import '../core/app_logger.dart';
 import '../core/retry.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
+import '../models/clock_entry.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/shift_preference.dart';
 import '../models/product.dart';
 import '../models/customer_order.dart';
 import '../models/customer_feedback.dart';
 import '../models/customer_wish.dart';
 import '../models/audit_log_entry.dart';
+import '../models/employee_ausbildung.dart';
+import '../models/employee_child.dart';
 import '../models/employee_profile.dart';
+import '../models/employee_qualification.dart';
+import '../models/org_payroll_settings.dart';
+import '../models/org_settings.dart';
+import '../models/pay_line_type.dart';
+import '../models/sollzeit_profile.dart';
+import '../models/urlaubsanpassung.dart';
+import '../models/urlaubskonto_jahr.dart';
+import '../models/zeitkonto_snapshot.dart';
 import '../models/finance_models.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
 import '../models/shift.dart';
+import '../models/shift_swap_request.dart';
+import '../models/swap_credit.dart';
 import '../models/shift_template.dart';
 import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
@@ -92,8 +106,151 @@ class FirestoreService {
     return snapshot.data();
   }
 
+  /// Liest die org-weiten operativen Einstellungen aus dem deterministischen
+  /// Doc `config/orgSettings`. Gibt null zurueck, wenn es (noch) nicht
+  /// existiert -> Aufrufer nutzt [OrgSettings.defaults].
+  Future<OrgSettings?> fetchOrgSettings(String orgId) async {
+    final snapshot = await _organizationDoc(orgId)
+        .collection('config')
+        .doc(OrgSettings.documentId)
+        .get();
+    final data = snapshot.data();
+    if (data == null) {
+      return null;
+    }
+    return OrgSettings.fromFirestore(snapshot.id, data);
+  }
+
+  /// Speichert die org-weiten operativen Einstellungen unter der festen Doc-ID
+  /// `orgSettings` (genau ein Datensatz je Org), merge-sicher.
+  Future<void> saveOrgSettings(OrgSettings settings) async {
+    await _organizationDoc(settings.orgId)
+        .collection('config')
+        .doc(OrgSettings.documentId)
+        .set(settings.toFirestoreMap(), SetOptions(merge: true));
+  }
+
   CollectionReference<Map<String, dynamic>> _entryCollection(String orgId) =>
       _organizationDoc(orgId).collection('workEntries');
+
+  // ── Zeitwirtschaft: Stempel-Sessions (ClockEntry, M3) ──────────────────────
+  CollectionReference<Map<String, dynamic>> _clockEntryCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('clockEntries');
+
+  Future<void> saveClockEntry(ClockEntry entry) async {
+    final collection = _clockEntryCollection(entry.orgId);
+    final docRef =
+        entry.id == null ? collection.doc() : collection.doc(entry.id);
+    await docRef.set(
+      entry.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteClockEntry({
+    required String orgId,
+    required String clockEntryId,
+  }) {
+    return _clockEntryCollection(orgId).doc(clockEntryId).delete();
+  }
+
+  /// Die offene Buchung (`status == ongoing`) eines Nutzers (höchstens eine).
+  /// Zwei Gleichheits-Filter → kein Composite-Index nötig.
+  Stream<ClockEntry?> watchOpenClockEntry({
+    required String orgId,
+    required String userId,
+  }) {
+    return _clockEntryCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .where('status', isEqualTo: 'ongoing')
+        .limit(1)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.isEmpty
+            ? null
+            : ClockEntry.fromFirestore(
+                snapshot.docs.first.id, snapshot.docs.first.data()));
+  }
+
+  /// Alle aktuell laufenden Buchungen der Org („wer ist eingestempelt").
+  /// Ein Gleichheits-Filter → kein Composite-Index nötig. Admin-/Manager-Read.
+  Stream<List<ClockEntry>> watchOngoingClockEntries({required String orgId}) {
+    return _clockEntryCollection(orgId)
+        .where('status', isEqualTo: 'ongoing')
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => ClockEntry.fromFirestore(doc.id, doc.data()))
+            .toList(growable: false));
+  }
+
+  /// Stempel-Buchungen eines Nutzers im Zeitraum (Composite-Index
+  /// `clockEntries(userId ASC, kommen DESC)` — siehe firestore.indexes.json).
+  Future<List<ClockEntry>> getClockEntriesInRange({
+    required String orgId,
+    required String userId,
+    required DateTime start,
+    required DateTime end,
+  }) async {
+    final snapshot = await _clockEntryCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .where('kommen', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('kommen', isLessThan: Timestamp.fromDate(end))
+        .orderBy('kommen', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => ClockEntry.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  // ── Zeitwirtschaft: Stundenkonto-Snapshots (ZeitkontoSnapshot, M4) ──────────
+  CollectionReference<Map<String, dynamic>> _snapshotCollection(String orgId) =>
+      _organizationDoc(orgId).collection('zeitkontoSnapshots');
+
+  /// Upsert über die deterministische Doc-ID `{userId}-{jahr}-{mm}`.
+  Future<void> saveZeitkontoSnapshot(ZeitkontoSnapshot snapshot) async {
+    final id =
+        ZeitkontoSnapshot.buildId(snapshot.userId, snapshot.jahr, snapshot.monat);
+    await _snapshotCollection(snapshot.orgId).doc(id).set(
+          snapshot.copyWith(id: id).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  /// Monats-Snapshots eines Nutzers für ein Jahr (zwei Gleichheits-Filter →
+  /// kein Composite-Index nötig).
+  Future<List<ZeitkontoSnapshot>> getZeitkontoSnapshotsForYear({
+    required String orgId,
+    required String userId,
+    required int jahr,
+  }) async {
+    final snapshot = await _snapshotCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .where('jahr', isEqualTo: jahr)
+        .get();
+    return snapshot.docs
+        .map((doc) => ZeitkontoSnapshot.fromFirestore(doc.id, doc.data()))
+        .toList()
+      ..sort((a, b) => a.monat.compareTo(b.monat));
+  }
+
+  /// **Org-weite** Monats-Snapshots (alle Mitarbeiter) für den
+  /// Mitarbeiterabschluss-Hub (M5). Zwei Gleichheits-Filter (`jahr`/`monat`) →
+  /// kein Composite-Index nötig. Manager-Lesezugriff regeln die `firestore.rules`
+  /// (`canManageShifts`).
+  Future<List<ZeitkontoSnapshot>> getOrgZeitkontoSnapshotsForMonth({
+    required String orgId,
+    required int jahr,
+    required int monat,
+  }) async {
+    final snapshot = await _snapshotCollection(orgId)
+        .where('jahr', isEqualTo: jahr)
+        .where('monat', isEqualTo: monat)
+        .get();
+    return snapshot.docs
+        .map((doc) => ZeitkontoSnapshot.fromFirestore(doc.id, doc.data()))
+        .toList();
+  }
 
   CollectionReference<Map<String, dynamic>> _templateCollection(String orgId) =>
       _organizationDoc(orgId).collection('workTemplates');
@@ -108,6 +265,16 @@ class FirestoreService {
 
   CollectionReference<Map<String, dynamic>> _absenceCollection(String orgId) =>
       _organizationDoc(orgId).collection('absenceRequests');
+
+  CollectionReference<Map<String, dynamic>> _swapRequestCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('shiftSwapRequests');
+
+  CollectionReference<Map<String, dynamic>> _swapCreditCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('swapCredits');
 
   CollectionReference<Map<String, dynamic>> _teamCollection(String orgId) =>
       _organizationDoc(orgId).collection('teams');
@@ -129,6 +296,11 @@ class FirestoreService {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('employeeSiteAssignments');
+
+  CollectionReference<Map<String, dynamic>> _shiftPreferenceCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('shiftPreferences');
 
   CollectionReference<Map<String, dynamic>> _ruleSetCollection(String orgId) =>
       _organizationDoc(orgId).collection('ruleSets');
@@ -155,6 +327,46 @@ class FirestoreService {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('employeeProfiles');
+
+  CollectionReference<Map<String, dynamic>> _sollzeitProfileCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('sollzeitProfiles');
+
+  CollectionReference<Map<String, dynamic>> _payrollConfigCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('payrollConfig');
+
+  CollectionReference<Map<String, dynamic>> _employeeChildCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('employeeChildren');
+
+  CollectionReference<Map<String, dynamic>> _employeeQualificationCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('employeeQualifications');
+
+  CollectionReference<Map<String, dynamic>> _employeeAusbildungCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('employeeAusbildungen');
+
+  CollectionReference<Map<String, dynamic>> _urlaubskontoJahrCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('urlaubskontoJahre');
+
+  CollectionReference<Map<String, dynamic>> _urlaubsanpassungCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('urlaubsanpassungen');
+
+  CollectionReference<Map<String, dynamic>> _payLineTypeCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('payLineTypes');
 
   CollectionReference<Map<String, dynamic>> _costCenterCollection(
     String orgId,
@@ -267,6 +479,17 @@ class FirestoreService {
         .map(
           (snapshot) => snapshot.docs
               .map((doc) => EmploymentContract.fromFirestore(
+                    doc.id,
+                    doc.data(),
+                  ))
+              .toList(growable: false),
+        );
+  }
+
+  Stream<List<EmployeeShiftPreference>> watchShiftPreferences(String orgId) {
+    return _shiftPreferenceCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => EmployeeShiftPreference.fromFirestore(
                     doc.id,
                     doc.data(),
                   ))
@@ -805,13 +1028,16 @@ class FirestoreService {
 
   Future<void> deleteInvite(String inviteId) => _invites.doc(inviteId).delete();
 
-  Future<void> saveTeam(TeamDefinition team) async {
+  /// Speichert ein Team und liefert die (ggf. neu vergebene) Doc-ID zurück,
+  /// damit Aufrufer das Audit-Log korrekt verknüpfen können.
+  Future<String> saveTeam(TeamDefinition team) async {
     final collection = _teamCollection(team.orgId);
     final docRef = team.id == null ? collection.doc() : collection.doc(team.id);
     await docRef.set({
       ...team.copyWith(id: docRef.id).toFirestoreMap(),
       if (team.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    return docRef.id;
   }
 
   Future<void> deleteTeam({
@@ -821,13 +1047,14 @@ class FirestoreService {
     return _teamCollection(orgId).doc(teamId).delete();
   }
 
-  Future<void> saveSite(SiteDefinition site) async {
+  Future<String> saveSite(SiteDefinition site) async {
     final collection = _siteCollection(site.orgId);
     final docRef = site.id == null ? collection.doc() : collection.doc(site.id);
     await docRef.set({
       ...site.copyWith(id: docRef.id).toFirestoreMap(),
       if (site.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    return docRef.id;
   }
 
   Future<void> deleteSite({
@@ -837,7 +1064,8 @@ class FirestoreService {
     return _siteCollection(orgId).doc(siteId).delete();
   }
 
-  Future<void> saveQualification(QualificationDefinition qualification) async {
+  Future<String> saveQualification(
+      QualificationDefinition qualification) async {
     final collection = _qualificationCollection(qualification.orgId);
     final docRef = qualification.id == null
         ? collection.doc()
@@ -846,6 +1074,7 @@ class FirestoreService {
       ...qualification.copyWith(id: docRef.id).toFirestoreMap(),
       if (qualification.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    return docRef.id;
   }
 
   Future<void> deleteQualification({
@@ -855,7 +1084,7 @@ class FirestoreService {
     return _qualificationCollection(orgId).doc(qualificationId).delete();
   }
 
-  Future<void> saveEmploymentContract(EmploymentContract contract) async {
+  Future<String> saveEmploymentContract(EmploymentContract contract) async {
     final collection = _employmentContractCollection(contract.orgId);
     final docRef =
         contract.id == null ? collection.doc() : collection.doc(contract.id);
@@ -863,6 +1092,25 @@ class FirestoreService {
       ...contract.copyWith(id: docRef.id).toFirestoreMap(),
       if (contract.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    return docRef.id;
+  }
+
+  /// Speichert die Schicht-Vorgaben eines Mitarbeiters (Doc-ID = userId). Die
+  /// `rules`-Liste wird vollständig ersetzt; `updatedAt` per Server-Zeitstempel.
+  Future<void> saveShiftPreference(EmployeeShiftPreference preference) async {
+    final docRef =
+        _shiftPreferenceCollection(preference.orgId).doc(preference.userId);
+    await docRef.set({
+      ...preference.toFirestoreMap(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteShiftPreference({
+    required String orgId,
+    required String userId,
+  }) {
+    return _shiftPreferenceCollection(orgId).doc(userId).delete();
   }
 
   Future<void> deleteEmploymentContract({
@@ -979,6 +1227,243 @@ class FirestoreService {
     required String userId,
   }) {
     return _employeeProfileCollection(orgId).doc(userId).delete();
+  }
+
+  /// Sollzeit-Profile (Arbeitszeitmodelle, gültig-ab-versioniert) – bewusst OHNE
+  /// `orderBy` abgefragt (Sortierung clientseitig), damit kein Composite-Index
+  /// nötig ist (Personal-Modul-Konvention).
+  Stream<List<SollzeitProfile>> watchSollzeitProfiles(String orgId) {
+    return _sollzeitProfileCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => SollzeitProfile.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// **Self-scoped** Sollzeit-Profile eines Mitarbeiters (M7-Self-Read) — ein
+  /// Gleichheitsfilter (`userId`), kein `orderBy` → kein Composite-Index. Damit
+  /// laden reguläre Mitarbeiter ihr eigenes Soll (Stundenkonto/Mein-Monatsabschluss),
+  /// abgesichert durch die `sollzeitProfiles`-Self-Read-Regel.
+  Stream<List<SollzeitProfile>> watchSollzeitProfilesForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _sollzeitProfileCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => SollzeitProfile.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert ein Sollzeit-Profil. Mehrere je Mitarbeiter möglich (Auto-ID für
+  /// neue Datensätze, wie bei [saveEmploymentContract]).
+  Future<void> saveSollzeitProfile(SollzeitProfile profile) async {
+    final collection = _sollzeitProfileCollection(profile.orgId);
+    final docRef =
+        profile.id == null ? collection.doc() : collection.doc(profile.id);
+    await docRef.set(
+      profile.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteSollzeitProfile({
+    required String orgId,
+    required String profileId,
+  }) {
+    return _sollzeitProfileCollection(orgId).doc(profileId).delete();
+  }
+
+  /// Org-/jahr-spezifische Lohn-Konfiguration (`payrollConfig/{jahr}`) – ohne
+  /// `orderBy` (Sortierung clientseitig), damit kein Composite-Index nötig ist.
+  Stream<List<OrgPayrollSettings>> watchOrgPayrollSettings(String orgId) {
+    return _payrollConfigCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) =>
+                  OrgPayrollSettings.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert die Lohn-Konfiguration unter der deterministischen Doc-ID
+  /// (Bezugsjahr), damit je Org/Jahr genau ein Datensatz existiert.
+  Future<void> saveOrgPayrollSettings(OrgPayrollSettings config) async {
+    final collection = _payrollConfigCollection(config.orgId);
+    final docId = config.id ?? config.documentId;
+    await collection.doc(docId).set(
+          config.copyWith(id: docId).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  Future<void> deleteOrgPayrollSettings({
+    required String orgId,
+    required int jahr,
+  }) {
+    return _payrollConfigCollection(orgId).doc(jahr.toString()).delete();
+  }
+
+  // --- HR-Sub-Entitäten: Kinder / Qualifikationen / Ausbildung (Admin) ------
+  // Bewusst OHNE orderBy (clientseitig sortiert) → kein Composite-Index.
+
+  Stream<List<EmployeeChild>> watchEmployeeChildren(String orgId) {
+    return _employeeChildCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) => EmployeeChild.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveEmployeeChild(EmployeeChild child) async {
+    final collection = _employeeChildCollection(child.orgId);
+    final docRef = child.id == null ? collection.doc() : collection.doc(child.id);
+    await docRef.set(
+      child.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteEmployeeChild({
+    required String orgId,
+    required String childId,
+  }) {
+    return _employeeChildCollection(orgId).doc(childId).delete();
+  }
+
+  Stream<List<EmployeeQualification>> watchEmployeeQualifications(String orgId) {
+    return _employeeQualificationCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) =>
+                  EmployeeQualification.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveEmployeeQualification(EmployeeQualification quali) async {
+    final collection = _employeeQualificationCollection(quali.orgId);
+    final docRef = quali.id == null ? collection.doc() : collection.doc(quali.id);
+    await docRef.set(
+      quali.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteEmployeeQualification({
+    required String orgId,
+    required String qualificationId,
+  }) {
+    return _employeeQualificationCollection(orgId)
+        .doc(qualificationId)
+        .delete();
+  }
+
+  Stream<List<EmployeeAusbildung>> watchEmployeeAusbildungen(String orgId) {
+    return _employeeAusbildungCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) =>
+                  EmployeeAusbildung.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveEmployeeAusbildung(EmployeeAusbildung ausbildung) async {
+    final collection = _employeeAusbildungCollection(ausbildung.orgId);
+    final docRef = ausbildung.id == null
+        ? collection.doc()
+        : collection.doc(ausbildung.id);
+    await docRef.set(
+      ausbildung.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteEmployeeAusbildung({
+    required String orgId,
+    required String ausbildungId,
+  }) {
+    return _employeeAusbildungCollection(orgId).doc(ausbildungId).delete();
+  }
+
+  // --- Urlaubskonto: Jahres-Vortrag + Korrektur-Ledger (Admin) --------------
+
+  Stream<List<UrlaubskontoJahr>> watchUrlaubskontoJahre(String orgId) {
+    return _urlaubskontoJahrCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) => UrlaubskontoJahr.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Speichert unter der deterministischen Doc-ID `{userId}-{jahr}` (ein
+  /// Datensatz je Mitarbeiter/Jahr, Upsert).
+  Future<void> saveUrlaubskontoJahr(UrlaubskontoJahr konto) async {
+    final collection = _urlaubskontoJahrCollection(konto.orgId);
+    final docId = konto.id ?? konto.documentId;
+    await collection.doc(docId).set(
+          konto.copyWith(id: docId).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  Future<void> deleteUrlaubskontoJahr({
+    required String orgId,
+    required String docId,
+  }) {
+    return _urlaubskontoJahrCollection(orgId).doc(docId).delete();
+  }
+
+  Stream<List<Urlaubsanpassung>> watchUrlaubsanpassungen(String orgId) {
+    return _urlaubsanpassungCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) => Urlaubsanpassung.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveUrlaubsanpassung(Urlaubsanpassung anpassung) async {
+    final collection = _urlaubsanpassungCollection(anpassung.orgId);
+    final docRef =
+        anpassung.id == null ? collection.doc() : collection.doc(anpassung.id);
+    await docRef.set(
+      anpassung.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteUrlaubsanpassung({
+    required String orgId,
+    required String anpassungId,
+  }) {
+    return _urlaubsanpassungCollection(orgId).doc(anpassungId).delete();
+  }
+
+  // --- Lohnarten-Katalog (Admin) -------------------------------------------
+
+  Stream<List<PayLineType>> watchPayLineTypes(String orgId) {
+    return _payLineTypeCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) => PayLineType.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> savePayLineType(PayLineType type) async {
+    final collection = _payLineTypeCollection(type.orgId);
+    final docRef = type.id == null ? collection.doc() : collection.doc(type.id);
+    await docRef.set(
+      type.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deletePayLineType({
+    required String orgId,
+    required String typeId,
+  }) {
+    return _payLineTypeCollection(orgId).doc(typeId).delete();
   }
 
   // --- Finanzen: Kostenstellen/Kostenarten/Journal/Budgets (nur Admin) ------
@@ -1126,7 +1611,7 @@ class FirestoreService {
     await batch.commit();
   }
 
-  Future<void> saveRuleSet(ComplianceRuleSet ruleSet) async {
+  Future<String> saveRuleSet(ComplianceRuleSet ruleSet) async {
     final collection = _ruleSetCollection(ruleSet.orgId);
     final docRef =
         ruleSet.id == null ? collection.doc() : collection.doc(ruleSet.id);
@@ -1134,6 +1619,7 @@ class FirestoreService {
       ...ruleSet.copyWith(id: docRef.id).toFirestoreMap(),
       if (ruleSet.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    return docRef.id;
   }
 
   Future<void> deleteRuleSet({
@@ -1143,13 +1629,14 @@ class FirestoreService {
     return _ruleSetCollection(orgId).doc(ruleSetId).delete();
   }
 
-  Future<void> saveTravelTimeRule(TravelTimeRule rule) async {
+  Future<String> saveTravelTimeRule(TravelTimeRule rule) async {
     final collection = _travelTimeRuleCollection(rule.orgId);
     final docRef = rule.id == null ? collection.doc() : collection.doc(rule.id);
     await docRef.set({
       ...rule.copyWith(id: docRef.id).toFirestoreMap(),
       if (rule.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    return docRef.id;
   }
 
   Future<void> deleteTravelTimeRule({
@@ -1278,6 +1765,22 @@ class FirestoreService {
     }, SetOptions(merge: true));
   }
 
+  /// Verknüpft einen Wunsch mit einem [Contact] aus der Kontakte-Kartei (H-D2)
+  /// bzw. löst die Verknüpfung (`contactId == null`) — interner, gegateter Pfad.
+  /// `merge: true` lässt die übrigen Felder unangetastet; `contactId` ist NICHT
+  /// Teil der öffentlichen Create-Allowlist (nur dieser interne Update-Pfad, in
+  /// `firestore.rules` durch `canManageInventory()` + `sameOrg` gesichert).
+  Future<void> updateCustomerWishContact({
+    required String orgId,
+    required String wishId,
+    required String? contactId,
+  }) {
+    return _customerWishCollection(orgId).doc(wishId).set({
+      'contactId': contactId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
   Future<void> deleteCustomerWish({
     required String orgId,
     required String wishId,
@@ -1339,6 +1842,23 @@ class FirestoreService {
       if (notes != null) 'notes': notes,
       'handledByUid': handledByUid,
       'handledAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  /// Verknüpft eine Rückmeldung mit einem [Contact] aus der Kontakte-Kartei
+  /// (H-D2) bzw. löst die Verknüpfung (`contactId == null`) — interner, gegateter
+  /// Pfad. `merge: true` lässt die übrigen Felder unangetastet; `contactId` ist
+  /// NICHT Teil der öffentlichen Create-Allowlist (nur dieser interne
+  /// Update-Pfad, in `firestore.rules` durch `canManageFeedback()` + `sameOrg`
+  /// gesichert).
+  Future<void> updateCustomerFeedbackContact({
+    required String orgId,
+    required String feedbackId,
+    required String? contactId,
+  }) {
+    return _customerFeedbackCollection(orgId).doc(feedbackId).set({
+      'contactId': contactId,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
@@ -1521,6 +2041,23 @@ class FirestoreService {
     }
   }
 
+  /// Schreibt Schichten **direkt** (ohne die `upsertShiftBatch`-Callable und
+  /// damit ohne serverseitige Compliance-Prüfung). Bewusster Bypass für den
+  /// Chef-Override beim Schichttausch (`confirmShiftSwapRequest`): die Rules
+  /// erlauben Schicht-Updates nur Managern, der direkte Pfad spiegelt den
+  /// „Sicherheitslücke per Design"-Direkt-Write. Chunked wie der Callable-Pfad.
+  Future<void> saveShiftBatchDirect(List<Shift> shifts) async {
+    if (shifts.isEmpty) {
+      return;
+    }
+    final stableShifts = shifts
+        .map((shift) => shift.id == null ? shift.copyWith(id: _uuid.v4()) : shift)
+        .toList(growable: false);
+    for (final chunk in _chunked(stableShifts, _maxCallableBatchSize)) {
+      await _saveShiftBatchDirect(chunk);
+    }
+  }
+
   Future<void> _saveShiftBatchChunk(List<Shift> shifts) async {
     // Stabile Client-IDs fuer Neuanlagen (siehe saveWorkEntry, probleme #3/#8):
     // Callable (Server: `shift.id ?? hash`) und direkter Fallback schreiben
@@ -1625,6 +2162,22 @@ class FirestoreService {
     return _shiftCollection(orgId).doc(shiftId).delete();
   }
 
+  /// Trägt den zugewiesenen Mitarbeiter aus einer Schicht aus (Schicht wird
+  /// „frei"/unbesetzt) – z.B. bei einer Krankmeldung. Minimaler Merge-Write
+  /// (nur `userId`/`employeeName` leeren, Status auf `planned`), damit ihn die
+  /// Self-Austragen-Regel (resource.userId == auth.uid → '') zulässt.
+  Future<void> releaseShiftAssignment({
+    required String orgId,
+    required String shiftId,
+  }) {
+    return _shiftCollection(orgId).doc(shiftId).set({
+      'userId': '',
+      'employeeName': '',
+      'status': ShiftStatus.planned.value,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
   Future<void> deleteShiftSeries({
     required String orgId,
     required String seriesId,
@@ -1674,6 +2227,18 @@ class FirestoreService {
     return snapshot.docs
         .map((doc) => Shift.fromFirestore(doc.id, doc.data()))
         .toList(growable: false);
+  }
+
+  Future<Shift?> getShiftById({
+    required String orgId,
+    required String shiftId,
+  }) async {
+    final snapshot = await _shiftCollection(orgId).doc(shiftId).get();
+    final data = snapshot.data();
+    if (!snapshot.exists || data == null) {
+      return null;
+    }
+    return Shift.fromFirestore(snapshot.id, data);
   }
 
   Future<List<AbsenceRequest>> getApprovedAbsencesInRange({
@@ -1769,6 +2334,128 @@ class FirestoreService {
       'status': status.value,
       'reviewedByUid': reviewerUid,
       'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  // --- Schichttausch (Tauschanfragen) ---
+
+  static int _compareSwapRequests(ShiftSwapRequest a, ShiftSwapRequest b) {
+    final aWhen = a.updatedAt ?? a.createdAt ?? a.requesterShiftStart;
+    final bWhen = b.updatedAt ?? b.createdAt ?? b.requesterShiftStart;
+    return bWhen.compareTo(aWhen);
+  }
+
+  /// Alle Tauschanfragen der Org (für Manager – Rules erlauben org-weit).
+  Stream<List<ShiftSwapRequest>> watchAllSwapRequests({required String orgId}) {
+    return _swapRequestCollection(orgId).snapshots().map((snapshot) {
+      final items = snapshot.docs
+          .map((doc) => ShiftSwapRequest.fromFirestore(doc.id, doc.data()))
+          .toList();
+      items.sort(_compareSwapRequests);
+      return List<ShiftSwapRequest>.unmodifiable(items);
+    });
+  }
+
+  /// Eingehende Anfragen für einen Mitarbeiter (er ist Zielmitarbeiter).
+  Stream<List<ShiftSwapRequest>> watchIncomingSwapRequests({
+    required String orgId,
+    required String targetUid,
+  }) {
+    return _swapRequestCollection(orgId)
+        .where('targetUid', isEqualTo: targetUid)
+        .snapshots()
+        .map((snapshot) {
+      final items = snapshot.docs
+          .map((doc) => ShiftSwapRequest.fromFirestore(doc.id, doc.data()))
+          .toList();
+      items.sort(_compareSwapRequests);
+      return List<ShiftSwapRequest>.unmodifiable(items);
+    });
+  }
+
+  /// Ausgehende Anfragen eines Mitarbeiters (er ist Antragsteller).
+  Stream<List<ShiftSwapRequest>> watchOutgoingSwapRequests({
+    required String orgId,
+    required String requesterUid,
+  }) {
+    return _swapRequestCollection(orgId)
+        .where('requesterUid', isEqualTo: requesterUid)
+        .snapshots()
+        .map((snapshot) {
+      final items = snapshot.docs
+          .map((doc) => ShiftSwapRequest.fromFirestore(doc.id, doc.data()))
+          .toList();
+      items.sort(_compareSwapRequests);
+      return List<ShiftSwapRequest>.unmodifiable(items);
+    });
+  }
+
+  Future<void> saveSwapRequest(ShiftSwapRequest request) async {
+    final collection = _swapRequestCollection(request.orgId);
+    final docRef =
+        request.id == null ? collection.doc() : collection.doc(request.id);
+    await docRef.set({
+      ...request.copyWith(id: docRef.id).toFirestoreMap(),
+      if (request.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> updateSwapRequestStatus({
+    required String orgId,
+    required String requestId,
+    required SwapStatus status,
+    String? reviewerUid,
+    bool? overriddenCompliance,
+  }) {
+    return _swapRequestCollection(orgId).doc(requestId).set({
+      'status': status.value,
+      if (reviewerUid != null) 'reviewedByUid': reviewerUid,
+      if (overriddenCompliance != null)
+        'overriddenCompliance': overriddenCompliance,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  // --- Schicht-Gutschriften (einseitiger Tausch) ---
+
+  static int _compareSwapCredits(SwapCredit a, SwapCredit b) {
+    return b.originShiftStart.compareTo(a.originShiftStart);
+  }
+
+  Stream<List<SwapCredit>> watchAllSwapCredits({required String orgId}) {
+    return _swapCreditCollection(orgId).snapshots().map((snapshot) {
+      final items = snapshot.docs
+          .map((doc) => SwapCredit.fromFirestore(doc.id, doc.data()))
+          .toList();
+      items.sort(_compareSwapCredits);
+      return List<SwapCredit>.unmodifiable(items);
+    });
+  }
+
+  Stream<List<SwapCredit>> watchSwapCredits({
+    required String orgId,
+    required String uid,
+    required bool asCreditor,
+  }) {
+    return _swapCreditCollection(orgId)
+        .where(asCreditor ? 'creditorUid' : 'debtorUid', isEqualTo: uid)
+        .snapshots()
+        .map((snapshot) {
+      final items = snapshot.docs
+          .map((doc) => SwapCredit.fromFirestore(doc.id, doc.data()))
+          .toList();
+      items.sort(_compareSwapCredits);
+      return List<SwapCredit>.unmodifiable(items);
+    });
+  }
+
+  Future<void> saveSwapCredit(SwapCredit credit) async {
+    final collection = _swapCreditCollection(credit.orgId);
+    final docRef =
+        credit.id == null ? collection.doc() : collection.doc(credit.id);
+    await docRef.set({
+      ...credit.copyWith(id: docRef.id).toFirestoreMap(),
+      if (credit.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 

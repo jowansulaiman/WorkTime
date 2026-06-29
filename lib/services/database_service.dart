@@ -9,11 +9,25 @@ import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
+import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/shift_preference.dart';
 import '../models/audit_log_entry.dart';
+import '../models/clock_entry.dart';
+import '../models/zeitkonto_snapshot.dart';
+import '../core/datev_export.dart';
+import '../models/employee_ausbildung.dart';
+import '../models/employee_child.dart';
 import '../models/employee_profile.dart';
+import '../models/employee_qualification.dart';
+import '../models/org_payroll_settings.dart';
+import '../models/org_settings.dart';
+import '../models/pay_line_type.dart';
+import '../models/sollzeit_profile.dart';
+import '../models/urlaubsanpassung.dart';
+import '../models/urlaubskonto_jahr.dart';
 import '../models/finance_models.dart';
 import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
@@ -22,6 +36,8 @@ import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
 import '../models/shift.dart';
+import '../models/shift_swap_request.dart';
+import '../models/swap_credit.dart';
 import '../models/shift_template.dart';
 import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
@@ -61,10 +77,16 @@ class LocalStorageScope {
 
 class DatabaseService {
   static const _entriesKey = 'work_entries';
+  static const _clockEntriesKey = 'clock_entries';
+  static const _zeitkontoSnapshotsKey = 'zeitkonto_snapshots';
   static const _templatesKey = 'work_templates';
   static const _shiftsKey = 'schedule_shifts';
   static const _shiftTemplatesKey = 'shift_templates';
   static const _absenceRequestsKey = 'absence_requests';
+  // Schichttausch (Tauschanfragen + Gutschriften): org-skopiert, neue
+  // Collections ohne Altbestand.
+  static const _swapRequestsKey = 'shift_swap_requests';
+  static const _swapCreditsKey = 'swap_credits';
   static const _membersKey = 'team_members';
   static const _invitesKey = 'team_invites';
   static const _teamsKey = 'teams';
@@ -72,6 +94,7 @@ class DatabaseService {
   static const _qualificationsKey = 'qualifications';
   static const _contractsKey = 'employment_contracts';
   static const _siteAssignmentsKey = 'employee_site_assignments';
+  static const _shiftPreferencesKey = 'shift_preferences';
   static const _ruleSetsKey = 'compliance_rule_sets';
   static const _travelTimeRulesKey = 'travel_time_rules';
   static const _suppliersKey = 'suppliers';
@@ -82,6 +105,8 @@ class DatabaseService {
   static const _customerOrdersKey = 'customer_orders';
   static const _orderCartsKey = 'order_carts';
   static const _weeklyOrderListsKey = 'weekly_order_lists';
+  // Kühlschrank-Nachfüllliste je Laden: org-skopiert, neue Collection.
+  static const _fridgeRefillListsKey = 'fridge_refill_lists';
   // Kontakte (Kunden/Lieferanten/Partner): org-skopiert, ohne Legacy-Migration.
   static const _contactsKey = 'contacts';
   // Personal-Bereich (nur Admin): org-skopiert, ohne Legacy-Migration.
@@ -89,12 +114,24 @@ class DatabaseService {
   static const _payrollRecordsKey = 'payroll_records';
   static const _payrollProfilesKey = 'payroll_profiles';
   static const _employeeProfilesKey = 'employee_profiles';
+  static const _sollzeitProfilesKey = 'sollzeit_profiles';
+  static const _payrollConfigKey = 'payroll_config';
+  static const _employeeChildrenKey = 'employee_children';
+  static const _employeeQualificationsKey = 'employee_qualifications';
+  static const _employeeAusbildungenKey = 'employee_ausbildungen';
+  static const _urlaubskontoJahreKey = 'urlaubskonto_jahre';
+  static const _urlaubsanpassungenKey = 'urlaubsanpassungen';
+  static const _payLineTypesKey = 'pay_line_types';
   // Finanzen (Kostenrechnung): org-skopiert, ohne Legacy-Migration.
   static const _costCentersKey = 'cost_centers';
   static const _costTypesKey = 'cost_types';
   static const _journalEntriesKey = 'journal_entries';
   static const _budgetsKey = 'budgets';
+  static const _datevConfigKey = 'datev_config';
   static const _auditLogKey = 'audit_log';
+  // Org-weite operative Einstellungen (Auto-Schichtverteilung): org-skopiert,
+  // ein Objekt je Org.
+  static const _orgSettingsKey = 'org_settings';
   static const _localAuthUserIdKey = 'local_auth_user_id';
   static const _settingsPrefix = 'setting_';
   static const _dataStorageLocationKey = 'data_storage_location';
@@ -114,6 +151,8 @@ class DatabaseService {
     _shiftsKey,
     _shiftTemplatesKey,
     _absenceRequestsKey,
+    _swapRequestsKey,
+    _swapCreditsKey,
     _membersKey,
     _invitesKey,
     _teamsKey,
@@ -121,6 +160,7 @@ class DatabaseService {
     _qualificationsKey,
     _contractsKey,
     _siteAssignmentsKey,
+    _shiftPreferencesKey,
     _ruleSetsKey,
     _travelTimeRulesKey,
     // Warenwirtschaft: org-skopiert, bewusst NICHT in der Legacy-Migration
@@ -135,6 +175,8 @@ class DatabaseService {
     // Eintrag), neue Collections ohne Altbestand.
     _orderCartsKey,
     _weeklyOrderListsKey,
+    // Kühlschrank-Nachfüllliste: org-skopiert (je Laden ein Eintrag).
+    _fridgeRefillListsKey,
     // Kontakte: org-skopiert, neue Collection ohne Altbestand.
     _contactsKey,
     // Personal-Bereich: org-skopiert, neue Collections ohne Altbestand.
@@ -142,12 +184,26 @@ class DatabaseService {
     _payrollRecordsKey,
     _payrollProfilesKey,
     _employeeProfilesKey,
+    _sollzeitProfilesKey,
+    _payrollConfigKey,
+    _employeeChildrenKey,
+    _employeeQualificationsKey,
+    _employeeAusbildungenKey,
+    _urlaubskontoJahreKey,
+    _urlaubsanpassungenKey,
+    _payLineTypesKey,
     // Finanzen: org-skopiert, neue Collections ohne Altbestand.
     _costCentersKey,
     _costTypesKey,
     _journalEntriesKey,
     _budgetsKey,
+    _datevConfigKey,
     _auditLogKey,
+    _orgSettingsKey,
+    // Zeitwirtschaft: Stempel-Sessions, org-skopiert (M3).
+    _clockEntriesKey,
+    // Zeitwirtschaft: Stundenkonto-Snapshots, org-skopiert (M4).
+    _zeitkontoSnapshotsKey,
   };
   static const _legacyWorkSettingKeys = <String>[
     'name',
@@ -208,6 +264,52 @@ class DatabaseService {
       scope: scope,
       items: entries,
       toMap: (entry) => entry.toMap(),
+    );
+  }
+
+  static Future<List<ClockEntry>> loadLocalClockEntries({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _clockEntriesKey,
+      scope: scope,
+      fromMap: ClockEntry.fromMap,
+      compare: (a, b) => a.kommen.compareTo(b.kommen),
+    );
+  }
+
+  static Future<void> saveLocalClockEntries(
+    List<ClockEntry> entries, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _clockEntriesKey,
+      scope: scope,
+      items: entries,
+      toMap: (entry) => entry.toMap(),
+    );
+  }
+
+  static Future<List<ZeitkontoSnapshot>> loadLocalZeitkontoSnapshots({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _zeitkontoSnapshotsKey,
+      scope: scope,
+      fromMap: ZeitkontoSnapshot.fromMap,
+      compare: (a, b) => a.monat.compareTo(b.monat),
+    );
+  }
+
+  static Future<void> saveLocalZeitkontoSnapshots(
+    List<ZeitkontoSnapshot> snapshots, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _zeitkontoSnapshotsKey,
+      scope: scope,
+      items: snapshots,
+      toMap: (snapshot) => snapshot.toMap(),
     );
   }
 
@@ -308,6 +410,52 @@ class DatabaseService {
       scope: scope,
       items: requests,
       toMap: (request) => request.toMap(),
+    );
+  }
+
+  static Future<List<ShiftSwapRequest>> loadLocalSwapRequests({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _swapRequestsKey,
+      scope: scope,
+      fromMap: ShiftSwapRequest.fromMap,
+      compare: (a, b) => b.requesterShiftStart.compareTo(a.requesterShiftStart),
+    );
+  }
+
+  static Future<void> saveLocalSwapRequests(
+    List<ShiftSwapRequest> requests, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _swapRequestsKey,
+      scope: scope,
+      items: requests,
+      toMap: (request) => request.toMap(),
+    );
+  }
+
+  static Future<List<SwapCredit>> loadLocalSwapCredits({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _swapCreditsKey,
+      scope: scope,
+      fromMap: SwapCredit.fromMap,
+      compare: (a, b) => b.originShiftStart.compareTo(a.originShiftStart),
+    );
+  }
+
+  static Future<void> saveLocalSwapCredits(
+    List<SwapCredit> credits, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _swapCreditsKey,
+      scope: scope,
+      items: credits,
+      toMap: (credit) => credit.toMap(),
     );
   }
 
@@ -573,6 +721,182 @@ class DatabaseService {
     );
   }
 
+  static Future<List<SollzeitProfile>> loadLocalSollzeitProfiles({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _sollzeitProfilesKey,
+      scope: scope,
+      fromMap: SollzeitProfile.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalSollzeitProfiles(
+    List<SollzeitProfile> profiles, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _sollzeitProfilesKey,
+      scope: scope,
+      items: profiles,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<OrgPayrollSettings>> loadLocalOrgPayrollSettings({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _payrollConfigKey,
+      scope: scope,
+      fromMap: OrgPayrollSettings.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalOrgPayrollSettings(
+    List<OrgPayrollSettings> configs, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _payrollConfigKey,
+      scope: scope,
+      items: configs,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<EmployeeChild>> loadLocalEmployeeChildren({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _employeeChildrenKey,
+      scope: scope,
+      fromMap: EmployeeChild.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalEmployeeChildren(
+    List<EmployeeChild> children, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _employeeChildrenKey,
+      scope: scope,
+      items: children,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<EmployeeQualification>> loadLocalEmployeeQualifications({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _employeeQualificationsKey,
+      scope: scope,
+      fromMap: EmployeeQualification.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalEmployeeQualifications(
+    List<EmployeeQualification> quals, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _employeeQualificationsKey,
+      scope: scope,
+      items: quals,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<EmployeeAusbildung>> loadLocalEmployeeAusbildungen({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _employeeAusbildungenKey,
+      scope: scope,
+      fromMap: EmployeeAusbildung.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalEmployeeAusbildungen(
+    List<EmployeeAusbildung> ausbildungen, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _employeeAusbildungenKey,
+      scope: scope,
+      items: ausbildungen,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<UrlaubskontoJahr>> loadLocalUrlaubskontoJahre({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _urlaubskontoJahreKey,
+      scope: scope,
+      fromMap: UrlaubskontoJahr.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalUrlaubskontoJahre(
+    List<UrlaubskontoJahr> konten, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _urlaubskontoJahreKey,
+      scope: scope,
+      items: konten,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<Urlaubsanpassung>> loadLocalUrlaubsanpassungen({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _urlaubsanpassungenKey,
+      scope: scope,
+      fromMap: Urlaubsanpassung.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalUrlaubsanpassungen(
+    List<Urlaubsanpassung> anpassungen, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _urlaubsanpassungenKey,
+      scope: scope,
+      items: anpassungen,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<PayLineType>> loadLocalPayLineTypes({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _payLineTypesKey,
+      scope: scope,
+      fromMap: PayLineType.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalPayLineTypes(
+    List<PayLineType> types, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _payLineTypesKey,
+      scope: scope,
+      items: types,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<CostCenter>> loadLocalCostCenters({
     LocalStorageScope? scope,
   }) {
@@ -662,6 +986,56 @@ class DatabaseService {
     );
   }
 
+  /// DATEV-Export-Konfiguration (ein Objekt je Org, lokal/gerätegebunden).
+  static Future<DatevExportConfig?> loadLocalDatevConfig({
+    LocalStorageScope? scope,
+  }) async {
+    final list = await _loadCollection(
+      key: _datevConfigKey,
+      scope: scope,
+      fromMap: DatevExportConfig.fromMap,
+    );
+    return list.isEmpty ? null : list.first;
+  }
+
+  static Future<void> saveLocalDatevConfig(
+    DatevExportConfig config, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _datevConfigKey,
+      scope: scope,
+      items: [config],
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  /// Org-weite operative Einstellungen (ein Objekt je Org, lokal gespiegelt für
+  /// Local-/Hybrid-Modus). Gibt null zurück, wenn nichts hinterlegt ist —
+  /// Aufrufer nutzt dann [OrgSettings.defaults].
+  static Future<OrgSettings?> loadLocalOrgSettings({
+    LocalStorageScope? scope,
+  }) async {
+    final list = await _loadCollection(
+      key: _orgSettingsKey,
+      scope: scope,
+      fromMap: OrgSettings.fromMap,
+    );
+    return list.isEmpty ? null : list.first;
+  }
+
+  static Future<void> saveLocalOrgSettings(
+    OrgSettings settings, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _orgSettingsKey,
+      scope: scope,
+      items: [settings],
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<AuditLogEntry>> loadLocalAuditLog({
     LocalStorageScope? scope,
   }) {
@@ -707,6 +1081,29 @@ class DatabaseService {
       key: _siteAssignmentsKey,
       scope: scope,
       items: assignments,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<EmployeeShiftPreference>> loadLocalShiftPreferences({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _shiftPreferencesKey,
+      scope: scope,
+      fromMap: EmployeeShiftPreference.fromMap,
+      compare: (a, b) => a.userId.compareTo(b.userId),
+    );
+  }
+
+  static Future<void> saveLocalShiftPreferences(
+    List<EmployeeShiftPreference> preferences, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _shiftPreferencesKey,
+      scope: scope,
+      items: preferences,
       toMap: (item) => item.toMap(),
     );
   }
@@ -891,6 +1288,29 @@ class DatabaseService {
   }) {
     return _saveCollection(
       key: _weeklyOrderListsKey,
+      scope: scope,
+      items: lists,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<FridgeRefillList>> loadLocalFridgeRefillLists({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _fridgeRefillListsKey,
+      scope: scope,
+      fromMap: FridgeRefillList.fromMap,
+      compare: (a, b) => a.siteId.compareTo(b.siteId),
+    );
+  }
+
+  static Future<void> saveLocalFridgeRefillLists(
+    List<FridgeRefillList> lists, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _fridgeRefillListsKey,
       scope: scope,
       items: lists,
       toMap: (item) => item.toMap(),

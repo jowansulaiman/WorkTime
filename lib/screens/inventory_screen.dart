@@ -5,6 +5,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../core/money.dart';
+import '../core/site_name_resolver.dart';
+import '../models/contact.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
@@ -16,8 +18,9 @@ import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/contact_picker_field.dart';
 import '../widgets/empty_state.dart';
-import '../widgets/responsive_layout.dart';
+import 'fridge_refill_screen.dart';
 import 'order_cart_screen.dart';
 import 'purchase_order_screens.dart';
 
@@ -77,9 +80,18 @@ class InventoryScreen extends StatefulWidget {
   const InventoryScreen({
     super.key,
     this.parentLabel = 'Profil',
+    this.initialTabIndex = 0,
   });
 
   final String parentLabel;
+
+  /// Tab, der beim Öffnen aktiv ist (0 = Bestand). Erlaubt Deep-Links wie den
+  /// Warenkorb-Knopf in der App-Bar, der direkt auf [cartTabIndex] springt.
+  final int initialTabIndex;
+
+  /// Index des „Bestellkorb"-Tabs — öffentlich, damit Deep-Links (Router/App-Bar)
+  /// nicht die private Tab-Reihenfolge kennen müssen.
+  static const int cartTabIndex = 3;
 
   @override
   State<InventoryScreen> createState() => _InventoryScreenState();
@@ -90,9 +102,11 @@ class _InventoryScreenState extends State<InventoryScreen>
   // Tab-Reihenfolge (benannte Indizes statt Literale, damit FAB/Badge/Navigation
   // bei künftigem Umsortieren nicht auseinanderlaufen).
   static const int _stockTabIndex = 0;
-  static const int _suppliersTabIndex = 1;
-  static const int _cartTabIndex = 2;
-  static const int _ordersTabIndex = 3;
+  static const int _fridgeTabIndex = 1;
+  static const int _suppliersTabIndex = 2;
+  static const int _cartTabIndex = 3;
+  static const int _ordersTabIndex = 4;
+  static const int _tabCount = 5;
 
   late final TabController _tabController;
   String? _selectedSiteId;
@@ -101,7 +115,11 @@ class _InventoryScreenState extends State<InventoryScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(
+      length: _tabCount,
+      vsync: this,
+      initialIndex: widget.initialTabIndex.clamp(0, _tabCount - 1),
+    );
     _tabController.addListener(() {
       if (mounted) {
         setState(() {});
@@ -158,6 +176,11 @@ class _InventoryScreenState extends State<InventoryScreen>
         ],
         actions: [
           IconButton(
+            tooltip: 'Bestell-Auswertung',
+            icon: const Icon(Icons.insights_outlined),
+            onPressed: () => context.push(AppRoutes.orderAnalytics),
+          ),
+          IconButton(
             tooltip: 'Kundenwünsche',
             icon: const Icon(Icons.inbox_outlined),
             onPressed: () => context.push(AppRoutes.customerWishes),
@@ -190,6 +213,17 @@ class _InventoryScreenState extends State<InventoryScreen>
                         icon: Icons.inventory_2_outlined,
                         label: 'Bestand',
                         badgeCount: lowStockCount,
+                      ),
+                    ),
+                    Tab(
+                      child: _TabLabel(
+                        icon: Icons.kitchen_outlined,
+                        label: 'Kühlschrank',
+                        // Wie der Bestellkorb: ohne eindeutigen Laden kein
+                        // Summen-Badge (der Tab zeigt dann „Laden wählen").
+                        badgeCount: effectiveSiteId == null
+                            ? 0
+                            : inventory.fridgeRefillOpenCount(effectiveSiteId),
                       ),
                     ),
                     const Tab(
@@ -238,6 +272,11 @@ class _InventoryScreenState extends State<InventoryScreen>
                         canManage: canManage,
                         onSearchChanged: (value) =>
                             setState(() => _search = value),
+                        sites: sites,
+                      ),
+                      FridgeRefillTab(
+                        siteId: effectiveSiteId,
+                        canManage: canManage,
                         sites: sites,
                       ),
                       _SuppliersTab(canManage: canManage),
@@ -337,6 +376,18 @@ class _InventoryScreenState extends State<InventoryScreen>
       ),
     );
 
+    // Schnell etwas auf die Kühlschrank-Nachfüllliste setzen — für JEDEN
+    // aktiven Mitarbeiter (gleiches Muster wie der Warenkorb).
+    final fridgeAction = FabAction(
+      icon: Icons.kitchen_outlined,
+      label: 'Kühlschrank nachfüllen',
+      onPressed: () => showFridgeRefillAddSheet(
+        context,
+        sites: sites,
+        initialSiteId: effectiveSiteId,
+      ),
+    );
+
     switch (_tabController.index) {
       case _stockTabIndex:
         // Verwaltung fächert Scanner + Artikel über die prominente Korb-Aktion
@@ -344,7 +395,9 @@ class _InventoryScreenState extends State<InventoryScreen>
         return ExpandableFab(
           heroTag: 'inv-fab-stock',
           actions: [
-            if (canManage && MobileBreakpoints.isNativeMobile)
+            // Scanner plattformunabhängig (Off-Mobile: manuelle Eingabe im
+            // ScannerScreen) — konsistent zum festen Scanner-Tab der Bottomnav.
+            if (canManage)
               FabAction(
                 icon: Icons.qr_code_scanner_outlined,
                 label: 'Scanner',
@@ -356,8 +409,14 @@ class _InventoryScreenState extends State<InventoryScreen>
                 label: 'Artikel',
                 onPressed: () => _addProduct(context, inventory, sites),
               ),
+            fridgeAction,
             cartAction,
           ],
+        );
+      case _fridgeTabIndex:
+        return ExpandableFab(
+          heroTag: 'inv-fab-fridge',
+          actions: [fridgeAction],
         );
       case _suppliersTabIndex:
         return canManage
@@ -831,11 +890,16 @@ class _ProductTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: colorScheme.onSurfaceVariant),
             ),
-            if (sites.length > 1 && (product.siteName?.isNotEmpty ?? false))
+            if (sites.length > 1 &&
+                (resolveSiteName(sites, product.siteId,
+                            fallback: product.siteName)
+                        ?.isNotEmpty ??
+                    false))
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: Text(
-                  product.siteName!,
+                  resolveSiteName(sites, product.siteId,
+                      fallback: product.siteName)!,
                   style: TextStyle(
                     color: colorScheme.outline,
                     fontSize: 12,
@@ -1589,11 +1653,13 @@ class _SupplierDialogState extends State<_SupplierDialog> {
   late final TextEditingController _minOrder;
   late final TextEditingController _packaging;
   late final TextEditingController _notes;
+  String? _contactId;
 
   @override
   void initState() {
     super.initState();
     final supplier = widget.supplier;
+    _contactId = supplier?.contactId;
     _name = TextEditingController(text: supplier?.name ?? '');
     _contact = TextEditingController(text: supplier?.contactPerson ?? '');
     _email = TextEditingController(text: supplier?.email ?? '');
@@ -1637,6 +1703,37 @@ class _SupplierDialogState extends State<_SupplierDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                ContactPickerField(
+                  contactId: _contactId,
+                  label: 'Verknüpfter Kontakt',
+                  emptyLabel: 'Kein Kontakt verknüpft',
+                  allowedTypes: const [
+                    ContactType.supplier,
+                    ContactType.wholesaler,
+                  ],
+                  onSelected: (contact) => setState(() {
+                    _contactId = contact?.id;
+                    if (contact != null) {
+                      if (_name.text.trim().isEmpty) {
+                        _name.text = contact.name;
+                      }
+                      if (_contact.text.trim().isEmpty &&
+                          (contact.contactPerson?.trim().isNotEmpty ?? false)) {
+                        _contact.text = contact.contactPerson!.trim();
+                      }
+                      if (_email.text.trim().isEmpty &&
+                          (contact.email?.trim().isNotEmpty ?? false)) {
+                        _email.text = contact.email!.trim();
+                      }
+                      final reach = contact.primaryPhone;
+                      if (_phone.text.trim().isEmpty &&
+                          (reach?.trim().isNotEmpty ?? false)) {
+                        _phone.text = reach!.trim();
+                      }
+                    }
+                  }),
+                ),
+                const SizedBox(height: 4),
                 TextFormField(
                   controller: _name,
                   decoration: const InputDecoration(labelText: 'Name *'),
@@ -1754,6 +1851,8 @@ class _SupplierDialogState extends State<_SupplierDialog> {
       clearPackagingUnit: _packaging.text.trim().isEmpty,
       notes: trimOrNull(_notes.text),
       clearNotes: _notes.text.trim().isEmpty,
+      contactId: _contactId,
+      clearContactId: _contactId == null,
     );
     Navigator.of(context).pop(result);
   }

@@ -83,6 +83,42 @@ void main() {
       expect(cols[1], 'H');
     });
 
+    test('DatevExportConfig round-trip + accountLength-Clamp', () {
+      const c = DatevExportConfig(
+        consultantNumber: '1234567',
+        clientNumber: '54321',
+        accountLength: 6,
+        defaultContraAccount: '8400',
+        designation: 'Stapel',
+      );
+      final r = DatevExportConfig.fromMap(c.toMap());
+      expect(r.consultantNumber, '1234567');
+      expect(r.clientNumber, '54321');
+      expect(r.accountLength, 6);
+      expect(r.defaultContraAccount, '8400');
+      expect(r.designation, 'Stapel');
+      // Sachkontenlänge wird auf 4..8 geklemmt.
+      expect(DatevExportConfig.fromMap({'account_length': 99}).accountLength, 8);
+      expect(DatevExportConfig.fromMap({'account_length': 2}).accountLength, 4);
+      expect(DatevExportConfig.fromMap(const {}).defaultContraAccount, '9000');
+    });
+
+    test('Konfiguration fließt in die Kopfzeile ein', () {
+      final out = DatevExport.buildBuchungsstapel(
+        entries: entries,
+        centersById: const {'c1': center},
+        typesById: const {'t1': type},
+        year: 2026,
+        config: const DatevExportConfig(
+          consultantNumber: '7777',
+          clientNumber: '8888',
+          accountLength: 5,
+        ),
+        generatedAt: DateTime(2026, 6, 22),
+      );
+      expect(out.split('\r\n').first, contains(';7777;8888;20260101;5;'));
+    });
+
     test('nur Buchungen des Geschäftsjahres + CRLF-Zeilenenden', () {
       final out = build();
       expect(out.contains('\r\n'), isTrue);

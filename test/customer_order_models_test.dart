@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worktime_app/models/customer_order.dart';
+import 'package:worktime_app/models/customer_wish.dart';
 
 void main() {
   CustomerOrder sample() => CustomerOrder(
@@ -16,6 +17,7 @@ void main() {
         notes: 'Holt jeden Freitag ab.',
         pickupDate: DateTime(2026, 6, 19, 12),
         preparedAt: DateTime(2026, 6, 18, 9, 30),
+        sourceWishId: 'wish-7',
         createdByUid: 'owner-1',
         items: const [
           CustomerOrderItem(
@@ -164,6 +166,7 @@ void main() {
       expect(restored.pickupDate, DateTime(2026, 6, 19, 12));
       expect(restored.preparedAt, DateTime(2026, 6, 18, 9, 30));
       expect(restored.notes, 'Holt jeden Freitag ab.');
+      expect(restored.sourceWishId, 'wish-7');
       expect(restored.items, hasLength(2));
       expect(restored.items.first.name, 'Pueblo Tabak 30g');
       expect(restored.items.first.category, 'Drehtabak');
@@ -177,6 +180,7 @@ void main() {
       final restored = CustomerOrder.fromFirestore('co-1', map);
       expect(restored.customerName, 'Herr Schmidt');
       expect(restored.contactId, 'contact-99');
+      expect(restored.sourceWishId, 'wish-7'); // H-E1 Rückverweis
       expect(restored.status, CustomerOrderStatus.prepared);
       expect(restored.recurrence, CustomerOrderRecurrence.weekly);
       expect(restored.pickupDate, DateTime(2026, 6, 19, 12));
@@ -193,6 +197,7 @@ void main() {
         clearOrderNumber: true,
         clearNotes: true,
         clearSiteName: true,
+        clearSourceWishId: true,
       );
       expect(cleared.pickupDate, isNull);
       expect(cleared.preparedAt, isNull);
@@ -201,8 +206,58 @@ void main() {
       expect(cleared.orderNumber, isNull);
       expect(cleared.notes, isNull);
       expect(cleared.siteName, isNull);
+      expect(cleared.sourceWishId, isNull);
       // Unberuehrte Felder bleiben.
       expect(cleared.customerName, 'Herr Schmidt');
+    });
+  });
+
+  group('CustomerOrder.fromCustomerWish (Wunsch→Bestellung, H-E1)', () {
+    CustomerWish wish({String? contactId, String? customerName}) => CustomerWish(
+          id: 'wish-7',
+          orgId: 'org-1',
+          referenceCode: 'K7Q-9X2',
+          storeName: 'Tabak Börse',
+          category: CustomerWishCategory.cigarettes,
+          wishText: 'Stange Marlboro Gold',
+          quantity: 3,
+          desiredDate: DateTime(2026, 7, 1, 12),
+          customerName: customerName,
+          customerContact: '0151 2345678',
+          contactId: contactId,
+        );
+
+    test('überträgt CRM-Kontakt (H-D2) und sourceWishId (H-E1)', () {
+      final order = CustomerOrder.fromCustomerWish(
+        wish(contactId: 'contact-99', customerName: 'Herr Schmidt'),
+        siteId: 'site-1',
+        siteName: 'Tabak Börse',
+      );
+
+      // Regression: contactId darf beim Übergang NICHT verloren gehen.
+      expect(order.contactId, 'contact-99');
+      expect(order.sourceWishId, 'wish-7');
+      expect(order.siteId, 'site-1');
+      expect(order.siteName, 'Tabak Börse');
+      expect(order.orgId, 'org-1');
+      expect(order.customerName, 'Herr Schmidt');
+      expect(order.customerContact, '0151 2345678');
+      expect(order.status, CustomerOrderStatus.open);
+      expect(order.pickupDate, DateTime(2026, 7, 1, 12));
+      expect(order.items, hasLength(1));
+      expect(order.items.single.name, 'Stange Marlboro Gold');
+      expect(order.items.single.quantity, 3);
+      expect(order.notes, contains('K7Q-9X2'));
+    });
+
+    test('ohne Kundenname fällt customerName auf die Referenz zurück', () {
+      final order = CustomerOrder.fromCustomerWish(
+        wish(),
+        siteId: 'site-1',
+      );
+      expect(order.customerName, 'Kundenwunsch K7Q-9X2');
+      // Kein verknüpfter Kontakt → contactId bleibt null.
+      expect(order.contactId, isNull);
     });
   });
 }

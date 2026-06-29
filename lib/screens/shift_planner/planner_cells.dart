@@ -157,6 +157,7 @@ class _PlannerBoardShiftCard extends StatelessWidget {
     required this.onTap,
     required this.onDelete,
     this.onDeleteSeries,
+    this.onCopyToDays,
   });
 
   final Shift shift;
@@ -164,6 +165,7 @@ class _PlannerBoardShiftCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback? onDeleteSeries;
+  final VoidCallback? onCopyToDays;
 
   @override
   Widget build(BuildContext context) {
@@ -236,6 +238,8 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                       switch (value) {
                         case 'edit':
                           onTap();
+                        case 'copy_days':
+                          onCopyToDays?.call();
                         case 'delete':
                           onDelete();
                         case 'delete_series':
@@ -247,6 +251,11 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                         value: 'edit',
                         child: Text('Bearbeiten'),
                       ),
+                      if (onCopyToDays != null)
+                        const PopupMenuItem(
+                          value: 'copy_days',
+                          child: Text('Kopieren (Mitarbeiter/Tage) ...'),
+                        ),
                       const PopupMenuItem(
                         value: 'delete',
                         child: Text('Einzeln loeschen'),
@@ -327,8 +336,8 @@ class _PlannerAbsencePill extends StatelessWidget {
     };
     final icon = switch (absence.type) {
       AbsenceType.vacation => Icons.beach_access_rounded,
-      AbsenceType.sickness => Icons.healing_rounded,
-      AbsenceType.unavailable => Icons.block_rounded,
+      AbsenceType.sickness || AbsenceType.childSick => Icons.healing_rounded,
+      _ => Icons.block_rounded,
     };
     final label = showEmployeeName
         ? '${absence.employeeName}: ${absence.type.label} · ${absence.status.label}'

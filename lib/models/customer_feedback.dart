@@ -84,6 +84,7 @@ class CustomerFeedback {
     this.incidentDate,
     this.customerName,
     this.customerContact,
+    this.contactId,
     this.status = FeedbackStatus.pending,
     this.source = publicWebSource,
     this.notes,
@@ -123,6 +124,13 @@ class CustomerFeedback {
 
   /// Optionaler Kontakt (Telefon/E-Mail) für eine Rückmeldung.
   final String? customerContact;
+
+  /// Optionale Verknüpfung zu einem [Contact] aus der zentralen Kontakte-Kartei
+  /// (H-D2). Wird ausschließlich INTERN von einem Manager beim Bearbeiten
+  /// gesetzt — `null` = nicht verknüpft. Bewusst NICHT im
+  /// [toPublicSubmissionMap] / der `firestore.rules`-Allowlist des öffentlichen
+  /// Create-Pfads (anonyme Kunden kennen keine internen Kontakt-IDs).
+  final String? contactId;
 
   final FeedbackStatus status;
 
@@ -172,6 +180,7 @@ class CustomerFeedback {
       incidentDate: FirestoreDateParser.readDate(map['incidentDate']),
       customerName: map['customerName'] as String?,
       customerContact: map['customerContact'] as String?,
+      contactId: map['contactId'] as String?,
       status: FeedbackStatusX.fromValue(map['status']?.toString()),
       source: (map['source'] ?? publicWebSource).toString(),
       notes: map['notes'] as String?,
@@ -194,6 +203,7 @@ class CustomerFeedback {
       incidentDate: FirestoreDateParser.readLocalDate(map['incident_date']),
       customerName: map['customer_name'] as String?,
       customerContact: map['customer_contact'] as String?,
+      contactId: map['contact_id'] as String?,
       status: FeedbackStatusX.fromValue(map['status']?.toString()),
       source: (map['source'] ?? publicWebSource).toString(),
       notes: map['notes'] as String?,
@@ -237,6 +247,7 @@ class CustomerFeedback {
       'incidentDate': _timestampOrNull(incidentDate),
       'customerName': _trimmedOrNull(customerName),
       'customerContact': _trimmedOrNull(customerContact),
+      'contactId': _trimmedOrNull(contactId),
       'status': status.value,
       'source': source,
       'notes': _trimmedOrNull(notes),
@@ -258,6 +269,7 @@ class CustomerFeedback {
       'incident_date': incidentDate?.toIso8601String(),
       'customer_name': customerName,
       'customer_contact': customerContact,
+      'contact_id': contactId,
       'status': status.value,
       'source': source,
       'notes': notes,
@@ -279,6 +291,7 @@ class CustomerFeedback {
     DateTime? incidentDate,
     String? customerName,
     String? customerContact,
+    String? contactId,
     FeedbackStatus? status,
     String? source,
     String? notes,
@@ -290,6 +303,7 @@ class CustomerFeedback {
     bool clearIncidentDate = false,
     bool clearCustomerName = false,
     bool clearCustomerContact = false,
+    bool clearContactId = false,
     bool clearNotes = false,
     bool clearHandledBy = false,
   }) {
@@ -308,6 +322,7 @@ class CustomerFeedback {
       customerContact: clearCustomerContact
           ? null
           : (customerContact ?? this.customerContact),
+      contactId: clearContactId ? null : (contactId ?? this.contactId),
       status: status ?? this.status,
       source: source ?? this.source,
       notes: clearNotes ? null : (notes ?? this.notes),

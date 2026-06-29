@@ -261,6 +261,7 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
     if (_supplierId == null) {
       return const [];
     }
+    final freq = inventory.orderFrequencyByProduct(siteId: _siteId);
     final products = inventory
         .productsForSite(_siteId)
         .where((product) =>
@@ -270,6 +271,12 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
         // Nachzubestellende zuerst.
         if (a.needsReorder != b.needsReorder) {
           return a.needsReorder ? -1 : 1;
+        }
+        // Dann häufig bestellte Artikel.
+        final fa = freq[a.id] ?? 0;
+        final fb = freq[b.id] ?? 0;
+        if (fa != fb) {
+          return fb.compareTo(fa);
         }
         return a.name.toLowerCase().compareTo(b.name.toLowerCase());
       });

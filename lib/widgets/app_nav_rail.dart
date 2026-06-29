@@ -10,11 +10,15 @@ class AppNavRailItem {
     required this.icon,
     required this.selectedIcon,
     required this.label,
+    this.badgeCount = 0,
   });
 
   final IconData icon;
   final IconData selectedIcon;
   final String label;
+
+  /// Anzahl offener Punkte als kleines Badge am Icon (0 = kein Badge).
+  final int badgeCount;
 }
 
 /// Moderne, maßgeschneiderte Seitenleiste für das V2-Redesign (Signal-Teal).
@@ -180,11 +184,20 @@ class _RailItem extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  selected ? item.selectedIcon : item.icon,
-                  color: fg,
-                  size: context.iconSizes.md,
-                ),
+                item.badgeCount > 0
+                    ? Badge(
+                        label: Text('${item.badgeCount}'),
+                        child: Icon(
+                          selected ? item.selectedIcon : item.icon,
+                          color: fg,
+                          size: context.iconSizes.md,
+                        ),
+                      )
+                    : Icon(
+                        selected ? item.selectedIcon : item.icon,
+                        color: fg,
+                        size: context.iconSizes.md,
+                      ),
                 SizedBox(height: spacing.xs),
                 Text(
                   item.label,

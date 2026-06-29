@@ -118,7 +118,16 @@ Personal-Mutatoren inkl. Stammakte/Lohn/Status). Vom Nutzer begonnen, von Claude
 
 > **Deploy:** `firebase deploy --only firestore:rules` (neue Blöcke costCenters/costTypes/
 > journalEntries/budgets). Keine neuen Composite-Indizes.
-> **Offen:** Finanz-PDF-Jahresbericht (PdfService), DATEV-Config-Dialog (Berater/Mandant), CSV-/DATEV-Import.
+
+### ✅ C-Nachträge (2026-06-22)
+- **DATEV-Config-Dialog**: `DatevExportConfig` (Berater/Mandant/Sachkontenlänge/Gegenkonto/Bezeichnung)
+  + `toMap/fromMap`, lokal/org-skopiert persistiert (`DatabaseService` Key `datev_config`,
+  `FinanceProvider.datevConfig`/`saveDatevConfig`, admin-only). Editor-Sheet im Export-Menü; DATEV-Export
+  nutzt die Config. Tests grün.
+- **Finanz-PDF-Jahresbericht**: `PdfService.generateFinanceReport` (KPI-Karten + Kostenstellen-Tabelle
+  + Monatsverlauf) → `ExportService.exportFinanceReportPdf`, Menüpunkt „Finanzbericht (PDF)". Smoke-Test.
+
+> **Noch offen:** CSV-/DATEV-**Import**, journalEntries-Jahresfilter+Index (Skalierung).
 
 ---
 

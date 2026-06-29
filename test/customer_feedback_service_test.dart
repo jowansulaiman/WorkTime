@@ -83,6 +83,31 @@ void main() {
     expect(items.single.handledByUid, 'mitarbeiter-1');
   });
 
+  test('updateCustomerFeedbackContact verknüpft und löst die Verknüpfung',
+      () async {
+    final id = await service.submitCustomerFeedback(buildFeedback());
+
+    // Verknüpfen
+    await service.updateCustomerFeedbackContact(
+      orgId: 'main-org',
+      feedbackId: id,
+      contactId: 'kontakt-1',
+    );
+    var items = await service.watchCustomerFeedback('main-org').first;
+    expect(items.single.contactId, 'kontakt-1');
+    // Status bleibt unangetastet (merge: true).
+    expect(items.single.status, FeedbackStatus.pending);
+
+    // Verknüpfung lösen
+    await service.updateCustomerFeedbackContact(
+      orgId: 'main-org',
+      feedbackId: id,
+      contactId: null,
+    );
+    items = await service.watchCustomerFeedback('main-org').first;
+    expect(items.single.contactId, isNull);
+  });
+
   test('deleteCustomerFeedback entfernt die Rückmeldung', () async {
     final id = await service.submitCustomerFeedback(buildFeedback());
     await service.deleteCustomerFeedback(orgId: 'main-org', feedbackId: id);

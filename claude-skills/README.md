@@ -123,3 +123,17 @@ Für typische Szenarien lassen sich mehrere Skills sinnvoll kombinieren:
 - Faustregeln sind bewusst **zahlenbasiert** (Breakpoints, Frame-Budgets, Coverage-Ziele), um konkret statt vage zu sein.
 - Skill 03 (UX/UI) wurde methodisch am Open-Source-Skill **ui-ux-pro-max** (`github.com/nextlevelbuilder/ui-ux-pro-max-skill`) ausgerichtet — Design-System-First-Workflow, priorisierte Regelkategorien (Apple HIG / Material Design) und Pre-Delivery-Anti-Pattern-Checkliste — und vollständig auf Flutter/Dart adaptiert.
 - Die Skills referenzieren sich gegenseitig (z. B. verweist Sync auf Datenbank und Resilience), lassen sich aber auch einzeln nutzen.
+
+---
+
+## Variante C: Claude Code (auto-ladende Skills)
+
+Aus jedem der 19 Experten-Prompts wird ein **auto-ladender Claude-Code-Skill** unter `.claude/skills/flutter-<domäne>/SKILL.md` erzeugt. Claude Code entdeckt diese beim Start automatisch; die `description` im Frontmatter trägt die Trigger-Keywords, sodass der passende Skill bei einer relevanten Aufgabe von selbst greift (oder per Slash-Command `/flutter-cross-platform` usw.). Jede `SKILL.md` ist bewusst dünn: Frontmatter + Pointer auf den **verbindlichen** Quell-Prompt hier in `claude-skills/` (Single Source of Truth) + die extrahierten Kernkompetenzen.
+
+```bash
+node claude-skills/build-skills.mjs          # erzeugt/aktualisiert alle 19 Skills nach .claude/skills/
+node claude-skills/build-skills.mjs --check   # CI: schlägt fehl, wenn Skills veraltet sind (exit 1)
+node claude-skills/validate-skills.mjs        # Discovery-Check: parst jedes Frontmatter wie Claude Code
+```
+
+**Nach dem Editieren eines Prompts** in `claude-skills/` → `build-skills.mjs` erneut ausführen (Titel, Rollen-Satz und Kernkompetenz-Liste werden aus der Quelle extrahiert, bleiben also in Sync). Slug, `description` (Auto-Lade-Signal) und die `Einsatz`-Zeile stehen pro Skill in der `SKILLS`-Tabelle in `build-skills.mjs`.

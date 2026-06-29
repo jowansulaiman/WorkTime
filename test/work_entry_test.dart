@@ -64,4 +64,108 @@ void main() {
           entry.updatedAt!.toIso8601String());
     });
   });
+
+  group('WorkEntry status workflow (M2)', () {
+    WorkEntry sample({
+      WorkEntryStatus status = WorkEntryStatus.approved,
+      String? approvedByUid,
+      DateTime? approvedAt,
+      String? sourceClockEntryId,
+    }) =>
+        WorkEntry(
+          id: 'e1',
+          date: DateTime(2026, 6, 1),
+          startTime: DateTime(2026, 6, 1, 8),
+          endTime: DateTime(2026, 6, 1, 16),
+          status: status,
+          approvedByUid: approvedByUid,
+          approvedAt: approvedAt,
+          sourceClockEntryId: sourceClockEntryId,
+        );
+
+    test('defaults to approved (abwärtskompatibel)', () {
+      expect(sample().status, WorkEntryStatus.approved);
+    });
+
+    test('fromValue fällt für unbekannt/leer auf approved', () {
+      expect(WorkEntryStatus.fromValue('bogus'), WorkEntryStatus.approved);
+      expect(WorkEntryStatus.fromValue(null), WorkEntryStatus.approved);
+      expect(WorkEntryStatus.fromValue(''), WorkEntryStatus.approved);
+      expect(WorkEntryStatus.fromValue('rejected'), WorkEntryStatus.rejected);
+    });
+
+    test('lokale Map round-trippt Status + Freigabe + sourceClockEntryId', () {
+      final entry = sample(
+        status: WorkEntryStatus.submitted,
+        approvedByUid: 'mgr-1',
+        approvedAt: DateTime(2026, 6, 2, 9, 30),
+        sourceClockEntryId: 'clk-1',
+      );
+      final map = entry.toMap();
+      expect(map['status'], 'submitted');
+      expect(map['source_clock_entry_id'], 'clk-1');
+
+      final restored = WorkEntry.fromMap(map);
+      expect(restored.status, WorkEntryStatus.submitted);
+      expect(restored.approvedByUid, 'mgr-1');
+      expect(restored.approvedAt!.toIso8601String(),
+          entry.approvedAt!.toIso8601String());
+      expect(restored.sourceClockEntryId, 'clk-1');
+    });
+
+    test('fromMap ohne status-Feld bleibt approved (Altdaten)', () {
+      final restored = WorkEntry.fromMap({
+        'date': '2026-06-01',
+        'start_time': '2026-06-01T08:00:00.000',
+        'end_time': '2026-06-01T16:00:00.000',
+      });
+      expect(restored.status, WorkEntryStatus.approved);
+    });
+
+    test('toFirestoreMap serialisiert Status + Freigabefelder', () {
+      final map = sample(
+        status: WorkEntryStatus.rejected,
+        approvedByUid: 'mgr-2',
+        approvedAt: DateTime(2026, 6, 2, 10),
+        sourceClockEntryId: 'clk-2',
+      ).toFirestoreMap();
+      expect(map['status'], 'rejected');
+      expect(map['approvedByUid'], 'mgr-2');
+      expect(map['approvedAt'], isNotNull);
+      expect(map['sourceClockEntryId'], 'clk-2');
+    });
+
+    test('fromFirestore parst Status + Freigabefelder', () {
+      final restored = WorkEntry.fromFirestore('e9', {
+        'orgId': 'org-1',
+        'userId': 'u1',
+        'date': DateTime(2026, 6, 1, 12),
+        'startTime': DateTime(2026, 6, 1, 8),
+        'endTime': DateTime(2026, 6, 1, 16),
+        'status': 'submitted',
+        'approvedByUid': 'mgr-3',
+        'approvedAt': DateTime(2026, 6, 2, 11),
+        'sourceClockEntryId': 'clk-3',
+      });
+      expect(restored.status, WorkEntryStatus.submitted);
+      expect(restored.approvedByUid, 'mgr-3');
+      expect(restored.approvedAt, isNotNull);
+      expect(restored.sourceClockEntryId, 'clk-3');
+    });
+
+    test('copyWith setzt Status und leert die Freigabe (Wiedereröffnen)', () {
+      final reopened = sample(
+        status: WorkEntryStatus.approved,
+        approvedByUid: 'mgr-1',
+        approvedAt: DateTime(2026, 6, 2),
+      ).copyWith(
+        status: WorkEntryStatus.submitted,
+        clearApprovedByUid: true,
+        clearApprovedAt: true,
+      );
+      expect(reopened.status, WorkEntryStatus.submitted);
+      expect(reopened.approvedByUid, isNull);
+      expect(reopened.approvedAt, isNull);
+    });
+  });
 }

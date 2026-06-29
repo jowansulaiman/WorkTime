@@ -55,7 +55,7 @@ flutter test --coverage   # erzeugt coverage/lcov.info; pragmatisches Ziel: krit
 ## Verzeichnis-Map
 
 ```
-lib/core/        Config (app_config.dart), Parser-Helfer, Demo-Daten, Compliance-Fallback
+lib/core/        Config (app_config.dart), Parser-Helfer, Demo-Daten, Compliance-Fallback, pure Auto-Schichtverteilung (shift_slot_generator.dart Phase A, shift_auto_assigner.dart Phase B)
 lib/models/      Datenklassen, dual serialisiert (kein codegen)
 lib/services/    Datenzugriff/Seiteneffekte: Firestore, lokale Persistenz, Compliance, Auth, PDF/CSV, Download
 lib/providers/   State (ChangeNotifier)
@@ -121,7 +121,7 @@ Jedes Model hat **zwei** nicht austauschbare Formate:
 ## Firestore-Datenmodell
 
 - **Top-Level:** `users/{uid}` (trägt `orgId`-Feld!) und `userInvites/{emailLower}` (Doc-ID = getrimmte lowercase-E-Mail, `/`→`_`).
-- **Org-skopiert** unter `organizations/{orgId}/`: `workEntries`, `workTemplates`, `shifts`, `shiftTemplates`, `absenceRequests`, `teams`, `sites`, `qualifications`, `employmentContracts`, `employeeSiteAssignments`, `ruleSets`, `travelTimeRules`.
+- **Org-skopiert** unter `organizations/{orgId}/`: `workEntries`, `workTemplates`, `shifts`, `shiftTemplates`, `absenceRequests`, `teams`, `sites`, `qualifications`, `employmentContracts`, `employeeSiteAssignments`, `ruleSets`, `travelTimeRules`. **Config-Singletons** unter `config/`: `appFlags` (FeatureFlagProvider) und `orgSettings` (org-weite operative Einstellungen der Auto-Schichtverteilung, fixe Doc-ID, ebenfalls von `FeatureFlagProvider` geladen/geschrieben; lokaler Fallback `local_v2/org_settings`). Beide deckt der generische `config/{configId}`-Rules-Block (sameOrg-read/admin-write).
 - `ComplianceViolation` ist **transient** (keine Collection, nur in-memory). Org-Isolation in `firestore.rules` (`sameOrg`) **und** in Functions (`assertSameOrg`) — müssen synchron bleiben.
 - Pfade nie hardcoden — `FirestoreService` hat die Collection-Getter.
 - Enums serialisieren via `.value`-Getter zu snake_case-Strings ≠ Dart-Name: `RecurrencePattern.biWeekly`→`bi_weekly`, `EmploymentType.fullTime`→`full_time`/`miniJob`→`mini_job`, `ShiftStatus` = `planned/confirmed/completed/cancelled`. `fromValue` hat immer einen Default-Branch (wirft nie) → falscher String fällt still auf Default.
@@ -136,6 +136,14 @@ Jedes Model hat **zwei** nicht austauschbare Formate:
 - Neuer `where`+`orderBy`-Query → passenden Composite-Index in `firestore.indexes.json` (14 vorhanden) ergänzen + deployen, sonst Laufzeitfehler.
 
 **`lib/services/compliance_service.dart` ist ein bewusster fast-exakter Spiegel** von `validateSingleShift`/`validateSingleWorkEntry` in `functions/index.js` (gleiche Violation-Codes, gleiche Schwellen: minRest 660min, Pausen 30@360 + 45@540, maxPlanned 600min/Tag, Minijob 60300 Cent, Nacht 23:00–06:00). Regel in einem ändern → im anderen mitziehen.
+
+## Automatische Schichtverteilung (zwei pure Core-Klassen)
+
+**Phase A** `ShiftSlotGenerator` (`lib/core/shift_slot_generator.dart`): generiert unbesetzte `Shift`-Slots aus `SiteDefinition.weekdayHours` (Öffnungszeiten, `TimeWindow`/`WeekdayHours` in `site_schedule.dart`) + `SiteDefinition.staffingDemands` (Bedarf > 1 = mehrere `Shift`-Objekte, **kein** headcount-Feld). **Phase B** `ShiftAutoAssigner` (`lib/core/shift_auto_assigner.dart`): verteilt sie unter harten Constraints (Standort, Quali, Abwesenheit, Doppelbelegung, **Compliance via `ComplianceService.validateShift`**, Cap/Minijob) + weichen Zielen (Fairness Richtung Sollzeit), Greedy + stabile Sortierung. **Beide sind pure** (kein State/IO/`now()`/Zufall; `seriesId`/`shiftIdFactory` injiziert) → deterministisch + offline testbar (`test/shift_slot_generator_test.dart`, `test/shift_auto_assigner_test.dart`).
+
+- **Stundengrenzen** `EmploymentContract.monthlyMaxHours`/`weeklyMaxHours` (beide `double?`, nullable) sind **Planungsschranken im Verteiler, KEINE Compliance-Violation** (Kopplung #2 NICHT auslösen). Hart/weich umschaltbar via `OrgSettings.enforceHourCapHard` (Default hart); weich → `AssignmentWarning` + Score-Penalty. **Minijob-Verdienstgrenze + Compliance bleiben in beiden Modi hart.**
+- Provider-Anbindung in `ScheduleProvider`: `generatePlannedShifts` (Phase A, sync), `proposeAutoAssignment` (Phase B, **`Future`** — sammelt besetzte Schichten + genehmigte Abwesenheiten für den **vollen Monat + ISO-Wochen der offenen Schichten**, NICHT nur `_shifts`/sichtbare Woche, sonst zählen Caps/Minijob zu niedrig; Cloud/Hybrid via `getShiftsInRange`/`getApprovedAbsencesInRange` org-weit, Local aus dem vollständigen lokalen Cache), `applyAutoPlan` delegiert an `saveShifts` (erbt Batch ≤50 / Storage-Modi / Compliance-Re-Validierung). `updateReferenceData` bekommt zusätzlich `sites:` (aus `TeamProvider`).
+- **UI-Footgun:** `ShiftPlannerScreen.build` gibt für `canManageShifts` FRÜH `_AdminShiftPlannerBoard` zurück; der Fallback-Pfad (mit der Wrap-Toolbar) rendert NUR für Nicht-Admins. Admin-Aktionen müssen daher als Callback ins Board durchgereicht werden (`onAutoPlan`/`onCopyWeek`, Toolbar-Button + `_buildPlannerActionMenuItems`/`_handleToolbarActionSelection`), NICHT in den Fallback-Pfad. „Automatisch planen" liegt im Board-Toolbar (`auto_fix_high`-Button + Aktionen-Menü „Automatisch planen") → Vorschau-Sheet → speichern.
 
 ## „Wenn du X änderst, ändere auch Y" (kritische Kopplungen)
 
@@ -196,6 +204,8 @@ Android-Release-Signierung läuft über `android/key.properties` (Upload-Keystor
 ## Claude Skills (Experten-Leitlinien)
 
 Im Verzeichnis `claude-skills/` liegen 19 Flutter-spezifische Experten-Rollen-Prompts (Web, iOS, Android, Desktop aus einer Codebasis). **Claude liest und wendet den jeweils passenden Skill aktiv an**, bevor es an einer Aufgabe in diesem Bereich arbeitet. Die Dateien sind die verbindliche Fachautorität für ihren Bereich — Entscheidungen sollen darin verankert sein.
+
+Diese 19 Prompts sind zusätzlich als **auto-ladende Claude-Code-Skills** unter `.claude/skills/flutter-<domäne>/SKILL.md` verfügbar (Slash-Command `/flutter-…`, greifen via `description`-Keywords automatisch). Sie sind dünne Pointer auf die Quell-Prompts (Single Source of Truth bleibt `claude-skills/`). Generiert/validiert via `node claude-skills/build-skills.mjs` (+ `--check`) und `node claude-skills/validate-skills.mjs`. **Quell-Prompt geändert → `build-skills.mjs` erneut ausführen** (Kompetenz-Liste/Titel werden aus der Quelle extrahiert).
 
 | Aufgabe | Skill-Datei(en) |
 |---|---|

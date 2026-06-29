@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
+import 'customer_wish.dart';
 
 /// Status einer Kundenbestellung (Sonderbestellung).
 enum CustomerOrderStatus {
@@ -226,10 +227,44 @@ class CustomerOrder {
     this.notes,
     this.pickupDate,
     this.preparedAt,
+    this.sourceWishId,
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
   });
+
+  /// Erzeugt die Vorlage einer echten Kundenbestellung aus einem öffentlich
+  /// abgegebenen [CustomerWish] (H-E1). Der Wunsch trägt nur einen
+  /// Klartext-Ladennamen, daher werden der gewählte [siteId]/[siteName] separat
+  /// übergeben. Trägt explizit die CRM-Verknüpfung [CustomerWish.contactId]
+  /// (H-D2) und [CustomerWish.id] als [sourceWishId] mit — sonst gingen
+  /// Kontakt-Zuordnung bzw. Idempotenz-Quelle beim Übergang verloren. Die
+  /// Feldzuordnung bewusst an EINER Stelle, damit ein neues Wunsch-Feld nicht
+  /// still durchrutscht.
+  factory CustomerOrder.fromCustomerWish(
+    CustomerWish wish, {
+    required String siteId,
+    String? siteName,
+  }) {
+    final customer = wish.customerName?.trim();
+    return CustomerOrder(
+      orgId: wish.orgId,
+      siteId: siteId,
+      siteName: siteName,
+      customerName: (customer != null && customer.isNotEmpty)
+          ? customer
+          : 'Kundenwunsch ${wish.referenceCode}',
+      customerContact: wish.customerContact,
+      contactId: wish.contactId,
+      status: CustomerOrderStatus.open,
+      items: [
+        CustomerOrderItem(name: wish.wishText, quantity: wish.quantity),
+      ],
+      notes: 'Aus Kundenwunsch ${wish.referenceCode} (${wish.category.label})',
+      pickupDate: wish.desiredDate,
+      sourceWishId: wish.id,
+    );
+  }
 
   final String? id;
   final String orgId;
@@ -258,6 +293,11 @@ class CustomerOrder {
 
   /// Zeitpunkt, zu dem die Ware als vorbereitet markiert wurde.
   final DateTime? preparedAt;
+
+  /// Herkunfts-Kundenwunsch (`CustomerWish.id`), falls diese Bestellung aus
+  /// einem öffentlichen Wunsch übernommen wurde (H-E1). `null` = direkt
+  /// angelegt. Dient als Idempotenz-/Rückverweis gegen Doppel-Übernahme.
+  final String? sourceWishId;
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -301,6 +341,7 @@ class CustomerOrder {
       notes: map['notes'] as String?,
       pickupDate: FirestoreDateParser.readDate(map['pickupDate']),
       preparedAt: FirestoreDateParser.readDate(map['preparedAt']),
+      sourceWishId: map['sourceWishId'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -324,6 +365,7 @@ class CustomerOrder {
       notes: map['notes'] as String?,
       pickupDate: FirestoreDateParser.readLocalDate(map['pickup_date']),
       preparedAt: FirestoreDateParser.readLocalDate(map['prepared_at']),
+      sourceWishId: map['source_wish_id'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -346,6 +388,7 @@ class CustomerOrder {
       'notes': _trimmedOrNull(notes),
       'pickupDate': _timestampOrNull(pickupDate),
       'preparedAt': _timestampOrNull(preparedAt),
+      'sourceWishId': _trimmedOrNull(sourceWishId),
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -367,6 +410,7 @@ class CustomerOrder {
       'notes': notes,
       'pickup_date': pickupDate?.toIso8601String(),
       'prepared_at': preparedAt?.toIso8601String(),
+      'source_wish_id': sourceWishId,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -388,6 +432,7 @@ class CustomerOrder {
     String? notes,
     DateTime? pickupDate,
     DateTime? preparedAt,
+    String? sourceWishId,
     bool clearSiteName = false,
     bool clearCustomerContact = false,
     bool clearContactId = false,
@@ -395,6 +440,7 @@ class CustomerOrder {
     bool clearNotes = false,
     bool clearPickupDate = false,
     bool clearPreparedAt = false,
+    bool clearSourceWishId = false,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -416,6 +462,8 @@ class CustomerOrder {
       notes: clearNotes ? null : (notes ?? this.notes),
       pickupDate: clearPickupDate ? null : (pickupDate ?? this.pickupDate),
       preparedAt: clearPreparedAt ? null : (preparedAt ?? this.preparedAt),
+      sourceWishId:
+          clearSourceWishId ? null : (sourceWishId ?? this.sourceWishId),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

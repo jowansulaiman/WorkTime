@@ -1,14 +1,17 @@
 import 'dart:async';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
 import '../core/local_demo_data.dart';
+import '../core/site_name_resolver.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/shift_preference.dart';
 import '../models/qualification_definition.dart';
 import '../models/site_definition.dart';
 import '../models/team_definition.dart';
@@ -42,6 +45,8 @@ class TeamProvider extends ChangeNotifier {
   StreamSubscription<List<EmploymentContract>>? _contractsSubscription;
   StreamSubscription<List<EmployeeSiteAssignment>>?
       _siteAssignmentsSubscription;
+  StreamSubscription<List<EmployeeShiftPreference>>?
+      _shiftPreferencesSubscription;
   StreamSubscription<List<ComplianceRuleSet>>? _ruleSetsSubscription;
   StreamSubscription<List<TravelTimeRule>>? _travelTimeRulesSubscription;
 
@@ -53,6 +58,7 @@ class TeamProvider extends ChangeNotifier {
   List<QualificationDefinition> _qualifications = [];
   List<EmploymentContract> _contracts = [];
   List<EmployeeSiteAssignment> _siteAssignments = [];
+  List<EmployeeShiftPreference> _shiftPreferences = [];
   List<ComplianceRuleSet> _ruleSets = [];
   List<TravelTimeRule> _travelTimeRules = [];
   List<AppUserProfile> _localMembers = [];
@@ -62,6 +68,7 @@ class TeamProvider extends ChangeNotifier {
   List<QualificationDefinition> _localQualifications = [];
   List<EmploymentContract> _localContracts = [];
   List<EmployeeSiteAssignment> _localSiteAssignments = [];
+  List<EmployeeShiftPreference> _localShiftPreferences = [];
   List<ComplianceRuleSet> _localRuleSets = [];
   List<TravelTimeRule> _localTravelTimeRules = [];
   bool _loading = false;
@@ -72,10 +79,19 @@ class TeamProvider extends ChangeNotifier {
   List<UserInvite> get invites => _invites;
   List<TeamDefinition> get teams => _teams;
   List<SiteDefinition> get sites => _sites;
+
+  /// Aktueller Standortname zu einer `siteId` (SSoT = `SiteDefinition.name`),
+  /// mit dem persistierten Snapshot als Fallback (H-C2, [resolveSiteName]).
+  String? siteNameById(String? siteId, {String? fallback}) =>
+      resolveSiteName(_sites, siteId, fallback: fallback);
+
   List<QualificationDefinition> get qualifications => _qualifications;
   List<EmploymentContract> get contracts =>
       _effectiveContracts(_contracts, _members);
   List<EmployeeSiteAssignment> get siteAssignments => _siteAssignments;
+  List<EmployeeShiftPreference> get shiftPreferences => _shiftPreferences;
+  EmployeeShiftPreference? shiftPreferenceForUser(String userId) =>
+      _shiftPreferences.firstWhereOrNull((p) => p.userId == userId);
   List<ComplianceRuleSet> get ruleSets => _effectiveRuleSets(_ruleSets);
   List<TravelTimeRule> get travelTimeRules => _travelTimeRules;
   bool get loading => _loading;
@@ -195,6 +211,7 @@ class TeamProvider extends ChangeNotifier {
       _qualifications = [];
       _contracts = [];
       _siteAssignments = [];
+      _shiftPreferences = [];
       _ruleSets = [];
       _travelTimeRules = [];
       _localMembers = [];
@@ -204,6 +221,7 @@ class TeamProvider extends ChangeNotifier {
       _localQualifications = [];
       _localContracts = [];
       _localSiteAssignments = [];
+      _localShiftPreferences = [];
       _localRuleSets = [];
       _localTravelTimeRules = [];
       await _membersSubscription?.cancel();
@@ -213,6 +231,7 @@ class TeamProvider extends ChangeNotifier {
       await _qualificationsSubscription?.cancel();
       await _contractsSubscription?.cancel();
       await _siteAssignmentsSubscription?.cancel();
+      await _shiftPreferencesSubscription?.cancel();
       await _ruleSetsSubscription?.cancel();
       await _travelTimeRulesSubscription?.cancel();
       notifyListeners();
@@ -227,6 +246,7 @@ class TeamProvider extends ChangeNotifier {
       await _qualificationsSubscription?.cancel();
       await _contractsSubscription?.cancel();
       await _siteAssignmentsSubscription?.cancel();
+      await _shiftPreferencesSubscription?.cancel();
       await _ruleSetsSubscription?.cancel();
       await _travelTimeRulesSubscription?.cancel();
       _membersSubscription = null;
@@ -236,6 +256,7 @@ class TeamProvider extends ChangeNotifier {
       _qualificationsSubscription = null;
       _contractsSubscription = null;
       _siteAssignmentsSubscription = null;
+      _shiftPreferencesSubscription = null;
       _ruleSetsSubscription = null;
       _travelTimeRulesSubscription = null;
     }
@@ -248,6 +269,7 @@ class TeamProvider extends ChangeNotifier {
       await _qualificationsSubscription?.cancel();
       await _contractsSubscription?.cancel();
       await _siteAssignmentsSubscription?.cancel();
+      await _shiftPreferencesSubscription?.cancel();
       await _ruleSetsSubscription?.cancel();
       await _travelTimeRulesSubscription?.cancel();
       if (changed ||
@@ -258,6 +280,7 @@ class TeamProvider extends ChangeNotifier {
               _localQualifications.isEmpty &&
               _localContracts.isEmpty &&
               _localSiteAssignments.isEmpty &&
+              _localShiftPreferences.isEmpty &&
               _localRuleSets.isEmpty &&
               _localTravelTimeRules.isEmpty)) {
         await _loadLocalState();
@@ -278,6 +301,7 @@ class TeamProvider extends ChangeNotifier {
                 _localQualifications.isEmpty &&
                 _localContracts.isEmpty &&
                 _localSiteAssignments.isEmpty &&
+                _localShiftPreferences.isEmpty &&
                 _localRuleSets.isEmpty &&
                 _localTravelTimeRules.isEmpty))) {
       await _loadLocalState();
@@ -301,6 +325,7 @@ class TeamProvider extends ChangeNotifier {
       await _qualificationsSubscription?.cancel();
       await _contractsSubscription?.cancel();
       await _siteAssignmentsSubscription?.cancel();
+      await _shiftPreferencesSubscription?.cancel();
       await _ruleSetsSubscription?.cancel();
       await _travelTimeRulesSubscription?.cancel();
 
@@ -413,6 +438,18 @@ class TeamProvider extends ChangeNotifier {
         _safeNotify();
       }, onError: (Object error) {
         _setStreamError('Standortzuordnungen', error);
+      });
+
+      _shiftPreferencesSubscription =
+          _firestoreService.watchShiftPreferences(user.orgId).listen((items) {
+        if (usesHybridStorage) {
+          unawaited(_storeHybridShiftPreferencesSnapshot(items));
+          return;
+        }
+        _shiftPreferences = items;
+        _safeNotify();
+      }, onError: (Object error) {
+        _setStreamError('Schicht-Vorgaben', error);
       });
 
       _ruleSetsSubscription =
@@ -572,11 +609,11 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.saveTeam(preparedTeam);
+    final savedId = await _firestoreService.saveTeam(preparedTeam);
     _audit?.call(
       action: auditAction,
       entityType: 'Team',
-      entityId: preparedTeam.id,
+      entityId: preparedTeam.id ?? savedId,
       summary: auditSummary,
     );
   }
@@ -882,11 +919,69 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.saveSite(prepared);
+    final savedId = await _firestoreService.saveSite(prepared);
     _audit?.call(
       action: auditAction,
       entityType: 'Standort',
-      entityId: prepared.id,
+      entityId: prepared.id ?? savedId,
+      summary: auditSummary,
+    );
+  }
+
+  /// Speichert (oder löscht bei leerer Regelliste) die Schicht-Vorgaben eines
+  /// Mitarbeiters. Nur Chef/Teamleitung. Doc-ID = userId (eine Vorgabe je
+  /// Mitarbeiter). Wird vom Verteiler (`proposeAutoAssignment`) ausgewertet.
+  Future<void> saveShiftPreference(EmployeeShiftPreference preference) async {
+    final currentUser = _currentUser;
+    if (currentUser == null ||
+        !(currentUser.isAdmin || currentUser.isTeamLead)) {
+      return;
+    }
+    if (preference.userId.trim().isEmpty) {
+      return;
+    }
+
+    final prepared = preference.copyWith(
+      id: preference.userId,
+      orgId: currentUser.orgId,
+    );
+    final isEmpty = prepared.rules.isEmpty;
+    final auditSummary = isEmpty
+        ? 'Schicht-Vorgaben zurückgesetzt'
+        : 'Schicht-Vorgaben aktualisiert (${prepared.rules.length} Regel(n))';
+
+    if (usesLocalStorage) {
+      _localShiftPreferences.removeWhere(
+        (item) =>
+            item.orgId == prepared.orgId && item.userId == prepared.userId,
+      );
+      if (!isEmpty) {
+        _localShiftPreferences.add(prepared);
+      }
+      await _persistLocalState();
+      _applyLocalState();
+      notifyListeners();
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Schicht-Vorgaben',
+        entityId: prepared.userId,
+        summary: auditSummary,
+      );
+      return;
+    }
+
+    if (isEmpty) {
+      await _firestoreService.deleteShiftPreference(
+        orgId: prepared.orgId,
+        userId: prepared.userId,
+      );
+    } else {
+      await _firestoreService.saveShiftPreference(prepared);
+    }
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Schicht-Vorgaben',
+      entityId: prepared.userId,
       summary: auditSummary,
     );
   }
@@ -1020,11 +1115,11 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.saveQualification(prepared);
+    final savedId = await _firestoreService.saveQualification(prepared);
     _audit?.call(
       action: auditAction,
       entityType: 'Qualifikation',
-      entityId: prepared.id,
+      entityId: prepared.id ?? savedId,
       summary: auditSummary,
     );
   }
@@ -1104,11 +1199,11 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.saveRuleSet(prepared);
+    final savedId = await _firestoreService.saveRuleSet(prepared);
     _audit?.call(
       action: auditAction,
       entityType: 'Regelwerk',
-      entityId: prepared.id,
+      entityId: prepared.id ?? savedId,
       summary: auditSummary,
     );
   }
@@ -1175,11 +1270,11 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    await _firestoreService.saveTravelTimeRule(prepared);
+    final savedId = await _firestoreService.saveTravelTimeRule(prepared);
     _audit?.call(
       action: auditAction,
       entityType: 'Wegezeit-Regel',
-      entityId: prepared.id,
+      entityId: prepared.id ?? savedId,
       summary: auditSummary,
     );
   }
@@ -1293,6 +1388,7 @@ class TeamProvider extends ChangeNotifier {
     _localQualifications = [..._qualifications];
     _localContracts = [..._contracts];
     _localSiteAssignments = [..._siteAssignments];
+    _localShiftPreferences = [..._shiftPreferences];
     _localRuleSets = [..._ruleSets];
     _localTravelTimeRules = [..._travelTimeRules];
     await _persistLocalState();
@@ -1399,6 +1495,14 @@ class TeamProvider extends ChangeNotifier {
             'geschrieben werden: $error');
       }
     }
+    for (final preference in _localShiftPreferences) {
+      try {
+        await _firestoreService.saveShiftPreference(preference);
+      } catch (error) {
+        AppLogger.warning('syncLocalStateToCloud: Schicht-Vorgaben konnten '
+            'nicht geschrieben werden: $error');
+      }
+    }
   }
 
   Future<void> _loadLocalState() async {
@@ -1415,6 +1519,9 @@ class TeamProvider extends ChangeNotifier {
       scope: _localScope,
     );
     _localSiteAssignments = await DatabaseService.loadLocalSiteAssignments(
+      scope: _localScope,
+    );
+    _localShiftPreferences = await DatabaseService.loadLocalShiftPreferences(
       scope: _localScope,
     );
     _localRuleSets = await DatabaseService.loadLocalRuleSets(
@@ -1453,6 +1560,7 @@ class TeamProvider extends ChangeNotifier {
       _qualifications = [];
       _contracts = [];
       _siteAssignments = [];
+      _shiftPreferences = [];
       _ruleSets = [];
       _travelTimeRules = [];
       _loading = false;
@@ -1517,6 +1625,10 @@ class TeamProvider extends ChangeNotifier {
         .where((assignment) => assignment.orgId == currentUser.orgId)
         .toList(growable: false);
 
+    _shiftPreferences = _localShiftPreferences
+        .where((pref) => pref.orgId == currentUser.orgId)
+        .toList(growable: false);
+
     _ruleSets = _localRuleSets
         .where((ruleSet) => ruleSet.orgId == currentUser.orgId)
         .toList(growable: false);
@@ -1545,6 +1657,10 @@ class TeamProvider extends ChangeNotifier {
       ),
       DatabaseService.saveLocalSiteAssignments(
         _localSiteAssignments,
+        scope: scope,
+      ),
+      DatabaseService.saveLocalShiftPreferences(
+        _localShiftPreferences,
         scope: scope,
       ),
       DatabaseService.saveLocalRuleSets(_localRuleSets, scope: scope),
@@ -1652,6 +1768,19 @@ class TeamProvider extends ChangeNotifier {
       keyOf: (assignment) => assignment.id?.trim().isNotEmpty == true
           ? assignment.id!
           : '${assignment.userId}:${assignment.siteId}',
+    );
+  }
+
+  Future<void> _storeHybridShiftPreferencesSnapshot(
+    List<EmployeeShiftPreference> items,
+  ) async {
+    await _storeHybridCollection<EmployeeShiftPreference>(
+      cloudItems: items,
+      currentLocalItems: _localShiftPreferences,
+      assignLocal: (merged) => _localShiftPreferences = merged,
+      persist: DatabaseService.saveLocalShiftPreferences,
+      keyOf: (pref) =>
+          pref.id?.trim().isNotEmpty == true ? pref.id! : pref.userId,
     );
   }
 
@@ -1828,6 +1957,13 @@ class TeamProvider extends ChangeNotifier {
       weeklyHours: settings.dailyHours * 5,
       dailyHours: settings.dailyHours,
       hourlyRate: settings.hourlyRate,
+      // Ohne Festgehalt ist ein Stundensatz-Mitarbeiter ein Stundenlöhner —
+      // sonst klassifiziert der synthetische Standardvertrag ihn als
+      // Festgehalt OHNE monthlyGrossCents, und die Lohn-Herleitung
+      // (LohnHerleitung.grundlohnCents) liefert 0 → der Monatsabschluss
+      // erzeugt KEINEN Lohn-Entwurf und der Lohnlauf bleibt leer.
+      salaryKind:
+          settings.hourlyRate > 0 ? SalaryKind.hourly : SalaryKind.monthly,
       currency: settings.currency,
       vacationDays: settings.vacationDays,
       maxDailyMinutes: 600,
@@ -1959,6 +2095,7 @@ class TeamProvider extends ChangeNotifier {
     _qualificationsSubscription?.cancel();
     _contractsSubscription?.cancel();
     _siteAssignmentsSubscription?.cancel();
+    _shiftPreferencesSubscription?.cancel();
     _ruleSetsSubscription?.cancel();
     _travelTimeRulesSubscription?.cancel();
     super.dispose();

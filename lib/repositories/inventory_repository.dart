@@ -1,4 +1,5 @@
 import '../models/customer_order.dart';
+import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
@@ -113,5 +114,21 @@ abstract interface class InventoryRepository {
     required String orgId,
     required String siteId,
     required OrderListKind kind,
+  });
+
+  // --- Kühlschrank-Nachfüllliste -----------------------------------------
+  // Singleton je Laden (Doc-ID = siteId), eingebettete Positionen. Collection
+  // `fridgeRefillLists`, analog zu den Bestelllisten (klein, kein Index).
+
+  /// Kühlschrank-Nachfülllisten je Laden (Collection `fridgeRefillLists`).
+  Stream<List<FridgeRefillList>> watchFridgeRefillLists(String orgId);
+
+  /// Speichert die Nachfüllliste eines Ladens (Doc-ID = `list.siteId`).
+  Future<void> saveFridgeRefillList(FridgeRefillList list);
+
+  /// Löscht die Nachfüllliste eines Ladens.
+  Future<void> deleteFridgeRefillList({
+    required String orgId,
+    required String siteId,
   });
 }

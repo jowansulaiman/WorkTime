@@ -69,11 +69,6 @@ String _formatClockDuration(Duration duration) {
   return '${hours}h:${minutes}min';
 }
 
-String _formatShiftWindow(Shift shift) {
-  return '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - '
-      '${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}';
-}
-
 String _formatClockBreakLabel(
   WorkProvider provider,
   WorkEntry? lastClockEntry,

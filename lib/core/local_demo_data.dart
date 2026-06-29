@@ -4,6 +4,7 @@ import '../models/customer_order.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
+import '../models/site_schedule.dart';
 import '../models/supplier.dart';
 import '../models/user_settings.dart';
 
@@ -84,11 +85,104 @@ class LocalDemoData {
         'Teamleiterprofil mit Zugriff auf Planung, Freigaben und Teamansichten.',
   );
 
+  // --- Echtes Personal aus dem Juli-2026-Plan (drei Kieler Läden) -----------
+  // Passwort überall demo1234. Jowan ist der planende Inhaber (teamlead).
+
+  static const LocalDemoAccount jowanAccount = LocalDemoAccount(
+    uid: 'local-demo-jowan',
+    email: 'jowan@demo.local',
+    password: 'demo1234',
+    name: 'Jowan',
+    role: UserRole.teamlead,
+    description: 'Inhaber/Planer — Zugriff auf Planung über alle drei Läden.',
+  );
+
+  static const LocalDemoAccount maikeAccount = LocalDemoAccount(
+    uid: 'local-demo-maike',
+    email: 'maike@demo.local',
+    password: 'demo1234',
+    name: 'Maike',
+    role: UserRole.employee,
+    description: 'Paketshop Dietrichsdorf — Frühdienst.',
+  );
+
+  static const LocalDemoAccount edithAccount = LocalDemoAccount(
+    uid: 'local-demo-edith',
+    email: 'edith@demo.local',
+    password: 'demo1234',
+    name: 'Edith',
+    role: UserRole.employee,
+    description: 'Paketshop Dietrichsdorf — Spätdienst.',
+  );
+
+  static const LocalDemoAccount raffaelAccount = LocalDemoAccount(
+    uid: 'local-demo-raffael',
+    email: 'raffael@demo.local',
+    password: 'demo1234',
+    name: 'Raffael',
+    role: UserRole.employee,
+    description: 'Paketshop Dietrichsdorf + Tabak Börse.',
+  );
+
+  static const LocalDemoAccount majdAccount = LocalDemoAccount(
+    uid: 'local-demo-majd',
+    email: 'majd@demo.local',
+    password: 'demo1234',
+    name: 'Majd',
+    role: UserRole.employee,
+    description: 'Strichmännchen + Tabak Börse.',
+  );
+
+  static const LocalDemoAccount tomAccount = LocalDemoAccount(
+    uid: 'local-demo-tom',
+    email: 'tom@demo.local',
+    password: 'demo1234',
+    name: 'Tom',
+    role: UserRole.employee,
+    description: 'Strichmännchen — Spätdienst.',
+  );
+
+  static const LocalDemoAccount jarlaAccount = LocalDemoAccount(
+    uid: 'local-demo-jarla',
+    email: 'jarla@demo.local',
+    password: 'demo1234',
+    name: 'Jarla',
+    role: UserRole.employee,
+    description: 'Strichmännchen + Tabak Börse.',
+  );
+
+  static const LocalDemoAccount johannaAccount = LocalDemoAccount(
+    uid: 'local-demo-johanna',
+    email: 'johanna@demo.local',
+    password: 'demo1234',
+    name: 'Johanna',
+    role: UserRole.employee,
+    description: 'Tabak Börse — Frühdienst.',
+  );
+
+  static const LocalDemoAccount jeanAccount = LocalDemoAccount(
+    uid: 'local-demo-jean',
+    email: 'jean@demo.local',
+    password: 'demo1234',
+    name: 'Jean',
+    role: UserRole.employee,
+    description: 'Tabak Börse — Tagdienst.',
+  );
+
   static const List<LocalDemoAccount> accounts = [
     adminAccount,
     employeeAccount,
     employeeSecondAccount,
     teamLeadAccount,
+    jowanAccount,
+    maikeAccount,
+    edithAccount,
+    raffaelAccount,
+    majdAccount,
+    tomAccount,
+    jarlaAccount,
+    johannaAccount,
+    jeanAccount,
   ];
 
   static LocalDemoAccount? accountForUid(String? uid) {
@@ -148,46 +242,125 @@ class LocalDemoData {
         .toList(growable: false);
   }
 
+  /// Drei echte Kieler Läden (Juli-2026-Plan) inkl. Öffnungszeiten +
+  /// Personalbedarf (1:1 aus dem Schichtplan) — Grundlage der automatischen
+  /// Schichtverteilung im Demo-Modus. Adressen aus öffentlichen Quellen.
   static List<SiteDefinition> sitesForOrg({
     required String orgId,
     required String createdByUid,
   }) {
+    TimeWindow w(int start, int end) =>
+        TimeWindow(startMinute: start, endMinute: end);
+    StaffingDemand demand(int weekday, TimeWindow window, [int count = 1]) =>
+        StaffingDemand(weekday: weekday, window: window, requiredCount: count);
+
+    // Tabak Börse: Mo–Fr 06:45–18:15 (Früh 06:45–10:15 + Tag 10:00–18:15),
+    // Sa 08:00–13:15.
+    final tabakWeekdayHours = <WeekdayHours>[
+      for (var d = DateTime.monday; d <= DateTime.friday; d++)
+        WeekdayHours(weekday: d, windows: [w(405, 1095)]),
+      WeekdayHours(weekday: DateTime.saturday, windows: [w(480, 795)]),
+    ];
+    final tabakDemands = <StaffingDemand>[
+      for (var d = DateTime.monday; d <= DateTime.friday; d++) ...[
+        demand(d, w(405, 615)),
+        demand(d, w(600, 1095)),
+      ],
+      demand(DateTime.saturday, w(480, 795)),
+    ];
+
+    // Strichmännchen: Mo–Fr 07:15–19:15 (Früh 07:15–15:15 + Spät 15:15–19:15),
+    // Sa 07:15–17:15.
+    final strichWeekdayHours = <WeekdayHours>[
+      for (var d = DateTime.monday; d <= DateTime.friday; d++)
+        WeekdayHours(weekday: d, windows: [w(435, 1155)]),
+      WeekdayHours(weekday: DateTime.saturday, windows: [w(435, 1035)]),
+    ];
+    final strichDemands = <StaffingDemand>[
+      for (var d = DateTime.monday; d <= DateTime.friday; d++) ...[
+        demand(d, w(435, 915)),
+        demand(d, w(915, 1155)),
+      ],
+      demand(DateTime.saturday, w(435, 1035)),
+    ];
+
+    // Paketshop REWE Dietrichsdorf: Mo–Fr 06:54–19:15
+    // (Früh 06:54–13:00 + Spät 13:00–19:15).
+    final paketWeekdayHours = <WeekdayHours>[
+      for (var d = DateTime.monday; d <= DateTime.friday; d++)
+        WeekdayHours(weekday: d, windows: [w(414, 1155)]),
+    ];
+    final paketDemands = <StaffingDemand>[
+      for (var d = DateTime.monday; d <= DateTime.friday; d++) ...[
+        demand(d, w(414, 780)),
+        demand(d, w(780, 1155)),
+      ],
+    ];
+
     return [
       SiteDefinition(
-        id: 'demo-site-$orgId-berlin',
+        id: tabakSiteId(orgId),
         orgId: orgId,
-        name: 'Hauptstandort Berlin',
-        code: 'BER-HQ',
-        street: 'Invalidenstrasse 117',
-        postalCode: '10115',
-        city: 'Berlin',
-        federalState: 'Berlin',
+        name: 'Tabak Börse',
+        code: 'TABAK',
+        street: 'Gneisenaustraße 27',
+        postalCode: '24105',
+        city: 'Kiel',
+        federalState: 'Schleswig-Holstein',
         countryCode: SiteDefinition.germanyCountryCode,
-        latitude: 52.5321,
-        longitude: 13.3849,
-        description: 'Dummy-Standort fuer Tests im lokalen Modus.',
+        latitude: 54.3373,
+        longitude: 10.1268,
+        description: 'Tabakwaren + Paketshop am Blücherplatz.',
+        weekdayHours: tabakWeekdayHours,
+        staffingDemands: tabakDemands,
         createdByUid: createdByUid,
       ),
       SiteDefinition(
-        id: 'demo-site-$orgId-hamburg',
+        id: strichmaennchenSiteId(orgId),
         orgId: orgId,
-        name: 'Filiale Hamburg',
-        code: 'HAM',
-        street: 'Spitalerstrasse 22',
-        postalCode: '20095',
-        city: 'Hamburg',
-        federalState: 'Hamburg',
+        name: 'Strichmännchen GmbH',
+        code: 'STRICH',
+        street: 'Blücherplatz 8',
+        postalCode: '24105',
+        city: 'Kiel',
+        federalState: 'Schleswig-Holstein',
         countryCode: SiteDefinition.germanyCountryCode,
-        latitude: 53.5511,
-        longitude: 9.9937,
-        description: 'Zweiter Dummy-Standort fuer Schicht- und Standorttests.',
+        latitude: 54.3378,
+        longitude: 10.1280,
+        description: 'Schreibwaren/Spielwaren, Tabak, DHL & Lotto.',
+        weekdayHours: strichWeekdayHours,
+        staffingDemands: strichDemands,
+        createdByUid: createdByUid,
+      ),
+      SiteDefinition(
+        id: paketshopSiteId(orgId),
+        orgId: orgId,
+        name: 'Paketshop REWE Dietrichsdorf',
+        code: 'PAKET',
+        street: 'Langer Rehm 22',
+        postalCode: '24149',
+        city: 'Kiel',
+        federalState: 'Schleswig-Holstein',
+        countryCode: SiteDefinition.germanyCountryCode,
+        latitude: 54.3527,
+        longitude: 10.1739,
+        description: 'Paketshop/Postfiliale im REWE Neumühlen-Dietrichsdorf.',
+        weekdayHours: paketWeekdayHours,
+        staffingDemands: paketDemands,
         createdByUid: createdByUid,
       ),
     ];
   }
 
-  static String berlinSiteId(String orgId) => 'demo-site-$orgId-berlin';
-  static String hamburgSiteId(String orgId) => 'demo-site-$orgId-hamburg';
+  static String tabakSiteId(String orgId) => 'demo-site-$orgId-tabak';
+  static String strichmaennchenSiteId(String orgId) =>
+      'demo-site-$orgId-strichmaennchen';
+  static String paketshopSiteId(String orgId) => 'demo-site-$orgId-paketshop';
+
+  // Rückwärtskompatible Aliasse: Warenwirtschaft/Kontakte-Demodaten referenzieren
+  // weiterhin diese Helfer als generische „erster/zweiter Standort"-Anker.
+  static String berlinSiteId(String orgId) => tabakSiteId(orgId);
+  static String hamburgSiteId(String orgId) => strichmaennchenSiteId(orgId);
 
   /// Demo-Lieferanten fuer den lokalen Modus (Warenwirtschaft).
   static List<Supplier> suppliersForOrg({
@@ -236,7 +409,7 @@ class LocalDemoData {
         id: 'demo-product-$orgId-1',
         orgId: orgId,
         siteId: berlin,
-        siteName: 'Hauptstandort Berlin',
+        siteName: 'Tabak Börse',
         name: 'Marlboro Rot (Stange)',
         category: 'Zigaretten',
         unit: 'Stange',
@@ -254,7 +427,7 @@ class LocalDemoData {
         id: 'demo-product-$orgId-2',
         orgId: orgId,
         siteId: berlin,
-        siteName: 'Hauptstandort Berlin',
+        siteName: 'Tabak Börse',
         name: 'Feuerzeug Clipper',
         category: 'Raucherbedarf',
         unit: 'Stück',
@@ -270,7 +443,7 @@ class LocalDemoData {
         id: 'demo-product-$orgId-3',
         orgId: orgId,
         siteId: berlin,
-        siteName: 'Hauptstandort Berlin',
+        siteName: 'Tabak Börse',
         name: 'Cola 0,5 l',
         category: 'Getraenke',
         unit: 'Flasche',
@@ -287,7 +460,7 @@ class LocalDemoData {
         id: 'demo-product-$orgId-4',
         orgId: orgId,
         siteId: hamburg,
-        siteName: 'Filiale Hamburg',
+        siteName: 'Strichmännchen GmbH',
         name: 'Pueblo Tabak 30g',
         category: 'Drehtabak',
         unit: 'Beutel',
@@ -303,7 +476,7 @@ class LocalDemoData {
         id: 'demo-product-$orgId-5',
         orgId: orgId,
         siteId: hamburg,
-        siteName: 'Filiale Hamburg',
+        siteName: 'Strichmännchen GmbH',
         name: 'Zeitschrift Der Spiegel',
         category: 'Presse',
         unit: 'Stück',
@@ -334,7 +507,7 @@ class LocalDemoData {
         id: 'demo-customerOrder-$orgId-1',
         orgId: orgId,
         siteId: berlin,
-        siteName: 'Hauptstandort Berlin',
+        siteName: 'Tabak Börse',
         customerName: 'Herr Schmidt',
         customerContact: '0151 2345678',
         orderNumber: 'KB-${now.year}-0001',
@@ -365,7 +538,7 @@ class LocalDemoData {
         id: 'demo-customerOrder-$orgId-2',
         orgId: orgId,
         siteId: hamburg,
-        siteName: 'Filiale Hamburg',
+        siteName: 'Strichmännchen GmbH',
         customerName: 'Frau Meier',
         customerContact: 'meier@example.com',
         orderNumber: 'KB-${now.year}-0002',
@@ -388,7 +561,7 @@ class LocalDemoData {
         id: 'demo-customerOrder-$orgId-3',
         orgId: orgId,
         siteId: berlin,
-        siteName: 'Hauptstandort Berlin',
+        siteName: 'Tabak Börse',
         customerName: 'Café Sonnenschein',
         customerContact: '0431 998877',
         orderNumber: 'KB-${now.year}-0003',
@@ -462,7 +635,7 @@ class LocalDemoData {
         mobile: '0170 5566778',
         city: 'Kiel',
         siteId: hamburg,
-        siteName: 'Filiale Hamburg',
+        siteName: 'Strichmännchen GmbH',
         notes: 'Kühlgeräte-Wartung und Getränkebelieferung.',
         createdByUid: createdByUid,
       ),
@@ -503,7 +676,7 @@ class LocalDemoData {
         email: 'verwaltung@moeller-immobilien.de',
         phone: '0431 445566',
         siteId: berlin,
-        siteName: 'Hauptstandort Berlin',
+        siteName: 'Tabak Börse',
         notes: 'Mietobjekt Ladenfläche, Nebenkosten jährlich.',
         createdByUid: createdByUid,
       ),
@@ -524,43 +697,54 @@ class LocalDemoData {
     required String orgId,
     required String createdByUid,
   }) {
+    final tabak = tabakSiteId(orgId);
+    final strich = strichmaennchenSiteId(orgId);
+    final paket = paketshopSiteId(orgId);
+    const tabakName = 'Tabak Börse';
+    const strichName = 'Strichmännchen GmbH';
+    const paketName = 'Paketshop REWE Dietrichsdorf';
+
+    EmployeeSiteAssignment a(
+      String suffix,
+      String uid,
+      String siteId,
+      String siteName, {
+      bool primary = true,
+    }) =>
+        EmployeeSiteAssignment(
+          id: 'demo-assignment-$orgId-$suffix',
+          orgId: orgId,
+          userId: uid,
+          siteId: siteId,
+          siteName: siteName,
+          isPrimary: primary,
+          createdByUid: createdByUid,
+        );
+
     return [
-      EmployeeSiteAssignment(
-        id: 'demo-assignment-$orgId-admin',
-        orgId: orgId,
-        userId: adminAccount.uid,
-        siteId: 'demo-site-$orgId-berlin',
-        siteName: 'Hauptstandort Berlin',
-        isPrimary: true,
-        createdByUid: createdByUid,
-      ),
-      EmployeeSiteAssignment(
-        id: 'demo-assignment-$orgId-peter',
-        orgId: orgId,
-        userId: employeeAccount.uid,
-        siteId: 'demo-site-$orgId-hamburg',
-        siteName: 'Filiale Hamburg',
-        isPrimary: true,
-        createdByUid: createdByUid,
-      ),
-      EmployeeSiteAssignment(
-        id: 'demo-assignment-$orgId-maria',
-        orgId: orgId,
-        userId: employeeSecondAccount.uid,
-        siteId: 'demo-site-$orgId-berlin',
-        siteName: 'Hauptstandort Berlin',
-        isPrimary: true,
-        createdByUid: createdByUid,
-      ),
-      EmployeeSiteAssignment(
-        id: 'demo-assignment-$orgId-lea',
-        orgId: orgId,
-        userId: teamLeadAccount.uid,
-        siteId: 'demo-site-$orgId-hamburg',
-        siteName: 'Filiale Hamburg',
-        isPrimary: true,
-        createdByUid: createdByUid,
-      ),
+      // Bestehende Demo-Accounts auf die Kieler Läden verteilt.
+      a('admin', adminAccount.uid, tabak, tabakName),
+      a('peter', employeeAccount.uid, tabak, tabakName),
+      a('maria', employeeSecondAccount.uid, strich, strichName),
+      a('lea', teamLeadAccount.uid, paket, paketName),
+      // Inhaber/Planer: in allen drei Läden einsetzbar.
+      a('jowan-tabak', jowanAccount.uid, tabak, tabakName),
+      a('jowan-strich', jowanAccount.uid, strich, strichName, primary: false),
+      a('jowan-paket', jowanAccount.uid, paket, paketName, primary: false),
+      // Paketshop Dietrichsdorf.
+      a('maike', maikeAccount.uid, paket, paketName),
+      a('edith', edithAccount.uid, paket, paketName),
+      a('raffael-paket', raffaelAccount.uid, paket, paketName),
+      a('raffael-tabak', raffaelAccount.uid, tabak, tabakName, primary: false),
+      // Strichmännchen.
+      a('majd-strich', majdAccount.uid, strich, strichName),
+      a('majd-tabak', majdAccount.uid, tabak, tabakName, primary: false),
+      a('tom', tomAccount.uid, strich, strichName),
+      a('jarla-strich', jarlaAccount.uid, strich, strichName),
+      a('jarla-tabak', jarlaAccount.uid, tabak, tabakName, primary: false),
+      // Tabak Börse.
+      a('johanna', johannaAccount.uid, tabak, tabakName),
+      a('jean', jeanAccount.uid, tabak, tabakName),
     ];
   }
 }

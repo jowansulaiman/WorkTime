@@ -2,10 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../models/audit_log_entry.dart';
+import '../models/contact.dart';
 import '../models/customer_feedback.dart';
+import '../providers/audit_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/contact_provider.dart';
 import '../services/firestore_service.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/contact_picker_field.dart';
 import '../widgets/empty_state.dart';
 
 /// Interner Eingang der über die öffentliche Webseite (/feedback) abgegebenen
@@ -119,6 +124,8 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
                                 onStatus: (status) =>
                                     _updateStatus(visible[index], status),
                                 onDelete: () => _delete(visible[index]),
+                                onLinkContact: () =>
+                                    _linkContact(visible[index]),
                               ),
                             ),
                     ),
@@ -163,6 +170,10 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
       return;
     }
     final profile = context.read<AuthProvider>().profile;
+    // Kundenfeedback hat keinen eigenen Provider (Mutation läuft direkt über
+    // FirestoreService) → der Audit-Eintrag wird hier auf dem Erfolgspfad
+    // gesetzt, sonst umginge diese interne Manager-Aktion das Änderungsprotokoll.
+    final audit = context.read<AuditProvider>();
     try {
       await _service.updateCustomerFeedbackStatus(
         orgId: feedback.orgId,
@@ -170,8 +181,57 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
         status: status,
         handledByUid: profile?.uid,
       );
+      audit.log(
+        action: AuditAction.updated,
+        entityType: 'Kundenfeedback',
+        entityId: id,
+        summary:
+            'Rückmeldung ${feedback.referenceCode}: Status „${status.label}"',
+      );
     } catch (_) {
       _snack('Status konnte nicht geändert werden.');
+    }
+  }
+
+  /// Verknüpft eine Rückmeldung mit einem Kontakt aus der Kontakte-Kartei (H-D2)
+  /// bzw. löst die Verknüpfung. Wie bei [_updateStatus] hat die Rückmeldung
+  /// keinen eigenen Provider → der Audit-Eintrag wird hier auf dem Erfolgspfad
+  /// gesetzt.
+  Future<void> _linkContact(CustomerFeedback feedback) async {
+    final id = feedback.id;
+    if (id == null) {
+      return;
+    }
+    final audit = context.read<AuditProvider>();
+    final selection = await showContactPicker(
+      context,
+      currentContactId: feedback.contactId,
+      allowedTypes: const [ContactType.customer],
+      emptyLabel: 'Kein Kontakt (Verknüpfung entfernen)',
+    );
+    if (selection == null) {
+      return; // abgebrochen
+    }
+    final contact = selection.contact;
+    if (contact?.id == feedback.contactId) {
+      return; // unverändert → kein Write/Audit für einen No-op
+    }
+    try {
+      await _service.updateCustomerFeedbackContact(
+        orgId: feedback.orgId,
+        feedbackId: id,
+        contactId: contact?.id,
+      );
+      audit.log(
+        action: AuditAction.updated,
+        entityType: 'Kundenfeedback',
+        entityId: id,
+        summary: contact == null
+            ? 'Rückmeldung ${feedback.referenceCode}: Kontakt-Verknüpfung entfernt'
+            : 'Rückmeldung ${feedback.referenceCode}: Kontakt „${contact.name}" verknüpft',
+      );
+    } catch (_) {
+      _snack('Kontakt konnte nicht verknüpft werden.');
     }
   }
 
@@ -180,6 +240,7 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
     if (id == null) {
       return;
     }
+    final audit = context.read<AuditProvider>();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -203,6 +264,12 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
     try {
       await _service.deleteCustomerFeedback(
           orgId: feedback.orgId, feedbackId: id);
+      audit.log(
+        action: AuditAction.deleted,
+        entityType: 'Kundenfeedback',
+        entityId: id,
+        summary: 'Rückmeldung ${feedback.referenceCode} gelöscht',
+      );
     } catch (_) {
       _snack('Rückmeldung konnte nicht gelöscht werden.');
     }
@@ -225,6 +292,7 @@ class _FeedbackCard extends StatelessWidget {
     required this.dateFormat,
     required this.onStatus,
     required this.onDelete,
+    required this.onLinkContact,
   });
 
   final CustomerFeedback feedback;
@@ -232,11 +300,19 @@ class _FeedbackCard extends StatelessWidget {
   final DateFormat dateFormat;
   final ValueChanged<FeedbackStatus> onStatus;
   final VoidCallback onDelete;
+  final VoidCallback onLinkContact;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final rating = feedback.rating;
+    // Verknüpften Kontakt live aus der Kontakte-Kartei auflösen (H-D2). `null`,
+    // wenn nicht verknüpft ODER der Kontakt (noch) nicht geladen/gelöscht ist.
+    // Nur verknüpfte Karten abonnieren den ContactProvider (spart Rebuilds in
+    // einem langen Eingang, wenn sich irgendwo ein Kontakt ändert).
+    final linkedContact = feedback.contactId == null
+        ? null
+        : context.watch<ContactProvider>().contactById(feedback.contactId);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -261,6 +337,8 @@ class _FeedbackCard extends StatelessWidget {
                 PopupMenuButton<_FeedbackAction>(
                   onSelected: (action) {
                     switch (action) {
+                      case _FeedbackAction.linkContact:
+                        onLinkContact();
                       case _FeedbackAction.seen:
                         onStatus(FeedbackStatus.seen);
                       case _FeedbackAction.done:
@@ -271,21 +349,28 @@ class _FeedbackCard extends StatelessWidget {
                         onDelete();
                     }
                   },
-                  itemBuilder: (_) => const [
+                  itemBuilder: (_) => [
                     PopupMenuItem(
+                      value: _FeedbackAction.linkContact,
+                      child: Text(feedback.contactId == null
+                          ? 'Kontakt verknüpfen'
+                          : 'Kontakt ändern'),
+                    ),
+                    const PopupMenuDivider(),
+                    const PopupMenuItem(
                       value: _FeedbackAction.seen,
                       child: Text('Als gesehen markieren'),
                     ),
-                    PopupMenuItem(
+                    const PopupMenuItem(
                       value: _FeedbackAction.done,
                       child: Text('Als erledigt markieren'),
                     ),
-                    PopupMenuItem(
+                    const PopupMenuItem(
                       value: _FeedbackAction.rejected,
                       child: Text('Ablehnen'),
                     ),
-                    PopupMenuDivider(),
-                    PopupMenuItem(
+                    const PopupMenuDivider(),
+                    const PopupMenuItem(
                       value: _FeedbackAction.delete,
                       child: Text('Löschen'),
                     ),
@@ -345,6 +430,27 @@ class _FeedbackCard extends StatelessWidget {
                 ],
               ),
             ],
+            if (feedback.contactId != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(Icons.link, size: 16, color: theme.colorScheme.primary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      linkedContact != null
+                          ? 'Kontakt: ${linkedContact.name}'
+                          : 'Verknüpfter Kontakt (nicht gefunden)',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
             if (feedback.createdAt != null) ...[
               const SizedBox(height: 8),
               Text(
@@ -360,7 +466,7 @@ class _FeedbackCard extends StatelessWidget {
   }
 }
 
-enum _FeedbackAction { seen, done, rejected, delete }
+enum _FeedbackAction { linkContact, seen, done, rejected, delete }
 
 class _TypeChip extends StatelessWidget {
   const _TypeChip({required this.type});

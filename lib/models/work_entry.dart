@@ -6,6 +6,48 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_num_parser.dart' as parse;
 
+/// Freigabe-Status eines Zeiteintrags (AllTec-Zeitwirtschafts-Workflow, M2).
+///
+/// **Default ist [approved]** — Alt-Einträge ohne `status`-Feld und die heutige
+/// Direkterfassung bleiben gültig und zählen voll (abwärtskompatibel). Die
+/// Zustände `draft`/`submitted` werden erst von den neuen Workflows gesetzt
+/// (Stempel-Ausgang → `submitted`, Klärungs-Markierung → `draft`); ein Manager
+/// genehmigt (`approved`) oder lehnt ab (`rejected`).
+enum WorkEntryStatus {
+  draft,
+  submitted,
+  approved,
+  rejected;
+
+  /// snake_case-Wert für beide Serialisierungen (≠ Dart-Name garantiert stabil).
+  String get value => switch (this) {
+        WorkEntryStatus.draft => 'draft',
+        WorkEntryStatus.submitted => 'submitted',
+        WorkEntryStatus.approved => 'approved',
+        WorkEntryStatus.rejected => 'rejected',
+      };
+
+  /// Deutsches UI-Label.
+  String get label => switch (this) {
+        WorkEntryStatus.draft => 'Entwurf',
+        WorkEntryStatus.submitted => 'Eingereicht',
+        WorkEntryStatus.approved => 'Genehmigt',
+        WorkEntryStatus.rejected => 'Abgelehnt',
+      };
+
+  /// Tolerant: unbekannter/leerer Wert fällt still auf [approved] (Default-Branch
+  /// wirft nie — CLAUDE.md Enum-Regel).
+  static WorkEntryStatus fromValue(Object? raw) {
+    final value = (raw ?? '').toString().trim();
+    for (final status in WorkEntryStatus.values) {
+      if (status.value == value) {
+        return status;
+      }
+    }
+    return WorkEntryStatus.approved;
+  }
+}
+
 class WorkEntry {
   final String? id;
   final String orgId;
@@ -22,6 +64,19 @@ class WorkEntry {
   final DateTime? correctedAt;
   final String? note;
   final String? category;
+
+  /// Freigabe-Status (Zeitwirtschafts-Workflow, M2). Default [WorkEntryStatus.approved].
+  final WorkEntryStatus status;
+
+  /// Manager, der genehmigt/abgelehnt hat (null solange offen).
+  final String? approvedByUid;
+
+  /// Zeitpunkt der Genehmigung/Ablehnung.
+  final DateTime? approvedAt;
+
+  /// Verknüpfte Stempel-Session ([ClockEntry], M3) — gesetzt, wenn dieser Eintrag
+  /// beim Ausstempeln erzeugt wurde (Duplikat-Vermeidung).
+  final String? sourceClockEntryId;
 
   /// Letzte Aenderung. Server-autoritativ (serverTimestamp) in Firestore; lokal
   /// beim Speichern auf die Geraetezeit gesetzt. Dient als Last-Write-Wins-
@@ -45,6 +100,10 @@ class WorkEntry {
     this.correctedAt,
     this.note,
     this.category,
+    this.status = WorkEntryStatus.approved,
+    this.approvedByUid,
+    this.approvedAt,
+    this.sourceClockEntryId,
     this.updatedAt,
   })  : date = normalizeDate(date),
         startTime = normalizeDateTime(startTime),
@@ -113,6 +172,10 @@ class WorkEntry {
       'corrected_at': correctedAt?.toIso8601String(),
       'note': note,
       'category': category,
+      'status': status.value,
+      'approved_by_uid': approvedByUid,
+      'approved_at': approvedAt?.toIso8601String(),
+      'source_clock_entry_id': sourceClockEntryId,
       'updated_at': updatedAt?.toIso8601String(),
     };
   }
@@ -134,6 +197,10 @@ class WorkEntry {
       correctedAt: _parseNullableFirestoreDate(map['corrected_at']),
       note: map['note'],
       category: map['category'],
+      status: WorkEntryStatus.fromValue(map['status']),
+      approvedByUid: map['approved_by_uid'] as String?,
+      approvedAt: _parseNullableFirestoreDate(map['approved_at']),
+      sourceClockEntryId: map['source_clock_entry_id'] as String?,
       updatedAt: _parseNullableFirestoreDate(map['updated_at']),
     );
   }
@@ -158,6 +225,10 @@ class WorkEntry {
       correctedAt: _parseNullableFirestoreDate(map['correctedAt']),
       note: map['note'] as String?,
       category: map['category'] as String?,
+      status: WorkEntryStatus.fromValue(map['status']),
+      approvedByUid: map['approvedByUid'] as String?,
+      approvedAt: _parseNullableFirestoreDate(map['approvedAt']),
+      sourceClockEntryId: map['sourceClockEntryId'] as String?,
       updatedAt: _parseNullableFirestoreDate(map['updatedAt']),
     );
   }
@@ -179,6 +250,10 @@ class WorkEntry {
           correctedAt == null ? null : Timestamp.fromDate(correctedAt!),
       'note': note,
       'category': category,
+      'status': status.value,
+      'approvedByUid': approvedByUid,
+      'approvedAt': approvedAt == null ? null : Timestamp.fromDate(approvedAt!),
+      'sourceClockEntryId': sourceClockEntryId,
       'workedHours': workedHours,
       if (id == null) 'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -229,6 +304,13 @@ class WorkEntry {
     bool clearCorrectedAt = false,
     String? note,
     String? category,
+    WorkEntryStatus? status,
+    String? approvedByUid,
+    DateTime? approvedAt,
+    String? sourceClockEntryId,
+    bool clearApprovedByUid = false,
+    bool clearApprovedAt = false,
+    bool clearSourceClockEntryId = false,
     DateTime? updatedAt,
   }) {
     return WorkEntry(
@@ -251,6 +333,13 @@ class WorkEntry {
       correctedAt: clearCorrectedAt ? null : (correctedAt ?? this.correctedAt),
       note: note ?? this.note,
       category: category ?? this.category,
+      status: status ?? this.status,
+      approvedByUid:
+          clearApprovedByUid ? null : (approvedByUid ?? this.approvedByUid),
+      approvedAt: clearApprovedAt ? null : (approvedAt ?? this.approvedAt),
+      sourceClockEntryId: clearSourceClockEntryId
+          ? null
+          : (sourceClockEntryId ?? this.sourceClockEntryId),
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }

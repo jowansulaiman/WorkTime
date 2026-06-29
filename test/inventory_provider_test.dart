@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/customer_order.dart';
+import 'package:worktime_app/models/fridge_refill.dart';
 import 'package:worktime_app/models/order_cart.dart';
 import 'package:worktime_app/models/price_history_entry.dart';
 import 'package:worktime_app/models/product.dart';
@@ -169,6 +170,21 @@ class _OfflineInventoryRepository implements InventoryRepository {
     required OrderListKind kind,
   }) =>
       _delegate.deleteOrderList(orgId: orgId, siteId: siteId, kind: kind);
+
+  @override
+  Stream<List<FridgeRefillList>> watchFridgeRefillLists(String orgId) =>
+      _delegate.watchFridgeRefillLists(orgId);
+
+  @override
+  Future<void> saveFridgeRefillList(FridgeRefillList list) =>
+      _delegate.saveFridgeRefillList(list);
+
+  @override
+  Future<void> deleteFridgeRefillList({
+    required String orgId,
+    required String siteId,
+  }) =>
+      _delegate.deleteFridgeRefillList(orgId: orgId, siteId: siteId);
 }
 
 /// Fake fuer den Cloud-Stream-Fehlerpfad: der Lieferanten-Stream schlaegt fehl,

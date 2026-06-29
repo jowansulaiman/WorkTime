@@ -22,6 +22,11 @@ class EmployeeSiteAssignment {
   final String orgId;
   final String userId;
   final String siteId;
+
+  /// Denormalisierter Standortname (Snapshot). Kanonisch ist
+  /// `SiteDefinition.name`, das zur Anzeigezeit via [siteId] aufgelöst wird
+  /// (`resolveSiteName` / `TeamProvider.siteNameById`, H-C2); dieser Wert dient
+  /// nur als Fallback (gelöschter Standort, Offline/Local ohne Stammdaten).
   final String siteName;
   final String? role;
   final List<String> qualificationIds;

@@ -4,6 +4,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:worktime_app/models/absence_request.dart';
 import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/shift.dart';
+import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/stock_movement.dart';
 import 'package:worktime_app/models/shift_template.dart';
 import 'package:worktime_app/models/work_entry.dart';
@@ -19,6 +20,25 @@ void main() {
       firestore = FakeFirebaseFirestore();
       service = FirestoreService(firestore: firestore);
     });
+
+    test(
+      'saveSite returns the assigned doc id for a new site (audit linkage, H-F1)',
+      () async {
+        const site = SiteDefinition(orgId: 'org-1', name: 'Tabak Börse');
+
+        final newId = await service.saveSite(site);
+
+        expect(newId, isNotEmpty);
+        final stored = await firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('sites')
+            .doc(newId)
+            .get();
+        expect(stored.exists, isTrue);
+        expect(stored.data()?['name'], 'Tabak Börse');
+      },
+    );
 
     test(
       'getApprovedVacationsForYear includes vacations overlapping the year boundary',

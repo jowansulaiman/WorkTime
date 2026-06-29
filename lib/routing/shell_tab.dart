@@ -54,4 +54,17 @@ abstract final class AppRoutes {
   static const String statistics = '/statistik';
   static const String customerWishes = '/kundenwuensche';
   static const String scanner = '/scanner';
+  static const String orderAnalytics = '/bestell-auswertung';
+
+  // Zeitwirtschaft-Bereich (Sub-Routen unter dem `/zeit`-Tab-Hub). Der Hub
+  // selbst ist der Tab-Inhalt von `ShellTab.time` (`/zeit`); diese Routen werden
+  // via `context.push(...)` über die Shell gepusht (Back → Hub).
+  static const String zeitErfassung = '/zeit/erfassung';
+  static const String zeitStempeln = '/zeit/stempeln';
+  static const String zeitStundenkonto = '/zeit/stundenkonto';
+  static const String zeitAbwesenheiten = '/zeit/abwesenheiten';
+  static const String zeitAbwesenheitenKalender = '/zeit/abwesenheiten/kalender';
+  static const String zeitMonatsabschluss = '/zeit/monatsabschluss';
+  static const String zeitMitarbeiterabschluss = '/zeit/mitarbeiterabschluss';
+  static const String zeitLohnlauf = '/zeit/lohnlauf';
 }

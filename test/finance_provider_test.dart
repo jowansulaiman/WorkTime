@@ -1,6 +1,7 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:worktime_app/core/datev_export.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/finance_models.dart';
 import 'package:worktime_app/models/user_settings.dart';
@@ -121,6 +122,46 @@ void main() {
       expect(reopened.totalActual(2026), -50000);
     });
 
+    test('costCenterForSite liefert deterministisch die kleinste Nummer (H-C1)',
+        () async {
+      final provider =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      await provider.saveCostCenter(const CostCenter(
+        orgId: 'org-1',
+        number: '1002',
+        name: 'Tabak Börse B',
+        siteId: 'site-2',
+      ));
+      await provider.saveCostCenter(const CostCenter(
+        orgId: 'org-1',
+        number: '1001',
+        name: 'Tabak Börse A',
+        siteId: 'site-2',
+      ));
+      await provider.saveCostCenter(const CostCenter(
+        orgId: 'org-1',
+        number: '1003',
+        name: 'Inaktiv',
+        siteId: 'site-2',
+        isActive: false,
+      ));
+      await provider.saveCostCenter(const CostCenter(
+        orgId: 'org-1',
+        number: '2000',
+        name: 'Strichmännchen',
+        siteId: 'site-1',
+      ));
+
+      // Mehrere aktive Treffer → kleinste Nummer gewinnt; inaktive ignoriert.
+      expect(provider.costCenterForSite('site-2')?.number, '1001');
+      expect(provider.costCenterForSite('site-1')?.number, '2000');
+      expect(provider.costCenterForSite('unbekannt'), isNull);
+      expect(provider.costCenterForSite(null), isNull);
+    });
+
     test('Nicht-Admin darf nicht schreiben', () async {
       final provider =
           FinanceProvider(firestoreService: service, disableAuthentication: true);
@@ -131,6 +172,36 @@ void main() {
         provider.saveCostCenter(
           const CostCenter(orgId: 'org-1', number: '1', name: 'x'),
         ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('DATEV-Config persistiert über Neustart + ist admin-gated', () async {
+      final provider =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      expect(provider.datevConfig.defaultContraAccount, '9000'); // Default
+
+      await provider.saveDatevConfig(const DatevExportConfig(
+        consultantNumber: '4242',
+        clientNumber: '99',
+        accountLength: 5,
+        defaultContraAccount: '8400',
+      ));
+      expect(provider.datevConfig.consultantNumber, '4242');
+
+      final reopened =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(reopened.dispose);
+      await reopened.updateSession(_admin, localStorageOnly: true);
+      expect(reopened.datevConfig.consultantNumber, '4242');
+      expect(reopened.datevConfig.accountLength, 5);
+      expect(reopened.datevConfig.defaultContraAccount, '8400');
+
+      await reopened.updateSession(_employee, localStorageOnly: true);
+      await expectLater(
+        reopened.saveDatevConfig(const DatevExportConfig()),
         throwsA(isA<StateError>()),
       );
     });
@@ -174,6 +245,88 @@ void main() {
       expect(provider.costCenters.map((c) => c.id), contains('cc1'));
       expect(provider.costCenterById('cc1')!.name, 'Tabak Börse');
       expect(provider.totalExpenses(2026), 120000);
+    });
+  });
+
+  group('FinanceProvider Speichermodus-Migration (H-H1)', () {
+    test('cacheCloudStateLocally schreibt Cloud-Stand in den lokalen Speicher',
+        () async {
+      await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('costCenters')
+          .doc('cc1')
+          .set(const CostCenter(
+                  id: 'cc1', orgId: 'org-1', number: '1001', name: 'Laden')
+              .toFirestoreMap());
+      await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('journalEntries')
+          .doc('j1')
+          .set(JournalEntry(
+            id: 'j1',
+            orgId: 'org-1',
+            date: DateTime(2026, 2, 1),
+            costCenterId: 'cc1',
+            costTypeId: 't1',
+            description: 'Miete',
+            amountCents: 90000,
+          ).toFirestoreMap());
+
+      final cloud = FinanceProvider(firestoreService: service);
+      addTearDown(cloud.dispose);
+      await cloud.updateSession(_admin);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(cloud.journalEntries, hasLength(1));
+
+      await cloud.cacheCloudStateLocally();
+
+      // Neuer Provider im local-Modus liest den gecachten Stand.
+      final local =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(local.dispose);
+      await local.updateSession(_admin, localStorageOnly: true);
+      expect(local.costCenterById('cc1')?.name, 'Laden');
+      expect(local.journalEntries.map((e) => e.id), contains('j1'));
+    });
+
+    test('syncLocalStateToCloud lädt das Journal idempotent hoch (append-only)',
+        () async {
+      final local =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(local.dispose);
+      await local.updateSession(_admin, localStorageOnly: true);
+      await local.saveCostCenter(
+          const CostCenter(id: 'cc1', orgId: 'org-1', number: '1', name: 'L'));
+      await local.saveCostType(
+          const CostType(id: 't1', orgId: 'org-1', number: '4', name: 'M'));
+      await local.saveJournalEntry(JournalEntry(
+        id: 'pay-emp-2026-06',
+        orgId: 'org-1',
+        date: DateTime(2026, 6, 30),
+        costCenterId: 'cc1',
+        costTypeId: 't1',
+        description: 'Personalkosten',
+        amountCents: 360000,
+      ));
+
+      Future<int> cloudJournalCount() async {
+        final snap = await firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('journalEntries')
+            .get();
+        return snap.docs.length;
+      }
+
+      await local.syncLocalStateToCloud();
+      expect(await cloudJournalCount(), 1);
+
+      // Zweiter Sync → kein Duplikat (Upsert über deterministische Doc-ID).
+      await local.syncLocalStateToCloud();
+      expect(await cloudJournalCount(), 1);
     });
   });
 }

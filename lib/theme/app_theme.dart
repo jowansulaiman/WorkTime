@@ -129,7 +129,12 @@ abstract final class AppTheme {
         ),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
+          // Etwas kompakter als labelMedium (12->11, engeres Tracking), damit
+          // bei 6 Tabs auch das längste Label ("Anfragen") einzeilig in die
+          // schmale Handy-Kachel passt.
           return textTheme.labelMedium?.copyWith(
+            fontSize: 11,
+            letterSpacing: 0.1,
             color: selected
                 ? colorScheme.onSecondaryContainer
                 : colorScheme.onSurfaceVariant,
@@ -572,7 +577,12 @@ abstract final class AppTheme {
         ),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
+          // Etwas kompakter als labelMedium (12->11, engeres Tracking), damit
+          // bei 6 Tabs auch das längste Label ("Anfragen") einzeilig in die
+          // schmale Handy-Kachel passt.
           return textTheme.labelMedium?.copyWith(
+            fontSize: 11,
+            letterSpacing: 0.1,
             color: selected
                 ? colorScheme.onSecondaryContainer
                 : colorScheme.onSurfaceVariant,

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/compliance_rule_set.dart';
 import 'package:worktime_app/models/employee_site_assignment.dart';
+import 'package:worktime_app/models/employment_contract.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/travel_time_rule.dart';
 import 'package:worktime_app/models/user_settings.dart';
@@ -1265,6 +1266,99 @@ void main() {
       expect(savedEntries.last.category, 'overtime');
       expect(savedEntries.last.startTime, shiftEnd);
       expect(savedEntries.last.endTime.isAfter(shiftEnd), isTrue);
+    });
+  });
+
+  group('WorkProvider Lohn-Schätzung (H-B1: Vertrag statt UserSettings)', () {
+    late FirestoreService firestoreService;
+    late AppUserProfile user;
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      DatabaseService.resetCachedPrefs();
+      firestoreService = FirestoreService(firestore: FakeFirebaseFirestore());
+      user = const AppUserProfile(
+        uid: 'employee-1',
+        orgId: 'org-1',
+        email: 'anna@example.com',
+        role: UserRole.employee,
+        isActive: true,
+        // Settings-Stundensatz 10 € (alte Quelle) — soll vom Vertrag (20 €)
+        // überschrieben werden.
+        settings: UserSettings(name: 'Anna', hourlyRate: 10, dailyHours: 6),
+      );
+    });
+
+    Future<WorkProvider> seedProvider({
+      required List<EmploymentContract> contracts,
+    }) async {
+      final provider = WorkProvider(firestoreService: firestoreService);
+      addTearDown(provider.dispose);
+      // Im local-Modus lädt _loadLocalState die Settings aus dem Speicher und
+      // überschreibt die In-Memory-Settings — daher hier persistieren.
+      await DatabaseService.saveLocalUserSettings(
+        user.settings,
+        scope: LocalStorageScope.fromUser(user),
+      );
+      await DatabaseService.saveLocalEntries(
+        [
+          WorkEntry(
+            id: 'e1',
+            orgId: user.orgId,
+            userId: user.uid,
+            date: DateTime(2026, 3, 10),
+            startTime: DateTime(2026, 3, 10, 8, 0),
+            endTime: DateTime(2026, 3, 10, 17, 0),
+            breakMinutes: 0, // 9 h gearbeitet
+            siteId: 'site-1',
+            siteName: 'Berlin',
+          ),
+        ],
+        scope: LocalStorageScope.fromUser(user),
+      );
+      await provider.updateSession(user, localStorageOnly: true);
+      await provider.selectMonth(DateTime(2026, 3, 1));
+      provider.updateReferenceData(
+        sites: const [],
+        contracts: contracts,
+        siteAssignments: const <EmployeeSiteAssignment>[],
+        ruleSets: [ComplianceRuleSet.defaultRetail('org-1')],
+        travelTimeRules: const <TravelTimeRule>[],
+      );
+      return provider;
+    }
+
+    test('nutzt den am Eintragsdatum gültigen Vertrag (hourlyRate/dailyHours)',
+        () async {
+      final provider = await seedProvider(contracts: [
+        EmploymentContract(
+          id: 'c1',
+          orgId: 'org-1',
+          userId: 'employee-1',
+          validFrom: DateTime(2026, 1, 1),
+          hourlyRate: 20,
+          dailyHours: 8,
+        ),
+      ]);
+
+      expect(provider.entries, hasLength(1));
+      // 9 h × 20 € (Vertrag) = 180 €, NICHT 9 × 10 € (Settings).
+      expect(provider.totalWageThisMonth, 180);
+      // Überstunden gegen Vertrags-Tagessoll 8 h → 1 h (nicht 3 h gegen 6 h).
+      expect(provider.overtimeThisMonth, 1);
+    });
+
+    test('fällt ohne aktiven Vertrag auf UserSettings zurück (nie still 0)',
+        () async {
+      final provider = await seedProvider(contracts: const []);
+
+      // Diagnose: Eintrag geladen? Settings korrekt?
+      expect(provider.entries, hasLength(1));
+      expect(provider.totalHoursThisMonth, 9);
+      expect(provider.settings.hourlyRate, 10);
+      // Kein Vertrag → Settings: 9 h × 10 € = 90 €; Überstunden gegen 6 h = 3 h.
+      expect(provider.totalWageThisMonth, 90);
+      expect(provider.overtimeThisMonth, 3);
     });
   });
 }

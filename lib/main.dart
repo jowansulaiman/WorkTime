@@ -29,6 +29,7 @@ import 'providers/storage_mode_provider.dart';
 import 'providers/team_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/work_provider.dart';
+import 'providers/zeitwirtschaft_provider.dart';
 import 'routing/app_router.dart';
 import 'screens/public/public_feedback_app.dart';
 import 'screens/public/public_legal_app.dart';
@@ -368,6 +369,8 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
               siteAssignments: team.siteAssignments,
               ruleSets: team.ruleSets,
               travelTimeRules: team.travelTimeRules,
+              sites: team.sites,
+              shiftPreferences: team.shiftPreferences,
             );
             return provider;
           },
@@ -433,6 +436,33 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
               members: team.members,
               contracts: team.contracts,
               sites: team.sites,
+              siteAssignments: team.siteAssignments,
+            );
+            return provider;
+          },
+        ),
+        // Zeitwirtschaft (M3): persistente Stempel-Sessions (ClockEntry). Nach
+        // Personal eingehängt; additiv zum WorkProvider-Clock.
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, ZeitwirtschaftProvider>(
+          create: (_) =>
+              ZeitwirtschaftProvider(firestoreService: firestoreService),
+          update: (context, auth, storage, audit, provider) {
+            provider ??=
+                ZeitwirtschaftProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
+            // Monatsabschluss-Entwurfslohn (M5): der lebende PersonalProvider
+            // (zuvor in der Kette gebaut) nimmt den Draft-PayrollRecord auf.
+            provider.setPayrollDraftPoster(
+                context.read<PersonalProvider>().savePayrollRecord);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'ZeitwirtschaftProvider.updateSession',
+              onError: provider.surfaceSessionError,
             );
             return provider;
           },
@@ -440,9 +470,22 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
         ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
             AuditProvider, FinanceProvider>(
           create: (_) => FinanceProvider(firestoreService: firestoreService),
-          update: (_, auth, storage, audit, provider) {
+          update: (context, auth, storage, audit, provider) {
             provider ??= FinanceProvider(firestoreService: firestoreService);
             provider.setAuditSink(audit.log);
+            // Personalkosten-Auto-Buchung (H-A1): die lebende Finance-Instanz
+            // als Buchungs-Sink in den (zuvor in der Kette gebauten)
+            // PersonalProvider injizieren. Finance hängt NICHT als Proxy an
+            // Personal — daher per context.read statt Kettenumsortierung.
+            context
+                .read<PersonalProvider>()
+                .setPayrollJournalPoster(provider.postPersonnelCostJournal);
+            // Umsatz/Wareneinsatz-Auto-Buchung (H-A2): dieselbe Finance-Instanz
+            // als Buchungs-Sink in den (zuvor gebauten) InventoryProvider.
+            final inventory = context.read<InventoryProvider>();
+            inventory
+                .setRevenueJournalPoster(provider.postCustomerOrderRevenue);
+            inventory.setGoodsCostJournalPoster(provider.postPurchaseOrderCost);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -460,10 +503,15 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
           create: (_) => WorkProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, team, storage, schedule, audit, provider) {
+          update: (context, auth, team, storage, schedule, audit, provider) {
             provider ??= WorkProvider(firestoreService: firestoreService);
             provider.updateScheduleProvider(schedule);
             provider.setAuditSink(audit.log);
+            // Stempel-Ausgang (ZeitwirtschaftProvider, zuvor in der Kette gebaut)
+            // erzeugt seinen WorkEntry über den lebenden WorkProvider (H-A1-Muster).
+            context
+                .read<ZeitwirtschaftProvider>()
+                .setWorkEntryPoster(provider.addEntry);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,

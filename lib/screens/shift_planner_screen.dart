@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -7,10 +9,13 @@ import 'package:collection/collection.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_violation.dart';
+import '../core/shift_auto_assigner.dart';
 import '../models/shift.dart';
+import '../models/shift_swap_request.dart';
 import '../models/shift_template.dart';
 import '../models/team_definition.dart';
 import '../providers/auth_provider.dart';
+import '../providers/feature_flag_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/team_provider.dart';
 import '../services/compliance_rejected_exception.dart';
@@ -164,6 +169,16 @@ class ShiftPlannerScreen extends StatelessWidget {
         canNavigateBack: canNavigateBack,
         onNavigateBack: onNavigateBack,
         onCopyWeek: () => _copyWeek(context),
+        onAutoPlan: () => _autoPlan(context),
+        onCopyShiftToDays: (shift) => _copyShiftToDays(context, shift, members),
+        onDropCopyShift: (shift, targetDay, reassignUserId, reassignName) =>
+            _dropCopyShift(
+          context,
+          shift,
+          targetDay,
+          reassignUserId,
+          reassignName,
+        ),
         onExport: (format, shifts) => _handleShiftPlanExport(
           context,
           format: format,
@@ -689,6 +704,193 @@ class ShiftPlannerScreen extends StatelessWidget {
     }
   }
 
+  /// Automatische Schichtverteilung: generiert Schichten aus Öffnungszeiten +
+  /// Bedarf (Phase A), besetzt sie (Phase B), zeigt eine Vorschau und speichert
+  /// auf Bestätigung.
+  Future<void> _autoPlan(BuildContext context) async {
+    final schedule = context.read<ScheduleProvider>();
+    final settings = context.read<FeatureFlagProvider>().orgSettings;
+    final range =
+        _currentScheduleRange(schedule.visibleDate, schedule.viewMode);
+
+    final generated = schedule.generatePlannedShifts(
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      settings: settings,
+    );
+    final existingOpen = schedule.shifts
+        .where((shift) =>
+            shift.isUnassigned &&
+            !shift.startTime.isBefore(range.start) &&
+            shift.startTime.isBefore(range.end))
+        .toList(growable: false);
+    final openShifts = [...generated, ...existingOpen];
+
+    if (openShifts.isEmpty) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Nichts zu planen — keine Öffnungszeiten/Bedarf im Zeitraum oder '
+            'bereits alles besetzt.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final result = await schedule.proposeAutoAssignment(
+      openShifts: openShifts,
+      month: range.start,
+      settings: settings,
+    );
+
+    if (!context.mounted) return;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => _AutoPlanPreviewSheet(
+        generated: generated,
+        existingOpen: existingOpen,
+        result: result,
+        enforceHourCapHard: settings.enforceHourCapHard,
+      ),
+    );
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+
+    try {
+      await schedule.applyAutoPlan(
+        generatedShifts: generated,
+        existingOpenShifts: existingOpen,
+        result: result,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${generated.length} Schichten geplant, '
+            '${result.assignments.length} besetzt',
+          ),
+        ),
+      );
+    } on ShiftConflictException catch (error) {
+      if (!context.mounted) return;
+      await _showShiftConflictDialog(context, error.issues);
+    } on ComplianceRejectedException catch (error) {
+      if (!context.mounted) return;
+      await _showComplianceRejectionDialog(context, error);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Fehler: ${_cleanErrorText(error)}'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  /// Kopiert eine bestehende Schicht auf andere Mitarbeiter und/oder Tage.
+  /// Öffnet das [_CopyShiftSheet] (Mitarbeiter-Chips + Mehrtage-Picker) und
+  /// nutzt [ScheduleProvider.copyShiftToAssignees].
+  Future<void> _copyShiftToDays(
+    BuildContext context,
+    Shift shift,
+    List<AppUserProfile> members,
+  ) async {
+    final schedule = context.read<ScheduleProvider>();
+    final selection = await showModalBottomSheet<_CopyShiftSelection>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (sheetContext) => _CopyShiftSheet(
+        source: shift,
+        members: members,
+      ),
+    );
+    if (selection == null ||
+        selection.days.isEmpty ||
+        selection.assigneeUids.isEmpty ||
+        !context.mounted) {
+      return;
+    }
+    final assignees = members
+        .where((member) => selection.assigneeUids.contains(member.uid))
+        .toList(growable: false);
+    if (assignees.isEmpty) {
+      return;
+    }
+    try {
+      await schedule.copyShiftToAssignees(
+        shift,
+        selection.days.toList(),
+        assignees,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Schicht kopiert')),
+      );
+    } on ShiftConflictException catch (error) {
+      if (!context.mounted) return;
+      await _showShiftConflictDialog(context, error.issues);
+    } on ComplianceRejectedException catch (error) {
+      if (!context.mounted) return;
+      await _showComplianceRejectionDialog(context, error);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Fehler: ${_cleanErrorText(error)}'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  /// Drag & Drop: kopiert die gezogene Schicht direkt auf den Zieltag (ohne
+  /// Picker), optional an die Ziel-Mitarbeiterzeile zugewiesen. Fehler werden
+  /// über dieselben Dialoge wie beim Editor gemeldet.
+  Future<void> _dropCopyShift(
+    BuildContext context,
+    Shift shift,
+    DateTime targetDay,
+    String? reassignUserId,
+    String? reassignName,
+  ) async {
+    final schedule = context.read<ScheduleProvider>();
+    try {
+      await schedule.copyShiftToDay(
+        shift,
+        targetDay,
+        reassignUserId: reassignUserId,
+        reassignEmployeeName: reassignName,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Schicht kopiert')),
+      );
+    } on ShiftConflictException catch (error) {
+      if (!context.mounted) return;
+      await _showShiftConflictDialog(context, error.issues);
+    } on ComplianceRejectedException catch (error) {
+      if (!context.mounted) return;
+      await _showComplianceRejectionDialog(context, error);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Fehler: ${_cleanErrorText(error)}'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
   Future<void> _handleShiftPlanExport(
     BuildContext context, {
     required ShiftPlanExportFormat format,
@@ -831,6 +1033,8 @@ class ShiftPlannerScreen extends StatelessWidget {
         result.shifts,
         recurrencePattern: result.recurrencePattern,
         recurrenceEndDate: result.recurrenceEndDate,
+        seriesId:
+            result.groupAsSeries ? scheduleProvider.newSeriesId() : null,
       );
     } on ShiftConflictException catch (error) {
       if (!context.mounted) {
@@ -980,6 +1184,9 @@ class _AdminShiftPlannerBoard extends StatefulWidget {
     required this.canNavigateBack,
     this.onNavigateBack,
     required this.onCopyWeek,
+    required this.onAutoPlan,
+    required this.onCopyShiftToDays,
+    required this.onDropCopyShift,
     required this.onExport,
     required this.onOpenShiftEditor,
   });
@@ -994,6 +1201,14 @@ class _AdminShiftPlannerBoard extends StatefulWidget {
   final bool canNavigateBack;
   final VoidCallback? onNavigateBack;
   final Future<void> Function() onCopyWeek;
+  final Future<void> Function() onAutoPlan;
+  final Future<void> Function(Shift shift) onCopyShiftToDays;
+  final Future<void> Function(
+    Shift shift,
+    DateTime targetDay,
+    String? reassignUserId,
+    String? reassignName,
+  ) onDropCopyShift;
   final Future<void> Function(ShiftPlanExportFormat format, List<Shift> shifts)
       onExport;
   final _ShiftEditorLauncher onOpenShiftEditor;
@@ -1368,6 +1583,17 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                         ),
                       ),
                       const SizedBox(width: 4),
+                      IconButton.filledTonal(
+                        onPressed: () => widget.onOpenShiftEditor(),
+                        icon: const Icon(Icons.add_rounded),
+                        tooltip: 'Neue Schicht',
+                      ),
+                      const SizedBox(width: 4),
+                      IconButton.filledTonal(
+                        onPressed: () => widget.onAutoPlan(),
+                        icon: const Icon(Icons.auto_fix_high_rounded),
+                        tooltip: 'Automatisch planen',
+                      ),
                       PopupMenuButton<String>(
                         tooltip: 'Aktionen',
                         onSelected: (value) =>
@@ -1492,6 +1718,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                   ),
                 ),
                 Flexible(
+                  flex: 2,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: Text(
@@ -1524,118 +1751,149 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                   onPressed: () => schedule.setVisibleDate(DateTime.now()),
                   child: const Text('HEUTE'),
                 ),
-                const Spacer(),
-                if (schedule.viewMode != ScheduleViewMode.month) ...[
-                  PopupMenuButton<_PlannerLayoutMode>(
-                    onSelected: (value) => setState(() => _layoutMode = value),
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(
-                        value: _PlannerLayoutMode.employee,
-                        child: Text('Mitarbeiter'),
-                      ),
-                      PopupMenuItem(
-                        value: _PlannerLayoutMode.location,
-                        child: Text('Standort'),
-                      ),
-                    ],
-                    child: _controlPill(
-                      context,
-                      label: 'Layout',
-                      value: _layoutMode == _PlannerLayoutMode.employee
-                          ? 'Mitarbeiter'
-                          : 'Standort',
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                ],
-                PopupMenuButton<ScheduleViewMode>(
-                  onSelected: schedule.setViewMode,
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
-                      value: ScheduleViewMode.day,
-                      child: Text('Tag'),
-                    ),
-                    PopupMenuItem(
-                      value: ScheduleViewMode.week,
-                      child: Text('Woche'),
-                    ),
-                    PopupMenuItem(
-                      value: ScheduleViewMode.month,
-                      child: Text('Monat'),
-                    ),
-                  ],
-                  child: _controlPill(
-                    context,
-                    label: 'Ansicht',
-                    value: switch (schedule.viewMode) {
-                      ScheduleViewMode.day => 'Tag',
-                      ScheduleViewMode.week => 'Woche',
-                      ScheduleViewMode.month => 'Monat',
-                    },
-                  ),
-                ),
-                const SizedBox(width: 10),
-                IconButton.filledTonal(
-                  onPressed: _clearAllFilters,
-                  icon: const Icon(Icons.filter_alt_off_outlined),
-                  tooltip: 'Filter zuruecksetzen',
-                  style: IconButton.styleFrom(
-                    backgroundColor: colorScheme.surfaceContainerHigh,
-                    foregroundColor: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                PopupMenuButton<String>(
-                  onSelected: (value) =>
-                      _handleToolbarActionSelection(context, value),
-                  itemBuilder: (context) => _buildPlannerActionMenuItems(),
-                  child: _outlineActionButton(context, 'AKTIONEN'),
-                ),
-                const SizedBox(width: 10),
-                PopupMenuButton<String>(
-                  onSelected: (value) =>
-                      _handleToolbarActionSelection(context, value),
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
-                      value: 'publish_changes',
-                      child: Text(
-                        'Veroeffentlichen und Benachrichtigungen bei Aenderungen',
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'publish_all',
-                      child: Text('Veroeffentlichen und alle benachrichtigen'),
-                    ),
-                    PopupMenuItem(
-                      value: 'publish_silent',
-                      child: Text(
-                        'Veroeffentlichen und niemanden benachrichtigen',
-                      ),
-                    ),
-                  ],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: appColors.success,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: appColors.success.withValues(alpha: 0.24),
-                          blurRadius: 14,
-                          offset: const Offset(0, 8),
+                const SizedBox(width: 8),
+                // Steuer-/Aktions-Cluster: rechtsbündig, scrollt horizontal,
+                // wenn die Breite knapp wird (kein RenderFlex-Overflow mehr,
+                // auch bei großer Schriftskalierung).
+                Flexible(
+                  flex: 3,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    reverse: true,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (schedule.viewMode != ScheduleViewMode.month) ...[
+                          PopupMenuButton<_PlannerLayoutMode>(
+                            onSelected: (value) =>
+                                setState(() => _layoutMode = value),
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: _PlannerLayoutMode.employee,
+                                child: Text('Mitarbeiter'),
+                              ),
+                              PopupMenuItem(
+                                value: _PlannerLayoutMode.location,
+                                child: Text('Standort'),
+                              ),
+                            ],
+                            child: _controlPill(
+                              context,
+                              label: 'Layout',
+                              value: _layoutMode == _PlannerLayoutMode.employee
+                                  ? 'Mitarbeiter'
+                                  : 'Standort',
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        PopupMenuButton<ScheduleViewMode>(
+                          onSelected: schedule.setViewMode,
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: ScheduleViewMode.day,
+                              child: Text('Tag'),
+                            ),
+                            PopupMenuItem(
+                              value: ScheduleViewMode.week,
+                              child: Text('Woche'),
+                            ),
+                            PopupMenuItem(
+                              value: ScheduleViewMode.month,
+                              child: Text('Monat'),
+                            ),
+                          ],
+                          child: _controlPill(
+                            context,
+                            label: 'Ansicht',
+                            value: switch (schedule.viewMode) {
+                              ScheduleViewMode.day => 'Tag',
+                              ScheduleViewMode.week => 'Woche',
+                              ScheduleViewMode.month => 'Monat',
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        IconButton.filledTonal(
+                          onPressed: _clearAllFilters,
+                          icon: const Icon(Icons.filter_alt_off_outlined),
+                          tooltip: 'Filter zuruecksetzen',
+                          style: IconButton.styleFrom(
+                            backgroundColor: colorScheme.surfaceContainerHigh,
+                            foregroundColor: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        FilledButton.tonalIcon(
+                          onPressed: () => widget.onOpenShiftEditor(),
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Neue Schicht'),
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 14,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        PopupMenuButton<String>(
+                          onSelected: (value) =>
+                              _handleToolbarActionSelection(context, value),
+                          itemBuilder: (context) =>
+                              _buildPlannerActionMenuItems(),
+                          child: _outlineActionButton(context, 'AKTIONEN'),
+                        ),
+                        const SizedBox(width: 10),
+                        PopupMenuButton<String>(
+                          onSelected: (value) =>
+                              _handleToolbarActionSelection(context, value),
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: 'publish_changes',
+                              child: Text(
+                                'Veroeffentlichen und Benachrichtigungen bei Aenderungen',
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'publish_all',
+                              child: Text(
+                                  'Veroeffentlichen und alle benachrichtigen'),
+                            ),
+                            PopupMenuItem(
+                              value: 'publish_silent',
+                              child: Text(
+                                'Veroeffentlichen und niemanden benachrichtigen',
+                              ),
+                            ),
+                          ],
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: appColors.success,
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: [
+                                BoxShadow(
+                                  color:
+                                      appColors.success.withValues(alpha: 0.24),
+                                  blurRadius: 14,
+                                  offset: const Offset(0, 8),
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              'VERÖFFENTLICHEN',
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                color: appColors.onSuccess,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                          ),
                         ),
                       ],
-                    ),
-                    child: Text(
-                      'VERÖFFENTLICHEN',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: appColors.onSuccess,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.4,
-                      ),
                     ),
                   ),
                 ),
@@ -1658,6 +1916,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         child: Text('Freie Schicht anlegen'),
       ),
       const PopupMenuItem(value: 'copy', child: Text('Woche kopieren')),
+      const PopupMenuItem(
+        value: 'auto',
+        child: Text('Automatisch planen'),
+      ),
       const PopupMenuDivider(),
       const PopupMenuItem(
         value: 'pdf',
@@ -1710,6 +1972,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         );
       case 'copy':
         await widget.onCopyWeek();
+      case 'auto':
+        await widget.onAutoPlan();
       case 'pdf':
         await widget.onExport(
           ShiftPlanExportFormat.pdf,
@@ -2225,7 +2489,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                 ? 92.0
                 : compactBoard
                     ? 108.0
-                    : 170.0;
+                    : 180.0;
 
         if (compactBoard) {
           return _buildCompactMonthBoard(
@@ -2726,6 +2990,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
               initialUserIds: row.memberId == null ? null : {row.memberId!},
               initialLocation: row.location,
             ),
+            onDropShift: (dragged) =>
+                _handleShiftDrop(dragged, targetDay: day, row: row),
           ),
       ],
     );
@@ -2827,6 +3093,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     required List<Shift> shifts,
     List<AbsenceRequest> absences = const [],
     required Future<void> Function() onAdd,
+    Future<void> Function(Shift dragged)? onDropShift,
   }) {
     final theme = Theme.of(context);
     final footerLabels = <String>[
@@ -2835,66 +3102,191 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
       if (absences.isNotEmpty)
         absences.length == 1 ? '1 Abw.' : '${absences.length} Abw.',
     ];
-    return Container(
-      width: _dayWidth,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        border: Border(
-          right: BorderSide(color: theme.colorScheme.outlineVariant),
-          bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+
+    Widget buildContent({bool highlighted = false}) {
+      return Container(
+        width: _dayWidth,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: highlighted
+              ? theme.colorScheme.primaryContainer.withValues(alpha: 0.35)
+              : null,
+          border: Border(
+            right: BorderSide(color: theme.colorScheme.outlineVariant),
+            bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+          ),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (shifts.isEmpty && absences.isEmpty)
-            SizedBox(
-              height: 72,
-              child: Center(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (shifts.isEmpty && absences.isEmpty)
+              SizedBox(
+                height: 72,
+                child: Center(
+                  child: _PlannerQuickAddButton(onTap: onAdd),
+                ),
+              )
+            else ...[
+              for (final absence in absences)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _PlannerAbsencePill(
+                    absence: absence,
+                    compact: true,
+                  ),
+                ),
+              for (final shift in shifts)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _buildDraggableShiftCard(context, shift, shifts),
+                ),
+              Align(
+                alignment: Alignment.center,
                 child: _PlannerQuickAddButton(onTap: onAdd),
               ),
-            )
-          else ...[
-            for (final absence in absences)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _PlannerAbsencePill(
-                  absence: absence,
-                  compact: true,
+            ],
+            if (footerLabels.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                footerLabels.join(' · '),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
-            for (final shift in shifts)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _PlannerBoardShiftCard(
-                  shift: shift,
-                  sameBucketCount: shifts
-                      .where((entry) => entry.title == shift.title)
-                      .length,
-                  onTap: () => widget.onOpenShiftEditor(shift: shift),
-                  onDelete: () => _deleteShift(context, shift),
-                  onDeleteSeries: shift.seriesId == null
-                      ? null
-                      : () => _deleteShiftSeries(context, shift.seriesId!),
-                ),
-              ),
-            Align(
-              alignment: Alignment.center,
-              child: _PlannerQuickAddButton(onTap: onAdd),
+            ],
+          ],
+        ),
+      );
+    }
+
+    if (onDropShift == null) {
+      return buildContent();
+    }
+    // Drop-Ziel: gezogene Schicht wird auf diesen Tag (und ggf. diese
+    // Mitarbeiter-Zeile) KOPIERT. Highlight, solange eine Schicht über der
+    // Zelle schwebt.
+    return DragTarget<Shift>(
+      onAcceptWithDetails: (details) => onDropShift(details.data),
+      builder: (context, candidate, rejected) =>
+          buildContent(highlighted: candidate.isNotEmpty),
+    );
+  }
+
+  /// Schichtkarte als [LongPressDraggable] – LongPress (nicht Draggable),
+  /// damit das horizontale Scrollen des Boards erhalten bleibt.
+  Widget _buildDraggableShiftCard(
+    BuildContext context,
+    Shift shift,
+    List<Shift> dayShifts,
+  ) {
+    final card = _PlannerBoardShiftCard(
+      shift: shift,
+      sameBucketCount:
+          dayShifts.where((entry) => entry.title == shift.title).length,
+      onTap: () => widget.onOpenShiftEditor(shift: shift),
+      onDelete: () => _deleteShift(context, shift),
+      onDeleteSeries: shift.seriesId == null
+          ? null
+          : () => _deleteShiftSeries(context, shift.seriesId!),
+      onCopyToDays: () => widget.onCopyShiftToDays(shift),
+    );
+    final feedback = _shiftDragFeedback(context, shift);
+    final whileDragging = Opacity(opacity: 0.4, child: card);
+
+    // Auf Desktop/Web (Maus) sofortiges Ziehen per Klick – dort scrollt das
+    // Board ohnehin per Rad/Trackpad, kein Gesten-Konflikt. Auf Touch
+    // LongPress-Draggable, damit das Board weiter mit dem Finger horizontal
+    // gescrollt werden kann.
+    final usePointerDrag = kIsWeb ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux;
+
+    if (usePointerDrag) {
+      return Draggable<Shift>(
+        data: shift,
+        feedback: feedback,
+        childWhenDragging: whileDragging,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.grab,
+          child: card,
+        ),
+      );
+    }
+    return LongPressDraggable<Shift>(
+      data: shift,
+      feedback: feedback,
+      childWhenDragging: whileDragging,
+      child: card,
+    );
+  }
+
+  Widget _shiftDragFeedback(BuildContext context, Shift shift) {
+    final theme = Theme.of(context);
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        width: _dayWidth - 20,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 12,
+              offset: const Offset(0, 6),
             ),
           ],
-          if (footerLabels.isNotEmpty) ...[
-            const SizedBox(height: 10),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Text(
-              footerLabels.join(' · '),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              shift.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelLarge
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            Text(
+              '${timeFmt.format(shift.startTime)} - ${timeFmt.format(shift.endTime)}',
+              style: theme.textTheme.bodySmall,
             ),
           ],
-        ],
+        ),
       ),
     );
+  }
+
+  /// Verarbeitet einen Drop auf eine Tageszelle: kopiert die gezogene Schicht
+  /// auf den Zieltag; liegt das Ziel in einer anderen Mitarbeiter-Zeile, wird
+  /// die Kopie diesem Mitarbeiter zugewiesen. Drop auf dieselbe Zelle = No-Op.
+  Future<void> _handleShiftDrop(
+    Shift dragged, {
+    required DateTime targetDay,
+    required _PlannerBoardRowData row,
+  }) {
+    final sourceDay = DateTime(
+      dragged.startTime.year,
+      dragged.startTime.month,
+      dragged.startTime.day,
+    );
+    final target = DateTime(targetDay.year, targetDay.month, targetDay.day);
+    String? reassignUserId;
+    String? reassignName;
+    if (row.memberId != null && row.memberId != dragged.userId) {
+      final member =
+          widget.members.firstWhereOrNull((m) => m.uid == row.memberId);
+      reassignUserId = row.memberId;
+      reassignName = member?.displayName ?? row.title;
+    }
+    if (target == sourceDay && reassignUserId == null) {
+      return Future<void>.value();
+    }
+    return widget.onDropCopyShift(dragged, target, reassignUserId, reassignName);
   }
 
   Widget _rowLabelCell(
@@ -3702,10 +4094,6 @@ class _PlannerCompactMonthDayCell extends StatelessWidget {
         day.month == visibleMonth && day.year == visibleYear;
     final isToday = isSameDay(day, DateTime.now());
     final isWeekend = day.weekday >= DateTime.saturday;
-    final visibleShiftCount = shifts.length > 2 ? 2 : shifts.length;
-    final hiddenShiftCount = shifts.length - visibleShiftCount;
-    final displayedShifts =
-        shifts.take(visibleShiftCount).toList(growable: false);
     final backgroundColor = !isInVisibleMonth
         ? colorScheme.surfaceContainerLow
         : (isWeekend
@@ -3779,34 +4167,59 @@ class _PlannerCompactMonthDayCell extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Expanded(
-                child: displayedShifts.isEmpty
+                child: shifts.isEmpty
                     ? const SizedBox.shrink()
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (var index = 0;
-                              index < displayedShifts.length;
-                              index++) ...[
-                            _PlannerCompactMonthShiftTile(
-                              shift: displayedShifts[index],
-                              onTap: () => onOpenShift(displayedShifts[index]),
+                    : LayoutBuilder(
+                        builder: (context, constraints) {
+                          // Höhenbudget der kompakten Zelle respektieren, sonst
+                          // läuft die innere Column über (RenderFlex-Overflow).
+                          const tileExtent = 20.0;
+                          const tileSpacing = 4.0;
+                          const moreHintExtent = 18.0;
+                          final shownCount = monthCellVisibleShiftCount(
+                            available: constraints.maxHeight,
+                            total: shifts.length,
+                            tileExtent: tileExtent,
+                            tileSpacing: tileSpacing,
+                            moreHintExtent: moreHintExtent,
+                          );
+                          final shown =
+                              shifts.take(shownCount).toList(growable: false);
+                          final hidden = shifts.length - shown.length;
+                          return ClipRect(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                for (var index = 0;
+                                    index < shown.length;
+                                    index++) ...[
+                                  SizedBox(
+                                    height: tileExtent,
+                                    child: _PlannerCompactMonthShiftTile(
+                                      shift: shown[index],
+                                      onTap: () => onOpenShift(shown[index]),
+                                    ),
+                                  ),
+                                  if (index < shown.length - 1)
+                                    const SizedBox(height: tileSpacing),
+                                ],
+                                if (hidden > 0) ...[
+                                  if (shown.isNotEmpty)
+                                    const SizedBox(height: tileSpacing),
+                                  Text(
+                                    '+$hidden mehr',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
-                            if (index < displayedShifts.length - 1)
-                              const SizedBox(height: 4),
-                          ],
-                          if (hiddenShiftCount > 0) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              '+$hiddenShiftCount mehr',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: colorScheme.primary,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ],
+                          );
+                        },
                       ),
               ),
             ],
@@ -3854,10 +4267,6 @@ class _PlannerMonthDayCell extends StatelessWidget {
         day.month == visibleMonth && day.year == visibleYear;
     final isToday = isSameDay(day, DateTime.now());
     final isWeekend = day.weekday >= DateTime.saturday;
-    final visibleShiftCount = shifts.length > 4 ? 4 : shifts.length;
-    final hiddenShiftCount = shifts.length - visibleShiftCount;
-    final displayedShifts =
-        shifts.take(visibleShiftCount).toList(growable: false);
     final totalHours =
         shifts.fold<double>(0, (sum, shift) => sum + shift.workedHours);
     final dayLabel = day.day == 1 || !isInVisibleMonth
@@ -3963,49 +4372,79 @@ class _PlannerMonthDayCell extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Expanded(
-            child: displayedShifts.isEmpty
+            child: shifts.isEmpty
                 ? const SizedBox.shrink()
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var index = 0;
-                          index < displayedShifts.length;
-                          index++) ...[
-                        _PlannerMonthShiftTile(
-                          shift: displayedShifts[index],
-                          onTap: () => onOpenShift(displayedShifts[index]),
-                          onDelete: () => onDeleteShift(displayedShifts[index]),
-                          onDeleteSeries:
-                              displayedShifts[index].seriesId == null
-                                  ? null
-                                  : () => onDeleteSeries(
-                                        displayedShifts[index].seriesId!,
-                                      ),
-                        ),
-                        if (index < displayedShifts.length - 1)
-                          const SizedBox(height: 6),
-                      ],
-                      if (hiddenShiftCount > 0) ...[
-                        const SizedBox(height: 6),
-                        InkWell(
-                          borderRadius: BorderRadius.circular(10),
-                          onTap: onShowMore,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 4,
-                            ),
-                            child: Text(
-                              '+$hiddenShiftCount weitere',
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: colorScheme.primary,
-                                fontWeight: FontWeight.w700,
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      // Nur so viele Schicht-Kacheln rendern, wie in die feste
+                      // Zellenhöhe passen — sonst läuft die innere Column über
+                      // (RenderFlex-Overflow). Der Rest erscheint als
+                      // „+N weitere"-Hinweis. ClipRect ist die Sicherung gegen
+                      // verbleibende Sub-Pixel-Rundung.
+                      const tileExtent = 30.0;
+                      const tileSpacing = 5.0;
+                      const moreHintExtent = 26.0;
+                      final shownCount = monthCellVisibleShiftCount(
+                        available: constraints.maxHeight,
+                        total: shifts.length,
+                        tileExtent: tileExtent,
+                        tileSpacing: tileSpacing,
+                        moreHintExtent: moreHintExtent,
+                      );
+                      final shown =
+                          shifts.take(shownCount).toList(growable: false);
+                      final hidden = shifts.length - shown.length;
+                      return ClipRect(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (var index = 0;
+                                index < shown.length;
+                                index++) ...[
+                              SizedBox(
+                                height: tileExtent,
+                                child: _PlannerMonthShiftTile(
+                                  shift: shown[index],
+                                  onTap: () => onOpenShift(shown[index]),
+                                  onDelete: () => onDeleteShift(shown[index]),
+                                  onDeleteSeries: shown[index].seriesId == null
+                                      ? null
+                                      : () => onDeleteSeries(
+                                            shown[index].seriesId!,
+                                          ),
+                                ),
                               ),
-                            ),
-                          ),
+                              if (index < shown.length - 1)
+                                const SizedBox(height: tileSpacing),
+                            ],
+                            if (hidden > 0) ...[
+                              if (shown.isNotEmpty)
+                                const SizedBox(height: tileSpacing),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: onShowMore,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 3,
+                                  ),
+                                  child: Text(
+                                    '+$hidden weitere',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style:
+                                        theme.textTheme.labelMedium?.copyWith(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
-                      ],
-                    ],
+                      );
+                    },
                   ),
           ),
           Row(
@@ -4021,10 +4460,14 @@ class _PlannerMonthDayCell extends StatelessWidget {
               if (shifts.isNotEmpty && absenceCount > 0)
                 const SizedBox(width: 8),
               if (shifts.isEmpty && absenceCount > 0)
-                Text(
-                  'Abwesenheiten vorhanden',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
+                Flexible(
+                  child: Text(
+                    'Abwesenheiten vorhanden',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
             ],
@@ -4121,7 +4564,7 @@ class _PlannerMonthShiftTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.fromLTRB(8, 5, 2, 5),
+          padding: const EdgeInsets.fromLTRB(8, 3, 2, 3),
           decoration: BoxDecoration(
             color: background,
             borderRadius: BorderRadius.circular(10),
@@ -4133,7 +4576,7 @@ class _PlannerMonthShiftTile extends StatelessWidget {
             children: [
               Container(
                 width: 4,
-                height: 22,
+                height: 18,
                 decoration: BoxDecoration(
                   color: baseColor,
                   borderRadius: BorderRadius.circular(999),
@@ -4246,50 +4689,43 @@ class _ShiftCard extends StatelessWidget {
                 '${shift.effectiveSiteLabel == null || shift.effectiveSiteLabel!.isEmpty ? '' : '\nStandort: ${shift.effectiveSiteLabel}'}'
                 '${shift.notes == null || shift.notes!.isEmpty ? '' : '\n${shift.notes}'}',
               ),
-              if (!isAdmin && shift.swapStatus == null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: TextButton.icon(
-                    onPressed: () async {
-                      if (shift.id == null) return;
-                      try {
-                        await context
-                            .read<ScheduleProvider>()
-                            .requestShiftSwap(shift.id!);
-                        if (!context.mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('Tauschanfrage gesendet')),
+              if (!isAdmin && shift.id != null)
+                Builder(
+                  builder: (context) {
+                    // Läuft für diese Schicht bereits eine (neue) Tauschanfrage?
+                    final openRequest = context
+                        .watch<ScheduleProvider>()
+                        .swapRequests
+                        .firstWhereOrNull(
+                          (request) =>
+                              request.requesterShiftId == shift.id &&
+                              !request.status.isClosed,
                         );
-                      } catch (error) {
-                        if (!context.mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Fehler: $error'),
-                            backgroundColor:
-                                Theme.of(context).colorScheme.error,
+                    if (openRequest != null) {
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Tauschanfrage: ${openRequest.status.label}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.tertiary,
+                            fontStyle: FontStyle.italic,
                           ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.swap_horiz, size: 18),
-                    label: const Text('Tausch anfragen'),
-                    style: TextButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                  ),
-                ),
-              if (!isAdmin && shift.swapStatus == 'pending')
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    'Tauschanfrage ausstehend',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.tertiary,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
+                        ),
+                      );
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: TextButton.icon(
+                        onPressed: () => showSwapRequestSheet(context, shift),
+                        icon: const Icon(Icons.swap_horiz, size: 18),
+                        label: const Text('Tausch anfragen'),
+                        style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    );
+                  },
                 ),
               if (isAdmin && shift.swapStatus == 'pending')
                 Padding(
@@ -4629,21 +5065,34 @@ class _PlannerQuickAddButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: Container(
-        width: 28,
-        height: 28,
-        decoration: BoxDecoration(
-          color: colorScheme.primaryContainer.withValues(alpha: 0.42),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: colorScheme.primary.withValues(alpha: 0.2)),
-        ),
-        child: Icon(
-          Icons.add,
-          size: 18,
-          color: colorScheme.primary,
+    // 48x48-Trefferfläche (Material-Mindestmaß) mit gut sichtbarem 40px-Kreis.
+    return Tooltip(
+      message: 'Schicht hinzufuegen',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: Center(
+            child: Container(
+              width: 40,
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: colorScheme.primary.withValues(alpha: 0.28),
+                ),
+              ),
+              child: Icon(
+                Icons.add_rounded,
+                size: 24,
+                color: colorScheme.primary,
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -5615,5 +6064,289 @@ DateTime _shiftVisibleDate(
     case ScheduleViewMode.month:
       final start = DateTime(date.year, date.month, 1);
       return (start: start, end: DateTime(date.year, date.month + 1, 1));
+  }
+}
+
+/// Vorschau-Sheet der automatischen Schichtverteilung: zeigt zu erstellende
+/// Schichten, Zuweisungen, Warnungen und nicht zuweisbare Slots. Gibt `true`
+/// zurück, wenn der Nutzer „Übernehmen & speichern" wählt.
+class _AutoPlanPreviewSheet extends StatelessWidget {
+  const _AutoPlanPreviewSheet({
+    required this.generated,
+    required this.existingOpen,
+    required this.result,
+    required this.enforceHourCapHard,
+  });
+
+  final List<Shift> generated;
+  final List<Shift> existingOpen;
+  final AutoAssignmentResult result;
+  final bool enforceHourCapHard;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final dateFmt = DateFormat('EEE dd.MM.', 'de_DE');
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
+
+    final lookup = <String, Shift>{
+      for (final shift in [...generated, ...existingOpen])
+        if (shift.id != null) shift.id!: shift,
+    };
+
+    String slotLabel(String shiftId) {
+      final shift = lookup[shiftId];
+      if (shift == null) {
+        return shiftId;
+      }
+      final site = shift.siteName?.trim().isNotEmpty == true
+          ? shift.siteName!.trim()
+          : 'Standort';
+      return '${dateFmt.format(shift.startTime)} '
+          '${timeFmt.format(shift.startTime)}–${timeFmt.format(shift.endTime)} · $site';
+    }
+
+    final generatedBySite = <String, int>{};
+    for (final shift in generated) {
+      final key = shift.siteName?.trim().isNotEmpty == true
+          ? shift.siteName!.trim()
+          : '—';
+      generatedBySite[key] = (generatedBySite[key] ?? 0) + 1;
+    }
+
+    return SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Automatische Planung — Vorschau',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _AutoPlanStat(
+                  label: '${generated.length} neu',
+                  color: appColors.info,
+                  icon: Icons.add_circle_outline,
+                ),
+                _AutoPlanStat(
+                  label: '${result.assignments.length} besetzt',
+                  color: appColors.success,
+                  icon: Icons.person_add_alt,
+                ),
+                _AutoPlanStat(
+                  label: '${result.unassigned.length} offen',
+                  color: appColors.warning,
+                  icon: Icons.help_outline,
+                ),
+                if (result.warnings.isNotEmpty)
+                  _AutoPlanStat(
+                    label: '${result.warnings.length} Warnungen',
+                    color: appColors.warning,
+                    icon: Icons.warning_amber_rounded,
+                  ),
+              ],
+            ),
+            if (!enforceHourCapHard) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: appColors.warningContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: appColors.onWarningContainer),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Stundengrenzen sind weich — Überschreitungen sind erlaubt.',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: appColors.onWarningContainer),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (generatedBySite.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _AutoPlanSectionHeader(
+                title: 'Neu zu erstellen',
+                count: generated.length,
+              ),
+              for (final entry in generatedBySite.entries)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text('${entry.key}: ${entry.value} Schichten'),
+                ),
+            ],
+            if (result.assignments.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _AutoPlanSectionHeader(
+                title: 'Zuweisungen',
+                count: result.assignments.length,
+              ),
+              for (final assignment in result.assignments)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text.rich(
+                        TextSpan(children: [
+                          TextSpan(text: slotLabel(assignment.shiftId)),
+                          const TextSpan(text: '  →  '),
+                          TextSpan(
+                            text: assignment.userName,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ]),
+                      ),
+                      Text(
+                        assignment.reason,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+            if (result.warnings.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _AutoPlanSectionHeader(
+                title: 'Warnungen',
+                count: result.warnings.length,
+                color: appColors.warning,
+              ),
+              for (final warning in result.warnings)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.warning_amber_rounded,
+                          size: 18, color: appColors.warning),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(warning.message)),
+                    ],
+                  ),
+                ),
+            ],
+            if (result.unassigned.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _AutoPlanSectionHeader(
+                title: 'Nicht zuweisbar',
+                count: result.unassigned.length,
+                color: appColors.warning,
+              ),
+              for (final item in result.unassigned)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(slotLabel(item.shiftId)),
+                      Text(
+                        item.message,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: appColors.warning),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Abbrechen'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    icon: const Icon(Icons.save),
+                    label: const Text('Übernehmen & speichern'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AutoPlanStat extends StatelessWidget {
+  const _AutoPlanStat({
+    required this.label,
+    required this.color,
+    required this.icon,
+  });
+
+  final String label;
+  final Color color;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 6),
+          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
+
+class _AutoPlanSectionHeader extends StatelessWidget {
+  const _AutoPlanSectionHeader({
+    required this.title,
+    required this.count,
+    this.color,
+  });
+
+  final String title;
+  final int count;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(
+        '$title ($count)',
+        style: theme.textTheme.titleSmall?.copyWith(
+          fontWeight: FontWeight.bold,
+          color: color,
+        ),
+      ),
+    );
   }
 }

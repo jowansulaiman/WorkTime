@@ -2,6 +2,201 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
+import '../core/sfn_zuschlag.dart';
+import 'pay_line_type.dart';
+
+/// Eine konkrete Lohnzeile einer Abrechnung (Plan §5.7/§5.8, M-L). Eingebettet
+/// in [PayrollRecord.lines] — zusätzliche Bezüge/Abzüge **neben** den
+/// bestehenden Einzelfeldern (Grundlohn, Zulagen, §3b-Zuschläge, VwL,
+/// Einmalzahlungen). [amountCents] ist signiert (Abzüge negativ).
+///
+/// Steuer-/SV-Behandlung: für die meisten Arten genügen die Flags
+/// [steuerfrei]/[svFrei] (Zeile ganz frei oder ganz pflichtig). Für
+/// [PayLineKind.zuschlag3b] ist die Aufteilung **partiell** (über/unter der
+/// 50 €/25 €-Grundlohngrenze) → dann tragen [steuerfreiAnteilCents]/
+/// [svFreiAnteilCents] die exakten Beträge und haben Vorrang vor den Flags
+/// (siehe [effektivSteuerfreiCents]/[effektivSvFreiCents]).
+class PayrollLine {
+  const PayrollLine({
+    this.lineTypeId,
+    required this.name,
+    this.datevLohnartNr,
+    this.amountCents = 0,
+    this.kind = PayLineKind.zulage,
+    this.steuerfrei = false,
+    this.svFrei = false,
+    this.steuerfreiAnteilCents,
+    this.svFreiAnteilCents,
+    this.note,
+  });
+
+  /// Verweis auf die [PayLineType]-Vorlage (`null` = freie Ad-hoc-Zeile).
+  final String? lineTypeId;
+  final String name;
+  final String? datevLohnartNr;
+
+  /// Signierter Betrag in Cent (Bezug positiv, Abzug negativ).
+  final int amountCents;
+  final PayLineKind kind;
+
+  /// Ganz-steuerfrei-Flag (Fallback, wenn [steuerfreiAnteilCents] null ist).
+  final bool steuerfrei;
+
+  /// Ganz-SV-frei-Flag (Fallback, wenn [svFreiAnteilCents] null ist).
+  final bool svFrei;
+
+  /// Partieller steuerfreier Betrag (z. B. §3b über 50 € Grundlohn). `null` ⇒
+  /// das [steuerfrei]-Flag entscheidet.
+  final int? steuerfreiAnteilCents;
+
+  /// Partieller SV-freier Betrag (z. B. §3b über 25 € Grundlohn). `null` ⇒ das
+  /// [svFrei]-Flag entscheidet.
+  final int? svFreiAnteilCents;
+
+  final String? note;
+
+  /// Erzeugt eine §3b-Zuschlagszeile aus der reinen Aufteilung [Sfn3bAnteil]
+  /// (siehe `lib/core/sfn_zuschlag.dart`). Bindet den §3b-Rechenkern an die
+  /// Lohnzeile, ohne dass dieser den Lohnart-/Persistenz-Layer kennt.
+  factory PayrollLine.zuschlag3b({
+    required Sfn3bAnteil anteil,
+    required String name,
+    String? lineTypeId,
+    String? datevLohnartNr,
+    String? note,
+  }) {
+    return PayrollLine(
+      lineTypeId: lineTypeId,
+      name: name,
+      datevLohnartNr: datevLohnartNr,
+      amountCents: anteil.gesamtCents,
+      kind: PayLineKind.zuschlag3b,
+      steuerfrei: anteil.steuerpflichtigCents == 0,
+      svFrei: anteil.svPflichtigCents == 0,
+      steuerfreiAnteilCents: anteil.steuerfreiCents,
+      svFreiAnteilCents: anteil.svFreiCents,
+      note: note,
+    );
+  }
+
+  // Hinweis: Diese Getter geben den partiellen Anteil unverändert zurück (kein
+  // Clamp gegen [amountCents]). Heute unkritisch, da der einzige Produzent die
+  // [PayrollLine.zuschlag3b]-Factory ist, die die `Sfn3bAnteil`-Invariante
+  // (0 ≤ svFrei ≤ steuerfrei ≤ gesamt) garantiert. Sobald ein Lohnart-Editor
+  // (M-L-b) frei Anteile setzt, gehört eine Grenzwert-Validierung an dessen
+  // Eingabe-Boundary (sonst könnte `steuerpflichtigCents` negativ werden).
+  /// Effektiv steuerfreier Betrag: partieller Anteil falls gesetzt, sonst das
+  /// Flag (ganze Zeile frei oder nichts).
+  int get effektivSteuerfreiCents =>
+      steuerfreiAnteilCents ?? (steuerfrei ? amountCents : 0);
+
+  /// Effektiv SV-freier Betrag (analog).
+  int get effektivSvFreiCents =>
+      svFreiAnteilCents ?? (svFrei ? amountCents : 0);
+
+  /// Steuerpflichtiger Rest der Zeile.
+  int get steuerpflichtigCents => amountCents - effektivSteuerfreiCents;
+
+  /// SV-pflichtiger Rest der Zeile.
+  int get svPflichtigCents => amountCents - effektivSvFreiCents;
+
+  factory PayrollLine.fromFirestore(Map<String, dynamic> map) {
+    return PayrollLine(
+      lineTypeId: map['lineTypeId'] as String?,
+      name: (map['name'] ?? '').toString(),
+      datevLohnartNr: map['datevLohnartNr'] as String?,
+      amountCents: parse.toInt(map['amountCents']) ?? 0,
+      kind: PayLineKindX.fromValue(map['kind']?.toString()),
+      steuerfrei: parse.toBool(map['steuerfrei']) ?? false,
+      svFrei: parse.toBool(map['svFrei']) ?? false,
+      steuerfreiAnteilCents: parse.toInt(map['steuerfreiAnteilCents']),
+      svFreiAnteilCents: parse.toInt(map['svFreiAnteilCents']),
+      note: map['note'] as String?,
+    );
+  }
+
+  factory PayrollLine.fromMap(Map<String, dynamic> map) {
+    return PayrollLine(
+      lineTypeId: map['line_type_id'] as String?,
+      name: (map['name'] ?? '').toString(),
+      datevLohnartNr: map['datev_lohnart_nr'] as String?,
+      amountCents: parse.toInt(map['amount_cents']) ?? 0,
+      kind: PayLineKindX.fromValue(map['kind']?.toString()),
+      steuerfrei: parse.toBool(map['steuerfrei']) ?? false,
+      svFrei: parse.toBool(map['sv_frei']) ?? false,
+      steuerfreiAnteilCents: parse.toInt(map['steuerfrei_anteil_cents']),
+      svFreiAnteilCents: parse.toInt(map['sv_frei_anteil_cents']),
+      note: map['note'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toFirestoreMap() {
+    return {
+      'lineTypeId': lineTypeId,
+      'name': name.trim(),
+      'datevLohnartNr': datevLohnartNr,
+      'amountCents': amountCents,
+      'kind': kind.value,
+      'steuerfrei': steuerfrei,
+      'svFrei': svFrei,
+      'steuerfreiAnteilCents': steuerfreiAnteilCents,
+      'svFreiAnteilCents': svFreiAnteilCents,
+      'note': note,
+    };
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'line_type_id': lineTypeId,
+      'name': name,
+      'datev_lohnart_nr': datevLohnartNr,
+      'amount_cents': amountCents,
+      'kind': kind.value,
+      'steuerfrei': steuerfrei,
+      'sv_frei': svFrei,
+      'steuerfrei_anteil_cents': steuerfreiAnteilCents,
+      'sv_frei_anteil_cents': svFreiAnteilCents,
+      'note': note,
+    };
+  }
+
+  PayrollLine copyWith({
+    String? lineTypeId,
+    bool clearLineTypeId = false,
+    String? name,
+    String? datevLohnartNr,
+    bool clearDatevLohnartNr = false,
+    int? amountCents,
+    PayLineKind? kind,
+    bool? steuerfrei,
+    bool? svFrei,
+    int? steuerfreiAnteilCents,
+    bool clearSteuerfreiAnteil = false,
+    int? svFreiAnteilCents,
+    bool clearSvFreiAnteil = false,
+    String? note,
+    bool clearNote = false,
+  }) {
+    return PayrollLine(
+      lineTypeId: clearLineTypeId ? null : (lineTypeId ?? this.lineTypeId),
+      name: name ?? this.name,
+      datevLohnartNr: clearDatevLohnartNr
+          ? null
+          : (datevLohnartNr ?? this.datevLohnartNr),
+      amountCents: amountCents ?? this.amountCents,
+      kind: kind ?? this.kind,
+      steuerfrei: steuerfrei ?? this.steuerfrei,
+      svFrei: svFrei ?? this.svFrei,
+      steuerfreiAnteilCents: clearSteuerfreiAnteil
+          ? null
+          : (steuerfreiAnteilCents ?? this.steuerfreiAnteilCents),
+      svFreiAnteilCents: clearSvFreiAnteil
+          ? null
+          : (svFreiAnteilCents ?? this.svFreiAnteilCents),
+      note: clearNote ? null : (note ?? this.note),
+    );
+  }
+}
 
 /// Steuerklasse (Lohnsteuerklasse) I–VI.
 enum TaxClass { i, ii, iii, iv, v, vi }
@@ -134,6 +329,8 @@ class PayrollRecord {
     this.status = PayrollStatus.entwurf,
     this.finalizedByUid,
     this.finalizedAt,
+    this.journalEntryId,
+    this.lines = const [],
     this.note,
     this.createdByUid,
     this.createdAt,
@@ -175,10 +372,34 @@ class PayrollRecord {
   /// Zeitpunkt der Freigabe/Statusänderung.
   final DateTime? finalizedAt;
 
+  /// Verknüpfte Finanz-Buchung (`JournalEntry.id`), sobald die Personalkosten
+  /// bei der Freigabe automatisch in die Buchhaltung gebucht wurden (H-A1).
+  /// `null` = noch nicht gebucht. Dient zugleich als Idempotenz-Marker gegen
+  /// Doppelbuchung im hybrid-Fallback (zusätzlich zur deterministischen
+  /// Journal-Doc-ID `pay-<documentId>`).
+  final String? journalEntryId;
+
+  /// Itemisierte Zusatz-Lohnzeilen (Plan §5.7/§5.8, M-L): Grundlohn-Line,
+  /// §3b-Zuschläge, VwL, Einmalzahlungen … **zusätzlich** zu den bestehenden
+  /// Einzelfeldern (die bleiben für Brutto/Netto maßgeblich). Eingebettet.
+  final List<PayrollLine> lines;
+
   final String? note;
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+
+  /// Summe aller Lohnzeilen (signiert) in Cent.
+  int get linesTotalCents =>
+      lines.fold(0, (acc, line) => acc + line.amountCents);
+
+  /// Steuerpflichtiger Anteil aller Lohnzeilen (z. B. §3b-Rest über 50 €).
+  int get steuerpflichtigeLinesCents =>
+      lines.fold(0, (acc, line) => acc + line.steuerpflichtigCents);
+
+  /// SV-pflichtiger Anteil aller Lohnzeilen (z. B. §3b-Rest über 25 €).
+  int get svPflichtigeLinesCents =>
+      lines.fold(0, (acc, line) => acc + line.svPflichtigCents);
 
   /// Deterministische Dokument-ID für stabilen Upsert pro Monat.
   String get documentId =>
@@ -232,6 +453,8 @@ class PayrollRecord {
       status: PayrollStatusX.fromValue(map['status']?.toString()),
       finalizedByUid: map['finalizedByUid'] as String?,
       finalizedAt: FirestoreDateParser.readDate(map['finalizedAt']),
+      journalEntryId: map['journalEntryId'] as String?,
+      lines: _parseLines(map['lines'], local: false),
       note: map['note'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
@@ -269,6 +492,8 @@ class PayrollRecord {
       status: PayrollStatusX.fromValue(map['status']?.toString()),
       finalizedByUid: map['finalized_by_uid'] as String?,
       finalizedAt: FirestoreDateParser.readLocalDate(map['finalized_at']),
+      journalEntryId: map['journal_entry_id'] as String?,
+      lines: _parseLines(map['lines'], local: true),
       note: map['note'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
@@ -304,6 +529,8 @@ class PayrollRecord {
       'finalizedByUid': finalizedByUid,
       'finalizedAt':
           finalizedAt == null ? null : Timestamp.fromDate(finalizedAt!),
+      'journalEntryId': journalEntryId,
+      'lines': lines.map((line) => line.toFirestoreMap()).toList(),
       'note': note,
       'createdByUid': createdByUid,
       if (id == null) 'createdAt': FieldValue.serverTimestamp(),
@@ -339,11 +566,30 @@ class PayrollRecord {
       'status': status.value,
       'finalized_by_uid': finalizedByUid,
       'finalized_at': finalizedAt?.toIso8601String(),
+      'journal_entry_id': journalEntryId,
+      'lines': lines.map((line) => line.toMap()).toList(),
       'note': note,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
     };
+  }
+
+  /// Parst die eingebettete Lohnzeilen-Liste tolerant (camelCase via
+  /// [PayrollLine.fromFirestore] bzw. snake_case via [PayrollLine.fromMap]).
+  static List<PayrollLine> _parseLines(dynamic raw, {required bool local}) {
+    if (raw is! List) {
+      return const [];
+    }
+    return raw
+        .whereType<Map>()
+        .map((e) {
+          final map = Map<String, dynamic>.from(e);
+          return local
+              ? PayrollLine.fromMap(map)
+              : PayrollLine.fromFirestore(map);
+        })
+        .toList(growable: false);
   }
 
   PayrollRecord copyWith({
@@ -376,6 +622,9 @@ class PayrollRecord {
     bool clearFinalizedBy = false,
     DateTime? finalizedAt,
     bool clearFinalizedAt = false,
+    String? journalEntryId,
+    bool clearJournalEntryId = false,
+    List<PayrollLine>? lines,
     String? note,
     bool clearNote = false,
     String? createdByUid,
@@ -414,6 +663,10 @@ class PayrollRecord {
           clearFinalizedBy ? null : (finalizedByUid ?? this.finalizedByUid),
       finalizedAt:
           clearFinalizedAt ? null : (finalizedAt ?? this.finalizedAt),
+      journalEntryId: clearJournalEntryId
+          ? null
+          : (journalEntryId ?? this.journalEntryId),
+      lines: lines ?? this.lines,
       note: clearNote ? null : (note ?? this.note),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,

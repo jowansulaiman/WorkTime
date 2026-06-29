@@ -603,6 +603,40 @@ void main() {
       expect(provider.absenceRequests.single.status, AbsenceStatus.approved);
     });
 
+    test('preserves M-U fields (halfDay/hours/vertreter/eau) on submit',
+        () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+      seedCompliance(provider);
+
+      final today = DateTime.now();
+      await provider.submitAbsenceRequest(
+        AbsenceRequest(
+          orgId: adminUser.orgId,
+          userId: adminUser.uid,
+          employeeName: adminUser.displayName,
+          startDate: today,
+          endDate: today,
+          type: AbsenceType.timeOff,
+          halfDay: true,
+          halfDayPeriod: HalfDayPeriod.nachmittags,
+          hours: 4.5,
+          vertreterUserIds: const ['rep-1', 'rep-2'],
+          eauAttached: true,
+        ),
+      );
+
+      final saved = provider.absenceRequests.single;
+      expect(saved.halfDay, isTrue);
+      expect(saved.halfDayPeriod, HalfDayPeriod.nachmittags);
+      expect(saved.hours, 4.5);
+      expect(saved.vertreterUserIds, ['rep-1', 'rep-2']);
+      expect(saved.eauAttached, isTrue);
+    });
+
     test('updates own pending absence requests locally', () async {
       final provider = ScheduleProvider(
         firestoreService: firestoreService,
@@ -1671,6 +1705,234 @@ void main() {
             .contains('site_assignment_missing'),
         isTrue,
       );
+    });
+
+    test(
+        'copyShiftsToDays kopiert Standort mit, ueberspringt den Quelltag und '
+        'gruppiert als Serie', () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+      seedCompliance(provider);
+
+      final source = Shift(
+        orgId: adminUser.orgId,
+        userId: adminUser.uid,
+        employeeName: adminUser.displayName,
+        title: 'Tagdienst',
+        startTime: DateTime(2026, 4, 6, 8),
+        endTime: DateTime(2026, 4, 6, 16),
+        breakMinutes: 30,
+        siteId: defaultSite.id,
+        siteName: defaultSite.name,
+        location: defaultSite.name,
+      );
+
+      // Quelltag (06.) ist absichtlich in der Zielliste -> wird uebersprungen.
+      await provider.copyShiftsToDays(
+        [source],
+        [DateTime(2026, 4, 6), DateTime(2026, 4, 7), DateTime(2026, 4, 8)],
+      );
+
+      provider.setVisibleDate(DateTime(2026, 4, 6));
+      final copies = provider.shifts;
+      expect(copies, hasLength(2));
+      expect(copies.every((s) => s.siteId == 'site-1'), isTrue);
+      expect(copies.every((s) => s.siteName == 'Berlin'), isTrue);
+      expect(copies.every((s) => s.status == ShiftStatus.planned), isTrue);
+      expect(copies.every((s) => s.startTime.hour == 8), isTrue);
+      expect(copies.map((s) => s.startTime.day).toSet(), {7, 8});
+      final seriesIds = copies.map((s) => s.seriesId).toSet();
+      expect(seriesIds, hasLength(1));
+      expect(seriesIds.single, isNotNull);
+    });
+
+    test('copyShiftToDay weist die Kopie einem anderen Mitarbeiter zu',
+        () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+      const employee = AppUserProfile(
+        uid: 'employee-1',
+        orgId: 'org-1',
+        email: 'anna@example.com',
+        role: UserRole.employee,
+        isActive: true,
+        settings: UserSettings(name: 'Anna'),
+      );
+      seedCompliance(
+        provider,
+        members: const [employee],
+        contracts: [contractFor('employee-1')],
+        assignments: [
+          assignmentFor(
+            userId: 'employee-1',
+            siteId: defaultSite.id!,
+            siteName: defaultSite.name,
+          ),
+        ],
+      );
+
+      final source = Shift(
+        orgId: adminUser.orgId,
+        userId: adminUser.uid,
+        employeeName: adminUser.displayName,
+        title: 'Tagdienst',
+        startTime: DateTime(2026, 4, 6, 8),
+        endTime: DateTime(2026, 4, 6, 16),
+        breakMinutes: 30,
+        siteId: defaultSite.id,
+        siteName: defaultSite.name,
+        location: defaultSite.name,
+      );
+
+      // Drop auf denselben Tag, aber andere Mitarbeiter-Zeile -> gueltige Kopie.
+      await provider.copyShiftToDay(
+        source,
+        DateTime(2026, 4, 6),
+        reassignUserId: 'employee-1',
+        reassignEmployeeName: 'Anna',
+      );
+
+      provider.setVisibleDate(DateTime(2026, 4, 6));
+      expect(provider.shifts, hasLength(1));
+      final copy = provider.shifts.single;
+      expect(copy.userId, 'employee-1');
+      expect(copy.employeeName, 'Anna');
+      expect(copy.siteId, 'site-1');
+      expect(copy.startTime.day, 6);
+    });
+
+    test(
+        'copyShiftToAssignees kopiert auf mehrere Mitarbeiter und Tage '
+        '(Kreuzprodukt, Ursprung uebersprungen)', () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+      const anna = AppUserProfile(
+        uid: 'employee-1',
+        orgId: 'org-1',
+        email: 'anna@example.com',
+        role: UserRole.employee,
+        isActive: true,
+        settings: UserSettings(name: 'Anna'),
+      );
+      const ben = AppUserProfile(
+        uid: 'employee-2',
+        orgId: 'org-1',
+        email: 'ben@example.com',
+        role: UserRole.employee,
+        isActive: true,
+        settings: UserSettings(name: 'Ben'),
+      );
+      seedCompliance(
+        provider,
+        members: const [anna, ben],
+        contracts: [contractFor('employee-1'), contractFor('employee-2')],
+        assignments: [
+          assignmentFor(
+            userId: 'employee-1',
+            siteId: defaultSite.id!,
+            siteName: defaultSite.name,
+          ),
+          assignmentFor(
+            userId: 'employee-2',
+            siteId: defaultSite.id!,
+            siteName: defaultSite.name,
+          ),
+        ],
+      );
+
+      // Quelle: Anna am 06.04.
+      final source = Shift(
+        orgId: adminUser.orgId,
+        userId: 'employee-1',
+        employeeName: 'Anna',
+        title: 'Tagdienst',
+        startTime: DateTime(2026, 4, 6, 8),
+        endTime: DateTime(2026, 4, 6, 16),
+        breakMinutes: 30,
+        siteId: defaultSite.id,
+        siteName: defaultSite.name,
+        location: defaultSite.name,
+      );
+
+      // Ziel: Anna + Ben an 06.04. und 07.04.
+      await provider.copyShiftToAssignees(
+        source,
+        [DateTime(2026, 4, 6), DateTime(2026, 4, 7)],
+        const [anna, ben],
+      );
+
+      provider.setVisibleDate(DateTime(2026, 4, 6));
+      final shifts = provider.shifts;
+      // 2 MA x 2 Tage = 4, minus die exakte Ursprungskombination (Anna/06.) = 3.
+      expect(shifts, hasLength(3));
+      expect(
+        shifts.where((s) => s.userId == 'employee-2'),
+        hasLength(2),
+        reason: 'Ben bekommt beide Tage',
+      );
+      expect(
+        shifts.where(
+            (s) => s.userId == 'employee-1' && s.startTime.day == 6),
+        isEmpty,
+        reason: 'Anna am Quelltag wird nicht dupliziert',
+      );
+      expect(shifts.every((s) => s.siteId == 'site-1'), isTrue);
+      final seriesIds = shifts.map((s) => s.seriesId).toSet();
+      expect(seriesIds, hasLength(1));
+      expect(seriesIds.single, isNotNull);
+    });
+
+    test('saveShifts stempelt eine gemeinsame seriesId auf', () async {
+      final provider = ScheduleProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+      seedCompliance(provider);
+
+      await provider.saveShifts(
+        [
+          Shift(
+            orgId: adminUser.orgId,
+            userId: adminUser.uid,
+            employeeName: adminUser.displayName,
+            title: 'A',
+            startTime: DateTime(2026, 4, 7, 8),
+            endTime: DateTime(2026, 4, 7, 16),
+            breakMinutes: 30,
+            siteId: defaultSite.id,
+            siteName: defaultSite.name,
+            location: defaultSite.name,
+          ),
+          Shift(
+            orgId: adminUser.orgId,
+            userId: adminUser.uid,
+            employeeName: adminUser.displayName,
+            title: 'B',
+            startTime: DateTime(2026, 4, 8, 8),
+            endTime: DateTime(2026, 4, 8, 16),
+            breakMinutes: 30,
+            siteId: defaultSite.id,
+            siteName: defaultSite.name,
+            location: defaultSite.name,
+          ),
+        ],
+        seriesId: 'series-xyz',
+      );
+
+      provider.setVisibleDate(DateTime(2026, 4, 6));
+      final saved = provider.shifts;
+      expect(saved, hasLength(2));
+      expect(saved.every((s) => s.seriesId == 'series-xyz'), isTrue);
     });
   });
 }

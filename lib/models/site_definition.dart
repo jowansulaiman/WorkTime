@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
+import '../core/firestore_num_parser.dart' as parse;
+import 'site_schedule.dart';
 
 class SiteDefinition {
   static const String germanyCountryCode = 'DE';
@@ -36,6 +38,8 @@ class SiteDefinition {
     this.latitude,
     this.longitude,
     this.description,
+    this.weekdayHours = const [],
+    this.staffingDemands = const [],
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
@@ -53,6 +57,14 @@ class SiteDefinition {
   final double? latitude;
   final double? longitude;
   final String? description;
+
+  /// Öffnungszeiten je Wochentag (leer = keine hinterlegt → Generator erzeugt
+  /// für diesen Standort nichts). Siehe [WeekdayHours].
+  final List<WeekdayHours> weekdayHours;
+
+  /// Personalbedarf je Wochentag/Zeitfenster (leer = impliziter Bedarf 1 pro
+  /// Öffnungsfenster). Siehe [StaffingDemand].
+  final List<StaffingDemand> staffingDemands;
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -119,6 +131,12 @@ class SiteDefinition {
       latitude: _readDouble(map['latitude']),
       longitude: _readDouble(map['longitude']),
       description: map['description'] as String?,
+      weekdayHours: ((map['weekdayHours'] as List?) ?? const [])
+          .map((e) => WeekdayHours.fromFirestore(parse.toMap(e)))
+          .toList(growable: false),
+      staffingDemands: ((map['staffingDemands'] as List?) ?? const [])
+          .map((e) => StaffingDemand.fromFirestore(parse.toMap(e)))
+          .toList(growable: false),
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -142,6 +160,12 @@ class SiteDefinition {
       latitude: _readDouble(map['latitude']),
       longitude: _readDouble(map['longitude']),
       description: map['description'] as String?,
+      weekdayHours: ((map['weekday_hours'] as List?) ?? const [])
+          .map((e) => WeekdayHours.fromMap(parse.toMap(e)))
+          .toList(growable: false),
+      staffingDemands: ((map['staffing_demands'] as List?) ?? const [])
+          .map((e) => StaffingDemand.fromMap(parse.toMap(e)))
+          .toList(growable: false),
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -163,6 +187,9 @@ class SiteDefinition {
       'latitude': latitude,
       'longitude': longitude,
       'description': _trimmedOrNull(description),
+      'weekdayHours': weekdayHours.map((e) => e.toFirestoreMap()).toList(),
+      'staffingDemands':
+          staffingDemands.map((e) => e.toFirestoreMap()).toList(),
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -182,6 +209,8 @@ class SiteDefinition {
       'latitude': latitude,
       'longitude': longitude,
       'description': description,
+      'weekday_hours': weekdayHours.map((e) => e.toMap()).toList(),
+      'staffing_demands': staffingDemands.map((e) => e.toMap()).toList(),
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -201,6 +230,8 @@ class SiteDefinition {
     double? latitude,
     double? longitude,
     String? description,
+    List<WeekdayHours>? weekdayHours,
+    List<StaffingDemand>? staffingDemands,
     bool clearCode = false,
     bool clearStreet = false,
     bool clearPostalCode = false,
@@ -227,6 +258,8 @@ class SiteDefinition {
       latitude: clearLatitude ? null : (latitude ?? this.latitude),
       longitude: clearLongitude ? null : (longitude ?? this.longitude),
       description: clearDescription ? null : (description ?? this.description),
+      weekdayHours: weekdayHours ?? this.weekdayHours,
+      staffingDemands: staffingDemands ?? this.staffingDemands,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

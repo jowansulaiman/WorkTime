@@ -860,6 +860,11 @@ class _ContactCard extends StatelessWidget {
     final colorScheme = theme.colorScheme;
     final spacing = context.spacing;
     final subtitle = _subtitle();
+    // Standortnamen live aus der siteId auflösen (H-C2); persistierter
+    // contact.siteName nur als Fallback (gelöschter Standort / Offline).
+    final siteLabel = context
+        .watch<TeamProvider>()
+        .siteNameById(contact.siteId, fallback: contact.siteName);
 
     return AppCard(
       onTap: onTap,
@@ -910,10 +915,10 @@ class _ContactCard extends StatelessWidget {
                         label: 'Archiviert',
                         tone: AppStatusTone.neutral,
                       ),
-                    if (contact.siteName != null)
+                    if (siteLabel != null)
                       _MetaChip(
                         icon: Icons.place_outlined,
-                        label: contact.siteName!,
+                        label: siteLabel,
                       ),
                   ],
                 ),
@@ -1110,6 +1115,9 @@ class _ContactDetailSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final spacing = context.spacing;
+    final siteLabel = context
+        .watch<TeamProvider>()
+        .siteNameById(contact.siteId, fallback: contact.siteName);
     return AppBottomSheetScaffold(
       title: contact.name,
       subtitle: contact.type.label,
@@ -1137,7 +1145,7 @@ class _ContactDetailSheet extends StatelessWidget {
                 ),
               _MetaChip(
                 icon: Icons.place_outlined,
-                label: contact.siteName ?? 'Allgemein (beide Läden)',
+                label: siteLabel ?? 'Allgemein (beide Läden)',
               ),
               for (final tag in contact.tags)
                 _MetaChip(icon: Icons.sell_outlined, label: tag),

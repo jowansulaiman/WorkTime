@@ -108,6 +108,18 @@ void main() {
       expect(cloud.finalizedAt, DateTime(2026, 6, 30, 9, 30));
     });
 
+    test('journalEntryId round-trippt + clear-Flag (H-A1)', () {
+      final booked = record.copyWith(journalEntryId: 'pay-u1-2026-06');
+      expect(PayrollRecord.fromMap(booked.toMap()).journalEntryId,
+          'pay-u1-2026-06');
+      expect(
+        PayrollRecord.fromFirestore('u1-2026-06', booked.toFirestoreMap())
+            .journalEntryId,
+        'pay-u1-2026-06',
+      );
+      expect(booked.copyWith(clearJournalEntryId: true).journalEntryId, isNull);
+    });
+
     test('copyWith clear-Flags für finalized-Felder', () {
       final finalized = record.copyWith(
         status: PayrollStatus.freigegeben,

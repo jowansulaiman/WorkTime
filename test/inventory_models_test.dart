@@ -32,6 +32,32 @@ void main() {
       expect(restored.packagingUnit, 'Karton à 10');
     });
 
+    test('contactId round-trips through both serializations', () {
+      const supplier = Supplier(
+        id: 'sup-2',
+        orgId: 'org-1',
+        name: 'Großhandel Süd',
+        contactId: 'contact-77',
+      );
+
+      expect(Supplier.fromMap(supplier.toMap()).contactId, 'contact-77');
+      expect(
+        Supplier.fromFirestore('sup-2', supplier.toFirestoreMap()).contactId,
+        'contact-77',
+      );
+    });
+
+    test('clearContactId removes the link via copyWith', () {
+      const supplier = Supplier(
+        orgId: 'o',
+        name: 'A',
+        contactId: 'contact-1',
+      );
+
+      expect(supplier.copyWith(clearContactId: true).contactId, isNull);
+      expect(supplier.copyWith().contactId, 'contact-1');
+    });
+
     test('effectiveOrderEmail falls back to the contact email', () {
       const withOrder = Supplier(
         orgId: 'o',

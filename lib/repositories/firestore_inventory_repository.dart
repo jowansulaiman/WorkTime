@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import '../core/error_reporter.dart';
 import '../core/retry.dart';
 import '../models/customer_order.dart';
+import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
@@ -59,6 +60,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('weeklyOrderLists');
+
+  CollectionReference<Map<String, dynamic>> _fridgeRefillListCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('fridgeRefillLists');
 
   /// Ziel-Collection einer Bestellliste je [kind] (Korb vs. Standard-Liste).
   CollectionReference<Map<String, dynamic>> _orderListCollection(
@@ -378,6 +384,47 @@ class FirestoreInventoryRepository implements InventoryRepository {
       );
     }
     return _orderListCollection(orgId, kind).doc(siteId).delete();
+  }
+
+  // --- Kühlschrank-Nachfüllliste -----------------------------------------
+  // Singleton je Laden (Doc-ID = siteId), kein orderBy/Index – wie die
+  // Bestelllisten (eine Liste je Laden).
+
+  @override
+  Stream<List<FridgeRefillList>> watchFridgeRefillLists(String orgId) {
+    return _fridgeRefillListCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => FridgeRefillList.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<void> saveFridgeRefillList(FridgeRefillList list) {
+    // Leeres siteId wuerde .doc('') aufrufen -> Firestore-ArgumentError.
+    if (list.siteId.trim().isEmpty) {
+      throw StateError(
+        'Nachfüllliste kann nicht gespeichert werden: Dem Artikel fehlt eine '
+        'Standortzuordnung.',
+      );
+    }
+    // Doc-ID = siteId -> idempotenter Upsert je Laden (keine Duplikate möglich).
+    return _fridgeRefillListCollection(list.orgId)
+        .doc(list.siteId)
+        .set(list.toFirestoreMap(), SetOptions(merge: true));
+  }
+
+  @override
+  Future<void> deleteFridgeRefillList({
+    required String orgId,
+    required String siteId,
+  }) {
+    if (siteId.trim().isEmpty) {
+      throw StateError(
+        'Nachfüllliste kann nicht gelöscht werden: Standort fehlt.',
+      );
+    }
+    return _fridgeRefillListCollection(orgId).doc(siteId).delete();
   }
 
   @override

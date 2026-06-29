@@ -9,17 +9,28 @@
 // Imports dupliziert werden.
 part of '../shift_planner_screen.dart';
 
+/// Obergrenze für einen Speichervorgang im Schicht-Editor. Entspricht der
+/// serverseitigen Batch-Chunk-Grenze (`_maxCallableBatchSize = 50`): bleibt der
+/// Fan-out (Tage × Mitarbeiter) ≤ 50, läuft das Speichern als EIN atomarer
+/// Server-Call → kein Teil-Write-Risiko bei einer Compliance-Ablehnung.
+const int _kMaxShiftsPerSave = 50;
 
 class _ShiftEditorResult {
   const _ShiftEditorResult({
     required this.shifts,
     required this.recurrencePattern,
     required this.recurrenceEndDate,
+    this.groupAsSeries = false,
   });
 
   final List<Shift> shifts;
   final RecurrencePattern recurrencePattern;
   final DateTime? recurrenceEndDate;
+
+  /// True, wenn die Schichten als zusammengehörige Serie (gemeinsame seriesId)
+  /// gespeichert werden sollen – z.B. eine Mehrtage-Anlage. Der Aufrufer
+  /// vergibt dann eine [ScheduleProvider.newSeriesId].
+  final bool groupAsSeries;
 }
 
 class _ShiftTemplatePickerSheet extends StatelessWidget {
@@ -208,6 +219,498 @@ class _AdditionalShiftAssignmentDraft {
   }
 }
 
+/// Mehrtage-Auswahl: Wochentags-Maske (Mo–So) über einen Zeitraum PLUS
+/// Kalender-Mehrfachauswahl beliebiger Einzeltage. Gibt das gewählte
+/// (datums-normalisierte) Tages-Set via [Navigator.pop] zurück.
+class _MultiDayPickerSheet extends StatefulWidget {
+  const _MultiDayPickerSheet({
+    required this.initialDays,
+    required this.anchorDay,
+  });
+
+  final Set<DateTime> initialDays;
+  final DateTime anchorDay;
+
+  @override
+  State<_MultiDayPickerSheet> createState() => _MultiDayPickerSheetState();
+}
+
+class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
+  static const List<String> _weekdayLabels = [
+    'Mo',
+    'Di',
+    'Mi',
+    'Do',
+    'Fr',
+    'Sa',
+    'So',
+  ];
+
+  late Set<DateTime> _days;
+  final Set<int> _weekdays = <int>{}; // 1=Mo .. 7=So (DateTime.weekday)
+  late DateTime _rangeStart;
+  late DateTime _rangeEnd;
+  late DateTime _visibleMonth;
+
+  @override
+  void initState() {
+    super.initState();
+    _days = {for (final day in widget.initialDays) _dateOnly(day)};
+    if (_days.isEmpty) {
+      _days = {_dateOnly(widget.anchorDay)};
+    }
+    _rangeStart = _dateOnly(widget.anchorDay);
+    _rangeEnd = _rangeStart.add(const Duration(days: 27)); // 4 Wochen
+    _visibleMonth = DateTime(_rangeStart.year, _rangeStart.month);
+  }
+
+  DateTime _dateOnly(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  void _applyMask() {
+    if (_rangeEnd.isBefore(_rangeStart)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Das Enddatum liegt vor dem Startdatum.'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+    final activeWeekdays =
+        _weekdays.isEmpty ? const {1, 2, 3, 4, 5, 6, 7} : _weekdays;
+    setState(() {
+      var cursor = _rangeStart;
+      while (!cursor.isAfter(_rangeEnd)) {
+        if (activeWeekdays.contains(cursor.weekday)) {
+          _days.add(_dateOnly(cursor));
+        }
+        cursor = cursor.add(const Duration(days: 1));
+      }
+    });
+  }
+
+  void _toggleDay(DateTime day) {
+    final normalized = _dateOnly(day);
+    setState(() {
+      if (!_days.remove(normalized)) {
+        _days.add(normalized);
+      }
+    });
+  }
+
+  Future<void> _pickRangeBound({required bool isStart}) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: isStart ? _rangeStart : _rangeEnd,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035),
+      locale: const Locale('de', 'DE'),
+    );
+    if (picked == null) {
+      return;
+    }
+    setState(() {
+      if (isStart) {
+        _rangeStart = _dateOnly(picked);
+        if (_rangeEnd.isBefore(_rangeStart)) {
+          _rangeEnd = _rangeStart;
+        }
+      } else {
+        _rangeEnd = _dateOnly(picked);
+        if (_rangeEnd.isBefore(_rangeStart)) {
+          _rangeStart = _rangeEnd;
+        }
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Tage waehlen',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Wochentage im Zeitraum hinzufuegen oder einzelne Tage im '
+                'Kalender antippen.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 16),
+              Text('Wochentage', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (var i = 0; i < _weekdayLabels.length; i++)
+                    FilterChip(
+                      label: Text(_weekdayLabels[i]),
+                      selected: _weekdays.contains(i + 1),
+                      onSelected: (selected) => setState(() {
+                        if (selected) {
+                          _weekdays.add(i + 1);
+                        } else {
+                          _weekdays.remove(i + 1);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _DateTile(
+                      label: 'Von',
+                      value:
+                          DateFormat('dd.MM.yyyy', 'de_DE').format(_rangeStart),
+                      icon: Icons.event,
+                      onTap: () => _pickRangeBound(isStart: true),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _DateTile(
+                      label: 'Bis',
+                      value:
+                          DateFormat('dd.MM.yyyy', 'de_DE').format(_rangeEnd),
+                      icon: Icons.event,
+                      onTap: () => _pickRangeBound(isStart: false),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  onPressed: _applyMask,
+                  icon: const Icon(Icons.playlist_add),
+                  label: Text(
+                    _weekdays.isEmpty
+                        ? 'Alle Tage im Zeitraum hinzufuegen'
+                        : 'Wochentage im Zeitraum hinzufuegen',
+                  ),
+                ),
+              ),
+              const Divider(height: 28),
+              _buildMonthHeader(theme),
+              const SizedBox(height: 8),
+              _buildWeekdayHeader(theme),
+              const SizedBox(height: 4),
+              _buildMonthGrid(theme),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _days.length == 1
+                          ? '1 Tag ausgewaehlt'
+                          : '${_days.length} Tage ausgewaehlt',
+                      style: theme.textTheme.titleSmall,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _days.isEmpty
+                        ? null
+                        : () => setState(_days.clear),
+                    child: const Text('Zuruecksetzen'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: _days.isEmpty
+                      ? null
+                      : () => Navigator.of(context).pop(_days),
+                  child: const Text('Uebernehmen'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMonthHeader(ThemeData theme) {
+    return Row(
+      children: [
+        IconButton(
+          onPressed: () => setState(() {
+            _visibleMonth =
+                DateTime(_visibleMonth.year, _visibleMonth.month - 1);
+          }),
+          icon: const Icon(Icons.chevron_left),
+          tooltip: 'Vorheriger Monat',
+        ),
+        Expanded(
+          child: Text(
+            DateFormat('MMMM yyyy', 'de_DE').format(_visibleMonth),
+            textAlign: TextAlign.center,
+            style: theme.textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
+        IconButton(
+          onPressed: () => setState(() {
+            _visibleMonth =
+                DateTime(_visibleMonth.year, _visibleMonth.month + 1);
+          }),
+          icon: const Icon(Icons.chevron_right),
+          tooltip: 'Naechster Monat',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWeekdayHeader(ThemeData theme) {
+    return Row(
+      children: [
+        for (final label in _weekdayLabels)
+          Expanded(
+            child: Center(
+              child: Text(
+                label,
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMonthGrid(ThemeData theme) {
+    final firstOfMonth = DateTime(_visibleMonth.year, _visibleMonth.month, 1);
+    final leadingBlanks = firstOfMonth.weekday - 1; // Mo-first
+    final daysInMonth =
+        DateTime(_visibleMonth.year, _visibleMonth.month + 1, 0).day;
+    final today = _dateOnly(widget.anchorDay);
+
+    final cells = <Widget>[];
+    for (var i = 0; i < leadingBlanks; i++) {
+      cells.add(const SizedBox.shrink());
+    }
+    for (var dayNum = 1; dayNum <= daysInMonth; dayNum++) {
+      final day = DateTime(_visibleMonth.year, _visibleMonth.month, dayNum);
+      final selected = _days.contains(day);
+      final isAnchor = day == today;
+      cells.add(
+        Padding(
+          padding: const EdgeInsets.all(2),
+          child: InkWell(
+            onTap: () => _toggleDay(day),
+            customBorder: const CircleBorder(),
+            child: Container(
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: selected ? theme.colorScheme.primary : null,
+                border: !selected && isAnchor
+                    ? Border.all(color: theme.colorScheme.primary)
+                    : null,
+              ),
+              child: Text(
+                '$dayNum',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: selected
+                      ? theme.colorScheme.onPrimary
+                      : theme.colorScheme.onSurface,
+                  fontWeight: selected ? FontWeight.bold : null,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    while (cells.length % 7 != 0) {
+      cells.add(const SizedBox.shrink());
+    }
+
+    final rows = <Widget>[];
+    for (var i = 0; i < cells.length; i += 7) {
+      rows.add(
+        Row(
+          children: [
+            for (var j = i; j < i + 7; j++) Expanded(child: cells[j]),
+          ],
+        ),
+      );
+    }
+    return Column(children: rows);
+  }
+}
+
+/// Auswahl beim Kopieren einer Schicht: Ziel-Mitarbeiter + Zieltage.
+class _CopyShiftSelection {
+  const _CopyShiftSelection({required this.days, required this.assigneeUids});
+
+  final Set<DateTime> days;
+  final List<String> assigneeUids;
+}
+
+/// Sheet zum Kopieren einer Schicht auf andere Mitarbeiter UND/ODER andere
+/// Tage. Mitarbeiter werden per Chips gewählt (Standard: der bisherige
+/// Mitarbeiter), Tage über den Mehrtage-Picker (Standard: der Quelltag).
+class _CopyShiftSheet extends StatefulWidget {
+  const _CopyShiftSheet({required this.source, required this.members});
+
+  final Shift source;
+  final List<AppUserProfile> members;
+
+  @override
+  State<_CopyShiftSheet> createState() => _CopyShiftSheetState();
+}
+
+class _CopyShiftSheetState extends State<_CopyShiftSheet> {
+  late Set<String> _assigneeUids;
+  late Set<DateTime> _days;
+
+  DateTime get _sourceDay => DateTime(
+        widget.source.startTime.year,
+        widget.source.startTime.month,
+        widget.source.startTime.day,
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    _assigneeUids =
+        widget.source.isUnassigned ? <String>{} : {widget.source.userId};
+    _days = {_sourceDay};
+  }
+
+  Future<void> _pickDays() async {
+    final picked = await showModalBottomSheet<Set<DateTime>>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (_) => _MultiDayPickerSheet(
+        initialDays: _days,
+        anchorDay: _sourceDay,
+      ),
+    );
+    if (picked != null && picked.isNotEmpty) {
+      setState(() => _days = picked);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final sortedDays = _days.toList()..sort();
+    final daysLabel = sortedDays.length == 1
+        ? DateFormat('EEE, dd.MM.yyyy', 'de_DE').format(sortedDays.first)
+        : '${sortedDays.length} Tage · ab '
+            '${DateFormat('dd.MM.yyyy', 'de_DE').format(sortedDays.first)}';
+    final copyCount = _assigneeUids.length * _days.length;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Schicht kopieren',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '"${widget.source.title}" auf gewaehlte Mitarbeiter und Tage '
+                'kopieren.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 16),
+              Text('Mitarbeiter', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              if (widget.members.isEmpty)
+                Text(
+                  'Keine aktiven Mitarbeiter vorhanden.',
+                  style: theme.textTheme.bodyMedium,
+                )
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final member in widget.members)
+                      FilterChip(
+                        label: Text(member.displayName),
+                        selected: _assigneeUids.contains(member.uid),
+                        onSelected: (selected) => setState(() {
+                          if (selected) {
+                            _assigneeUids.add(member.uid);
+                          } else {
+                            _assigneeUids.remove(member.uid);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              const SizedBox(height: 16),
+              Text('Tage', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              _DateTile(
+                label: 'Tage',
+                value: daysLabel,
+                icon: Icons.event_available,
+                onTap: _pickDays,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                copyCount == 1
+                    ? 'Es wird 1 Kopie erstellt.'
+                    : 'Es werden bis zu $copyCount Kopien erstellt.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: (_assigneeUids.isEmpty || _days.isEmpty)
+                      ? null
+                      : () => Navigator.of(context).pop(
+                            _CopyShiftSelection(
+                              days: _days,
+                              assigneeUids: _assigneeUids.toList(),
+                            ),
+                          ),
+                  icon: const Icon(Icons.copy_all_outlined),
+                  label: const Text('Kopieren'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ShiftEditorSheet extends StatefulWidget {
   const _ShiftEditorSheet({
     required this.members,
@@ -254,6 +757,11 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
   late ShiftStatus _status;
   RecurrencePattern _recurrencePattern = RecurrencePattern.none;
   DateTime? _recurrenceEndDate;
+  // Tage, an denen Schichten erzeugt werden (Mehrtage-Anlage). Immer
+  // datums-normalisiert (Mitternacht) und nicht leer; im Edit-Modus genau ein
+  // Tag. [_date] bleibt der Ankertag (= frühester Tag, Bezug für Uhrzeiten und
+  // Zusatzbesetzungen).
+  late Set<DateTime> _selectedDays;
   String? _shiftColor;
   List<ShiftConflictIssue> _conflictIssues = const [];
   List<ShiftAssigneeAvailability> _assigneeAvailability = const [];
@@ -289,6 +797,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     );
     _notesCtrl = TextEditingController(text: shift?.notes ?? '');
     _date = initialDate;
+    _selectedDays = {DateTime(initialDate.year, initialDate.month, initialDate.day)};
     _startTime = TimeOfDay.fromDateTime(
       shift?.startTime ?? initialDate,
     );
@@ -361,12 +870,24 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     }
     _siteInitialized = true;
     final sites = context.read<TeamProvider>().sites;
-    final site = sites.firstWhereOrNull(
+    var site = sites.firstWhereOrNull(
       (candidate) =>
           candidate.id == _selectedSiteId ||
           candidate.name.trim().toLowerCase() ==
               _locationCtrl.text.trim().toLowerCase(),
     );
+    // Smarte Vorbelegung des Pflicht-Standorts (spart bei jeder Neuanlage
+    // Taps): kein Treffer + Neuanlage -> einziger Org-Standort, sonst der
+    // zuletzt verwendete. Im Edit-Modus nie überschreiben.
+    if (site == null && widget.shift == null) {
+      if (sites.length == 1) {
+        site = sites.first;
+      } else {
+        site = sites.firstWhereOrNull(
+          (candidate) => candidate.id == ScheduleProvider.lastUsedSiteId,
+        );
+      }
+    }
     if (site != null) {
       _selectedSiteId = site.id;
       _locationCtrl.text = site.name;
@@ -591,6 +1112,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               )
             else if (isEdit)
               DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue: selectedUserId,
                 decoration: const InputDecoration(
                   labelText: 'Mitarbeiter',
@@ -668,22 +1190,24 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                         ],
                         if (availableMembers.isNotEmpty) ...[
                           const SizedBox(height: 16),
-                          Row(
+                          // Wrap statt Row: bricht auf schmalen/Telefon-Breiten
+                          // um, statt überzulaufen (RenderFlex-Overflow).
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  'Verfuegbar im gewaehlten Zeitraum',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleSmall
-                                      ?.copyWith(fontWeight: FontWeight.w600),
-                                ),
+                              Text(
+                                'Verfuegbar im gewaehlten Zeitraum',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleSmall
+                                    ?.copyWith(fontWeight: FontWeight.w600),
                               ),
                               _EditorCountBadge(
                                 label: '${availableMembers.length} frei',
                                 tone: _EditorBadgeTone.success,
                               ),
-                              const SizedBox(width: 8),
                               TextButton.icon(
                                 onPressed: () => _setDirty(
                                   () => _selectedUserIds = availableMembers
@@ -791,12 +1315,20 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               },
             ),
             const SizedBox(height: 12),
-            _DateTile(
-              label: 'Datum',
-              value: DateFormat('dd.MM.yyyy', 'de_DE').format(_date),
-              icon: Icons.calendar_today,
-              onTap: _pickDate,
-            ),
+            if (isEdit)
+              _DateTile(
+                label: 'Datum',
+                value: DateFormat('dd.MM.yyyy', 'de_DE').format(_date),
+                icon: Icons.calendar_today,
+                onTap: _pickDate,
+              )
+            else
+              _DateTile(
+                label: 'Tage',
+                value: _selectedDaysSummary(),
+                icon: Icons.event_available,
+                onTap: _openMultiDayPicker,
+              ),
             const SizedBox(height: 12),
             Card(
               child: Column(
@@ -930,6 +1462,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
             ],
             const SizedBox(height: 12),
             DropdownButtonFormField<String?>(
+              isExpanded: true,
               initialValue: _selectedTeamId,
               decoration: const InputDecoration(
                 labelText: 'Gespeichertes Team',
@@ -1006,6 +1539,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               )
             else
               DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue: _selectedSiteId,
                 decoration: const InputDecoration(
                   labelText: 'Standort',
@@ -1077,6 +1611,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<ShiftStatus>(
+              isExpanded: true,
               initialValue: _status,
               decoration: const InputDecoration(
                 labelText: 'Status',
@@ -1095,37 +1630,27 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                 }
               },
             ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<RecurrencePattern>(
-              initialValue: _recurrencePattern,
-              decoration: const InputDecoration(
-                labelText: 'Wiederholung',
-                prefixIcon: Icon(Icons.repeat),
-              ),
-              items: [
-                for (final pattern in RecurrencePattern.values)
-                  DropdownMenuItem(
-                    value: pattern,
-                    child: Text(pattern.label),
-                  ),
-              ],
-              onChanged: isEdit
-                  ? null
-                  : (value) {
-                      if (value != null) {
-                        _setDirty(() => _recurrencePattern = value);
-                      }
-                    },
-            ),
-            if (!isEdit && _recurrencePattern != RecurrencePattern.none) ...[
+            // Wiederholung nur im Bearbeiten-Modus sichtbar (read-only). Beim
+            // Anlegen ersetzt die Mehrtage-Auswahl ("Tage") das alte Muster –
+            // zwei parallele Wiederhol-Konzepte würden eine Doppel-Expansion
+            // auslösen.
+            if (isEdit) ...[
               const SizedBox(height: 12),
-              _DateTile(
-                label: 'Wiederholen bis',
-                value: _recurrenceEndDate == null
-                    ? 'Enddatum waehlen'
-                    : DateFormat('dd.MM.yyyy', 'de_DE').format(_recurrenceEndDate!),
-                icon: Icons.event_repeat,
-                onTap: _pickRecurrenceEndDate,
+              DropdownButtonFormField<RecurrencePattern>(
+                isExpanded: true,
+                initialValue: _recurrencePattern,
+                decoration: const InputDecoration(
+                  labelText: 'Wiederholung',
+                  prefixIcon: Icon(Icons.repeat),
+                ),
+                items: [
+                  for (final pattern in RecurrencePattern.values)
+                    DropdownMenuItem(
+                      value: pattern,
+                      child: Text(pattern.label),
+                    ),
+                ],
+                onChanged: null,
               ),
             ],
             const SizedBox(height: 12),
@@ -1211,6 +1736,26 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                         textColor:
                             Theme.of(context).colorScheme.onErrorContainer,
                       ),
+                      if (_canSkipConflicts) ...[
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          onPressed: _validating ? null : _saveSkippingConflicts,
+                          icon: const Icon(Icons.playlist_add_check),
+                          label: const Text(
+                            'Betroffene ueberspringen und Rest speichern',
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor:
+                                Theme.of(context).colorScheme.onErrorContainer,
+                            side: BorderSide(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onErrorContainer
+                                  .withValues(alpha: 0.5),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -1505,17 +2050,16 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     }
   }
 
-  Future<void> _pickRecurrenceEndDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _recurrenceEndDate ?? _date.add(const Duration(days: 28)),
-      firstDate: _date,
-      lastDate: DateTime(2035),
-      locale: const Locale('de', 'DE'),
-    );
-    if (picked != null) {
-      _setDirty(() => _recurrenceEndDate = picked);
+  String _selectedDaysSummary() {
+    final sorted = _selectedDays.toList()..sort();
+    if (sorted.isEmpty) {
+      return 'Tag waehlen';
     }
+    if (sorted.length == 1) {
+      return DateFormat('EEE, dd.MM.yyyy', 'de_DE').format(sorted.first);
+    }
+    return '${sorted.length} Tage · ab '
+        '${DateFormat('dd.MM.yyyy', 'de_DE').format(sorted.first)}';
   }
 
   Future<void> _pickStart() async {
@@ -1581,6 +2125,88 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
           shifts: shifts,
           recurrencePattern: _recurrencePattern,
           recurrenceEndDate: _recurrenceEndDate,
+          groupAsSeries: widget.shift == null && _selectedDays.length > 1,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _validating = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Konfliktpruefung fehlgeschlagen: $error'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  /// "Betroffene überspringen" lohnt nur, wenn überhaupt mehr als eine Schicht
+  /// vorgeschlagen wird (Mehrtage / mehrere Mitarbeiter / Zusatzbesetzung) und
+  /// es eine Neuanlage ist – sonst bliebe nichts zu speichern.
+  bool get _canSkipConflicts =>
+      widget.shift == null &&
+      (_selectedDays.length > 1 ||
+          _selectedUserIds.length > 1 ||
+          _additionalAssignments.isNotEmpty);
+
+  /// Schlüssel zum Abgleich einer Konflikt-Schicht mit einer vorgeschlagenen
+  /// Schicht (Mitarbeiter + Startzeitpunkt identifizieren eine Fan-out-Zelle
+  /// eindeutig).
+  String _shiftKey(Shift shift) =>
+      '${shift.userId}@${shift.startTime.millisecondsSinceEpoch}';
+
+  Future<void> _saveSkippingConflicts() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    final proposed = _buildProposedShifts();
+    if (proposed == null) {
+      return;
+    }
+    final affectedKeys =
+        _conflictIssues.map((issue) => _shiftKey(issue.shift)).toSet();
+    final remaining = proposed
+        .where((shift) => !affectedKeys.contains(_shiftKey(shift)))
+        .toList(growable: false);
+    if (remaining.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Alle vorgeschlagenen Schichten sind betroffen – nichts zu '
+            'speichern.',
+          ),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _validating = true;
+    });
+    try {
+      // Erneut prüfen: nach dem Entfernen der Konflikt-Schichten können
+      // batch-interne Überschneidungen wegfallen.
+      final issues =
+          await context.read<ScheduleProvider>().validateShifts(remaining);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _validating = false;
+        _conflictIssues = issues;
+      });
+      if (issues.isNotEmpty) {
+        return;
+      }
+      Navigator.of(context).pop(
+        _ShiftEditorResult(
+          shifts: remaining,
+          recurrencePattern: RecurrencePattern.none,
+          recurrenceEndDate: null,
+          groupAsSeries: remaining.length > 1,
         ),
       );
     } catch (error) {
@@ -1602,10 +2228,8 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     final selectedMembers = widget.members
         .where((candidate) => _selectedUserIds.contains(candidate.uid))
         .toList(growable: false);
-    final startTime = _selectedStartDateTime;
-    final endTime = _selectedEndDateTime;
 
-    if (!endTime.isAfter(startTime)) {
+    if (!_selectedEndDateTime.isAfter(_selectedStartDateTime)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: const Text('Endzeit muss nach Startzeit liegen.'),
@@ -1627,12 +2251,14 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       return null;
     }
 
-    if (widget.shift == null &&
-        _recurrencePattern != RecurrencePattern.none &&
-        _recurrenceEndDate == null) {
+    // Mehrtage ist anlage-only: im Edit-Modus genau der bearbeitete Tag.
+    final days = (widget.shift != null
+        ? <DateTime>[_dateOnly(_date)]
+        : (_selectedDays.toList()..sort()));
+    if (days.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Bitte Enddatum fuer die Wiederholung waehlen.'),
+          content: const Text('Bitte mindestens einen Tag auswaehlen.'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1653,62 +2279,88 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       );
       return null;
     }
+    // Zuletzt benutzten Standort für die nächste Neuanlage merken (UI-Komfort).
+    ScheduleProvider.lastUsedSiteId = selectedSite.id;
+
+    // Fan-out begrenzen: bis [_kMaxShiftsPerSave] bleibt das Speichern EIN
+    // atomarer Server-Call (kein Teil-Write-Risiko). Zusatzbesetzungen liegen
+    // nur am Ankertag und zählen daher einfach.
+    final primaryPerDay = _saveAsUnassigned ? 1 : selectedMembers.length;
+    final totalShifts =
+        primaryPerDay * days.length + _additionalAssignments.length;
+    if (totalShifts > _kMaxShiftsPerSave) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Zu viele Schichten auf einmal ($totalShifts). Bitte Tage oder '
+            'Mitarbeiter reduzieren (max. $_kMaxShiftsPerSave pro Speichern).',
+          ),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return null;
+    }
+
     final location = selectedSite.name;
     final breakMinutes = _parseBreakMinutes();
+    final title = _titleCtrl.text.trim();
+    final notes =
+        _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim();
+    final quals = _requiredQualificationIds.toList(growable: false);
+
     if (_saveAsUnassigned) {
       return [
-        Shift(
-          id: widget.shift?.id,
-          orgId: widget.currentUser.orgId,
-          userId: '',
-          employeeName: 'Freie Schicht',
-          title: _titleCtrl.text.trim(),
-          startTime: startTime,
-          endTime: endTime,
-          breakMinutes: breakMinutes,
-          teamId: _selectedTeamId,
-          team: teamName,
-          siteId: selectedSite.id,
-          siteName: selectedSite.name,
-          location: location,
-          requiredQualificationIds:
-              _requiredQualificationIds.toList(growable: false),
-          notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
-          seriesId: widget.shift?.seriesId,
-          recurrencePattern: _recurrencePattern,
-          color: _shiftColor,
-          status: _status,
-          createdByUid: widget.currentUser.uid,
-        ),
+        for (final day in days)
+          Shift(
+            id: widget.shift?.id,
+            orgId: widget.currentUser.orgId,
+            userId: '',
+            employeeName: 'Freie Schicht',
+            title: title,
+            startTime: _startDateTimeForDay(day),
+            endTime: _endDateTimeForDay(day),
+            breakMinutes: breakMinutes,
+            teamId: _selectedTeamId,
+            team: teamName,
+            siteId: selectedSite.id,
+            siteName: selectedSite.name,
+            location: location,
+            requiredQualificationIds: quals,
+            notes: notes,
+            seriesId: widget.shift?.seriesId,
+            recurrencePattern: _recurrencePattern,
+            color: _shiftColor,
+            status: _status,
+            createdByUid: widget.currentUser.uid,
+          ),
       ];
     }
 
     final shifts = <Shift>[
-      ...selectedMembers.map(
-        (member) => Shift(
-          id: widget.shift?.id,
-          orgId: widget.currentUser.orgId,
-          userId: member.uid,
-          employeeName: member.displayName,
-          title: _titleCtrl.text.trim(),
-          startTime: startTime,
-          endTime: endTime,
-          breakMinutes: breakMinutes,
-          teamId: _selectedTeamId,
-          team: teamName,
-          siteId: selectedSite.id,
-          siteName: selectedSite.name,
-          location: location,
-          requiredQualificationIds:
-              _requiredQualificationIds.toList(growable: false),
-          notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
-          seriesId: widget.shift?.seriesId,
-          recurrencePattern: _recurrencePattern,
-          color: _shiftColor,
-          status: _status,
-          createdByUid: widget.currentUser.uid,
-        ),
-      ),
+      for (final day in days)
+        for (final member in selectedMembers)
+          Shift(
+            id: widget.shift?.id,
+            orgId: widget.currentUser.orgId,
+            userId: member.uid,
+            employeeName: member.displayName,
+            title: title,
+            startTime: _startDateTimeForDay(day),
+            endTime: _endDateTimeForDay(day),
+            breakMinutes: breakMinutes,
+            teamId: _selectedTeamId,
+            team: teamName,
+            siteId: selectedSite.id,
+            siteName: selectedSite.name,
+            location: location,
+            requiredQualificationIds: quals,
+            notes: notes,
+            seriesId: widget.shift?.seriesId,
+            recurrencePattern: _recurrencePattern,
+            color: _shiftColor,
+            status: _status,
+            createdByUid: widget.currentUser.uid,
+          ),
     ];
 
     for (var index = 0; index < _additionalAssignments.length; index++) {
@@ -1826,6 +2478,50 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     return endMinutes < startMinutes
         ? base.add(const Duration(days: 1))
         : base;
+  }
+
+  DateTime _dateOnly(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  /// Start-Zeitpunkt der Schicht für einen konkreten Tag (gewählte Startzeit).
+  DateTime _startDateTimeForDay(DateTime day) =>
+      DateTime(day.year, day.month, day.day, _startTime.hour, _startTime.minute);
+
+  /// End-Zeitpunkt für einen konkreten Tag; Übernacht-Schichten (Endzeit vor
+  /// Startzeit) landen auf dem Folgetag – analog zu [_endDateTimeFor].
+  DateTime _endDateTimeForDay(DateTime day) {
+    final base =
+        DateTime(day.year, day.month, day.day, _endTime.hour, _endTime.minute);
+    return _toMinutes(_endTime) < _toMinutes(_startTime)
+        ? base.add(const Duration(days: 1))
+        : base;
+  }
+
+  /// Öffnet den Mehrtage-Picker (Wochentags-Maske + Kalender) und übernimmt die
+  /// Auswahl. Hält die Invariante: nicht leer, datums-normalisiert, [_date] =
+  /// frühester Tag (Ankertag für Uhrzeiten/Zusatzbesetzungen).
+  Future<void> _openMultiDayPicker() async {
+    final picked = await showModalBottomSheet<Set<DateTime>>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (sheetContext) => _MultiDayPickerSheet(
+        initialDays: _selectedDays,
+        anchorDay: _dateOnly(_date),
+      ),
+    );
+    if (picked == null || picked.isEmpty) {
+      return;
+    }
+    final sorted = picked.toList()..sort();
+    _setDirty(
+      () {
+        _selectedDays = picked;
+        _date = sorted.first;
+      },
+      refreshAvailability: true,
+    );
   }
 
   void _addAdditionalAssignment() {
@@ -2057,6 +2753,7 @@ class _AdditionalShiftAssignmentCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
+            isExpanded: true,
             initialValue: draft.memberId,
             decoration: const InputDecoration(
               labelText: 'Mitarbeiter',
@@ -2105,6 +2802,355 @@ class _AdditionalShiftAssignmentCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Öffnet das Tausch-Anfrage-Sheet für die eigene [shift]: Auswahl einer
+/// Kollegenschicht (Tausch) oder eines Kollegen, der übernimmt (Gutschrift),
+/// und Versand der Anfrage. Zeigt Erfolg/Fehler selbst per SnackBar.
+Future<void> showSwapRequestSheet(BuildContext context, Shift shift) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (sheetContext) => _SwapRequestSheet(shift: shift),
+  );
+}
+
+class _SwapRequestSheet extends StatefulWidget {
+  const _SwapRequestSheet({required this.shift});
+
+  final Shift shift;
+
+  @override
+  State<_SwapRequestSheet> createState() => _SwapRequestSheetState();
+}
+
+class _SwapRequestSheetState extends State<_SwapRequestSheet> {
+  SwapKind _kind = SwapKind.exchange;
+  bool _loading = true;
+  bool _submitting = false;
+  List<Shift> _candidates = const [];
+  Shift? _selectedShift;
+  String? _selectedMemberUid;
+  final TextEditingController _noteController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCandidates();
+  }
+
+  @override
+  void dispose() {
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadCandidates() async {
+    final schedule = context.read<ScheduleProvider>();
+    // Aktueller + nächster Monat: deckt Tausch und „nächsten Monat regeln" ab.
+    final base = widget.shift.startTime;
+    final start = DateTime(base.year, base.month, 1);
+    final end = DateTime(base.year, base.month + 2, 1);
+    try {
+      final candidates = await schedule.getSwappableShiftsInRange(start, end);
+      if (!mounted) return;
+      setState(() {
+        _candidates = candidates
+            .where((candidate) => candidate.id != widget.shift.id)
+            .toList(growable: false);
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _candidates = const [];
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _submit() async {
+    final schedule = context.read<ScheduleProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+
+    final ShiftSwapRequest request;
+    if (_kind == SwapKind.exchange) {
+      final target = _selectedShift;
+      if (target == null) {
+        return;
+      }
+      request = ShiftSwapRequest(
+        orgId: widget.shift.orgId,
+        requesterUid: widget.shift.userId,
+        requesterName: widget.shift.employeeName,
+        requesterShiftId: widget.shift.id ?? '',
+        targetUid: target.userId,
+        targetName: target.employeeName,
+        targetShiftId: target.id,
+        kind: SwapKind.exchange,
+        requesterShiftStart: widget.shift.startTime,
+        note: _noteController.text,
+      );
+    } else {
+      final memberUid = _selectedMemberUid;
+      if (memberUid == null) {
+        return;
+      }
+      final memberName = schedule.orgMembers
+              .where((member) => member.uid == memberUid)
+              .map((member) => member.displayName)
+              .firstOrNull ??
+          '';
+      request = ShiftSwapRequest(
+        orgId: widget.shift.orgId,
+        requesterUid: widget.shift.userId,
+        requesterName: widget.shift.employeeName,
+        requesterShiftId: widget.shift.id ?? '',
+        targetUid: memberUid,
+        targetName: memberName,
+        kind: SwapKind.giveAway,
+        requesterShiftStart: widget.shift.startTime,
+        note: _noteController.text,
+      );
+    }
+
+    setState(() => _submitting = true);
+    try {
+      await schedule.submitShiftSwapRequest(request);
+      navigator.pop();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Tauschanfrage gesendet')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(error.toString().replaceFirst('Bad state: ', '')),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final schedule = context.watch<ScheduleProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
+    final startFmt = DateFormat('EEE, dd.MM. HH:mm', 'de_DE');
+    final endFmt = DateFormat('HH:mm', 'de_DE');
+    final ownUid = widget.shift.userId;
+    final members = schedule.orgMembers
+        .where((member) => member.uid != ownUid && member.isActive)
+        .toList(growable: false)
+      ..sort((a, b) =>
+          a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+
+    final canSubmit = !_submitting &&
+        (_kind == SwapKind.exchange
+            ? _selectedShift != null
+            : _selectedMemberUid != null);
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 8,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Tausch anfragen',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleLarge
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Deine Schicht: ${widget.shift.title} · '
+              '${startFmt.format(widget.shift.startTime)} – '
+              '${endFmt.format(widget.shift.endTime)}',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 14),
+            SegmentedButton<SwapKind>(
+              segments: const [
+                ButtonSegment(
+                  value: SwapKind.exchange,
+                  label: Text('Tauschen'),
+                  icon: Icon(Icons.swap_horiz),
+                ),
+                ButtonSegment(
+                  value: SwapKind.giveAway,
+                  label: Text('Abgeben'),
+                  icon: Icon(Icons.redo),
+                ),
+              ],
+              selected: {_kind},
+              onSelectionChanged: _submitting
+                  ? null
+                  : (selection) =>
+                      setState(() => _kind = selection.first),
+            ),
+            const SizedBox(height: 12),
+            Flexible(
+              child: _kind == SwapKind.exchange
+                  ? _buildExchangeList(startFmt, endFmt, colorScheme)
+                  : _buildGiveAwayList(members, colorScheme),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _noteController,
+              enabled: !_submitting,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Notiz (optional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: canSubmit ? _submit : null,
+                icon: _submitting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send),
+                label: Text(_submitting ? 'Sende…' : 'Anfrage senden'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExchangeList(
+    DateFormat startFmt,
+    DateFormat endFmt,
+    ColorScheme colorScheme,
+  ) {
+    if (_loading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 24),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_candidates.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Text(
+          'Keine tauschbaren Schichten der Kollegen im aktuellen und nächsten '
+          'Monat gefunden. Du kannst die Schicht stattdessen „Abgeben".',
+          style: TextStyle(color: colorScheme.onSurfaceVariant),
+        ),
+      );
+    }
+    return ListView.builder(
+      shrinkWrap: true,
+      itemCount: _candidates.length,
+      itemBuilder: (context, index) {
+        final candidate = _candidates[index];
+        final selected = _selectedShift?.id == candidate.id;
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          color: selected ? colorScheme.secondaryContainer : null,
+          child: ListTile(
+            leading: Icon(
+              selected ? Icons.check_circle : Icons.circle_outlined,
+              color: selected ? colorScheme.primary : colorScheme.outline,
+            ),
+            title: Text(candidate.employeeName),
+            subtitle: Text(
+              '${candidate.title} · ${startFmt.format(candidate.startTime)} – '
+              '${endFmt.format(candidate.endTime)}'
+              '${candidate.effectiveSiteLabel == null ? '' : '\n${candidate.effectiveSiteLabel}'}',
+            ),
+            isThreeLine: candidate.effectiveSiteLabel != null,
+            onTap: _submitting
+                ? null
+                : () => setState(() => _selectedShift = candidate),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildGiveAwayList(
+    List<AppUserProfile> members,
+    ColorScheme colorScheme,
+  ) {
+    if (members.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Text(
+          'Keine Kollegen verfügbar.',
+          style: TextStyle(color: colorScheme.onSurfaceVariant),
+        ),
+      );
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'Der Kollege übernimmt deine Schicht – ohne Gegenleistung. Es '
+            'entsteht eine Gutschrift, die nächsten Monat eingelöst wird.',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: colorScheme.onSurfaceVariant),
+          ),
+        ),
+        Flexible(
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: members.length,
+            itemBuilder: (context, index) {
+              final member = members[index];
+              final selected = _selectedMemberUid == member.uid;
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                color: selected ? colorScheme.secondaryContainer : null,
+                child: ListTile(
+                  leading: Icon(
+                    selected ? Icons.check_circle : Icons.person_outline,
+                    color:
+                        selected ? colorScheme.primary : colorScheme.outline,
+                  ),
+                  title: Text(member.displayName),
+                  onTap: _submitting
+                      ? null
+                      : () =>
+                          setState(() => _selectedMemberUid = member.uid),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

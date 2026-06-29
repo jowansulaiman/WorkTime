@@ -84,6 +84,7 @@ class CustomerWish {
     this.desiredDate,
     this.customerName,
     this.customerContact,
+    this.contactId,
     this.status = CustomerWishStatus.pending,
     this.source = publicWebSource,
     this.notes,
@@ -121,6 +122,13 @@ class CustomerWish {
 
   /// Optionaler Kontakt (Telefon/E-Mail) für Rückfragen.
   final String? customerContact;
+
+  /// Optionale Verknüpfung zu einem [Contact] aus der zentralen Kontakte-Kartei
+  /// (H-D2). Wird ausschließlich INTERN von einem Mitarbeiter beim Bearbeiten
+  /// gesetzt — `null` = nicht verknüpft. Bewusst NICHT im
+  /// [toPublicSubmissionMap] / der `firestore.rules`-Allowlist des öffentlichen
+  /// Create-Pfads (anonyme Kunden kennen keine internen Kontakt-IDs).
+  final String? contactId;
 
   final CustomerWishStatus status;
 
@@ -170,6 +178,7 @@ class CustomerWish {
       desiredDate: FirestoreDateParser.readDate(map['desiredDate']),
       customerName: map['customerName'] as String?,
       customerContact: map['customerContact'] as String?,
+      contactId: map['contactId'] as String?,
       status: CustomerWishStatusX.fromValue(map['status']?.toString()),
       source: (map['source'] ?? publicWebSource).toString(),
       notes: map['notes'] as String?,
@@ -192,6 +201,7 @@ class CustomerWish {
       desiredDate: FirestoreDateParser.readLocalDate(map['desired_date']),
       customerName: map['customer_name'] as String?,
       customerContact: map['customer_contact'] as String?,
+      contactId: map['contact_id'] as String?,
       status: CustomerWishStatusX.fromValue(map['status']?.toString()),
       source: (map['source'] ?? publicWebSource).toString(),
       notes: map['notes'] as String?,
@@ -234,6 +244,7 @@ class CustomerWish {
       'desiredDate': _timestampOrNull(desiredDate),
       'customerName': _trimmedOrNull(customerName),
       'customerContact': _trimmedOrNull(customerContact),
+      'contactId': _trimmedOrNull(contactId),
       'status': status.value,
       'source': source,
       'notes': _trimmedOrNull(notes),
@@ -255,6 +266,7 @@ class CustomerWish {
       'desired_date': desiredDate?.toIso8601String(),
       'customer_name': customerName,
       'customer_contact': customerContact,
+      'contact_id': contactId,
       'status': status.value,
       'source': source,
       'notes': notes,
@@ -276,6 +288,7 @@ class CustomerWish {
     DateTime? desiredDate,
     String? customerName,
     String? customerContact,
+    String? contactId,
     CustomerWishStatus? status,
     String? source,
     String? notes,
@@ -286,6 +299,7 @@ class CustomerWish {
     bool clearDesiredDate = false,
     bool clearCustomerName = false,
     bool clearCustomerContact = false,
+    bool clearContactId = false,
     bool clearNotes = false,
     bool clearHandledBy = false,
   }) {
@@ -303,6 +317,7 @@ class CustomerWish {
       customerContact: clearCustomerContact
           ? null
           : (customerContact ?? this.customerContact),
+      contactId: clearContactId ? null : (contactId ?? this.contactId),
       status: status ?? this.status,
       source: source ?? this.source,
       notes: clearNotes ? null : (notes ?? this.notes),

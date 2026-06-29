@@ -81,6 +81,31 @@ void main() {
     expect(wishes.single.handledByUid, 'mitarbeiter-1');
   });
 
+  test('updateCustomerWishContact verknüpft und löst die Verknüpfung',
+      () async {
+    final id = await service.submitCustomerWish(buildWish());
+
+    // Verknüpfen
+    await service.updateCustomerWishContact(
+      orgId: 'main-org',
+      wishId: id,
+      contactId: 'kontakt-1',
+    );
+    var wishes = await service.watchCustomerWishes('main-org').first;
+    expect(wishes.single.contactId, 'kontakt-1');
+    // Status bleibt unangetastet (merge: true).
+    expect(wishes.single.status, CustomerWishStatus.pending);
+
+    // Verknüpfung lösen
+    await service.updateCustomerWishContact(
+      orgId: 'main-org',
+      wishId: id,
+      contactId: null,
+    );
+    wishes = await service.watchCustomerWishes('main-org').first;
+    expect(wishes.single.contactId, isNull);
+  });
+
   test('deleteCustomerWish entfernt den Wunsch', () async {
     final id = await service.submitCustomerWish(buildWish());
     await service.deleteCustomerWish(orgId: 'main-org', wishId: id);

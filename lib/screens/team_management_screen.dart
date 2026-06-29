@@ -8,8 +8,10 @@ import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
+import '../models/shift_preference.dart';
 import '../models/qualification_definition.dart';
 import '../models/site_definition.dart';
+import '../models/site_schedule.dart';
 import '../models/team_definition.dart';
 import '../models/travel_time_rule.dart';
 import '../models/user_invite.dart';
@@ -173,6 +175,8 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
                     onOpenInviteEditor: () => _openInviteEditor(context),
                     onOpenMemberEditor: (member) =>
                         _openMemberEditor(context, member),
+                    onOpenPreferenceEditor: (member) =>
+                        _openShiftPreferenceEditor(context, member),
                   ),
                   _SitesTab(
                     onOpenSiteEditor: ({SiteDefinition? site}) =>
@@ -265,6 +269,34 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
     );
   }
 
+  Future<void> _openShiftPreferenceEditor(
+    BuildContext context,
+    AppUserProfile member,
+  ) async {
+    final teamProvider = context.read<TeamProvider>();
+    final existing = teamProvider.shiftPreferenceForUser(member.uid);
+    final result = await showModalBottomSheet<EmployeeShiftPreference>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+        ),
+        child: _ShiftPreferenceEditorSheet(member: member, existing: existing),
+      ),
+    );
+    if (result == null || !context.mounted) {
+      return;
+    }
+    await teamProvider.saveShiftPreference(result);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Schicht-Vorlieben gespeichert.')),
+    );
+  }
+
   Future<void> _openTeamEditor(
     BuildContext context, {
     TeamDefinition? teamDefinition,
@@ -305,6 +337,7 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
     if (currentUser == null) {
       return;
     }
+    final qualifications = context.read<TeamProvider>().qualifications;
     final result = await showModalBottomSheet<SiteDefinition>(
       context: context,
       isScrollControlled: true,
@@ -313,7 +346,11 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
         padding: EdgeInsets.only(
           bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
         ),
-        child: _SiteEditorSheet(currentUser: currentUser, site: site),
+        child: _SiteEditorSheet(
+          currentUser: currentUser,
+          site: site,
+          qualifications: qualifications,
+        ),
       ),
     );
     if (result == null) {
@@ -742,12 +779,14 @@ class _MembersTab extends StatelessWidget {
     required this.onSearchChanged,
     required this.onOpenInviteEditor,
     required this.onOpenMemberEditor,
+    required this.onOpenPreferenceEditor,
   });
 
   final String searchQuery;
   final ValueChanged<String> onSearchChanged;
   final VoidCallback onOpenInviteEditor;
   final void Function(AppUserProfile member) onOpenMemberEditor;
+  final void Function(AppUserProfile member) onOpenPreferenceEditor;
 
   @override
   Widget build(BuildContext context) {
@@ -873,6 +912,7 @@ class _MembersTab extends StatelessWidget {
                   contract: contractByUser[member.uid],
                   assignments: assignmentsByUser[member.uid] ?? const [],
                   onEdit: () => onOpenMemberEditor(member),
+                  onEditPreferences: () => onOpenPreferenceEditor(member),
                   onToggleActive: () =>
                       context.read<TeamProvider>().setMemberActive(
                             uid: member.uid,
@@ -1722,6 +1762,7 @@ class _MemberCard extends StatelessWidget {
     required this.contract,
     required this.assignments,
     required this.onEdit,
+    required this.onEditPreferences,
     required this.onToggleActive,
   });
 
@@ -1729,6 +1770,7 @@ class _MemberCard extends StatelessWidget {
   final EmploymentContract? contract;
   final List<EmployeeSiteAssignment> assignments;
   final VoidCallback onEdit;
+  final VoidCallback onEditPreferences;
   final VoidCallback onToggleActive;
 
   @override
@@ -1739,12 +1781,20 @@ class _MemberCard extends StatelessWidget {
     final contractLabel = contract == null
         ? 'Kein Vertrag'
         : '${contract!.type.label} · ${contract!.dailyHours.toStringAsFixed(1)} h Soll';
+    // Standortnamen live aus siteId auflösen (H-C2); EmployeeSiteAssignment
+    // trägt siteName als (Pflicht-)Snapshot, der bei Umbenennung sonst driftet.
+    final team = context.watch<TeamProvider>();
     final siteNames = assignments
-        .map((item) => item.siteName.trim())
+        .map((item) =>
+            team.siteNameById(item.siteId, fallback: item.siteName) ?? '')
         .where((name) => name.isNotEmpty)
         .toSet()
         .toList(growable: false);
     final primarySite = assignments.firstWhereOrNull((item) => item.isPrimary);
+    final primarySiteName = primarySite == null
+        ? null
+        : team.siteNameById(primarySite.siteId,
+            fallback: primarySite.siteName);
     final qualificationCount =
         assignments.expand((item) => item.qualificationIds).toSet().length;
     final permissionSummary = member.isAdmin
@@ -1796,6 +1846,8 @@ class _MemberCard extends StatelessWidget {
         onSelected: (value) {
           if (value == 'edit') {
             onEdit();
+          } else if (value == 'preferences') {
+            onEditPreferences();
           } else if (value == 'toggle') {
             onToggleActive();
           }
@@ -1804,6 +1856,10 @@ class _MemberCard extends StatelessWidget {
           const PopupMenuItem(
             value: 'edit',
             child: Text('Bearbeiten'),
+          ),
+          const PopupMenuItem(
+            value: 'preferences',
+            child: Text('Schicht-Vorlieben'),
           ),
           PopupMenuItem(
             value: 'toggle',
@@ -1814,9 +1870,9 @@ class _MemberCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (primarySite != null)
+          if (primarySiteName != null)
             Text(
-              'Primaerstandort: ${primarySite.siteName}',
+              'Primaerstandort: $primarySiteName',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -2374,9 +2430,12 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
   late final TextEditingController _rateCtrl;
   late final TextEditingController _hoursCtrl;
   late final TextEditingController _contractLabelCtrl;
+  late final TextEditingController _weeklyMaxHoursCtrl;
+  late final TextEditingController _monthlyMaxHoursCtrl;
   late String _currency;
   late UserRole _role;
   late EmploymentType _employmentType;
+  late SalaryKind _salaryKind;
   late DateTime _validFrom;
   late UserPermissions _permissions;
   Set<String> _selectedSiteIds = <String>{};
@@ -2397,10 +2456,17 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
     _contractLabelCtrl = TextEditingController(
       text: widget.contract?.label ?? 'Standardvertrag',
     );
+    _weeklyMaxHoursCtrl = TextEditingController(
+      text: _formatNullableHours(widget.contract?.weeklyMaxHours),
+    );
+    _monthlyMaxHoursCtrl = TextEditingController(
+      text: _formatNullableHours(widget.contract?.monthlyMaxHours),
+    );
     _currency = widget.member.settings.currency;
     _role = widget.member.role;
     _permissions = widget.member.effectivePermissions;
     _employmentType = widget.contract?.type ?? EmploymentType.fullTime;
+    _salaryKind = widget.contract?.salaryKind ?? SalaryKind.monthly;
     _validFrom = widget.contract?.validFrom ?? DateTime.now();
     _selectedSiteIds = widget.assignments.map((item) => item.siteId).toSet();
     _primarySiteId =
@@ -2420,6 +2486,8 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
     _rateCtrl.dispose();
     _hoursCtrl.dispose();
     _contractLabelCtrl.dispose();
+    _weeklyMaxHoursCtrl.dispose();
+    _monthlyMaxHoursCtrl.dispose();
     for (final controller in _roleCtrls.values) {
       controller.dispose();
     }
@@ -2555,6 +2623,28 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
               },
             ),
             const SizedBox(height: 12),
+            DropdownButtonFormField<SalaryKind>(
+              initialValue: _salaryKind,
+              decoration: const InputDecoration(
+                labelText: 'Vergütungsart',
+                prefixIcon: Icon(Icons.payments_outlined),
+                helperText: 'Stundenlohn schlägt das Brutto aus den Stunden vor',
+              ),
+              items: SalaryKind.values
+                  .map(
+                    (kind) => DropdownMenuItem(
+                      value: kind,
+                      child: Text(kind.label),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => _salaryKind = value);
+                }
+              },
+            ),
+            const SizedBox(height: 12),
             Card(
               margin: EdgeInsets.zero,
               child: ListTile(
@@ -2563,6 +2653,47 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
                 subtitle: Text(DateFormat('dd.MM.yyyy', 'de_DE').format(_validFrom)),
                 onTap: _pickValidFrom,
               ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _weeklyMaxHoursCtrl,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Max. Wochenstunden',
+                      prefixIcon: Icon(Icons.timelapse_outlined),
+                      helperText: 'Optional — leer = keine Grenze',
+                    ),
+                    validator: _validateOptionalHours,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _monthlyMaxHoursCtrl,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Max. Monatsstunden',
+                      prefixIcon: Icon(Icons.calendar_month_outlined),
+                      helperText: 'Optional — leer = keine Grenze',
+                    ),
+                    validator: _validateOptionalHours,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Grenzen steuern die automatische Schichtverteilung (hart/weich '
+              'je nach Org-Einstellung) — keine gesetzliche Compliance-Regel.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
             ),
             const SizedBox(height: 12),
             Text(
@@ -2742,6 +2873,7 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
               ? null
               : _contractLabelCtrl.text.trim(),
           type: _employmentType,
+          salaryKind: _salaryKind,
           validFrom: _validFrom,
           weeklyHours: (double.tryParse(_hoursCtrl.text) ?? 8) * 5,
           dailyHours: double.tryParse(_hoursCtrl.text) ?? 8,
@@ -2751,12 +2883,47 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
           maxDailyMinutes: maxDailyMinutes,
           monthlyIncomeLimitCents:
               _employmentType == EmploymentType.miniJob ? 60300 : null,
+          weeklyMaxHours: _parseNullableHours(_weeklyMaxHoursCtrl.text),
+          monthlyMaxHours: _parseNullableHours(_monthlyMaxHoursCtrl.text),
           isMinor: isMinor,
           isPregnant: isPregnant,
         ),
         assignments: siteAssignments,
       ),
     );
+  }
+
+  /// Formatiert optionale Stunden für die Eingabe (leer = nicht gesetzt),
+  /// deutsche Dezimalkomma-Darstellung ohne überflüssige Nachkommastellen.
+  String _formatNullableHours(double? value) {
+    if (value == null) {
+      return '';
+    }
+    final text = value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toString();
+    return text.replaceAll('.', ',');
+  }
+
+  /// Parst optionale Stunden (leer → null; akzeptiert Komma und Punkt).
+  double? _parseNullableHours(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    return double.tryParse(trimmed.replaceAll(',', '.'));
+  }
+
+  String? _validateOptionalHours(String? value) {
+    final trimmed = (value ?? '').trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    final parsed = double.tryParse(trimmed.replaceAll(',', '.'));
+    if (parsed == null || parsed <= 0) {
+      return 'Bitte eine Stundenzahl > 0 oder leer';
+    }
+    return null;
   }
 
   Future<void> _pickValidFrom() async {
@@ -2936,16 +3103,43 @@ class _SiteEditorSheet extends StatefulWidget {
   const _SiteEditorSheet({
     required this.currentUser,
     this.site,
+    this.qualifications = const [],
   });
 
   final AppUserProfile currentUser;
   final SiteDefinition? site;
+  final List<QualificationDefinition> qualifications;
 
   @override
   State<_SiteEditorSheet> createState() => _SiteEditorSheetState();
 }
 
+/// Editierbare Zeile: ein Öffnungs-/Bedarfsfenster eines Wochentags.
+class _DemandRow {
+  _DemandRow({
+    required this.startMinute,
+    required this.endMinute,
+    this.requiredCount = 1,
+    Set<String>? qualificationIds,
+  }) : qualificationIds = qualificationIds ?? <String>{};
+
+  int startMinute;
+  int endMinute;
+  int requiredCount;
+  Set<String> qualificationIds;
+}
+
 class _SiteEditorSheetState extends State<_SiteEditorSheet> {
+  static const List<String> _weekdayLabels = [
+    'Montag',
+    'Dienstag',
+    'Mittwoch',
+    'Donnerstag',
+    'Freitag',
+    'Samstag',
+    'Sonntag',
+  ];
+
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameCtrl;
   late final TextEditingController _codeCtrl;
@@ -2954,6 +3148,11 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
   late final TextEditingController _cityCtrl;
   late final TextEditingController _descriptionCtrl;
   String? _selectedFederalState;
+
+  // Öffnungszeiten + Bedarf, je Wochentag (1..7) eine Liste Fenster.
+  final Map<int, List<_DemandRow>> _rowsByWeekday = {
+    for (var d = 1; d <= 7; d++) d: <_DemandRow>[],
+  };
 
   @override
   void initState() {
@@ -2969,6 +3168,29 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     );
     _descriptionCtrl =
         TextEditingController(text: widget.site?.description ?? '');
+    _hydrateSchedule();
+  }
+
+  /// Baut die Editor-Zeilen aus den vorhandenen Öffnungszeiten + Bedarfen.
+  void _hydrateSchedule() {
+    for (final entry in widget.site?.weekdayHours ?? const <WeekdayHours>[]) {
+      final list = _rowsByWeekday[entry.weekday];
+      if (list == null) continue;
+      for (final window in entry.windows) {
+        final demand = (widget.site?.staffingDemands ??
+                const <StaffingDemand>[])
+            .firstWhereOrNull((sd) =>
+                sd.weekday == entry.weekday &&
+                sd.window.startMinute == window.startMinute &&
+                sd.window.endMinute == window.endMinute);
+        list.add(_DemandRow(
+          startMinute: window.startMinute,
+          endMinute: window.endMinute,
+          requiredCount: demand?.requiredCount ?? 1,
+          qualificationIds: {...?demand?.requiredQualificationIds},
+        ));
+      }
+    }
   }
 
   @override
@@ -3112,6 +3334,26 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
                 prefixIcon: Icon(Icons.notes_outlined),
               ),
             ),
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 12),
+            Text(
+              'Öffnungszeiten & Personalbedarf',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Grundlage der automatischen Schichtverteilung. Pro Wochentag '
+              'Zeitfenster mit benötigter Mitarbeiterzahl anlegen.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            for (var weekday = 1; weekday <= 7; weekday++)
+              _buildWeekdaySection(weekday),
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: _save,
@@ -3127,9 +3369,242 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     );
   }
 
+  Widget _buildWeekdaySection(int weekday) {
+    final rows = _rowsByWeekday[weekday]!;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _weekdayLabels[weekday - 1],
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => _addWindow(weekday),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Zeitfenster'),
+                ),
+              ],
+            ),
+            if (rows.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 4),
+                child: Text(
+                  'Geschlossen',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              )
+            else
+              for (var i = 0; i < rows.length; i++)
+                _buildWindowRow(weekday, i, rows[i]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWindowRow(int weekday, int index, _DemandRow row) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              OutlinedButton(
+                onPressed: () => _pickTime(weekday, index, isStart: true),
+                child: Text(_formatMinutes(row.startMinute)),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 6),
+                child: Text('–'),
+              ),
+              OutlinedButton(
+                onPressed: () => _pickTime(weekday, index, isStart: false),
+                child: Text(_formatMinutes(row.endMinute)),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: 'MA verringern',
+                onPressed: row.requiredCount > 1
+                    ? () => setState(() => row.requiredCount--)
+                    : null,
+                icon: const Icon(Icons.remove_circle_outline),
+              ),
+              Text('${row.requiredCount} MA'),
+              IconButton(
+                tooltip: 'MA erhöhen',
+                onPressed: () => setState(() => row.requiredCount++),
+                icon: const Icon(Icons.add_circle_outline),
+              ),
+              IconButton(
+                tooltip: 'Entfernen',
+                onPressed: () =>
+                    setState(() => _rowsByWeekday[weekday]!.removeAt(index)),
+                icon: Icon(Icons.delete_outline, color: colorScheme.error),
+              ),
+            ],
+          ),
+          if (row.endMinute <= row.startMinute)
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Text(
+                'Ende muss nach Beginn liegen',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: colorScheme.error),
+              ),
+            ),
+          if (widget.qualifications.isNotEmpty)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _editQualifications(row),
+                icon: const Icon(Icons.workspace_premium_outlined, size: 18),
+                label: Text(
+                  row.qualificationIds.isEmpty
+                      ? 'Qualifikation (keine)'
+                      : 'Qualifikation (${row.qualificationIds.length})',
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _addWindow(int weekday) {
+    setState(() {
+      _rowsByWeekday[weekday]!.add(
+        _DemandRow(startMinute: 9 * 60, endMinute: 17 * 60),
+      );
+    });
+  }
+
+  Future<void> _pickTime(int weekday, int index,
+      {required bool isStart}) async {
+    final row = _rowsByWeekday[weekday]![index];
+    final current = isStart ? row.startMinute : row.endMinute;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: (current ~/ 60) % 24, minute: current % 60),
+      builder: (ctx, child) => MediaQuery(
+        data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+        child: child!,
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      final minutes = picked.hour * 60 + picked.minute;
+      if (isStart) {
+        row.startMinute = minutes;
+      } else {
+        row.endMinute = minutes;
+      }
+    });
+  }
+
+  Future<void> _editQualifications(_DemandRow row) async {
+    final selected = {...row.qualificationIds};
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Erforderliche Qualifikationen'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final qualification in widget.qualifications)
+                    if (qualification.id != null)
+                      CheckboxListTile(
+                        value: selected.contains(qualification.id),
+                        title: Text(qualification.name),
+                        onChanged: (checked) => setDialogState(() {
+                          if (checked ?? false) {
+                            selected.add(qualification.id!);
+                          } else {
+                            selected.remove(qualification.id);
+                          }
+                        }),
+                      ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Abbrechen'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(selected),
+              child: const Text('Übernehmen'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result != null) {
+      setState(() {
+        row.qualificationIds = result;
+      });
+    }
+  }
+
+  String _formatMinutes(int minutes) {
+    final clamped = minutes.clamp(0, 24 * 60);
+    final h = (clamped ~/ 60).toString().padLeft(2, '0');
+    final m = (clamped % 60).toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
   void _save() {
     if (!_formKey.currentState!.validate()) {
       return;
+    }
+    final weekdayHours = <WeekdayHours>[];
+    final staffingDemands = <StaffingDemand>[];
+    for (var weekday = 1; weekday <= 7; weekday++) {
+      final rows = _rowsByWeekday[weekday]!
+          .where((row) => row.endMinute > row.startMinute)
+          .toList()
+        ..sort((a, b) => a.startMinute.compareTo(b.startMinute));
+      if (rows.isEmpty) {
+        continue;
+      }
+      weekdayHours.add(WeekdayHours(
+        weekday: weekday,
+        windows: [
+          for (final row in rows)
+            TimeWindow(startMinute: row.startMinute, endMinute: row.endMinute),
+        ],
+      ));
+      for (final row in rows) {
+        staffingDemands.add(StaffingDemand(
+          weekday: weekday,
+          window:
+              TimeWindow(startMinute: row.startMinute, endMinute: row.endMinute),
+          requiredCount: row.requiredCount < 1 ? 1 : row.requiredCount,
+          requiredQualificationIds: row.qualificationIds.toList(growable: false),
+        ));
+      }
     }
     Navigator.of(context).pop(
       SiteDefinition(
@@ -3150,6 +3625,8 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
         description: _descriptionCtrl.text.trim().isEmpty
             ? null
             : _descriptionCtrl.text.trim(),
+        weekdayHours: weekdayHours,
+        staffingDemands: staffingDemands,
         createdByUid: widget.currentUser.uid,
       ),
     );
@@ -3804,4 +4281,353 @@ class _TeamEditorSheetState extends State<_TeamEditorSheet> {
       ),
     );
   }
+}
+
+/// Auswahlmodus des Zeitfensters einer Vorgabe-Regel.
+enum _ScopeMode { morning, afternoon, evening, custom }
+
+/// Bearbeitbarer Zustand einer einzelnen Vorgabe-Regel in der UI.
+class _RuleDraft {
+  _RuleDraft({
+    required this.kind,
+    required this.mode,
+    required this.startMinute,
+    required this.endMinute,
+    required this.weekdays,
+  });
+
+  PreferenceKind kind;
+  _ScopeMode mode;
+  int startMinute;
+  int endMinute;
+  Set<int> weekdays;
+
+  factory _RuleDraft.fromRule(ShiftPreferenceRule rule) {
+    final mode = switch (rule.daypart) {
+      ShiftDaypart.morning => _ScopeMode.morning,
+      ShiftDaypart.afternoon => _ScopeMode.afternoon,
+      ShiftDaypart.evening => _ScopeMode.evening,
+      null => _ScopeMode.custom,
+    };
+    return _RuleDraft(
+      kind: rule.kind,
+      mode: mode,
+      startMinute: rule.startMinute,
+      endMinute: rule.endMinute,
+      weekdays: {...rule.weekdays},
+    );
+  }
+
+  factory _RuleDraft.fresh() => _RuleDraft(
+        kind: PreferenceKind.prefer,
+        mode: _ScopeMode.morning,
+        startMinute: ShiftDaypart.morning.startMinute,
+        endMinute: ShiftDaypart.morning.endMinute,
+        weekdays: <int>{},
+      );
+
+  ShiftDaypart? get _daypart => switch (mode) {
+        _ScopeMode.morning => ShiftDaypart.morning,
+        _ScopeMode.afternoon => ShiftDaypart.afternoon,
+        _ScopeMode.evening => ShiftDaypart.evening,
+        _ScopeMode.custom => null,
+      };
+
+  ShiftPreferenceRule toRule() {
+    final daypart = _daypart;
+    return ShiftPreferenceRule(
+      kind: kind,
+      weekdays: weekdays,
+      startMinute: daypart?.startMinute ?? startMinute,
+      endMinute: daypart?.endMinute ?? endMinute,
+      daypart: daypart,
+    );
+  }
+}
+
+/// Editor (Modal) für die Schicht-Vorlieben eines Mitarbeiters. Nur
+/// Chef/Teamleitung erreichbar (siehe Aufrufer). Gibt beim Speichern eine
+/// [EmployeeShiftPreference] zurück; der Aufrufer persistiert via TeamProvider.
+class _ShiftPreferenceEditorSheet extends StatefulWidget {
+  const _ShiftPreferenceEditorSheet({
+    required this.member,
+    this.existing,
+  });
+
+  final AppUserProfile member;
+  final EmployeeShiftPreference? existing;
+
+  @override
+  State<_ShiftPreferenceEditorSheet> createState() =>
+      _ShiftPreferenceEditorSheetState();
+}
+
+class _ShiftPreferenceEditorSheetState
+    extends State<_ShiftPreferenceEditorSheet> {
+  static const _weekdayLabels = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+
+  late List<_RuleDraft> _drafts;
+
+  @override
+  void initState() {
+    super.initState();
+    _drafts = (widget.existing?.rules ?? const <ShiftPreferenceRule>[])
+        .map(_RuleDraft.fromRule)
+        .toList();
+  }
+
+  String _formatMinutes(int minutes) {
+    final clamped = minutes.clamp(0, 24 * 60);
+    final h = (clamped ~/ 60).toString().padLeft(2, '0');
+    final m = (clamped % 60).toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  Future<void> _pickTime(_RuleDraft draft, {required bool isStart}) async {
+    final current = isStart ? draft.startMinute : draft.endMinute;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+        hour: (current ~/ 60).clamp(0, 23),
+        minute: current % 60,
+      ),
+      builder: (ctx, child) => MediaQuery(
+        data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+        child: child!,
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      var minutes = picked.hour * 60 + picked.minute;
+      if (isStart) {
+        draft.startMinute = minutes;
+      } else {
+        // 00:00 als Endzeit = Tagesende (24:00).
+        if (minutes == 0) minutes = 24 * 60;
+        draft.endMinute = minutes;
+      }
+    });
+  }
+
+  void _save() {
+    for (final draft in _drafts) {
+      if (draft.mode == _ScopeMode.custom &&
+          draft.endMinute <= draft.startMinute) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Jedes eigene Zeitfenster braucht ein Ende nach '
+                'dem Start.'),
+          ),
+        );
+        return;
+      }
+    }
+    Navigator.of(context).pop(
+      EmployeeShiftPreference(
+        orgId: widget.member.orgId,
+        userId: widget.member.uid,
+        rules: _drafts.map((d) => d.toRule()).toList(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Schicht-Vorlieben', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              widget.member.displayName,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Bevorzugen/Meiden wirken als weiche Wünsche beim Automatisch '
+              'planen. „Sperren" ist hart — gesperrte Zeiten werden nie '
+              'verplant.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            if (_drafts.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'Noch keine Vorgaben. Mit „Regel hinzufügen" eine '
+                  'Bevorzugung, Meidung oder Sperre anlegen.',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: colorScheme.onSurfaceVariant),
+                ),
+              ),
+            for (var i = 0; i < _drafts.length; i++) ...[
+              _buildRuleCard(i),
+              const SizedBox(height: 12),
+            ],
+            const SizedBox(height: 4),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  setState(() => _drafts.add(_RuleDraft.fresh())),
+              icon: const Icon(Icons.add),
+              label: const Text('Regel hinzufügen'),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Abbrechen'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.check),
+                    label: const Text('Speichern'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRuleCard(int index) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final draft = _drafts[index];
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('Regel ${index + 1}',
+                  style: theme.textTheme.titleSmall),
+              const Spacer(),
+              IconButton(
+                tooltip: 'Regel entfernen',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => setState(() => _drafts.removeAt(index)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          _label('Art'),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final kind in PreferenceKind.values)
+                ChoiceChip(
+                  label: Text(kind.label),
+                  selected: draft.kind == kind,
+                  onSelected: (_) => setState(() => draft.kind = kind),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _label('Zeit'),
+          Wrap(
+            spacing: 8,
+            children: [
+              _scopeChip(draft, _ScopeMode.morning, 'Vormittag'),
+              _scopeChip(draft, _ScopeMode.afternoon, 'Nachmittag'),
+              _scopeChip(draft, _ScopeMode.evening, 'Abend'),
+              _scopeChip(draft, _ScopeMode.custom, 'Eigenes Fenster'),
+            ],
+          ),
+          if (draft.mode == _ScopeMode.custom) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => _pickTime(draft, isStart: true),
+                    child: Text('von ${_formatMinutes(draft.startMinute)}'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => _pickTime(draft, isStart: false),
+                    child: Text('bis ${_formatMinutes(draft.endMinute)}'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 12),
+          _label('Tage (leer = alle Tage)'),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (var d = 1; d <= 7; d++)
+                FilterChip(
+                  label: Text(_weekdayLabels[d - 1]),
+                  selected: draft.weekdays.contains(d),
+                  onSelected: (selected) => setState(() {
+                    if (selected) {
+                      draft.weekdays.add(d);
+                    } else {
+                      draft.weekdays.remove(d);
+                    }
+                  }),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _scopeChip(_RuleDraft draft, _ScopeMode mode, String label) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: draft.mode == mode,
+      onSelected: (_) => setState(() {
+        draft.mode = mode;
+        final daypart = draft._daypart;
+        if (daypart != null) {
+          draft.startMinute = daypart.startMinute;
+          draft.endMinute = daypart.endMinute;
+        }
+      }),
+    );
+  }
+
+  Widget _label(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(
+          text,
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+      );
 }

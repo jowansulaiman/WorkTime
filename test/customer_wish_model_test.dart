@@ -57,6 +57,8 @@ void main() {
         quantity: 2,
         // Status absichtlich abweichend -> Payload muss trotzdem 'neu' sein.
         status: CustomerWishStatus.done,
+        // Internes Feld: darf NIE in den öffentlichen Payload (Allowlist).
+        contactId: 'kontakt-1',
       );
 
       final map = wish.toPublicSubmissionMap();
@@ -77,6 +79,10 @@ void main() {
           'source',
         },
       );
+      // Tripwire: contactId (H-D2, internes Feld) darf NICHT im öffentlichen
+      // Create-Payload landen — die `firestore.rules`-hasOnly-Allowlist kennt
+      // es nicht, sonst bräche der anonyme /wunsch-Schreibpfad still.
+      expect(map.containsKey('contactId'), isFalse);
       // Invarianten, die die Rule serverseitig erzwingt:
       expect(map['status'], 'neu');
       expect(map['source'], CustomerWish.publicWebSource);
@@ -98,6 +104,7 @@ void main() {
         desiredDate: DateTime(2026, 7, 1, 12),
         customerName: 'Max Muster',
         customerContact: 'max@example.com',
+        contactId: 'kontakt-7',
         status: CustomerWishStatus.seen,
         notes: 'liegt bereit',
       );
@@ -112,8 +119,42 @@ void main() {
       expect(restored.desiredDate, DateTime(2026, 7, 1, 12));
       expect(restored.customerName, 'Max Muster');
       expect(restored.customerContact, 'max@example.com');
+      expect(restored.contactId, 'kontakt-7');
       expect(restored.status, CustomerWishStatus.seen);
       expect(restored.notes, 'liegt bereit');
+    });
+
+    test('toFirestoreMap/fromFirestore (camelCase) trippt contactId rund', () {
+      const wish = CustomerWish(
+        id: 'w1',
+        orgId: 'main-org',
+        referenceCode: 'K7Q-9X2',
+        storeName: 'Strichmännchen',
+        category: CustomerWishCategory.magazine,
+        wishText: 'Spiegel Ausgabe 26',
+        contactId: 'kontakt-7',
+      );
+
+      final restored =
+          CustomerWish.fromFirestore('w1', wish.toFirestoreMap());
+
+      expect(restored.contactId, 'kontakt-7');
+    });
+
+    test('clearContactId löst die Verknüpfung in copyWith', () {
+      const wish = CustomerWish(
+        orgId: 'main-org',
+        referenceCode: 'K7Q-9X2',
+        storeName: 'Strichmännchen',
+        category: CustomerWishCategory.magazine,
+        wishText: 'Spiegel Ausgabe 26',
+        contactId: 'kontakt-7',
+      );
+
+      expect(wish.copyWith(contactId: 'kontakt-9').contactId, 'kontakt-9');
+      expect(wish.copyWith(clearContactId: true).contactId, isNull);
+      // Ohne Argument bleibt der bestehende Wert erhalten.
+      expect(wish.copyWith().contactId, 'kontakt-7');
     });
   });
 }

@@ -43,7 +43,15 @@ void main() {
       expect(r.unemploymentEmployeeCents, 3900); // 1,3 %
       expect(r.employeeSocialTotalCents, 62850);
       expect(r.netCents, 206742); // 300000 - 30408 - 62850
-      expect(r.employerTotalCents, 362850);
+      // AG-Umlagen auf 3000 €: U1 1,1 % = 3300, U2 0,24 % = 720,
+      // InsO 0,15 % (gesetzl. Regelsatz) = 450, UV 1,3 % = 3900 -> Summe 8370.
+      expect(r.employerU1Cents, 3300);
+      expect(r.employerU2Cents, 720);
+      expect(r.employerInsolvencyCents, 450);
+      expect(r.employerAccidentCents, 3900);
+      expect(r.employerLeviesTotalCents, 8370);
+      // AG-Gesamt = Brutto + AG-Sozial (62850) + AG-Umlagen (8370).
+      expect(r.employerTotalCents, 371220);
     });
 
     test('niedriger Lohn nahe Grundfreibetrag — ~0 Lohnsteuer (Kernkorrektur)',
@@ -68,7 +76,12 @@ void main() {
               r.churchTaxCents -
               r.employeeSocialTotalCents,
         );
-        expect(r.employerTotalCents, r.grossCents + r.employerSocialTotalCents);
+        expect(
+          r.employerTotalCents,
+          r.grossCents +
+              r.employerSocialTotalCents +
+              r.employerLeviesTotalCents,
+        );
       }
     });
 
@@ -109,9 +122,11 @@ void main() {
     });
 
     test('Mindestlohn-Warnung greift unterhalb der Schwelle', () {
-      // Default 12,82 €/h.
-      expect(settings.isBelowMinimumWage(1200), isTrue); // 12,00 €
-      expect(settings.isBelowMinimumWage(1300), isFalse); // 13,00 €
+      // Default 13,90 €/h (2026).
+      expect(settings.minimumHourlyWageCents, 1390);
+      expect(settings.isBelowMinimumWage(1389), isTrue); // 13,89 €
+      expect(settings.isBelowMinimumWage(1390), isFalse); // 13,90 € (Schwelle)
+      expect(settings.isBelowMinimumWage(1400), isFalse); // 14,00 €
       expect(settings.isBelowMinimumWage(0), isFalse); // kein Lohn -> keine Warnung
     });
 
@@ -124,6 +139,24 @@ void main() {
       expect(restored.minijobEmployerTotalRate,
           closeTo(custom.minijobEmployerTotalRate, 1e-9));
       expect(restored.reducedChurchTaxStates, custom.reducedChurchTaxStates);
+      // AG-Umlagen runden ebenfalls round-trip-sicher durch.
+      expect(restored.umlageU1Rate, closeTo(custom.umlageU1Rate, 1e-9));
+      expect(restored.umlageU2Rate, closeTo(custom.umlageU2Rate, 1e-9));
+      expect(restored.insolvenzgeldumlageRate,
+          closeTo(custom.insolvenzgeldumlageRate, 1e-9));
+      expect(restored.uvRate, closeTo(custom.uvRate, 1e-9));
+      expect(restored.u1Applies, custom.u1Applies);
+    });
+
+    test('copyWith ändert nur die übergebenen Felder', () {
+      final base = PayrollSettings.defaults2026();
+      final changed = base.copyWith(umlageU1Rate: 0.02, u1Applies: false);
+      expect(changed.umlageU1Rate, 0.02);
+      expect(changed.u1Applies, isFalse);
+      // Unberührte Felder bleiben gleich.
+      expect(changed.umlageU2Rate, base.umlageU2Rate);
+      expect(changed.healthRate, base.healthRate);
+      expect(changed.minijobCeilingCents, base.minijobCeilingCents);
     });
 
     test('Midijob: reduzierte AN-Bemessung gegenüber Standard', () {
@@ -195,6 +228,77 @@ void main() {
       final r = calc(gross: 300000);
       expect(r.careEmployeeCents, 5400); // 1,8 %, kein Kinderlosenzuschlag
       expect(r.churchTaxCents, 0);
+    });
+  });
+
+  group('Arbeitgeber-Umlagen (U1/U2/InsO/UV)', () {
+    PayrollResult calcWith(PayrollSettings s,
+        {int gross = 300000,
+        PayrollEmploymentKind kind = PayrollEmploymentKind.standard}) {
+      return PayrollCalculator.calculate(
+        grossCents: gross,
+        taxClass: TaxClass.i,
+        churchTax: false,
+        kind: kind,
+        settings: s,
+      );
+    }
+
+    test('U1 entfällt, wenn u1Applies = false (≥ 30 MA)', () {
+      final ohneU1 = calcWith(settings.copyWith(u1Applies: false));
+      expect(ohneU1.employerU1Cents, 0);
+      // U2/InsO/UV bleiben (immer fällig).
+      expect(ohneU1.employerU2Cents, 720);
+      expect(ohneU1.employerInsolvencyCents, 450);
+      expect(ohneU1.employerAccidentCents, 3900);
+      expect(ohneU1.employerLeviesTotalCents, 5070);
+    });
+
+    test('U2/InsO/UV greifen immer, U1 nur wenn aktiv', () {
+      final r = calcWith(settings);
+      expect(r.employerU1Cents, greaterThan(0));
+      expect(r.employerU2Cents, greaterThan(0));
+      expect(r.employerInsolvencyCents, greaterThan(0));
+      expect(r.employerAccidentCents, greaterThan(0));
+    });
+
+    test('Editierbare Sätze wirken auf die AG-Umlagen', () {
+      final custom = settings.copyWith(
+        umlageU1Rate: 0.02, // 2 %
+        umlageU2Rate: 0.005, // 0,5 %
+        insolvenzgeldumlageRate: 0.001, // 0,1 %
+        uvRate: 0.0, // abgeschaltet
+      );
+      final r = calcWith(custom, gross: 200000); // 2000 €
+      expect(r.employerU1Cents, 4000); // 2 % von 2000 €
+      expect(r.employerU2Cents, 1000); // 0,5 %
+      expect(r.employerInsolvencyCents, 200); // 0,1 %
+      expect(r.employerAccidentCents, 0);
+      expect(r.employerLeviesTotalCents, 5200);
+    });
+
+    test('Minijob trägt keine separaten Umlagen (im Pauschalsatz enthalten)', () {
+      final r = calcWith(settings,
+          gross: 50000, kind: PayrollEmploymentKind.minijob);
+      expect(r.employerLeviesTotalCents, 0);
+      expect(r.employerU1Cents, 0);
+      // AG-Gesamt = Brutto + Pauschale (keine Doppelzählung der Umlagen).
+      expect(r.employerTotalCents, r.grossCents + r.minijobEmployerFlatCents);
+    });
+
+    test('Midijob trägt AG-Umlagen wie reguläre Beschäftigung', () {
+      const gross = 150000; // 1500 €
+      final midi =
+          calcWith(settings, gross: gross, kind: PayrollEmploymentKind.midijob);
+      final std = calcWith(settings, gross: gross); // standard
+      // AG-Umlagen liegen auf dem vollen (gedeckelten) Brutto, NICHT auf der
+      // reduzierten Midijob-Bemessung -> identisch zur regulären Beschäftigung.
+      expect(midi.employerLeviesTotalCents, std.employerLeviesTotalCents);
+      expect(midi.employerU1Cents, 1650); // 1,1 % von 1500 €
+      expect(midi.employerU2Cents, 360); // 0,24 %
+      expect(midi.employerInsolvencyCents, 225); // 0,15 %
+      expect(midi.employerAccidentCents, 1950); // 1,3 %
+      expect(midi.employerLeviesTotalCents, 4185);
     });
   });
 }

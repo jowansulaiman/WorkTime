@@ -24,6 +24,10 @@ class PayrollResult {
     required this.netCents,
     required this.employerTotalCents,
     required this.contributionBaseCents,
+    this.employerU1Cents = 0,
+    this.employerU2Cents = 0,
+    this.employerInsolvencyCents = 0,
+    this.employerAccidentCents = 0,
   });
 
   final int grossCents;
@@ -44,6 +48,15 @@ class PayrollResult {
   final int minijobEmployerFlatCents;
   final int netCents;
   final int employerTotalCents;
+
+  /// **Arbeitgeber-Umlagen** (reguläre/Midijob-Beschäftigung; beim Minijob 0,
+  /// da im [minijobEmployerFlatCents]-Pauschalsatz enthalten): U1
+  /// (Lohnfortzahlung), U2 (Mutterschutz), Insolvenzgeldumlage und der
+  /// UV-Beitrag (Unfallversicherung). Nur AG-Kosten, kein AN-Abzug.
+  final int employerU1Cents;
+  final int employerU2Cents;
+  final int employerInsolvencyCents;
+  final int employerAccidentCents;
 
   /// Beitragspflichtige Bemessungsgrundlage der Arbeitnehmer-SV (bei Midijob
   /// reduziert, sonst = gedeckeltes Brutto). Nur zur Transparenz.
@@ -68,6 +81,13 @@ class PayrollResult {
       pensionEmployerCents +
       unemploymentEmployerCents +
       minijobEmployerFlatCents;
+
+  /// Summe der Arbeitgeber-Umlagen (U1 + U2 + InsO + UV).
+  int get employerLeviesTotalCents =>
+      employerU1Cents +
+      employerU2Cents +
+      employerInsolvencyCents +
+      employerAccidentCents;
 
   int get totalDeductionsCents =>
       incomeTaxCents +
@@ -231,6 +251,16 @@ class PayrollCalculator {
     final employeeSocial = healthEmp + careEmp + pensionEmp + unemploymentEmp;
     final employerSocial = healthEr + careEr + pensionEr + unemploymentEr;
 
+    // Arbeitgeber-Umlagen (U1/U2/InsO/UV) auf das gedeckelte RV-Brutto –
+    // reine AG-Kosten (kein AN-Abzug). Beim Minijob entfällt dieser Zweig
+    // oben, da die Umlagen dort bereits im Pauschalsatz stecken.
+    final levyBase = employerBaseRvAlv;
+    final u1 = settings.u1Applies ? _round(levyBase * settings.umlageU1Rate) : 0;
+    final u2 = _round(levyBase * settings.umlageU2Rate);
+    final inso = _round(levyBase * settings.insolvenzgeldumlageRate);
+    final uv = _round(levyBase * settings.uvRate);
+    final employerLevies = u1 + u2 + inso + uv;
+
     final net = gross - incomeTax - soli - churchTaxCents - employeeSocial;
 
     return PayrollResult(
@@ -249,8 +279,12 @@ class PayrollCalculator {
       unemploymentEmployerCents: unemploymentEr,
       minijobEmployerFlatCents: 0,
       netCents: net,
-      employerTotalCents: gross + employerSocial,
+      employerTotalCents: gross + employerSocial + employerLevies,
       contributionBaseCents: employeeBaseRvAlv,
+      employerU1Cents: u1,
+      employerU2Cents: u2,
+      employerInsolvencyCents: inso,
+      employerAccidentCents: uv,
     );
   }
 

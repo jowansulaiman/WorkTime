@@ -10,6 +10,21 @@ void main() {
       expect(AuditActionX.fromValue('unbekannt'), AuditAction.updated);
     });
 
+    test('AuditAction.corrected round-trips through value/fromValue', () {
+      expect(AuditAction.corrected.value, 'corrected');
+      expect(AuditAction.corrected.label, 'Korrigiert');
+      expect(AuditActionX.fromValue('corrected'), AuditAction.corrected);
+
+      const entry = AuditLogEntry(
+        orgId: 'org-1',
+        action: AuditAction.corrected,
+        entityType: 'Zeiteintrag',
+        summary: 'Stempelzeit korrigiert',
+      );
+      final restored = AuditLogEntry.fromMap(entry.toMap());
+      expect(restored.action, AuditAction.corrected);
+    });
+
     test('snake_case Round-Trip (lokal)', () {
       final entry = AuditLogEntry(
         id: 'a1',

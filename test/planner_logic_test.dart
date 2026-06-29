@@ -82,6 +82,69 @@ void main() {
     });
   });
 
+  group('monthCellVisibleShiftCount', () {
+    // Maße der nicht-kompakten Monatszelle (siehe _PlannerMonthDayCell).
+    int wide(double available, int total) => monthCellVisibleShiftCount(
+          available: available,
+          total: total,
+          tileExtent: 30,
+          tileSpacing: 5,
+          moreHintExtent: 26,
+        );
+    // Maße der kompakten Monatszelle (siehe _PlannerCompactMonthDayCell).
+    int compact(double available, int total) => monthCellVisibleShiftCount(
+          available: available,
+          total: total,
+          tileExtent: 20,
+          tileSpacing: 4,
+          moreHintExtent: 18,
+        );
+
+    test('nichts anzuzeigen ergibt 0', () {
+      expect(wide(120, 0), 0);
+      expect(wide(0, 5), 0);
+      expect(wide(-10, 5), 0);
+    });
+
+    test('zeigt alle, wenn alles passt', () {
+      // 3 Kacheln = 3*30 + 2*5 = 100 <= 105.
+      expect(wide(105, 3), 3);
+    });
+
+    test('reserviert eine Zeile fuer den Hinweis, wenn nicht alles passt', () {
+      // Kapazitaet bei 105 = 3, aber 5 Schichten -> Hinweiszeile kostet Platz.
+      final shown = wide(105, 5);
+      expect(shown, lessThan(5));
+      expect(shown, greaterThan(0));
+    });
+
+    test('die gezeigten Kacheln passen immer in die Hoehe', () {
+      // Eigenschaftstest: fuer viele Hoehen darf das Layout nie ueberlaufen.
+      for (var available = 24.0; available <= 240.0; available += 1) {
+        for (final total in [1, 2, 3, 4, 8, 20]) {
+          final shown = wide(available, total);
+          expect(shown, inInclusiveRange(0, total));
+          final hasMore = shown < total;
+          final used = shown == 0
+              ? 0.0
+              : shown * 30 + (shown - 1) * 5 + (hasMore ? 5 + 26 : 0);
+          expect(
+            used,
+            lessThanOrEqualTo(available + 0.001),
+            reason: 'available=$available total=$total shown=$shown',
+          );
+        }
+      }
+    });
+
+    test('kompakte Zelle: zwei Kacheln passen, drei nicht', () {
+      // 2 Kacheln = 2*20 + 4 = 44 <= 50.
+      expect(compact(50, 2), 2);
+      // Mit 3 Schichten kostet die Hinweiszeile Platz -> weniger sichtbar.
+      expect(compact(50, 3), lessThan(3));
+    });
+  });
+
   group('isoWeekNumber', () {
     test('erster Januar 2026 liegt in KW 1', () {
       expect(isoWeekNumber(DateTime(2026, 1, 1)), 1);

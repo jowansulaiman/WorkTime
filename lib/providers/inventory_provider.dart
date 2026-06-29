@@ -9,6 +9,7 @@ import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/customer_order.dart';
+import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
@@ -61,6 +62,7 @@ class InventoryProvider extends ChangeNotifier {
   StreamSubscription<List<CustomerOrder>>? _customerOrdersSubscription;
   StreamSubscription<List<SiteOrderList>>? _orderCartsSubscription;
   StreamSubscription<List<SiteOrderList>>? _weeklyListsSubscription;
+  StreamSubscription<List<FridgeRefillList>>? _fridgeListsSubscription;
 
   AppUserProfile? _currentUser;
   List<Supplier> _suppliers = [];
@@ -71,6 +73,7 @@ class InventoryProvider extends ChangeNotifier {
   List<CustomerOrder> _customerOrders = [];
   List<SiteOrderList> _orderCarts = [];
   List<SiteOrderList> _weeklyLists = [];
+  List<FridgeRefillList> _fridgeLists = [];
   bool _loading = false;
   String? _errorMessage;
   bool _disposed = false;
@@ -83,6 +86,63 @@ class InventoryProvider extends ChangeNotifier {
   void setAuditSink(AuditSink sink) {
     _audit = sink;
   }
+
+  // --- Auto-Buchung Umsatz/Wareneinsatz → Finanzen (H-A2) ------------------
+  // Best-effort, fire-and-forget; deterministische Journal-IDs (co-/po-<id>)
+  // sichern Idempotenz (keine Doppelbuchung im hybrid-Fallback). Aus der
+  // lebenden FinanceProvider-Instanz in main.dart gesetzt (Finance steht NACH
+  // Inventory in der Kette → Injektion per Sink, keine Kettenumsortierung).
+  Future<String?> Function(CustomerOrder order)? _revenuePoster;
+  Future<String?> Function(PurchaseOrder order)? _goodsCostPoster;
+
+  void setRevenueJournalPoster(Future<String?> Function(CustomerOrder)? poster) {
+    _revenuePoster = poster;
+  }
+
+  void setGoodsCostJournalPoster(Future<String?> Function(PurchaseOrder)? poster) {
+    _goodsCostPoster = poster;
+  }
+
+  Future<void> _bookCustomerOrderRevenueIfNeeded(
+    CustomerOrder order,
+    CustomerOrderStatus? oldStatus,
+  ) async {
+    final poster = _revenuePoster;
+    if (poster == null) return;
+    if (order.status != CustomerOrderStatus.pickedUp) return;
+    if (oldStatus == CustomerOrderStatus.pickedUp) return;
+    try {
+      await poster(order);
+    } catch (error) {
+      AppLogger.warning('Umsatz-Buchung fehlgeschlagen', error: error);
+    }
+  }
+
+  Future<void> _bookPurchaseOrderCostIfNeeded(
+    PurchaseOrder order,
+    PurchaseOrderStatus? oldStatus,
+  ) async {
+    final poster = _goodsCostPoster;
+    if (poster == null) return;
+    if (order.status != PurchaseOrderStatus.received) return;
+    if (oldStatus == PurchaseOrderStatus.received) return;
+    try {
+      await poster(order);
+    } catch (error) {
+      AppLogger.warning('Wareneinsatz-Buchung fehlgeschlagen', error: error);
+    }
+  }
+
+  CustomerOrderStatus? _customerOrderStatus(String? id) {
+    if (id == null) return null;
+    for (final o in _customerOrders) {
+      if (o.id == id) return o.status;
+    }
+    return null;
+  }
+
+  PurchaseOrderStatus? _purchaseOrderStatus(String? id) =>
+      _purchaseOrderForId(id)?.status;
 
   List<Supplier> get suppliers => _suppliers;
   List<Product> get products => _products;
@@ -99,6 +159,7 @@ class InventoryProvider extends ChangeNotifier {
   List<CustomerOrder> get customerOrders => _customerOrders;
   List<SiteOrderList> get orderCarts => _orderCarts;
   List<SiteOrderList> get weeklyOrderLists => _weeklyLists;
+  List<FridgeRefillList> get fridgeRefillLists => _fridgeLists;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
@@ -347,6 +408,35 @@ class InventoryProvider extends ChangeNotifier {
     return orderCartForSite(siteId)?.itemCount ?? 0;
   }
 
+  // --- Kühlschrank-Nachfüllliste -----------------------------------------
+
+  /// Die Kühlschrank-Nachfüllliste eines Ladens (oder `null`, wenn leer/
+  /// ungesetzt). Bei Einzel-Laden-Org ist die einzige Liste der Fallback.
+  FridgeRefillList? fridgeRefillListForSite(String? siteId) {
+    if (siteId == null || siteId.isEmpty) {
+      return _fridgeLists.length == 1 ? _fridgeLists.first : null;
+    }
+    for (final list in _fridgeLists) {
+      if (list.siteId == siteId) {
+        return list;
+      }
+    }
+    return null;
+  }
+
+  /// Positionen der Nachfüllliste eines Ladens (leer, wenn keine existiert).
+  List<FridgeRefillItem> fridgeRefillItems(String? siteId) =>
+      fridgeRefillListForSite(siteId)?.items ?? const <FridgeRefillItem>[];
+
+  /// Anzahl noch nachzufüllender (nicht abgehakter) Positionen — für Badges.
+  /// Über alle Läden, wenn [siteId] null/leer.
+  int fridgeRefillOpenCount([String? siteId]) {
+    if (siteId == null || siteId.isEmpty) {
+      return _fridgeLists.fold(0, (sum, list) => sum + list.openCount);
+    }
+    return fridgeRefillListForSite(siteId)?.openCount ?? 0;
+  }
+
   Set<String> get categories {
     final result = <String>{};
     for (final product in _products) {
@@ -358,8 +448,111 @@ class InventoryProvider extends ChangeNotifier {
     return result;
   }
 
+  // --- Bestellhäufigkeit ("häufig bestellte Artikel") --------------------
+  //
+  // Rein aus der bereits im Speicher liegenden Bestellhistorie (`_orders`)
+  // abgeleitet — kein Firestore-Index, kein Repo-Zugriff, deckt local/cloud/
+  // hybrid einheitlich ab (analog zum Barcode-Lookup). Eine Bestellung zählt je
+  // Artikel genau 1× (Häufigkeit der Bestellvorgänge, nicht der Stückzahl);
+  // stornierte Bestellungen werden ignoriert. Memoisiert je Laden, invalidiert
+  // bei jedem `notifyListeners` (siehe [_safeNotify]).
+
+  /// Rollierendes Fenster, in dem ein Artikel als „häufig bestellt" zählt.
+  static const Duration orderFrequencyWindow = Duration(days: 84); // ~12 Wochen
+
+  final Map<String, Map<String, int>> _orderFreqCache = {};
+
+  /// Wie oft jeder Artikel ([productId] → Anzahl) innerhalb
+  /// [orderFrequencyWindow] in nicht stornierten Lieferantenbestellungen
+  /// vorkam, optional auf einen [siteId]-Laden beschränkt. Datum einer
+  /// Bestellung = `orderedAt ?? createdAt`. [now] nur für Tests; im Normalfall
+  /// (null) wird `DateTime.now()` benutzt und das Ergebnis memoisiert.
+  Map<String, int> orderFrequencyByProduct({String? siteId, DateTime? now}) {
+    final useCache = now == null;
+    final reference = now ?? DateTime.now();
+    // Tag in den Cache-Key aufnehmen: Eine über Mitternacht offene Sitzung ohne
+    // Datenänderung (z.B. Kassen-Tablet) bekäme sonst das Fenster von gestern.
+    final key = useCache
+        ? '${siteId ?? ''}|${reference.year}-${reference.month}-${reference.day}'
+        : '';
+    if (useCache) {
+      final cached = _orderFreqCache[key];
+      if (cached != null) {
+        return cached;
+      }
+    }
+    final cutoff = reference.subtract(orderFrequencyWindow);
+    final counts = <String, int>{};
+    for (final order in _orders) {
+      if (order.status == PurchaseOrderStatus.cancelled) {
+        continue;
+      }
+      if (siteId != null && siteId.isNotEmpty && order.siteId != siteId) {
+        continue;
+      }
+      final when = order.orderedAt ?? order.createdAt;
+      if (when == null || when.isBefore(cutoff)) {
+        continue;
+      }
+      final counted = <String>{};
+      for (final item in order.items) {
+        final pid = item.productId;
+        if (pid == null || pid.isEmpty) {
+          continue;
+        }
+        if (!counted.add(pid)) {
+          continue; // pro Bestellung nur einmal zählen
+        }
+        counts[pid] = (counts[pid] ?? 0) + 1;
+      }
+    }
+    if (useCache) {
+      _orderFreqCache[key] = counts;
+    }
+    return counts;
+  }
+
+  /// Bestellhäufigkeit eines einzelnen Artikels (0, wenn nie/außerhalb Fenster).
+  int orderFrequencyFor(String productId, {String? siteId}) =>
+      orderFrequencyByProduct(siteId: siteId)[productId] ?? 0;
+
+  /// Kopiert [products] und sortiert: häufiger bestellt zuerst, dann nach Name.
+  /// Seam für alle Bestell-Listen (Schnell-Hinzufügen, Picker, Bestelleditor).
+  List<Product> sortByOrderFrequency(List<Product> products, {String? siteId}) {
+    final freq = orderFrequencyByProduct(siteId: siteId);
+    final list = [...products];
+    list.sort((a, b) => _compareByOrderFrequency(a, b, freq));
+    return list;
+  }
+
+  /// Aktive Artikel eines Ladens, die im Fenster mindestens einmal bestellt
+  /// wurden — absteigend nach Häufigkeit, gekappt auf [limit] (≤0 = alle).
+  /// Für die Scanner-Schnellwahl „Häufig bestellt".
+  List<Product> frequentlyOrderedProducts({String? siteId, int limit = 8}) {
+    final freq = orderFrequencyByProduct(siteId: siteId);
+    final list = productsForSite(siteId)
+        .where((product) => product.isActive && (freq[product.id] ?? 0) > 0)
+        .toList()
+      ..sort((a, b) => _compareByOrderFrequency(a, b, freq));
+    if (limit > 0 && list.length > limit) {
+      return list.sublist(0, limit);
+    }
+    return list;
+  }
+
+  int _compareByOrderFrequency(Product a, Product b, Map<String, int> freq) {
+    final fa = freq[a.id] ?? 0;
+    final fb = freq[b.id] ?? 0;
+    if (fa != fb) {
+      return fb.compareTo(fa); // höhere Häufigkeit zuerst
+    }
+    return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  }
+
   void _safeNotify() {
     if (!_disposed) {
+      // Daten haben sich geändert -> Häufigkeits-Memo verwerfen.
+      _orderFreqCache.clear();
       notifyListeners();
     }
   }
@@ -444,6 +637,8 @@ class InventoryProvider extends ChangeNotifier {
     _orderCarts = await DatabaseService.loadLocalOrderCarts(scope: scope);
     _weeklyLists =
         await DatabaseService.loadLocalWeeklyOrderLists(scope: scope);
+    _fridgeLists =
+        await DatabaseService.loadLocalFridgeRefillLists(scope: scope);
   }
 
   Future<void> _persistSuppliers() =>
@@ -464,6 +659,9 @@ class InventoryProvider extends ChangeNotifier {
   Future<void> _persistWeeklyLists() =>
       DatabaseService.saveLocalWeeklyOrderLists(_weeklyLists,
           scope: _localScope);
+  Future<void> _persistFridgeLists() =>
+      DatabaseService.saveLocalFridgeRefillLists(_fridgeLists,
+          scope: _localScope);
 
   Future<void> _persistAllLocal() async {
     await _persistSuppliers();
@@ -474,6 +672,46 @@ class InventoryProvider extends ChangeNotifier {
     await _persistCustomerOrders();
     await _persistOrderCarts();
     await _persistWeeklyLists();
+    await _persistFridgeLists();
+  }
+
+  // --- Speichermodus-Migration (H-H1) -------------------------------------
+
+  /// Snapshot des aktuellen (Cloud-)Warenwirtschafts-Stands in den lokalen
+  /// Speicher (für den Wechsel cloud/hybrid → local).
+  Future<void> cacheCloudStateLocally() async {
+    if (usesLocalStorage) return;
+    await _persistAllLocal();
+  }
+
+  /// Lädt Stamm-/Bestelldaten beim Wechsel local→Cloud/Hybrid hoch (Upsert über
+  /// die Doc-ID → idempotent). Bewusst NICHT die append-only Ledger
+  /// (StockMovement/PriceHistory) — die würden bei Re-Sync duplizieren; sie
+  /// entstehen ohnehin aus künftigen Buchungen neu.
+  Future<void> syncLocalStateToCloud() async {
+    final orgId = _orgId;
+    if (orgId == null) return;
+    Future<void> push(String label, Future<void> Function() write) async {
+      try {
+        await write();
+      } catch (error) {
+        AppLogger.warning('syncLocalStateToCloud(inventory:$label): $error');
+      }
+    }
+
+    for (final s in List<Supplier>.from(_suppliers)) {
+      await push('supplier', () => _inventory.saveSupplier(s.copyWith(orgId: orgId)));
+    }
+    for (final p in List<Product>.from(_products)) {
+      await push('product', () => _inventory.saveProduct(p.copyWith(orgId: orgId)));
+    }
+    for (final o in List<PurchaseOrder>.from(_orders)) {
+      await push('order', () => _inventory.savePurchaseOrder(o.copyWith(orgId: orgId)));
+    }
+    for (final co in List<CustomerOrder>.from(_customerOrders)) {
+      await push('customerOrder',
+          () => _inventory.saveCustomerOrder(co.copyWith(orgId: orgId)));
+    }
   }
 
   /// Befuellt den lokalen Modus einmalig mit Demo-Daten, damit die
@@ -519,6 +757,7 @@ class InventoryProvider extends ChangeNotifier {
     _customerOrders = [];
     _orderCarts = [];
     _weeklyLists = [];
+    _fridgeLists = [];
     _loading = false;
   }
 
@@ -568,6 +807,12 @@ class InventoryProvider extends ChangeNotifier {
       _weeklyLists = items;
       _safeNotify();
     }, onError: _setError);
+
+    _fridgeListsSubscription =
+        _inventory.watchFridgeRefillLists(orgId).listen((items) {
+      _fridgeLists = items;
+      _safeNotify();
+    }, onError: _setError);
   }
 
   Future<void> _cancelSubscriptions() async {
@@ -578,6 +823,7 @@ class InventoryProvider extends ChangeNotifier {
     await _customerOrdersSubscription?.cancel();
     await _orderCartsSubscription?.cancel();
     await _weeklyListsSubscription?.cancel();
+    await _fridgeListsSubscription?.cancel();
     _suppliersSubscription = null;
     _productsSubscription = null;
     _ordersSubscription = null;
@@ -585,6 +831,7 @@ class InventoryProvider extends ChangeNotifier {
     _customerOrdersSubscription = null;
     _orderCartsSubscription = null;
     _weeklyListsSubscription = null;
+    _fridgeListsSubscription = null;
   }
 
   String _nextLocalId(String prefix) {
@@ -1088,6 +1335,9 @@ class InventoryProvider extends ChangeNotifier {
     );
     // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
     final isNew = prepared.id == null || prepared.id!.isEmpty;
+    // Alten Status VOR dem Upsert merken (Übergang → geliefert löst die
+    // Wareneinsatz-Buchung aus, H-A2).
+    final oldStatus = _purchaseOrderStatus(prepared.id);
     final supplierName =
         supplierById(prepared.supplierId)?.name ?? prepared.supplierName;
     final summary = supplierName == null || supplierName.isEmpty
@@ -1102,6 +1352,8 @@ class InventoryProvider extends ChangeNotifier {
           entityId: newId,
           summary: summary,
         );
+        await _bookPurchaseOrderCostIfNeeded(
+            prepared.copyWith(id: newId), oldStatus);
         return newId;
       } catch (error) {
         if (!usesHybridStorage) {
@@ -1130,6 +1382,7 @@ class InventoryProvider extends ChangeNotifier {
       entityId: withId.id,
       summary: summary,
     );
+    await _bookPurchaseOrderCostIfNeeded(withId, oldStatus);
     return withId.id!;
   }
 
@@ -1203,6 +1456,27 @@ class InventoryProvider extends ChangeNotifier {
     final receivedTotal =
         receivedByItemIndex.values.fold<int>(0, (sum, qty) => sum + qty);
     final auditSummary = 'Wareneingang gebucht ($receivedTotal Einheiten)';
+    // Wareneinsatz-Buchung (H-A2): vorab prüfen, ob dieser Wareneingang die
+    // Bestellung vollständig macht (Übergang → geliefert). Aus dem Vor-Zustand
+    // projiziert → mode-unabhängig, idempotent über die deterministische
+    // Journal-ID po-<id> (auch wenn der Cloud-Stream noch nicht aktualisiert ist).
+    final before = _purchaseOrderForId(orderId);
+    final bookCost = before != null &&
+        before.status != PurchaseOrderStatus.received &&
+        before.totalQuantityOrdered > 0 &&
+        (before.totalQuantityReceived + receivedTotal) >=
+            before.totalQuantityOrdered;
+    Future<void> maybeBook() async {
+      if (!bookCost) return;
+      await _bookPurchaseOrderCostIfNeeded(
+        before.copyWith(
+          status: PurchaseOrderStatus.received,
+          receivedAt: before.receivedAt ?? DateTime.now(),
+        ),
+        before.status,
+      );
+    }
+
     if (_usesFirestore &&
         await _tryFirestore(
           'receiveOrder',
@@ -1220,6 +1494,7 @@ class InventoryProvider extends ChangeNotifier {
         entityId: orderId,
         summary: auditSummary,
       );
+      await maybeBook();
       return;
     }
     _applyLocalReceipt(orderId, receivedByItemIndex);
@@ -1233,6 +1508,15 @@ class InventoryProvider extends ChangeNotifier {
       summary: auditSummary,
     );
     _safeNotify();
+    await maybeBook();
+  }
+
+  PurchaseOrder? _purchaseOrderForId(String? id) {
+    if (id == null) return null;
+    for (final o in _orders) {
+      if (o.id == id) return o;
+    }
+    return null;
   }
 
   // --- Kundenbestellungen (Sonderbestellungen) ---------------------------
@@ -1249,6 +1533,9 @@ class InventoryProvider extends ChangeNotifier {
     );
     // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
     final isNew = prepared.id == null || prepared.id!.isEmpty;
+    // Alten Status VOR dem Upsert merken (Übergang → abgeholt löst die
+    // Umsatz-Buchung aus, H-A2).
+    final oldStatus = _customerOrderStatus(prepared.id);
     final customer = prepared.customerName.trim();
     final summary = customer.isEmpty
         ? 'Kundenbestellung gespeichert'
@@ -1262,6 +1549,8 @@ class InventoryProvider extends ChangeNotifier {
           entityId: newId,
           summary: summary,
         );
+        await _bookCustomerOrderRevenueIfNeeded(
+            prepared.copyWith(id: newId), oldStatus);
         return newId;
       } catch (error) {
         if (!usesHybridStorage) {
@@ -1289,6 +1578,7 @@ class InventoryProvider extends ChangeNotifier {
       entityId: withId.id,
       summary: summary,
     );
+    await _bookCustomerOrderRevenueIfNeeded(withId, oldStatus);
     return withId.id!;
   }
 
@@ -1709,6 +1999,198 @@ class InventoryProvider extends ChangeNotifier {
       _orderCarts = [..._orderCarts];
       await _persistOrderCarts();
     }
+    _safeNotify();
+  }
+
+  // --- Kühlschrank-Nachfüllliste: Mutationen -----------------------------
+
+  /// Setzt [name] (oder einen Artikel) mit [quantity] auf die Nachfüllliste des
+  /// Ladens. Ist [productId] gesetzt und steht der Artikel bereits **offen** auf
+  /// der Liste, wird die Menge **erhöht** (kollaboratives Sammeln). Freitext-
+  /// Positionen (productId == null) werden immer als neuer Eintrag angelegt.
+  /// Offen für **jeden aktiven Mitarbeiter** (nicht nur Manager).
+  Future<void> addFridgeRefillItem({
+    required String siteId,
+    String? productId,
+    required String name,
+    String? category,
+    String? unit,
+    int quantity = 1,
+    String? note,
+    String? siteName,
+  }) async {
+    final trimmedName = name.trim();
+    if (siteId.isEmpty || quantity <= 0 || trimmedName.isEmpty) {
+      return;
+    }
+    final list = fridgeRefillListForSite(siteId) ??
+        FridgeRefillList(
+          orgId: _orgId ?? '',
+          siteId: siteId,
+          siteName: siteName,
+        );
+    final items = [...list.items];
+    final hasProduct = productId != null && productId.isNotEmpty;
+    final index = hasProduct
+        ? items.indexWhere(
+            (item) => !item.done && item.productId == productId,
+          )
+        : -1;
+    if (index >= 0) {
+      final existing = items[index];
+      items[index] = existing.copyWith(
+        name: trimmedName,
+        unit: unit ?? existing.unit,
+        category: category,
+        clearCategory: category == null,
+        quantity: existing.quantity + quantity,
+        note: note,
+        clearNote: note == null,
+        addedByUid: _currentUser?.uid,
+        addedByName: _currentUser?.displayName,
+        addedAt: DateTime.now(),
+      );
+    } else {
+      items.add(
+        FridgeRefillItem(
+          id: _uuid.v4(),
+          productId: hasProduct ? productId : null,
+          name: trimmedName,
+          category: category,
+          unit: (unit == null || unit.trim().isEmpty) ? 'Stück' : unit.trim(),
+          quantity: quantity,
+          note: note,
+          addedByUid: _currentUser?.uid,
+          addedByName: _currentUser?.displayName,
+          addedAt: DateTime.now(),
+        ),
+      );
+    }
+    await _persistFridgeList(
+      list.copyWith(
+        siteName: siteName ?? list.siteName,
+        items: items,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Setzt die Menge einer Nachfüll-Position. [quantity] <= 0 entfernt sie.
+  Future<void> setFridgeRefillItemQuantity({
+    required String siteId,
+    required String itemId,
+    required int quantity,
+  }) async {
+    final list = fridgeRefillListForSite(siteId);
+    if (list == null) {
+      return;
+    }
+    final items = <FridgeRefillItem>[];
+    for (final item in list.items) {
+      if (item.id == itemId) {
+        if (quantity > 0) {
+          items.add(item.copyWith(quantity: quantity));
+        }
+        // quantity <= 0 -> Position weglassen (entfernen)
+      } else {
+        items.add(item);
+      }
+    }
+    await _persistFridgeList(
+      list.copyWith(
+        items: items,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> removeFridgeRefillItem({
+    required String siteId,
+    required String itemId,
+  }) =>
+      setFridgeRefillItemQuantity(siteId: siteId, itemId: itemId, quantity: 0);
+
+  /// Hakt eine Position ab ([done] true = aus dem Lager geholt und nachgefüllt)
+  /// bzw. nimmt das Häkchen zurück.
+  Future<void> setFridgeRefillItemDone({
+    required String siteId,
+    required String itemId,
+    required bool done,
+  }) async {
+    final list = fridgeRefillListForSite(siteId);
+    if (list == null) {
+      return;
+    }
+    final items = list.items
+        .map((item) => item.id == itemId ? item.copyWith(done: done) : item)
+        .toList();
+    await _persistFridgeList(
+      list.copyWith(
+        items: items,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Entfernt alle bereits abgehakten Positionen (Aufräumen nach dem
+  /// Nachfüllen). Speichert eine reduzierte Liste (Update-Pfad – funktioniert
+  /// auch für Mitarbeiter ohne Lösch-Recht).
+  Future<void> clearFridgeRefillDone(String siteId) async {
+    final list = fridgeRefillListForSite(siteId);
+    if (list == null) {
+      return;
+    }
+    final remaining = list.items.where((item) => !item.done).toList();
+    if (remaining.length == list.items.length) {
+      return;
+    }
+    await _persistFridgeList(
+      list.copyWith(
+        items: remaining,
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Leert die gesamte Nachfüllliste eines Ladens.
+  Future<void> clearFridgeRefillList(String siteId) async {
+    final list = fridgeRefillListForSite(siteId);
+    if (list == null || list.items.isEmpty) {
+      return;
+    }
+    await _persistFridgeList(
+      list.copyWith(
+        items: const [],
+        updatedByUid: _currentUser?.uid,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// Persistiert die Nachfüllliste nach dem Drei-Speichermodi-Muster. Doc-ID =
+  /// `siteId` (Singleton je Laden). Wie beim Bestellkorb ist die cloud/hybrid-
+  /// Schreibstrategie „last writer wins" (read-modify-write über den gestreamten
+  /// Stand) — für zwei Läden mit wenigen Mitarbeitern bewusst akzeptiert.
+  Future<void> _persistFridgeList(FridgeRefillList list) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final prepared = list.copyWith(orgId: orgId, id: list.siteId);
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveFridgeRefillList',
+          () => _inventory.saveFridgeRefillList(prepared),
+        )) {
+      return;
+    }
+    _upsertLocal(_fridgeLists, prepared, (item) => item.siteId);
+    _fridgeLists = [..._fridgeLists];
+    await _persistFridgeLists();
     _safeNotify();
   }
 

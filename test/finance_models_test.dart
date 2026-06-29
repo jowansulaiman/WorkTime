@@ -32,6 +32,23 @@ void main() {
       expect(cloud.isBillable, isTrue);
     });
 
+    test('CostCenter.siteId round-trips + clear-Flag (H-C1)', () {
+      const center = CostCenter(
+        id: 'c2',
+        orgId: 'org-1',
+        number: '1002',
+        name: 'Tabak Börse',
+        siteId: 'site-77',
+      );
+      expect(CostCenter.fromMap(center.toMap()).siteId, 'site-77');
+      expect(
+        CostCenter.fromFirestore('c2', center.toFirestoreMap()).siteId,
+        'site-77',
+      );
+      expect(center.copyWith(clearSiteId: true).siteId, isNull);
+      expect(center.copyWith().siteId, 'site-77');
+    });
+
     test('CostType round-trip + Group-Enum-Default', () {
       const type = CostType(
         orgId: 'org-1',

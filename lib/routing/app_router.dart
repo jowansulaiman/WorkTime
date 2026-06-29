@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 
 import '../core/analytics_service.dart';
 import '../core/redesign_flags.dart';
-import '../models/app_user.dart';
 import '../providers/auth_provider.dart';
 import '../providers/feature_flag_provider.dart';
 import '../providers/theme_provider.dart';
@@ -19,13 +18,21 @@ import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
 import '../screens/month_report_screen.dart';
+import '../screens/order_analytics_screen.dart';
 import '../screens/personal_screen.dart';
 import '../screens/scanner_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/statistics_screen.dart';
 import '../screens/team_management_screen.dart';
+import '../screens/zeitwirtschaft/lohnlauf_screen.dart';
+import '../screens/zeitwirtschaft/mitarbeiterabschluss_screen.dart';
+import '../screens/zeitwirtschaft/monatsabschluss_screen.dart';
+import '../screens/zeitwirtschaft/stempel_screen.dart';
+import '../screens/zeitwirtschaft/stundenkonto_screen.dart';
+import '../screens/zeitwirtschaft/zeit_section_placeholder.dart';
+import '../screens/zeitwirtschaft/zeiterfassung_screen.dart';
 import '../widgets/bootstrap_frame.dart';
-import '../widgets/responsive_layout.dart';
+import 'route_permissions.dart';
 import 'shell_tab.dart';
 
 /// Root-Navigator der App. Section-Routen pushen über diesen Key, decken also
@@ -114,8 +121,18 @@ GoRouter buildAppRouter({
       ),
 
       // ---- Hauptbereich-Routen (single canonical route je Screen) ----
-      _sectionRoute(AppRoutes.inventory,
-          (c, s) => const InventoryScreen(parentLabel: 'Laden')),
+      _sectionRoute(
+        AppRoutes.inventory,
+        // `?tab=korb` springt direkt in den Bestellkorb (Warenkorb-Knopf in der
+        // V2-App-Bar). Der Query-Param berührt das Permission-Gating nicht — der
+        // Redirect prüft state.matchedLocation (ohne Query).
+        (c, s) => InventoryScreen(
+          parentLabel: 'Laden',
+          initialTabIndex: s.uri.queryParameters['tab'] == 'korb'
+              ? InventoryScreen.cartTabIndex
+              : 0,
+        ),
+      ),
       _sectionRoute(AppRoutes.customerOrders,
           (c, s) => const CustomerOrderScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.personal,
@@ -138,6 +155,27 @@ GoRouter buildAppRouter({
           (c, s) => const CustomerWishesScreen()),
       _sectionRoute(AppRoutes.scanner,
           (c, s) => const ScannerScreen(parentLabel: 'Warenwirtschaft')),
+      _sectionRoute(AppRoutes.orderAnalytics,
+          (c, s) => const OrderAnalyticsScreen(parentLabel: 'Laden')),
+
+      // ---- Zeitwirtschaft-Bereich (Sub-Routen unter dem `/zeit`-Tab-Hub) ----
+      _sectionRoute(AppRoutes.zeitErfassung, (c, s) => const ZeiterfassungScreen()),
+      _sectionRoute(AppRoutes.zeitStempeln, (c, s) => const StempelScreen()),
+      _sectionRoute(
+          AppRoutes.zeitStundenkonto, (c, s) => const StundenkontoScreen()),
+      _sectionRoute(
+          AppRoutes.zeitAbwesenheiten,
+          (c, s) => const ZeitSectionPlaceholder(
+              title: 'Abwesenheiten', meilenstein: 'M4')),
+      _sectionRoute(
+          AppRoutes.zeitAbwesenheitenKalender,
+          (c, s) => const ZeitSectionPlaceholder(
+              title: 'Abwesenheitskalender', meilenstein: 'M4')),
+      _sectionRoute(AppRoutes.zeitMonatsabschluss,
+          (c, s) => const MonatsabschlussScreen()),
+      _sectionRoute(AppRoutes.zeitMitarbeiterabschluss,
+          (c, s) => const MitarbeiterabschlussScreen()),
+      _sectionRoute(AppRoutes.zeitLohnlauf, (c, s) => const LohnlaufScreen()),
     ],
   );
 }
@@ -183,46 +221,12 @@ String? _gateRedirect(BuildContext context, GoRouterState state) {
   }
 
   // Permission-Gating für Deep-Links (URL-Ebene). '/' und '/anfragen' sind
-  // immer erlaubt -> der Fallback '/' kann keine Schleife auslösen.
-  if (!_isLocationAllowed(loc, profile)) {
+  // immer erlaubt -> der Fallback '/' kann keine Schleife auslösen. Matrix:
+  // zentral in RoutePermissions (geteilt mit dem Home-Screen, H-H2).
+  if (!RoutePermissions.isLocationAllowed(loc, profile)) {
     return '/';
   }
   return null;
-}
-
-bool _isLocationAllowed(String loc, AppUserProfile? p) {
-  switch (loc) {
-    case '/': // Heute
-    case '/anfragen': // Anfragen
-    case '/profil':
-    case AppRoutes.settings:
-      return true;
-    case '/plan':
-      return p?.canViewSchedule ?? false;
-    case '/zeit':
-      return p?.canViewTimeTracking ?? false;
-    case '/kontakte':
-      return p?.canViewContacts ?? false;
-    case '/laden':
-    case AppRoutes.inventory:
-    case AppRoutes.customerOrders:
-    case AppRoutes.customerWishes:
-      return p?.canViewInventory ?? false;
-    case AppRoutes.personal:
-    case AppRoutes.finance:
-    case AppRoutes.team:
-    case AppRoutes.auditLog:
-      return p?.isAdmin ?? false;
-    case AppRoutes.feedbackInbox:
-      return p?.canManageFeedback ?? false;
-    case AppRoutes.monthReport:
-    case AppRoutes.statistics:
-      return p?.canViewReports ?? false;
-    case AppRoutes.scanner:
-      return (p?.canUseScanner ?? false) && MobileBreakpoints.isNativeMobile;
-    default:
-      return true;
-  }
 }
 
 /// Lade-Splash, gezeigt während Auth/Profil aufgelöst werden (Gate-Zustand

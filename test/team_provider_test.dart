@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/local_demo_data.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/employee_site_assignment.dart';
+import 'package:worktime_app/models/shift_preference.dart';
 import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/team_definition.dart';
 import 'package:worktime_app/models/travel_time_rule.dart';
@@ -109,6 +110,40 @@ void main() {
       );
     });
 
+    test('syncLocalStateToCloud überträgt Schicht-Vorgaben in die Cloud',
+        () async {
+      final provider = TeamProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await provider.updateSession(adminUser);
+
+      await provider.saveShiftPreference(
+        const EmployeeShiftPreference(
+          orgId: 'org-1',
+          userId: 'peter-1',
+          rules: [
+            ShiftPreferenceRule(
+              kind: PreferenceKind.block,
+              weekdays: {1},
+              startMinute: 360,
+              endMinute: 720,
+              daypart: ShiftDaypart.morning,
+            ),
+          ],
+        ),
+      );
+      expect(provider.shiftPreferenceForUser('peter-1'), isNotNull);
+
+      await provider.syncLocalStateToCloud();
+
+      final cloud = await firestoreService.watchShiftPreferences('org-1').first;
+      final pushed = cloud.firstWhere((p) => p.userId == 'peter-1');
+      expect(pushed.rules, hasLength(1));
+      expect(pushed.rules.single.kind, PreferenceKind.block);
+      expect(pushed.rules.single.weekdays, {1});
+    });
+
     test('bootstraps demo sites and employee assignment for demo logins',
         () async {
       final provider = TeamProvider(
@@ -134,14 +169,18 @@ void main() {
       expect(lea.role, UserRole.teamlead);
       expect(
         provider.sites.map((site) => site.name),
-        containsAll(['Hauptstandort Berlin', 'Filiale Hamburg']),
+        containsAll([
+          'Tabak Börse',
+          'Strichmännchen GmbH',
+          'Paketshop REWE Dietrichsdorf',
+        ]),
       );
 
       expect(
         provider.siteAssignments.any(
           (assignment) =>
               assignment.userId == peter.uid &&
-              assignment.siteName == 'Filiale Hamburg',
+              assignment.siteName == 'Tabak Börse',
         ),
         isTrue,
       );
@@ -149,7 +188,7 @@ void main() {
         provider.siteAssignments.any(
           (assignment) =>
               assignment.userId == maria.uid &&
-              assignment.siteName == 'Hauptstandort Berlin',
+              assignment.siteName == 'Strichmännchen GmbH',
         ),
         isTrue,
       );
@@ -157,9 +196,15 @@ void main() {
         provider.siteAssignments.any(
           (assignment) =>
               assignment.userId == lea.uid &&
-              assignment.siteName == 'Filiale Hamburg',
+              assignment.siteName == 'Paketshop REWE Dietrichsdorf',
         ),
         isTrue,
+      );
+
+      // Echtes Personal aus dem Juli-2026-Plan ist als Demo-Mitarbeiter da.
+      expect(
+        provider.members.map((m) => m.displayName),
+        containsAll(['Maike', 'Edith', 'Majd', 'Tom', 'Jarla', 'Johanna']),
       );
     });
 

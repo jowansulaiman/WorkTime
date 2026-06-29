@@ -1508,6 +1508,15 @@ function parseShift(raw, index, fallbackOrgId) {
   };
 }
 
+// Spiegelt WorkEntryStatus.fromValue (lib/models/work_entry.dart): unbekannter
+// oder leerer Wert fällt still auf "approved" (abwärtskompatibel).
+function normalizeWorkEntryStatus(raw) {
+  const value = stringOrEmpty(raw);
+  return ["draft", "submitted", "approved", "rejected"].includes(value)
+    ? value
+    : "approved";
+}
+
 function parseWorkEntry(raw) {
   const map = ensureObject(raw, "entry");
   const startTime = parseDate(requiredString(map.start_time, "entry.start_time"));
@@ -1535,6 +1544,10 @@ function parseWorkEntry(raw) {
     correctedAt: parseNullableDate(map.corrected_at),
     note: stringOrNull(map.note),
     category: stringOrNull(map.category),
+    status: normalizeWorkEntryStatus(map.status),
+    approvedByUid: stringOrNull(map.approved_by_uid),
+    approvedAt: parseNullableDate(map.approved_at),
+    sourceClockEntryId: stringOrNull(map.source_clock_entry_id),
   };
 }
 
@@ -1584,6 +1597,10 @@ function toFirestoreWorkEntry(entry, callerUid) {
       : (entry.correctedAt ? Timestamp.fromDate(entry.correctedAt) : null),
     note: entry.note,
     category: entry.category,
+    status: normalizeWorkEntryStatus(entry.status),
+    approvedByUid: entry.approvedByUid || null,
+    approvedAt: entry.approvedAt ? Timestamp.fromDate(entry.approvedAt) : null,
+    sourceClockEntryId: entry.sourceClockEntryId || null,
     workedHours: workedMinutesFromEntry(entry) / 60,
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -1729,6 +1746,10 @@ function fromFirestoreWorkEntry(doc) {
     correctedAt: toNullableDate(data.correctedAt),
     note: stringOrNull(data.note),
     category: stringOrNull(data.category),
+    status: normalizeWorkEntryStatus(data.status),
+    approvedByUid: stringOrNull(data.approvedByUid),
+    approvedAt: toNullableDate(data.approvedAt),
+    sourceClockEntryId: stringOrNull(data.sourceClockEntryId),
   };
 }
 

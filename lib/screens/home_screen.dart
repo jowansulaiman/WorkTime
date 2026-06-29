@@ -5,9 +5,9 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
 
-import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
 import '../core/redesign_flags.dart';
+import '../routing/route_permissions.dart';
 import '../routing/shell_tab.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
@@ -21,6 +21,7 @@ import '../providers/schedule_provider.dart';
 import '../providers/storage_mode_provider.dart';
 import '../providers/team_provider.dart';
 import '../providers/work_provider.dart';
+import '../providers/zeitwirtschaft_provider.dart';
 import '../theme/app_theme.dart';
 import '../ui/app_card.dart';
 import '../ui/app_hero_card.dart';
@@ -40,9 +41,11 @@ import '../widgets/section_header.dart';
 import '../widgets/dashboard_action_items_card.dart';
 import 'entry_form_screen.dart';
 import 'contacts_screen.dart';
+import 'fridge_refill_screen.dart';
 import 'order_cart_screen.dart';
 import 'notification_screen.dart';
 import 'shift_planner_screen.dart';
+import 'zeitwirtschaft/zeitwirtschaft_hub_screen.dart';
 
 part 'home_screen_helpers.dart';
 part 'home_screen_tabs.dart';
@@ -99,6 +102,10 @@ class _HomeScreenState extends State<HomeScreen> {
             (storage) => storage.location,
           );
     final canManageShifts = currentUser?.canManageShifts ?? false;
+    // Eng gescoptes Select: rebuildt die Shell nur, wenn sich die Badge-Zahl
+    // (offene Anfragen + Tausch-Aktionen) ändert – nicht bei jeder Schicht.
+    final inboxBadge =
+        context.select<ScheduleProvider, int>((s) => s.pendingInboxActionCount);
     final useV2 = RedesignFlags.isOn(context);
     final destinations = _visibleDestinations(currentUser, useV2: useV2);
     final currentBranchIndex = _shell.currentIndex;
@@ -175,10 +182,18 @@ class _HomeScreenState extends State<HomeScreen> {
                 // Rail-Profil-Header). Pro Layout nur eine Seite, damit es kein
                 // verwirrendes Wischen von der „falschen" Kante gibt. V1 bleibt ohne.
                 drawer: (useV2 && !useRail)
-                    ? _buildAppMenuDrawer(currentUser, authDisabled)
+                    ? _buildAppMenuDrawer(
+                        currentUser,
+                        authDisabled,
+                        showAreas: true,
+                      )
                     : null,
                 endDrawer: (useV2 && useRail)
-                    ? _buildAppMenuDrawer(currentUser, authDisabled)
+                    ? _buildAppMenuDrawer(
+                        currentUser,
+                        authDisabled,
+                        showAreas: false,
+                      )
                     : null,
                 // Schmaler Rand: lässt dem horizontalen TableCalendar-/Wochen-Swipe
                 // im ShiftPlanner Platz, statt ihn am linken Rand abzufangen.
@@ -188,6 +203,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         user: currentUser,
                         onOpenMenu: () =>
                             _scaffoldKey.currentState?.openDrawer(),
+                        showCart: currentUser?.canViewInventory ?? false,
+                        onOpenCart: () => context.push(
+                          '${AppRoutes.inventory}?tab=korb',
+                        ),
                       )
                     : null,
                 body: useRail
@@ -203,6 +222,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                       icon: destination.icon,
                                       selectedIcon: destination.selectedIcon,
                                       label: destination.label,
+                                      badgeCount:
+                                          destination.id == ShellTab.inbox
+                                              ? inboxBadge
+                                              : 0,
                                     ),
                                 ],
                                 selectedIndex: railSelectedIndex,
@@ -261,9 +284,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                 destinations: [
                                   for (final destination in railDestinations)
                                     NavigationRailDestination(
-                                      icon: Icon(destination.icon),
-                                      selectedIcon:
-                                          Icon(destination.selectedIcon),
+                                      icon: _badgedNavIcon(
+                                        destination.icon,
+                                        destination.id,
+                                        inboxBadge,
+                                      ),
+                                      selectedIcon: _badgedNavIcon(
+                                        destination.selectedIcon,
+                                        destination.id,
+                                        inboxBadge,
+                                      ),
                                       label: Text(destination.label),
                                     ),
                                 ],
@@ -277,20 +307,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     : shellContent,
                 bottomNavigationBar: useRail
                     ? null
-                    : NavigationBar(
+                    : _buildBottomNavBar(
+                        useV2: useV2,
+                        user: currentUser,
+                        currentBranchIndex: currentBranchIndex,
+                        inboxBadge: inboxBadge,
+                        destinations: destinations,
                         selectedIndex: selectedIndex,
-                        onDestinationSelected: (index) => _handleDestinationTap(
-                          index,
-                          destinations: destinations,
-                        ),
-                        destinations: [
-                          for (final destination in destinations)
-                            NavigationDestination(
-                              icon: Icon(destination.icon),
-                              selectedIcon: Icon(destination.selectedIcon),
-                              label: destination.label,
-                            ),
-                        ],
                       ),
                 floatingActionButton: currentDestination.showFab
                     ? Consumer<WorkProvider>(
@@ -373,6 +396,130 @@ class _HomeScreenState extends State<HomeScreen> {
     _activateDestination(destinations[index].id);
   }
 
+  /// Untere Navigationsleiste. Das Framework rendert die Labels als nacktes
+  /// `Text` (kein maxLines) UND skaliert sie mit der System-Schrift bis 1,3×
+  /// hoch -> lange Labels brechen sonst auf zwei Zeilen um. Wir deckeln die
+  /// Label-Skalierung hier auf 1,0 (Icons/Indikator skalieren ohnehin nicht),
+  /// damit die Leiste bei jeder Geräte-Schriftgröße einzeilig bleibt.
+  Widget _buildBottomNavBar({
+    required bool useV2,
+    required AppUserProfile? user,
+    required int currentBranchIndex,
+    required int inboxBadge,
+    required List<_ShellDestination> destinations,
+    required int selectedIndex,
+  }) {
+    if (!useV2) {
+      // V1: unveränderte, permission-gefilterte Branch-Leiste.
+      return MediaQuery.withClampedTextScaling(
+        maxScaleFactor: 1.0,
+        child: NavigationBar(
+          selectedIndex: selectedIndex,
+          onDestinationSelected: (index) =>
+              _handleDestinationTap(index, destinations: destinations),
+          destinations: [
+            for (final destination in destinations)
+              NavigationDestination(
+                icon: _badgedNavIcon(
+                  destination.icon,
+                  destination.id,
+                  inboxBadge,
+                ),
+                selectedIcon: _badgedNavIcon(
+                  destination.selectedIcon,
+                  destination.id,
+                  inboxBadge,
+                ),
+                label: destination.label,
+              ),
+          ],
+        ),
+      );
+    }
+
+    // V2: feste 5er-Leiste (Heute · Plan · Scanner · Anfragen · Mehr). Scanner
+    // pusht eine Route, »Mehr« öffnet das Slide-in-Menü — beides sind KEINE
+    // Shell-Branches. Liegt der aktive Branch nicht in der Leiste (Zeit/
+    // Kontakte/Laden, über »Mehr« geöffnet), wird »Mehr« markiert.
+    final entries = _v2BottomNavEntries(user);
+    final currentBranch = ShellTab.values[currentBranchIndex];
+    var selected = entries.indexWhere((e) => e.branch == currentBranch);
+    if (selected == -1) {
+      final moreIndex = entries.indexWhere((e) => e.kind == _BottomNavKind.more);
+      selected = moreIndex == -1 ? 0 : moreIndex;
+    }
+    return MediaQuery.withClampedTextScaling(
+      maxScaleFactor: 1.0,
+      child: NavigationBar(
+        selectedIndex: selected,
+        onDestinationSelected: (index) => _handleBottomNavTap(entries[index]),
+        destinations: [
+          for (final entry in entries)
+            NavigationDestination(
+              icon: entry.showInboxBadge
+                  ? _badgedNavIcon(entry.icon, ShellTab.inbox, inboxBadge)
+                  : Icon(entry.icon),
+              selectedIcon: entry.showInboxBadge
+                  ? _badgedNavIcon(entry.selectedIcon, ShellTab.inbox, inboxBadge)
+                  : Icon(entry.selectedIcon),
+              label: entry.label,
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Die festen V2-Bottomnav-Einträge in Reihenfolge: Heute · Plan · Scanner ·
+  /// Anfragen · Mehr. Plan und Scanner sind berechtigungsabhängig (fehlt das
+  /// Recht, schrumpft die Leiste); Heute/Anfragen/Mehr sind immer da.
+  List<_BottomNavEntry> _v2BottomNavEntries(AppUserProfile? user) {
+    return [
+      const _BottomNavEntry.branch(
+        branch: ShellTab.today,
+        label: 'Heute',
+        icon: Icons.home_outlined,
+        selectedIcon: Icons.home,
+      ),
+      if (RoutePermissions.isShellTabAllowed(ShellTab.plan, user))
+        const _BottomNavEntry.branch(
+          branch: ShellTab.plan,
+          label: 'Plan',
+          icon: Icons.view_timeline_outlined,
+          selectedIcon: Icons.view_timeline,
+        ),
+      if (RoutePermissions.isLocationAllowed(AppRoutes.scanner, user))
+        const _BottomNavEntry.scanner(),
+      const _BottomNavEntry.branch(
+        branch: ShellTab.inbox,
+        label: 'Anfragen',
+        icon: Icons.inbox_outlined,
+        selectedIcon: Icons.inbox,
+        showInboxBadge: true,
+      ),
+      const _BottomNavEntry.more(),
+    ];
+  }
+
+  void _handleBottomNavTap(_BottomNavEntry entry) {
+    switch (entry.kind) {
+      case _BottomNavKind.branch:
+        _activateDestination(entry.branch!);
+      case _BottomNavKind.scanner:
+        // Scanner ist eine über die Shell gepushte Route, kein Branch.
+        context.push(AppRoutes.scanner);
+      case _BottomNavKind.more:
+        // »Mehr« öffnet dasselbe Slide-in-Menü wie der Avatar in der V2-AppBar.
+        _scaffoldKey.currentState?.openDrawer();
+    }
+  }
+
+  /// Schließt das »Mehr«-Menü und wechselt auf einen Shell-Branch (Zeit/
+  /// Kontakte/Laden), der nicht mehr in der Bottomnav liegt.
+  void _openBranchFromMenu(ShellTab tab) {
+    _closeAppMenu();
+    _activateDestination(tab);
+  }
+
   Widget? _buildFab(
     BuildContext context, {
     required _ShellDestination destination,
@@ -409,14 +556,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Primär & dauerhaft sichtbar: die Stempeluhr als prominenter Status-Button.
     // Grün „Einstempeln" / rot „Ausstempeln" – Farbe und Symbol spiegeln den
-    // aktuellen Zustand direkt wider.
-    final active = work.hasActiveClockSession;
+    // Zustand der EINEN persistenten Stempeluhr ([ZeitwirtschaftProvider]).
+    // Tippen öffnet den Stempel-Bildschirm (Laden-Auswahl + Kommen/Gehen).
+    final active = context.watch<ZeitwirtschaftProvider>().isClockedIn;
     final punchClockFab = FloatingActionButton.extended(
       heroTag: 'shell_punch_clock_fab',
       tooltip: active
           ? 'Stempeluhr oeffnen und ausstempeln'
           : 'Stempeluhr oeffnen',
-      onPressed: work.currentUser == null ? null : () => _showPunchClockSheet(),
+      onPressed: work.currentUser == null
+          ? null
+          : () => context.push(AppRoutes.zeitStempeln),
       backgroundColor: active ? colorScheme.error : appColors.success,
       foregroundColor: active ? colorScheme.onError : appColors.onSuccess,
       icon: Icon(active ? Icons.logout_rounded : Icons.login_rounded),
@@ -436,18 +586,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _showPunchClockSheet() async {
-    if (!mounted) {
-      return;
-    }
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (_) => const _PunchClockSheet(),
-    );
-  }
 
   // Hauptbereich-Routen über die Shell pushen (Back kehrt zum Hub zurück).
   Future<void> _pushTeamManagement() => context.push(AppRoutes.team);
@@ -487,6 +625,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final sites = team.sites.isNotEmpty ? team.sites : work.sites;
     Navigator.of(sheetContext).pop();
     await showQuickAddCartSheet(context, sites: sites);
+  }
+
+  /// Öffnet den „Kühlschrank nachfüllen"-Sheet aus einer Schnellaktion heraus
+  /// (schließt zuerst das Schnellaktionen-Sheet). Gleiche Standort-Quelle wie
+  /// der Warenkorb-Schnellzugriff.
+  Future<void> _openFridgeRefillFromSheet(BuildContext sheetContext) async {
+    final team = context.read<TeamProvider>();
+    final work = context.read<WorkProvider>();
+    final sites = team.sites.isNotEmpty ? team.sites : work.sites;
+    Navigator.of(sheetContext).pop();
+    await showFridgeRefillAddSheet(context, sites: sites);
   }
 
   Future<void> _showPlannerQuickActions(
@@ -554,6 +703,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       title: 'In den Warenkorb',
                       subtitle: 'Ware schnell zum Bestellen in den Korb legen',
                       onTap: () => _openQuickAddCartFromSheet(sheetContext),
+                    ),
+                  if (currentUser?.canViewInventory ?? false)
+                    _QuickActionListTile(
+                      icon: Icons.kitchen_outlined,
+                      title: 'Kühlschrank nachfüllen',
+                      subtitle: 'Markieren, was aus dem Lager nachgefüllt wird',
+                      onTap: () => _openFridgeRefillFromSheet(sheetContext),
                     ),
                   if (currentUser?.isTeamLead ?? false)
                     _QuickActionListTile(
@@ -672,6 +828,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       subtitle: 'Ware schnell zum Bestellen in den Korb legen',
                       onTap: () => _openQuickAddCartFromSheet(sheetContext),
                     ),
+                  if (currentUser?.canViewInventory ?? false)
+                    _QuickActionListTile(
+                      icon: Icons.kitchen_outlined,
+                      title: 'Kühlschrank nachfüllen',
+                      subtitle: 'Markieren, was aus dem Lager nachgefüllt wird',
+                      onTap: () => _openFridgeRefillFromSheet(sheetContext),
+                    ),
                   if (currentUser?.canEditTimeEntries ?? false)
                     _QuickActionListTile(
                       icon: Icons.edit_calendar_outlined,
@@ -731,7 +894,11 @@ class _HomeScreenState extends State<HomeScreen> {
   /// als auch als `endDrawer` (rechts) verwendet. Der `Consumer2`-Teilbaum wird
   /// erst beim Öffnen des Drawers gebaut (geschlossen ist er nicht im Tree),
   /// abonniert Team/Work also nur dann und weitet die Shell-Rebuilds nicht aus.
-  Widget _buildAppMenuDrawer(AppUserProfile? user, bool authDisabled) {
+  Widget _buildAppMenuDrawer(
+    AppUserProfile? user,
+    bool authDisabled, {
+    required bool showAreas,
+  }) {
     return Drawer(
       child: Consumer2<TeamProvider, WorkProvider>(
         builder: (context, team, work, _) {
@@ -756,15 +923,18 @@ class _HomeScreenState extends State<HomeScreen> {
             }
           }
 
-          // Scanner-Einstieg auf echten Mobil-Plattformen (Handy UND Tablet:
-          // Android/iOS nativ). Web und Desktop-OS haben keine sinnvolle
-          // Kamera-/Scan-UX und fallen raus.
-          final showScanner = MobileBreakpoints.isNativeMobile;
+          // Scanner-Einstieg im Menü für alle, die Inventar verwalten dürfen —
+          // plattformunabhängig (passend zum festen Scanner-Tab in der Mitte der
+          // Bottomnav). Off-Mobile bietet der ScannerScreen die manuelle Eingabe.
+          final showScanner = user?.canUseScanner ?? false;
 
           return AppNavMenu(
             user: user,
             authDisabled: authDisabled,
             showScanner: showScanner,
+            // Die aus der Bottomnav ausgelagerten Bereiche nur im mobilen
+            // Drawer zeigen — in der Rail (endDrawer) stehen sie schon links.
+            showAreas: showAreas,
             siteName: siteName,
             dailyHours: work.settings.dailyHours,
             vacationDays: work.settings.vacationDays,
@@ -772,6 +942,9 @@ class _HomeScreenState extends State<HomeScreen> {
               _closeAppMenu();
               context.read<AuthProvider>().signOut();
             },
+            onOpenTime: () => _openBranchFromMenu(ShellTab.time),
+            onOpenContacts: () => _openBranchFromMenu(ShellTab.contacts),
+            onOpenShop: () => _openBranchFromMenu(ShellTab.shop),
             onOpenMonthReport: () => _openSection(AppRoutes.monthReport),
             onOpenStatistics: () => _openSection(AppRoutes.statistics),
             onOpenPersonal: () => _openSection(AppRoutes.personal),
@@ -779,6 +952,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onOpenTeam: () => _openSection(AppRoutes.team),
             onOpenInventory: () => _openSection(AppRoutes.inventory),
             onOpenCustomerOrders: () => _openSection(AppRoutes.customerOrders),
+            onOpenOrderAnalytics: () => _openSection(AppRoutes.orderAnalytics),
             onOpenScanner: () => _openSection(AppRoutes.scanner),
             onOpenSettings: () => _openSection(AppRoutes.settings),
           );
@@ -803,6 +977,14 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Metadaten (Label/Icons/FAB) einer [ShellTab] — permission-unabhängig, damit
   /// auch der aktuell aktive (ggf. in der Nav versteckte) Branch ein Label und
   /// die richtige FAB-Sichtbarkeit hat.
+  /// Icon einer Nav-Destination, am Anfragen-Tab mit Zähler-Badge versehen.
+  Widget _badgedNavIcon(IconData icon, ShellTab tab, int inboxBadge) {
+    if (tab == ShellTab.inbox && inboxBadge > 0) {
+      return Badge(label: Text('$inboxBadge'), child: Icon(icon));
+    }
+    return Icon(icon);
+  }
+
   _ShellDestination _destinationMeta(ShellTab tab) {
     switch (tab) {
       case ShellTab.today:
@@ -869,22 +1051,15 @@ class _HomeScreenState extends State<HomeScreen> {
   /// der Route IMMER (statisch) — hier wird nur entschieden, ob ein Nav-Item
   /// gezeigt wird. In V2 ersetzt das Slide-in-Menü den Profil-Tab.
   bool _isTabVisible(ShellTab tab, AppUserProfile? user, {required bool useV2}) {
-    switch (tab) {
-      case ShellTab.today:
-        return true;
-      case ShellTab.plan:
-        return user?.canViewSchedule ?? false;
-      case ShellTab.time:
-        return user?.canViewTimeTracking ?? false;
-      case ShellTab.inbox:
-        return true;
-      case ShellTab.contacts:
-        return user?.canViewContacts ?? false;
-      case ShellTab.shop:
-        return (user?.canViewInventory ?? false) || (user?.isAdmin ?? false);
-      case ShellTab.profile:
-        return !useV2;
+    // Reiner Darstellungs-Sonderfall: im V2-Design ersetzt das Slide-in-Menü
+    // den Profil-Tab. Das ist KEINE Berechtigung und bleibt daher hier.
+    if (tab == ShellTab.profile && useV2) {
+      return false;
     }
+    // Berechtigungs-Matrix zentral (geteilt mit dem Router-Redirect, H-H2):
+    // löst u. a. die frühere Shop-Tab-Divergenz auf (canViewInventory statt
+    // `canViewInventory || isAdmin`).
+    return RoutePermissions.isShellTabAllowed(tab, user);
   }
 
   /// Sichtbare Nav-Items (nach Permissions gefiltert), in kanonischer
@@ -917,6 +1092,65 @@ class _ShellDestination {
   final bool showFab;
 }
 
+/// Art eines V2-Bottomnav-Eintrags: ein Shell-Branch (Tab-Wechsel), der Scanner
+/// (gepushte Route) oder »Mehr« (öffnet das Slide-in-Menü).
+enum _BottomNavKind { branch, scanner, more }
+
+/// Ein Eintrag der festen V2-Bottomnav. Anders als [_ShellDestination] kann ein
+/// Eintrag auch eine Aktion ohne eigenen Branch sein (Scanner/Mehr).
+class _BottomNavEntry {
+  const _BottomNavEntry({
+    required this.kind,
+    required this.label,
+    required this.icon,
+    required this.selectedIcon,
+    this.branch,
+    this.showInboxBadge = false,
+  });
+
+  const _BottomNavEntry.branch({
+    required ShellTab branch,
+    required String label,
+    required IconData icon,
+    required IconData selectedIcon,
+    bool showInboxBadge = false,
+  }) : this(
+          kind: _BottomNavKind.branch,
+          label: label,
+          icon: icon,
+          selectedIcon: selectedIcon,
+          branch: branch,
+          showInboxBadge: showInboxBadge,
+        );
+
+  const _BottomNavEntry.scanner()
+      : this(
+          kind: _BottomNavKind.scanner,
+          label: 'Scanner',
+          icon: Icons.qr_code_scanner_outlined,
+          selectedIcon: Icons.qr_code_scanner,
+        );
+
+  const _BottomNavEntry.more()
+      : this(
+          kind: _BottomNavKind.more,
+          label: 'Mehr',
+          icon: Icons.menu,
+          selectedIcon: Icons.menu,
+        );
+
+  final _BottomNavKind kind;
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
+
+  /// Zugehöriger Shell-Branch — nur bei [_BottomNavKind.branch] gesetzt.
+  final ShellTab? branch;
+
+  /// Ob das Icon das Anfragen-Badge (offene Inbox-Aktionen) trägt.
+  final bool showInboxBadge;
+}
+
 /// Reicht die Cross-Tab-Zurück-Geste der Shell an die Tab-Inhalte. Die Inhalte
 /// werden in den `StatefulShellRoute`-Branches gebaut und liegen damit im
 /// Widget-Baum UNTERHALB dieser InheritedWidget; [buildHomeTab] liest sie hier.
@@ -942,10 +1176,19 @@ class _ShellScope extends InheritedWidget {
 /// Slide-in-Menü. Bewusst ohne Titel — den Abschnittstitel liefert weiterhin der
 /// `SectionHeader` jedes Tabs (kein Doppel-Header).
 class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
-  const _V2MenuTopBar({required this.user, required this.onOpenMenu});
+  const _V2MenuTopBar({
+    required this.user,
+    required this.onOpenMenu,
+    required this.showCart,
+    required this.onOpenCart,
+  });
 
   final AppUserProfile? user;
   final VoidCallback onOpenMenu;
+
+  /// Ob der Warenkorb-Knopf oben rechts gezeigt wird (nur mit Waren-Recht).
+  final bool showCart;
+  final VoidCallback onOpenCart;
 
   @override
   Size get preferredSize => const Size.fromHeight(56);
@@ -980,6 +1223,28 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
           ),
         ),
       ),
+      actions: [
+        if (showCart)
+          // Warenkorb oben rechts, mit Stück-Badge (Summe über alle Läden).
+          // Eigenes Selector -> nur dieses Icon rebuildet bei Korb-Änderungen,
+          // nicht die ganze Shell.
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Selector<InventoryProvider, int>(
+              selector: (_, inventory) => inventory.cartItemCount(),
+              builder: (context, count, _) {
+                const cartIcon = Icon(Icons.shopping_cart_outlined);
+                return IconButton(
+                  tooltip: 'Warenkorb',
+                  onPressed: onOpenCart,
+                  icon: count > 0
+                      ? Badge(label: Text('$count'), child: cartIcon)
+                      : cartIcon,
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 }
@@ -1117,7 +1382,7 @@ Widget buildHomeTab(BuildContext context, ShellTab tab) {
         onNavigateBack: onBack,
       );
     case ShellTab.time:
-      return _TimeTrackingTab(
+      return ZeitwirtschaftHubScreen(
         canNavigateBack: canBack,
         onNavigateBack: onBack,
       );
@@ -1718,16 +1983,14 @@ class _EmployeeHeroCard extends StatelessWidget {
     final team = context.watch<TeamProvider>();
     final colorScheme = Theme.of(context).colorScheme;
     final nextShift = this.nextShift;
-    final activeShift = provider.activeShiftNow;
-    final isClockActive = provider.hasActiveClockSession;
+    // Eine persistente Stempeluhr ([ZeitwirtschaftProvider]) — frei stempelbar.
+    final isClockActive = context.watch<ZeitwirtschaftProvider>().isClockedIn;
     final primaryAssignment =
         _resolvePrimaryAssignment(team, provider.currentUser?.uid);
     final primarySite = _resolvePrimarySite(
       team.sites.isNotEmpty ? team.sites : provider.sites,
       primaryAssignment,
     );
-    final canStartClock = primaryAssignment != null && activeShift != null;
-    final canUseClock = isClockActive || canStartClock;
     final siteLabel = primarySite?.name ??
         primaryAssignment?.siteName ??
         'Kein Standort hinterlegt';
@@ -1791,9 +2054,7 @@ class _EmployeeHeroCard extends StatelessWidget {
               runSpacing: 12,
               children: [
                 FilledButton.icon(
-                  onPressed: !canUseClock
-                      ? null
-                      : () => _handlePunchClockAction(context, provider),
+                  onPressed: () => context.push(AppRoutes.zeitStempeln),
                   icon: Icon(
                     isClockActive ? Icons.stop_circle : Icons.play_circle,
                   ),
@@ -1820,23 +2081,7 @@ class _EmployeeHeroCard extends StatelessWidget {
                 ),
               ],
             ),
-            if (!canStartClock && !isClockActive) ...[
-              const SizedBox(height: 12),
-              Text(
-                primaryAssignment == null
-                    ? 'Bitte zuerst in der Teamverwaltung einen Primaerstandort hinterlegen.'
-                    : nextShift != null &&
-                            nextShift.startTime.isAfter(DateTime.now())
-                        ? 'Einstempeln ist erst ab ${DateFormat('HH:mm', 'de_DE').format(nextShift.startTime)} innerhalb deiner geplanten Schicht moeglich.'
-                        : 'Aktuell liegt keine laufende Schicht fuer die Stempeluhr vor.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: primaryAssignment == null
-                          ? colorScheme.error
-                          : colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-            ] else if (nextShift == null) ...[
+            if (nextShift == null) ...[
               const SizedBox(height: 12),
               Text(
                 'Stempeluhr-Standort: $siteLabel',
@@ -2557,6 +2802,14 @@ class _ShopHubTab extends StatelessWidget {
                       badgeTone: AppStatusTone.info,
                       onTap: () => context.push(AppRoutes.customerOrders),
                     ),
+                  if (canViewInventory)
+                    _QuickActionCard(
+                      icon: Icons.insights_outlined,
+                      title: 'Bestell-Auswertung',
+                      subtitle:
+                          'Wie oft welcher Artikel bestellt wird (Woche/Monat)',
+                      onTap: () => context.push(AppRoutes.orderAnalytics),
+                    ),
                   if (isAdmin)
                     _QuickActionCard(
                       icon: Icons.badge_outlined,
@@ -3185,227 +3438,6 @@ class _EntriesList extends StatelessWidget {
           child: _EntryCard(entry: entries[index]),
         ),
         childCount: entries.length,
-      ),
-    );
-  }
-}
-
-class _ConfirmedShiftDayPanel extends StatefulWidget {
-  const _ConfirmedShiftDayPanel({
-    required this.day,
-    required this.title,
-    required this.emptyText,
-    this.highlightShiftId,
-  });
-
-  final DateTime day;
-  final String title;
-  final String emptyText;
-  final String? highlightShiftId;
-
-  @override
-  State<_ConfirmedShiftDayPanel> createState() =>
-      _ConfirmedShiftDayPanelState();
-}
-
-class _ConfirmedShiftDayPanelState extends State<_ConfirmedShiftDayPanel> {
-  Future<List<Shift>>? _future;
-  String? _futureKey;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _refreshFutureIfNeeded();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ConfirmedShiftDayPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!DateUtils.isSameDay(oldWidget.day, widget.day)) {
-      _futureKey = null;
-    }
-    _refreshFutureIfNeeded();
-  }
-
-  void _refreshFutureIfNeeded() {
-    final provider = context.read<WorkProvider>();
-    final user = provider.currentUser;
-    final dayKey = DateTime(
-      widget.day.year,
-      widget.day.month,
-      widget.day.day,
-    ).toIso8601String();
-    final nextKey = '${user?.orgId}:${user?.uid}:$dayKey';
-    if (_futureKey == nextKey && _future != null) {
-      return;
-    }
-    _futureKey = nextKey;
-    _future = provider.loadConfirmedShiftsForDay(widget.day);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<Shift>>(
-      future: _future,
-      builder: (context, snapshot) {
-        final colorScheme = Theme.of(context).colorScheme;
-        final theme = Theme.of(context);
-        final shifts = snapshot.data ?? const <Shift>[];
-
-        return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: colorScheme.outlineVariant.withValues(alpha: 0.38),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                widget.title,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 10),
-              if (snapshot.connectionState == ConnectionState.waiting)
-                const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(16),
-                    child: CircularProgressIndicator.adaptive(),
-                  ),
-                )
-              else if (snapshot.hasError)
-                Text(
-                  'Schichten konnten nicht geladen werden.',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.error,
-                    fontWeight: FontWeight.w600,
-                  ),
-                )
-              else if (shifts.isEmpty)
-                Text(
-                  widget.emptyText,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                )
-              else
-                ...shifts.map(
-                  (shift) => Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _ConfirmedShiftInfoTile(
-                      shift: shift,
-                      highlighted: shift.id == widget.highlightShiftId,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _ConfirmedShiftInfoTile extends StatelessWidget {
-  const _ConfirmedShiftInfoTile({
-    required this.shift,
-    required this.highlighted,
-  });
-
-  final Shift shift;
-  final bool highlighted;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: highlighted
-            ? colorScheme.primaryContainer.withValues(alpha: 0.38)
-            : colorScheme.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: highlighted
-              ? colorScheme.primary
-              : colorScheme.outlineVariant.withValues(alpha: 0.42),
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: colorScheme.secondaryContainer,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Icon(
-              highlighted
-                  ? Icons.play_circle_fill_rounded
-                  : Icons.event_rounded,
-              color: colorScheme.onSecondaryContainer,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        shift.title,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
-                      ),
-                    ),
-                    if (highlighted)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: Text(
-                          'Jetzt aktiv',
-                          style:
-                              Theme.of(context).textTheme.labelLarge?.copyWith(
-                                    color: colorScheme.primary,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                        ),
-                      ),
-                    _ShiftStatusBadge(status: shift.status),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} - ${DateFormat('HH:mm', 'de_DE').format(shift.endTime)}'
-                  ' · ${shift.workedHours.toStringAsFixed(1)} h',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                ),
-                if (shift.effectiveSiteLabel?.trim().isNotEmpty == true) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    shift.effectiveSiteLabel!,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:worktime_app/models/audit_log_entry.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/services/export_service.dart';
 
@@ -83,112 +84,134 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => initializeDateFormatting('de_DE'));
 
-  group('ExportService.buildShiftPlanCsv – Escaping/Struktur', () {
-    test('beginnt mit UTF-8-BOM und deutscher Kopfzeile', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: const [],
-        rangeLabel: '01.04.2026 - 07.04.2026',
-      );
+  group('ExportService.buildAuditLogCsv', () {
+    test('BOM, Kopfzeile und neueste-zuerst-Sortierung', () {
+      final csv = ExportService.buildAuditLogCsv(entries: [
+        AuditLogEntry(
+          orgId: 'org-1',
+          action: AuditAction.created,
+          entityType: 'Lieferant',
+          entityId: 's-1',
+          summary: 'Lieferant „Nord" angelegt',
+          actorName: 'Inhaber',
+          createdAt: DateTime(2026, 6, 20, 9, 0),
+        ),
+        AuditLogEntry(
+          orgId: 'org-1',
+          action: AuditAction.corrected,
+          entityType: 'Zeiteintrag',
+          summary: 'Stempelzeit korrigiert',
+          actorName: 'Inhaber',
+          createdAt: DateTime(2026, 6, 22, 14, 30),
+        ),
+      ]);
+
       expect(csv, startsWith('﻿'));
       expect(
         csv,
-        contains(
-          'Datum;Wochentag;Beginn;Ende;Pause (min);Stunden;'
-          'Mitarbeiter;Titel;Team;Status;Notiz',
-        ),
+        contains('Zeitpunkt;Aktion;Objekttyp;Objekt-ID;'
+            'Zusammenfassung;Benutzer'),
       );
+      // „Korrigiert" (22.06.) muss vor „Angelegt" (20.06.) stehen.
+      expect(
+        csv.indexOf('Korrigiert'),
+        lessThan(csv.indexOf('Angelegt')),
+      );
+      expect(csv, contains('Lieferant'));
+    });
+  });
+
+  group('ExportService.buildShiftPlanCsv – Escaping/Struktur (Matrix)', () {
+    // Standardbereich für die 06:00–14:00-Schicht (1 Tag → 1 Datumsspalte).
+    String csvFor(List<Shift> shifts, {String rangeLabel = 'Test'}) {
+      return ExportService.buildShiftPlanCsv(
+        shifts: shifts,
+        rangeStart: DateTime(2026, 4, 1),
+        rangeEnd: DateTime(2026, 4, 2),
+        rangeLabel: rangeLabel,
+      );
+    }
+
+    test('beginnt mit UTF-8-BOM und Export-Kopf', () {
+      final csv = csvFor(const [], rangeLabel: '01.04.2026 - 07.04.2026');
+      expect(csv, startsWith('﻿'));
+      expect(csv, contains('Schichtplan Export'));
+      expect(csv, contains('Zeitraum;01.04.2026 - 07.04.2026'));
     });
 
-    test('quotet Felder mit Semikolon', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: [_shift(employeeName: 'Anna; Berta')],
-        rangeLabel: 'Test',
-      );
+    test('Mitarbeiter-Zeile (Matrix-Kopf) ist vorhanden', () {
+      final csv = csvFor([_shift(employeeName: 'Anna')]);
+      expect(csv, contains('Mitarbeiter;'));
+    });
+
+    test('quotet Mitarbeiternamen mit Semikolon', () {
+      final csv = csvFor([_shift(employeeName: 'Anna; Berta')]);
       expect(csv, contains('"Anna; Berta"'));
     });
 
     test('verdoppelt Anfuehrungszeichen und quotet das Feld (RFC 4180)', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: [_shift(title: 'Schicht "A"')],
-        rangeLabel: 'Test',
-      );
-      expect(csv, contains('"Schicht ""A"""'));
+      final csv = csvFor([_shift(employeeName: 'Anna "A"')]);
+      expect(csv, contains('"Anna ""A"""'));
     });
 
     test('quotet Felder mit Zeilenumbruch', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: [_shift(notes: 'Zeile 1\nZeile 2')],
-        rangeLabel: 'Test',
-      );
+      final csv = csvFor([_shift(employeeName: 'Zeile 1\nZeile 2')]);
       expect(csv, contains('"Zeile 1\nZeile 2"'));
     });
 
     test('neutralisiert Formel-Praefixe gegen CSV-Injection (probleme #7)', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: [_shift(notes: '=HYPERLINK("http://evil","x")')],
-        rangeLabel: 'Test',
-      );
-      // Vorangestellter Apostroph entschaerft die Formel; das Feld wird zudem
-      // gequotet, weil es Anfuehrungszeichen enthaelt.
-      expect(csv, contains("\"'=HYPERLINK"));
-      expect(csv, isNot(contains(';=HYPERLINK')));
+      // Standortname als Vektor — landet in der Sektions-Kopfzeile.
+      final csv = csvFor([
+        Shift(
+          orgId: 'org-1',
+          userId: 'employee-1',
+          employeeName: 'Anna',
+          title: 'x',
+          startTime: DateTime(2026, 4, 1, 6),
+          endTime: DateTime(2026, 4, 1, 14),
+          breakMinutes: 30,
+          siteId: 'site-1',
+          siteName: '=HYPERLINK("http://evil","x")',
+        ),
+      ]);
+      expect(csv, contains("'=HYPERLINK"));
+      expect(csv, isNot(contains('\n=HYPERLINK')));
     });
 
     test('quotet Felder mit alleinstehendem Carriage-Return (probleme #38)', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: [_shift(title: 'Zeile\rUmbruch')],
-        rangeLabel: 'Test',
-      );
+      final csv = csvFor([_shift(employeeName: 'Zeile\rUmbruch')]);
       expect(csv, contains('"Zeile\rUmbruch"'));
     });
 
     test('quotet kombinierte Sonderzeichen in der Zeitraum-Metazeile', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: const [],
-        rangeLabel: 'KW; "April" 2026',
-      );
+      final csv = csvFor(const [], rangeLabel: 'KW; "April" 2026');
       expect(csv, contains('Zeitraum;"KW; ""April"" 2026"'));
     });
 
     test('laesst einfache Felder ohne Sonderzeichen unquotiert', () {
-      final csv = ExportService.buildShiftPlanCsv(
-        shifts: [_shift(employeeName: 'Anna', title: 'Fruehdienst')],
-        rangeLabel: 'Test',
-      );
+      final csv = csvFor([_shift(employeeName: 'Anna')]);
       expect(csv, contains('Anna'));
       expect(csv, isNot(contains('"Anna"')));
-      expect(csv, isNot(contains('"Fruehdienst"')));
     });
 
     test(
       'Sonderzeichen zerstoeren die Spaltenstruktur nicht '
-      '(11 Felder, verlustfreier Round-Trip)',
+      '(verlustfreier Round-Trip)',
       () {
-        final csv = ExportService.buildShiftPlanCsv(
-          shifts: [
-            _shift(
-              employeeName: 'Mueller; Anna',
-              title: 'Schicht "A"',
-              team: 'Service;Kasse',
-              notes: 'Zeile1\nZeile2; mit "Anfuehrung"',
-            ),
-          ],
-          rangeLabel: 'Test',
-        );
+        final csv = csvFor([_shift(employeeName: 'Mueller; Anna')]);
 
         final records = _parseCsv(csv);
-        final headerIndex =
-            records.indexWhere((r) => r.isNotEmpty && r.first == 'Datum');
-        expect(headerIndex, isNonNegative, reason: 'Kopfzeile gefunden');
-        expect(records[headerIndex].length, 11);
+        final headerIndex = records
+            .indexWhere((r) => r.isNotEmpty && r.first == 'Mitarbeiter');
+        expect(headerIndex, isNonNegative, reason: 'Matrix-Kopfzeile gefunden');
+        // Mitarbeiter + 1 Datumsspalte + Summe (h) = 3 Spalten.
+        expect(records[headerIndex].length, 3);
 
         final dataRow = records[headerIndex + 1];
-        expect(dataRow.length, 11,
-            reason: 'Datenzeile behaelt trotz Sonderzeichen 11 Spalten');
-        expect(dataRow[6], 'Mueller; Anna'); // Mitarbeiter
-        expect(dataRow[7], 'Schicht "A"'); // Titel
-        expect(dataRow[8], 'Service;Kasse'); // Team
-        expect(dataRow[10], 'Zeile1\nZeile2; mit "Anfuehrung"'); // Notiz
+        expect(dataRow.length, 3,
+            reason: 'Datenzeile behaelt trotz Sonderzeichen die Spaltenzahl');
+        expect(dataRow[0], 'Mueller; Anna'); // Mitarbeiter
+        expect(dataRow[1], '06:00–14:00'); // Zelle (Uhrzeit-Spanne)
       },
     );
   });

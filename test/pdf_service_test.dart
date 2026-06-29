@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:worktime_app/core/finance_analytics.dart';
+import 'package:worktime_app/models/finance_models.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_entry.dart';
@@ -82,7 +84,44 @@ void main() {
       expect(bytes.length, greaterThan(1000));
     });
 
-    test('builds a shift plan csv with metadata and rows', () {
+    test('generates a finance report without external font downloads',
+        () async {
+      const center =
+          CostCenter(id: 'c1', orgId: 'o', number: '1001', name: 'Strichmännchen');
+      final bytes = await PdfService.generateFinanceReport(
+        year: 2026,
+        orgName: 'Kostenrechnung',
+        reports: const [
+          CostCenterReport(
+            center: center,
+            plannedCents: 1200000,
+            actualCents: 900000,
+            entryCount: 12,
+          ),
+        ],
+        months: FinanceAnalytics.monthlyBreakdown(
+          [
+            JournalEntry(
+              orgId: 'o',
+              date: DateTime(2026, 3, 1),
+              costCenterId: 'c1',
+              costTypeId: 't1',
+              description: 'Miete',
+              amountCents: 250000,
+            ),
+          ],
+          2026,
+        ),
+        totalPlanned: 1200000,
+        totalActual: 900000,
+        totalExpenses: 950000,
+        totalCredits: 50000,
+      );
+      expect(bytes, isNotEmpty);
+      expect(bytes.length, greaterThan(1000));
+    });
+
+    test('builds a shift plan csv split per site (matrix)', () {
       final csv = ExportService.buildShiftPlanCsv(
         shifts: [
           Shift(
@@ -93,22 +132,40 @@ void main() {
             startTime: DateTime(2026, 4, 1, 6),
             endTime: DateTime(2026, 4, 1, 14),
             breakMinutes: 30,
-            teamId: 'team-1',
-            team: 'Service',
-            notes: 'Kasse',
+            siteId: 'site-1',
+            siteName: 'Tabak B\u00F6rse',
+          ),
+          Shift(
+            orgId: 'org-1',
+            userId: 'employee-2',
+            employeeName: 'Ben',
+            title: 'Spaetdienst',
+            startTime: DateTime(2026, 4, 2, 13),
+            endTime: DateTime(2026, 4, 2, 19),
+            breakMinutes: 0,
+            siteId: 'site-2',
+            siteName: 'Strichm\u00E4nnchen GmbH',
           ),
         ],
+        rangeStart: DateTime(2026, 4, 1),
+        rangeEnd: DateTime(2026, 4, 8),
         rangeLabel: '01.04.2026 - 07.04.2026',
-        employeeLabel: 'Anna',
+        employeeLabel: 'Alle',
         teamLabel: 'Service',
       );
 
       expect(csv, startsWith('\uFEFFSchichtplan Export'));
       expect(csv, contains('Zeitraum;01.04.2026 - 07.04.2026'));
-      expect(csv, contains('Mitarbeiter;Anna'));
-      expect(csv, contains('Team;Service'));
-      expect(csv, contains('Fruehdienst'));
-      expect(csv, contains('Kasse'));
+      // Pro Standort eine Sektion + Datums-Spaltenkopf.
+      expect(csv, contains('Tabak B\u00F6rse'));
+      expect(csv, contains('Strichm\u00E4nnchen GmbH'));
+      expect(csv, contains('Mitarbeiter;'));
+      expect(csv, contains('01.04.'));
+      // Matrix-Zellen mit Uhrzeit-Spanne.
+      expect(csv, contains('Anna'));
+      expect(csv, contains('06:00\u201314:00'));
+      expect(csv, contains('Ben'));
+      expect(csv, contains('13:00\u201319:00'));
     });
   });
 }

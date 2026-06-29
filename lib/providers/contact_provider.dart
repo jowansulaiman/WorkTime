@@ -226,6 +226,29 @@ class ContactProvider extends ChangeNotifier {
   Future<void> _persistContacts() =>
       DatabaseService.saveLocalContacts(_items, scope: _localScope);
 
+  // --- Speichermodus-Migration (H-H1) -------------------------------------
+
+  /// Snapshot der aktuellen (Cloud-)Kontakte in den lokalen Speicher, damit sie
+  /// nach dem Wechsel in den local-Modus offline verfügbar sind.
+  Future<void> cacheCloudStateLocally() async {
+    if (usesLocalStorage) return;
+    await _persistContacts();
+  }
+
+  /// Lädt die lokalen Kontakte beim Wechsel local→Cloud/Hybrid hoch
+  /// (Upsert über die Doc-ID → idempotent, keine Duplikate bei Re-Sync).
+  Future<void> syncLocalStateToCloud() async {
+    final orgId = _orgId;
+    if (orgId == null) return;
+    for (final contact in List<Contact>.from(_items)) {
+      try {
+        await _contacts.saveContact(contact.copyWith(orgId: orgId));
+      } catch (error) {
+        AppLogger.warning('syncLocalStateToCloud(contact): $error');
+      }
+    }
+  }
+
   /// Befuellt den lokalen Modus einmalig mit Demo-Kontakten, damit der Bereich
   /// ohne Firebase nicht leer ist. Echte lokale Daten bleiben unangetastet.
   bool _maybeSeedLocalDemo(AppUserProfile user) {
