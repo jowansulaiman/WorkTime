@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/fridge_refill_shortfall.dart';
 import '../models/fridge_refill.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
 import '../providers/inventory_provider.dart';
+import '../theme/theme_extensions.dart';
 import '../widgets/empty_state.dart';
 
 void _toast(BuildContext context, String message) {
@@ -51,6 +53,17 @@ class FridgeRefillTab extends StatelessWidget {
     final open = items.where((item) => !item.done).toList();
     final done = items.where((item) => item.done).toList();
 
+    // Automatische Kühlschrank-Lücken (Soll-Ist) + Dedupe gegen manuelle
+    // Positionen desselben Artikels.
+    final shortfalls = inventory.fridgeShortfalls(siteId: siteId);
+    final shortfallIds =
+        shortfalls.map((s) => s.product.id).whereType<String>().toSet();
+    final openManual = open
+        .where((item) =>
+            item.productId == null || !shortfallIds.contains(item.productId))
+        .toList();
+    final hasContent = items.isNotEmpty || shortfalls.isNotEmpty;
+
     return Column(
       children: [
         Padding(
@@ -84,7 +97,7 @@ class FridgeRefillTab extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: items.isEmpty
+          child: !hasContent
               ? const EmptyState(
                   icon: Icons.kitchen_outlined,
                   message:
@@ -95,12 +108,20 @@ class FridgeRefillTab extends StatelessWidget {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 120),
                   children: [
-                    if (open.isNotEmpty) ...[
+                    if (shortfalls.isNotEmpty) ...[
+                      _SectionHeader(
+                        icon: Icons.priority_high,
+                        label: 'Fehlt im Kühlschrank (${shortfalls.length})',
+                      ),
+                      for (final shortfall in shortfalls)
+                        _FridgeShortfallTile(shortfall: shortfall),
+                    ],
+                    if (openManual.isNotEmpty) ...[
                       _SectionHeader(
                         icon: Icons.move_to_inbox_outlined,
-                        label: 'Aus dem Lager holen (${open.length})',
+                        label: 'Aus dem Lager holen (${openManual.length})',
                       ),
-                      for (final item in open)
+                      for (final item in openManual)
                         _FridgeItemTile(siteId: siteId!, item: item),
                     ],
                     if (done.isNotEmpty) ...[
@@ -267,6 +288,145 @@ class _FridgeItemTile extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Eine automatisch erkannte Kühlschrank-Lücke mit Ein-Tap-Nachfüllen.
+class _FridgeShortfallTile extends StatefulWidget {
+  const _FridgeShortfallTile({required this.shortfall});
+
+  final FridgeShortfall shortfall;
+
+  @override
+  State<_FridgeShortfallTile> createState() => _FridgeShortfallTileState();
+}
+
+class _FridgeShortfallTileState extends State<_FridgeShortfallTile> {
+  bool _busy = false;
+
+  Future<void> _refill({int? quantity}) async {
+    final inventory = context.read<InventoryProvider>();
+    setState(() => _busy = true);
+    try {
+      await inventory.refillFridge(widget.shortfall.product, quantity: quantity);
+      if (mounted) {
+        _toast(context, '${widget.shortfall.product.name}: nachgefüllt.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Teilmengen-Optionen für den Überlauf (kleinere Schritte + die volle Lücke).
+  List<int> _partialOptions(int deficit) {
+    final opts = <int>{};
+    for (final q in const [1, 5, 10]) {
+      if (q < deficit) opts.add(q);
+    }
+    opts.add(deficit);
+    return opts.toList()..sort();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final appColors = theme.appColors;
+    final s = widget.shortfall;
+    final p = s.product;
+
+    final (IconData icon, Color color, String label) = switch (s.severity) {
+      FridgeShortfallSeverity.empty => (
+          Icons.error_outline,
+          colorScheme.error,
+          'leer',
+        ),
+      FridgeShortfallSeverity.refill => (
+          Icons.warning_amber_outlined,
+          appColors.warning,
+          'nachfüllen',
+        ),
+      FridgeShortfallSeverity.warehouseLow => (
+          Icons.inventory_2_outlined,
+          appColors.info,
+          'Lager knapp',
+        ),
+    };
+    final statusText =
+        '$label · Kühlschrank ${p.fridgeStockClamped}/${p.fridgeTargetStock} · '
+        'Lager ${s.warehouseAvailable}';
+
+    return Semantics(
+      label: '${p.name}, Kühlschrank ${p.fridgeStockClamped} von '
+          '${p.fridgeTargetStock}, Lager ${s.warehouseAvailable}, $label',
+      child: Card(
+        margin: const EdgeInsets.only(bottom: 8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+          child: Row(
+            children: [
+              Icon(icon, color: color),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      p.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      statusText,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (_busy)
+                const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else ...[
+                FilledButton.tonal(
+                  onPressed: () => _refill(),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 44),
+                  ),
+                  child: const Text('Nachgefüllt'),
+                ),
+                PopupMenuButton<int>(
+                  tooltip: 'Teilmenge nachfüllen',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (qty) => _refill(quantity: qty),
+                  itemBuilder: (context) => [
+                    for (final q in _partialOptions(s.deficit))
+                      PopupMenuItem<int>(
+                        value: q,
+                        child: Text('+$q nachgefüllt'),
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

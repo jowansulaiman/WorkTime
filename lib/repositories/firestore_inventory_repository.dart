@@ -6,8 +6,10 @@ import '../core/retry.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
+import '../models/pos_receipt.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
+import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
@@ -36,6 +38,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
   CollectionReference<Map<String, dynamic>> _productCollection(String orgId) =>
       _organizationDoc(orgId).collection('products');
 
+  CollectionReference<Map<String, dynamic>> _productBatchCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('productBatches');
+
   CollectionReference<Map<String, dynamic>> _purchaseOrderCollection(
     String orgId,
   ) =>
@@ -45,6 +52,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('stockMovements');
+
+  CollectionReference<Map<String, dynamic>> _posReceiptCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('posReceipts');
 
   CollectionReference<Map<String, dynamic>> _customerOrderCollection(
     String orgId,
@@ -137,6 +149,55 @@ class FirestoreInventoryRepository implements InventoryRepository {
   }
 
   @override
+  Future<List<StockMovement>> getStockMovementsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) async {
+    Query<Map<String, dynamic>> query = _stockMovementCollection(orgId);
+    // siteId-Gleichheit + createdAt-Range bedient der vorhandene
+    // (siteId, createdAt)-Composite-Index; ohne siteId genuegt der
+    // automatische Single-Field-Index auf createdAt.
+    if (siteId != null && siteId.isNotEmpty) {
+      query = query.where('siteId', isEqualTo: siteId);
+    }
+    final snapshot = await query
+        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+        .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(to))
+        .orderBy('createdAt', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => StockMovement.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<PosReceipt>> getPosReceiptsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) async {
+    Query<Map<String, dynamic>> query = _posReceiptCollection(orgId);
+    // siteId-Gleichheit + transactionDate-Range bedient den
+    // (siteId, transactionDate)-Composite-Index; ohne siteId genügt der
+    // automatische Single-Field-Index auf transactionDate.
+    if (siteId != null && siteId.isNotEmpty) {
+      query = query.where('siteId', isEqualTo: siteId);
+    }
+    final snapshot = await query
+        .where('transactionDate',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+        .where('transactionDate', isLessThanOrEqualTo: Timestamp.fromDate(to))
+        .orderBy('transactionDate', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => PosReceipt.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  @override
   Future<void> saveSupplier(Supplier supplier) async {
     final collection = _supplierCollection(supplier.orgId);
     final docRef =
@@ -160,10 +221,14 @@ class FirestoreInventoryRepository implements InventoryRepository {
     final collection = _productCollection(product.orgId);
     final docRef =
         product.id == null ? collection.doc() : collection.doc(product.id);
-    await docRef.set({
+    // Clobber-Schutz: fridgeStock wird NIE über saveProduct geschrieben (allein
+    // setFridgeStock/Refill + POS-Increment sind autoritativ) — sonst überschriebe
+    // ein Manager-Edit den serverseitig dekrementierten Wert (Plan §7).
+    final data = {
       ...product.copyWith(id: docRef.id).toFirestoreMap(),
       if (product.id == null) 'createdAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    }..remove('fridgeStock');
+    await docRef.set(data, SetOptions(merge: true));
   }
 
   @override
@@ -172,6 +237,39 @@ class FirestoreInventoryRepository implements InventoryRepository {
     required String productId,
   }) {
     return _productCollection(orgId).doc(productId).delete();
+  }
+
+  // --- MHD-/Ablauf-Chargen ------------------------------------------------
+  // Voller `orderBy(expiryDay)`-Stream (Single-Field, auto-indiziert). Auch
+  // aufgeloeste (abverkauft/entsorgt) Chargen werden mitgestreamt und bleiben
+  // zur Historie erhalten; die Warnung filtert clientseitig auf `active`.
+
+  @override
+  Stream<List<ProductBatch>> watchProductBatches(String orgId) {
+    return _productBatchCollection(orgId).orderBy('expiryDay').snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => ProductBatch.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<void> saveProductBatch(ProductBatch batch) async {
+    final collection = _productBatchCollection(batch.orgId);
+    final docRef =
+        batch.id == null ? collection.doc() : collection.doc(batch.id);
+    await docRef.set({
+      ...batch.copyWith(id: docRef.id).toFirestoreMap(),
+      if (batch.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  @override
+  Future<void> deleteProductBatch({
+    required String orgId,
+    required String batchId,
+  }) {
+    return _productBatchCollection(orgId).doc(batchId).delete();
   }
 
   CollectionReference<Map<String, dynamic>> _priceHistoryCollection(
@@ -259,6 +357,59 @@ class FirestoreInventoryRepository implements InventoryRepository {
 
       return newStock;
     });
+  }
+
+  @override
+  Future<void> setFridgeStock({
+    required String orgId,
+    required String productId,
+    required int fridgeStock,
+    required int refilledQty,
+    String? createdByUid,
+    String? clientMutationId,
+  }) async {
+    final productRef = _productCollection(orgId).doc(productId);
+    final movementRef = clientMutationId == null
+        ? _stockMovementCollection(orgId).doc()
+        : _stockMovementCollection(orgId).doc(clientMutationId);
+
+    // Kein Read-Modify-Write nötig (fridgeStock ist ein ABSOLUTwert, vom Aufrufer
+    // berechnet) → ein atomarer Batch statt einer Transaktion. Wir lesen das
+    // Produkt nur für Standort/Name der Bewegung und die Idempotenz-Prüfung.
+    final snapshot = await productRef.get();
+    if (!snapshot.exists) {
+      throw StateError('Artikel wurde nicht gefunden.');
+    }
+    final product = Product.fromFirestore(snapshot.id, snapshot.data()!);
+
+    if (clientMutationId != null) {
+      final existing = await movementRef.get();
+      if (existing.exists) {
+        return; // Buchung wurde bereits angewendet (Retry) — no-op.
+      }
+    }
+
+    final batch = _firestore.batch();
+    // NUR fridgeStock + updatedAt — currentStock bleibt unberührt (das Nachfüllen
+    // verschiebt Ware nur Lager→Kühlschrank, kein Gesamt-Abgang).
+    batch.set(productRef, {
+      'fridgeStock': fridgeStock,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.set(movementRef, {
+      ...StockMovement(
+        orgId: orgId,
+        siteId: product.siteId,
+        productId: productId,
+        productName: product.name,
+        type: StockMovementType.fridgeRefill,
+        quantityDelta: refilledQty,
+        balanceAfter: fridgeStock,
+        reason: 'Kühlschrank nachgefüllt',
+        createdByUid: createdByUid,
+      ).toFirestoreMap(),
+    });
+    await batch.commit();
   }
 
   @override

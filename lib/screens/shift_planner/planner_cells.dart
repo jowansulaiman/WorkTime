@@ -125,22 +125,32 @@ class _PlannerDayHeaderCell extends StatelessWidget {
           const Spacer(),
           InkWell(
             onTap: onTapNote,
-            child: Row(
-              children: [
-                Text(
-                  noteCount > 0 ? '$noteCount Anmerkungen' : 'Anmerkungen',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: appColors.info,
-                    fontWeight: FontWeight.w600,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              // Größeres Tap-Ziel (vorher nur Texthöhe).
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      noteCount > 0 ? '$noteCount Anmerkungen' : 'Anmerkungen',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: appColors.info,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 4),
-                Icon(
-                  Icons.help_outline_rounded,
-                  size: 14,
-                  color: appColors.info,
-                ),
-              ],
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.help_outline_rounded,
+                    size: 14,
+                    color: appColors.info,
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -233,7 +243,10 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                     ),
                   PopupMenuButton<String>(
                     padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
+                    // Größeres Tap-Ziel (vorher ~16px) — dichte Board-Karten,
+                    // daher 40dp als Kompromiss statt der winzigen Icon-Fläche.
+                    constraints:
+                        const BoxConstraints(minWidth: 40, minHeight: 40),
                     onSelected: (value) {
                       switch (value) {
                         case 'edit':
@@ -266,9 +279,8 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                           child: Text('Serie loeschen'),
                         ),
                     ],
-                    child: const Padding(
-                      padding: EdgeInsets.only(left: 6),
-                      child: Icon(Icons.more_horiz, size: 16),
+                    child: const Center(
+                      child: Icon(Icons.more_horiz, size: 20),
                     ),
                   ),
                 ],
@@ -467,8 +479,9 @@ Color _plannerAvatarColor(ThemeData theme, _PlannerBoardRowData row) {
 }
 
 Color _resolveShiftColor(Shift shift, ThemeData theme) {
-  if (shift.color != null && shift.color!.trim().isNotEmpty) {
-    return Color(int.parse(shift.color!.replaceFirst('#', '0xFF')));
+  final parsed = tryParseHexColor(shift.color);
+  if (parsed != null) {
+    return parsed;
   }
   final palette = [
     theme.appColors.success,

@@ -3,13 +3,28 @@
 const crypto = require("node:crypto");
 const admin = require("firebase-admin");
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {onDocumentCreated, onDocumentWritten} =
+  require("firebase-functions/v2/firestore");
+const {defineSecret} = require("firebase-functions/params");
+const logger = require("firebase-functions/logger");
+const push = require("./push_notifications");
 
 admin.initializeApp();
 
 const db = admin.firestore();
-const FieldValue = admin.firestore.FieldValue;
-const Timestamp = admin.firestore.Timestamp;
+// firebase-admin v13: FieldValue/Timestamp NICHT mehr zuverlaessig ueber den
+// Namespace `admin.firestore.FieldValue` (kann undefined sein) -> Subpath-Import.
+const {FieldValue, Timestamp} = require("firebase-admin/firestore");
 const REGION = "europe-west3";
+
+// OktoPOS-Kassen-API-Schluessel (HTTP-Header X-API-KEY). Ein Secret — NIE im
+// Client-Bundle, NIE in Firestore, NIE per dart-define. Wert ist entweder ein
+// einzelner Key-String (alle Standorte teilen ihn) ODER ein JSON-Objekt
+// {"<siteId>": "<key>"} fuer einen Key je Standort/Division. Setzen via:
+//   firebase functions:secrets:set OKTOPOS_API_KEYS
+const OKTOPOS_API_KEYS = defineSecret("OKTOPOS_API_KEYS");
+
 // Mindestversion des Callable-Payload-Vertrags (no-api-contract-versioning).
 // Wird sie erhoeht, lehnt der Server zu alte Clients mit APP_UPDATE_REQUIRED ab.
 const MIN_SUPPORTED_API_VERSION = 1;
@@ -29,18 +44,665 @@ function assertSupportedVersion(request) {
   }
 }
 
-// Korrelations-/Trace-ID (no-distributed-tracing) des Clients mitloggen, damit
-// Server-Logs mit Client-Fehlern verknuepfbar sind. Loggt keine PII.
+// Korrelations-/Trace-ID (no-distributed-tracing) des Clients uebernehmen ODER
+// serverseitig erzeugen, damit Server-Logs mit Client-Fehlern verknuepfbar sind
+// und JEDE Folge-Logzeile derselben Invocation dieselbe ID traegt. Loggt nie PII
+// (kein uid/E-Mail), nur ob ueberhaupt authentifiziert.
 function traceCallable(name, request) {
-  const requestId = request.data?._request_id;
-  if (requestId) {
-    console.log(JSON.stringify({fn: name, requestId}));
-  }
+  const clientId = stringOrNull(request.data?._request_id);
+  const requestId = clientId || crypto.randomUUID();
+  logger.info("callable_start", {
+    event: "callable_start",
+    fn: name,
+    requestId,
+    requestIdSource: clientId ? "client" : "server",
+    hasAuth: Boolean(request.auth),
+  });
   return requestId;
 }
 
-exports.upsertShiftBatch = onCall({region: REGION}, async (request) => {
-  traceCallable("upsertShiftBatch", request);
+// Einheitlicher Logging-Wrapper um jede Callable: zieht/erzeugt die Request-ID
+// (Start-Log via traceCallable), reicht {requestId, fn} an den Handler durch und
+// loggt Ende+Dauer bzw. Fehler+Code strukturiert (Fehler wird unveraendert
+// re-thrown). Erwartbare HttpsError (Vertrag/Recht/Compliance/unavailable) als
+// warn, unerwartete (kein HttpsError bzw. internal/unknown) als error. Loggt nie
+// PII/Secrets; Fehlertext wird via truncateError gekappt.
+function callable(name, options, handler) {
+  return onCall(options, async (request) => {
+    const requestId = traceCallable(name, request);
+    const startedAt = Date.now();
+    try {
+      const result = await handler(request, {requestId, fn: name});
+      logger.info("callable_done", {
+        event: "callable_done",
+        fn: name,
+        requestId,
+        durationMs: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      const code = error instanceof HttpsError ? error.code : "internal";
+      const entry = {
+        event: "callable_error",
+        fn: name,
+        requestId,
+        durationMs: Date.now() - startedAt,
+        code,
+        message: truncateError(error),
+      };
+      if (error instanceof HttpsError && code !== "internal" &&
+          code !== "unknown") {
+        logger.warn("callable_error", entry);
+      } else {
+        logger.error("callable_error", entry);
+      }
+      throw error;
+    }
+  });
+}
+
+// === Push-Benachrichtigungen (Plan push-benachrichtigungen-plan.md) =========
+// Firestore-Trigger statt Callable: erfasst JEDEN Write (Callable, Direkt-Write,
+// anonymer oeffentlicher Pfad), den eine an die Callable gehaengte Logik
+// verpassen wuerde.
+
+// Logging-/Korrelations-Wrapper um einen onDocumentCreated-Trigger (analog zu
+// callable()). Push-Fehler werden nach dem Log GESCHLUCKT (best-effort, kein
+// Endlos-Retry) — die Idempotenz schuetzt ohnehin gegen Doppelversand.
+function documentCreatedTrigger(name, options, handler) {
+  return onDocumentCreated(options, async (event) => {
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
+    logger.info("trigger_start", {event: "trigger_start", fn: name, requestId});
+    try {
+      await handler(event, {requestId, fn: name});
+      logger.info("trigger_done", {
+        event: "trigger_done", fn: name, requestId,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (error) {
+      logger.error("trigger_error", {
+        event: "trigger_error", fn: name, requestId,
+        durationMs: Date.now() - startedAt, message: truncateError(error),
+      });
+    }
+  });
+}
+
+// Gemeinsamer Fan-out: je Empfaenger ein idempotentes Inbox-Doc anlegen
+// (.create() = Dedupe-Anker), Tokens sammeln, per Multicast senden, ungueltige
+// Tokens prunen. Loggt nie Token/PII.
+// Aktuelle Uhrzeit (Berlin) als Minuten seit Mitternacht — fuer Ruhezeiten.
+function nowMinutesBerlin() {
+  const parts = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin", hour: "2-digit", minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  let hour = 0;
+  let minute = 0;
+  for (const part of parts) {
+    if (part.type === "hour") hour = Number(part.value) % 24;
+    if (part.type === "minute") minute = Number(part.value);
+  }
+  return hour * 60 + minute;
+}
+
+async function fanOutPush({orgId, recipientUids, notif, requestId}) {
+  const notifCol = db.collection("organizations").doc(orgId)
+    .collection("notifications");
+  const tokenEntries = []; // {ref, token}
+  const nowMinutes = nowMinutesBerlin();
+  let suppressed = 0;
+
+  for (const uid of recipientUids) {
+    const key = push.dedupeKey(notif.type, notif.dedupeId || notif.entityId, uid);
+    try {
+      await notifCol.doc(key).create({
+        recipientUid: uid,
+        category: notif.type,
+        title: notif.title,
+        body: notif.body,
+        route: notif.route,
+        entityType: notif.entityType,
+        entityId: notif.entityId,
+        dedupeKey: key,
+        readAt: null,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      // .create() schlaegt fehl, wenn das Inbox-Doc schon existiert -> dieses
+      // Ereignis wurde fuer den Nutzer bereits zugestellt, NICHT erneut senden.
+      continue;
+    }
+    // Push-Praeferenzen (M5): das In-App-Inbox-Doc oben wird IMMER geschrieben;
+    // der System-Push wird unterdrueckt, wenn Master/Kategorie aus oder Ruhezeit.
+    const userSnap = await db.collection("users").doc(uid).get();
+    const prefs = userSnap.exists ? userSnap.get("notificationPrefs") : null;
+    if (!push.pushAllowed(prefs, notif.type, nowMinutes)) {
+      suppressed += 1;
+      continue;
+    }
+    const tokensSnap = await db.collection("users").doc(uid)
+      .collection("fcmTokens").get();
+    tokensSnap.forEach((t) => {
+      const token = t.get("token");
+      if (typeof token === "string" && token) {
+        tokenEntries.push({ref: t.ref, token});
+      }
+    });
+  }
+
+  if (tokenEntries.length === 0) {
+    logger.info("push_sent", {
+      fn: "fanOutPush", requestId, recipients: recipientUids.length,
+      tokens: 0, suppressed,
+    });
+    return;
+  }
+
+  const response = await admin.messaging().sendEachForMulticast({
+    tokens: tokenEntries.map((e) => e.token),
+    notification: {title: notif.title, body: notif.body},
+    data: {
+      type: notif.type,
+      entityId: String(notif.entityId || ""),
+      deepLink: notif.route,
+      orgId,
+      thread: notif.thread,
+      _request_id: requestId,
+    },
+  });
+
+  const dead = push.stalePruneIndices(response.responses);
+  await Promise.all(
+    dead.map((i) => tokenEntries[i].ref.delete().catch(() => {})),
+  );
+
+  logger.info("push_sent", {
+    fn: "fanOutPush", requestId,
+    recipients: recipientUids.length,
+    tokens: tokenEntries.length,
+    sent: response.successCount,
+    failed: response.failureCount,
+    pruned: dead.length,
+    suppressed,
+  });
+}
+
+// Neuer Kundenwunsch (oeffentlich/anonym via /wunsch) -> ALLE aktiven
+// Mitarbeiter der Org benachrichtigen ("bitte vorbereiten").
+exports.onCustomerWishCreated = documentCreatedTrigger(
+  "onCustomerWishCreated",
+  {region: REGION, document: "organizations/{orgId}/customerWishes/{wishId}"},
+  async (event, ctx) => {
+    const snapshot = event.data;
+    if (!snapshot) {
+      return;
+    }
+    const orgId = event.params.orgId;
+    const data = snapshot.data() || {};
+
+    const notif = push.buildWishNotification({
+      wishId: event.params.wishId,
+      storeName: stringFromEither(data, "storeName", "store_name"),
+      wishText: stringFromEither(data, "wishText", "wish_text"),
+    });
+
+    const usersSnap = await db.collection("users")
+      .where("orgId", "==", orgId).get();
+    const users = usersSnap.docs.map((doc) => ({
+      uid: doc.id,
+      isActive: isTruthy(valueFromEither(doc.data(), "isActive", "is_active")),
+    }));
+    const recipientUids = push.activeRecipientUids(users);
+
+    if (recipientUids.length === 0) {
+      logger.info("push_no_recipients", {
+        fn: ctx.fn, requestId: ctx.requestId, orgId,
+      });
+      return;
+    }
+
+    await fanOutPush({
+      orgId, recipientUids, notif, requestId: ctx.requestId,
+    });
+  },
+);
+
+// onDocumentWritten-Variante des Logging-Wrappers (Status-Uebergaenge).
+function documentWrittenTrigger(name, options, handler) {
+  return onDocumentWritten(options, async (event) => {
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
+    logger.info("trigger_start", {event: "trigger_start", fn: name, requestId});
+    try {
+      await handler(event, {requestId, fn: name});
+      logger.info("trigger_done", {
+        event: "trigger_done", fn: name, requestId,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (error) {
+      logger.error("trigger_error", {
+        event: "trigger_error", fn: name, requestId,
+        durationMs: Date.now() - startedAt, message: truncateError(error),
+      });
+    }
+  });
+}
+
+// Org-Nutzer als normalisierte Datensaetze fuer die Empfaenger-Aufloesung
+// (Permissions/Rolle hier aufgeloest -> push_notifications.js bleibt pur).
+async function loadOrgUserRecords(orgId) {
+  const snapshot = await db.collection("users")
+    .where("orgId", "==", orgId).get();
+  return snapshot.docs.map((doc) => {
+    const data = doc.data() || {};
+    const permissions = resolvePermissions(data);
+    return {
+      uid: doc.id,
+      isActive: isTruthy(valueFromEither(data, "isActive", "is_active")),
+      isAdmin: normalizeRole(data.role) === "admin",
+      canEditSchedule: permissions.canEditSchedule,
+    };
+  });
+}
+
+function readTriggerDate(data, primaryKey, legacyKey) {
+  const value = valueFromEither(data, primaryKey, legacyKey);
+  if (value && typeof value.toDate === "function") {
+    return value.toDate();
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function numberFromEither(data, primaryKey, legacyKey) {
+  const value = valueFromEither(data, primaryKey, legacyKey);
+  if (typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+const ABSENCE_TYPE_LABELS = {
+  vacation: "Urlaub",
+  sickness: "Krankmeldung",
+  child_sick: "Kind krank",
+  unavailable: "Nicht verfügbar",
+  special_leave: "Sonderurlaub",
+  unpaid_leave: "Unbezahlt",
+  time_off: "Zeitausgleich",
+  parental_leave: "Elternzeit",
+  maternity: "Mutterschutz",
+  vocational_school: "Berufsschule",
+  volunteering: "Ehrenamt",
+  short_time_work: "Kurzarbeit",
+};
+
+function absenceTypeLabel(value) {
+  return ABSENCE_TYPE_LABELS[stringOrEmpty(value)] || "Abwesenheit";
+}
+
+// Neues Feedback/Beschwerde (oeffentlich/anonym) -> Manager.
+exports.onCustomerFeedbackCreated = documentCreatedTrigger(
+  "onCustomerFeedbackCreated",
+  {region: REGION, document: "organizations/{orgId}/customerFeedback/{feedbackId}"},
+  async (event, ctx) => {
+    const snapshot = event.data;
+    if (!snapshot) {
+      return;
+    }
+    const orgId = event.params.orgId;
+    const data = snapshot.data() || {};
+    const notif = push.buildFeedbackNotification({
+      feedbackId: event.params.feedbackId,
+      type: stringOrEmpty(data.type),
+      message: stringFromEither(data, "message", "message"),
+    });
+    const recipientUids = push.managerUids(await loadOrgUserRecords(orgId));
+    if (recipientUids.length === 0) {
+      return;
+    }
+    await fanOutPush({orgId, recipientUids, notif, requestId: ctx.requestId});
+  },
+);
+
+// Abwesenheit: eingereicht -> Manager; genehmigt/abgelehnt -> Antragsteller.
+exports.onAbsenceRequestWritten = documentWrittenTrigger(
+  "onAbsenceRequestWritten",
+  {region: REGION, document: "organizations/{orgId}/absenceRequests/{absenceId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const absenceId = event.params.absenceId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) {
+      return;
+    }
+    const beforeStatus = before ? stringOrEmpty(before.status) : null;
+    const afterStatus = stringOrEmpty(after.status);
+    const typeLabel = absenceTypeLabel(after.type);
+    const start = push.formatDe(readTriggerDate(after, "startDate", "start_date"));
+    const end = push.formatDe(readTriggerDate(after, "endDate", "end_date"));
+
+    if (afterStatus === "pending" && beforeStatus !== "pending") {
+      const recipientUids = push.managerUids(await loadOrgUserRecords(orgId));
+      if (recipientUids.length === 0) {
+        return;
+      }
+      const notif = push.buildAbsenceSubmittedNotification({
+        absenceId,
+        employeeName: stringFromEither(after, "employeeName", "employee_name"),
+        typeLabel, start, end,
+      });
+      await fanOutPush({orgId, recipientUids, notif, requestId: ctx.requestId});
+      return;
+    }
+
+    if (beforeStatus === "pending" &&
+        (afterStatus === "approved" || afterStatus === "rejected")) {
+      const requester = stringFromEither(after, "userId", "user_id");
+      if (!requester) {
+        return;
+      }
+      const notif = push.buildAbsenceDecisionNotification({
+        absenceId, typeLabel, start, end, approved: afterStatus === "approved",
+      });
+      await fanOutPush({
+        orgId, recipientUids: [requester], notif, requestId: ctx.requestId,
+      });
+    }
+  },
+);
+
+// Schichttausch-Lebenszyklus: phasenabhaengige Empfaenger.
+exports.onShiftSwapRequestWritten = documentWrittenTrigger(
+  "onShiftSwapRequestWritten",
+  {region: REGION, document: "organizations/{orgId}/shiftSwapRequests/{swapId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const swapId = event.params.swapId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) {
+      return;
+    }
+    const beforeStatus = before ? stringOrEmpty(before.status) : null;
+    const afterStatus = stringOrEmpty(after.status);
+    if (afterStatus === beforeStatus) {
+      return;
+    }
+    const requesterUid = stringFromEither(after, "requesterUid", "requester_uid");
+    const targetUid = stringFromEither(after, "targetUid", "target_uid");
+    const meta = {
+      swapId,
+      requesterName: stringFromEither(after, "requesterName", "requester_name"),
+      targetName: stringFromEither(after, "targetName", "target_name"),
+      shiftDate: "",
+    };
+
+    let phase = null;
+    let recipients = [];
+    if (afterStatus === "pending" && !beforeStatus) {
+      phase = "request";
+      recipients = [targetUid];
+    } else if (afterStatus === "accepted_by_colleague") {
+      phase = "accepted";
+      recipients = push.managerUids(await loadOrgUserRecords(orgId));
+    } else if (afterStatus === "declined_by_colleague") {
+      phase = "declined";
+      recipients = [requesterUid];
+    } else if (afterStatus === "confirmed") {
+      phase = "confirmed";
+      recipients = [requesterUid, targetUid];
+    } else if (afterStatus === "rejected_by_manager") {
+      phase = "rejected";
+      recipients = [requesterUid, targetUid];
+    } else if (afterStatus === "cancelled") {
+      phase = "rejected";
+      recipients = [targetUid];
+    }
+    if (!phase) {
+      return;
+    }
+    const notif = push.buildSwapNotification(phase, meta);
+    const recipientUids = push.uniqueUids(recipients);
+    if (notif && recipientUids.length > 0) {
+      await fanOutPush({orgId, recipientUids, notif, requestId: ctx.requestId});
+    }
+  },
+);
+
+// Schicht: veroeffentlicht (planned->confirmed) -> zugewiesene(r) MA; frei
+// geworden (z.B. Krankmeldung) -> Manager (neu besetzen).
+exports.onShiftWritten = documentWrittenTrigger(
+  "onShiftWritten",
+  {region: REGION, document: "organizations/{orgId}/shifts/{shiftId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const shiftId = event.params.shiftId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) {
+      return;
+    }
+    const beforeStatus = before ? stringOrEmpty(before.status) : null;
+    const afterStatus = stringOrEmpty(after.status);
+    const beforeUser = before ?
+      stringFromEither(before, "userId", "user_id") : "";
+    const afterUser = stringFromEither(after, "userId", "user_id");
+    const siteName = stringFromEither(after, "siteName", "site_name");
+    const date = push.formatDe(readTriggerDate(after, "startTime", "start_time"));
+
+    if (beforeStatus !== "confirmed" && afterStatus === "confirmed" && afterUser) {
+      const week = push.isoWeek(readTriggerDate(after, "startTime", "start_time"));
+      const notif = push.buildShiftPublishedNotification({
+        shiftId, siteName, date,
+        weekLabel: week ? `KW ${week.week}` : null,
+      });
+      // Bündelung (M7): EIN Push je Mitarbeiter & Woche statt einer je Schicht
+      // (publishShiftBatch bestätigt bis zu 50 Schichten auf einmal).
+      if (week) {
+        notif.dedupeId = `${afterUser}:${week.year}-${week.week}`;
+      }
+      await fanOutPush({
+        orgId, recipientUids: [afterUser], notif, requestId: ctx.requestId,
+      });
+      return;
+    }
+
+    if (beforeUser && !afterUser && afterStatus !== "cancelled") {
+      const recipientUids = push.managerUids(await loadOrgUserRecords(orgId));
+      if (recipientUids.length === 0) {
+        return;
+      }
+      const notif = push.buildShiftOpenNotification({shiftId, siteName, date});
+      await fanOutPush({orgId, recipientUids, notif, requestId: ctx.requestId});
+    }
+  },
+);
+
+// Bestand: faellt unter Meldebestand (Flanke) -> Bestands-/Inventar-Manager.
+exports.onProductWritten = documentWrittenTrigger(
+  "onProductWritten",
+  {region: REGION, document: "organizations/{orgId}/products/{productId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const productId = event.params.productId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) {
+      return;
+    }
+    const needsReorder = (data) => {
+      const min = numberFromEither(data, "minStock", "min_stock");
+      const cur = numberFromEither(data, "currentStock", "current_stock");
+      return min > 0 && cur <= min;
+    };
+    const beforeNeeds = before ? needsReorder(before) : false;
+    if (beforeNeeds || !needsReorder(after)) {
+      return; // nur die Flanke "jetzt unter Meldebestand" loest aus
+    }
+    const recipientUids = push.managerUids(await loadOrgUserRecords(orgId));
+    if (recipientUids.length === 0) {
+      return;
+    }
+    const notif = push.buildLowStockNotification({
+      productId,
+      productName: stringFromEither(after, "name", "name"),
+      currentStock: numberFromEither(after, "currentStock", "current_stock"),
+      minStock: numberFromEither(after, "minStock", "min_stock"),
+      siteName: stringFromEither(after, "siteName", "site_name"),
+    });
+    // Taeglicher Re-Alert-Bucket: nach Restock + erneutem Unterschreiten darf an
+    // einem anderen Tag wieder gepusht werden, am selben Tag nicht doppelt.
+    notif.dedupeId =
+      `${productId}:${new Date().toISOString().slice(0, 10)}`;
+    await fanOutPush({orgId, recipientUids, notif, requestId: ctx.requestId});
+  },
+);
+
+// Token-GC (M7) — Backstop zum Send-Pruning: entfernt Geräte-Tokens, die seit
+// >270 Tagen nicht aktualisiert wurden (FCM verfällt ohnehin). Braucht den
+// COLLECTION_GROUP-Index auf fcmTokens.updatedAt (firestore.indexes.json).
+exports.pruneStaleFcmTokens = onSchedule(
+  {region: REGION, schedule: "every day 03:30", timeZone: "Europe/Berlin"},
+  async () => {
+    const requestId = crypto.randomUUID();
+    const cutoff = Timestamp.fromMillis(
+      Date.now() - 270 * 24 * 60 * 60 * 1000);
+    const snapshot = await db.collectionGroup("fcmTokens")
+      .where("updatedAt", "<", cutoff).get();
+    const refs = snapshot.docs.map((doc) => doc.ref);
+    let deleted = 0;
+    for (let i = 0; i < refs.length; i += 400) {
+      const batch = db.batch();
+      for (const ref of refs.slice(i, i + 400)) {
+        batch.delete(ref);
+      }
+      await batch.commit();
+      deleted += Math.min(400, refs.length - i);
+    }
+    logger.info("fcm_token_gc", {requestId, deleted});
+  },
+);
+
+// MHD-/Ablauf-Warnung (zeitbasiert -> Scheduler, NICHT Trigger: kein Schreib-
+// Ereignis feuert „in 3 Tagen"). Findet je Org die aktiven Warenchargen, deren
+// Mindesthaltbarkeitsdatum in <= EXPIRY_LEAD_DAYS Kalendertagen liegt (oder schon
+// abgelaufen ist), und benachrichtigt die aktiven Mitarbeiter. Idempotenz:
+// dedupeId = `${batchId}:${expiryDay}` -> je Charge genau EIN Push (fanOutPush
+// .create()-Dedupe), kein taegliches Wiederholen. Braucht den Composite-Index
+// productBatches(status, expiryDay) (firestore.indexes.json) + Blaze (Scheduler).
+const EXPIRY_LEAD_DAYS = 3;
+
+// „YYYY-MM-DD" (Berlin) fuer heute + offsetDays. Der lexikographische Vergleich
+// gegen das String-Feld expiryDay ist == chronologisch (deshalb das Feld).
+function berlinDayString(offsetDays) {
+  const base = new Date(Date.now() + (offsetDays || 0) * 24 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Berlin",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(base);
+  let y = "";
+  let m = "";
+  let d = "";
+  for (const p of parts) {
+    if (p.type === "year") y = p.value;
+    if (p.type === "month") m = p.value;
+    if (p.type === "day") d = p.value;
+  }
+  return `${y}-${m}-${d}`;
+}
+
+// Ganze Kalendertage zwischen zwei „YYYY-MM-DD"-Strings (UTC-basiert ->
+// DST-robust). null bei ungueltiger Eingabe.
+function daysBetweenDayStrings(fromDay, toDay) {
+  const a = Date.parse(`${fromDay}T00:00:00Z`);
+  const b = Date.parse(`${toDay}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+exports.expiryWarningNightly = onSchedule(
+  {region: REGION, schedule: "every day 07:00", timeZone: "Europe/Berlin"},
+  async () => {
+    const requestId = crypto.randomUUID();
+    const todayStr = berlinDayString(0);
+    const thresholdStr = berlinDayString(EXPIRY_LEAD_DAYS);
+    const orgsSnap = await db.collection("organizations").limit(50).get();
+    let orgsProcessed = 0;
+    let warned = 0;
+    for (const orgDoc of orgsSnap.docs) {
+      const orgId = orgDoc.id;
+      let batchesSnap;
+      try {
+        batchesSnap = await db.collection("organizations").doc(orgId)
+          .collection("productBatches")
+          .where("status", "==", "active")
+          .where("expiryDay", "<=", thresholdStr)
+          .get();
+      } catch (error) {
+        logger.error("expiry_query_error", {
+          event: "expiry_query_error", fn: "expiryWarningNightly",
+          requestId, orgId, message: truncateError(error),
+        });
+        continue;
+      }
+      if (batchesSnap.empty) {
+        continue;
+      }
+      const recipientUids = push.activeRecipientUids(
+        await loadOrgUserRecords(orgId));
+      if (recipientUids.length === 0) {
+        continue;
+      }
+      // Standortnamen einmal je Org aufloesen (Chargen tragen nur die siteId).
+      const siteNameById = {};
+      try {
+        const sitesSnap = await db.collection("organizations").doc(orgId)
+          .collection("sites").get();
+        sitesSnap.forEach((s) => {
+          siteNameById[s.id] = stringOrEmpty((s.data() || {}).name);
+        });
+      } catch (error) {
+        // Ohne Namen wird trotzdem gewarnt (nur ohne Ladennamen im Text).
+      }
+      orgsProcessed += 1;
+      for (const doc of batchesSnap.docs) {
+        const data = doc.data() || {};
+        const expiryDay = stringOrEmpty(data.expiryDay);
+        if (!expiryDay) continue;
+        const notif = push.buildExpiryNotification({
+          batchId: doc.id,
+          productName: stringOrEmpty(data.productName),
+          siteName: siteNameById[stringOrEmpty(data.siteId)] || "",
+          daysUntilExpiry: daysBetweenDayStrings(todayStr, expiryDay),
+        });
+        // Je Charge genau ein Push (unabhaengig vom Lauf-Tag).
+        notif.dedupeId = `${doc.id}:${expiryDay}`;
+        await fanOutPush({orgId, recipientUids, notif, requestId});
+        warned += 1;
+      }
+    }
+    logger.info("expiry_warning_done", {
+      event: "expiry_warning_done", fn: "expiryWarningNightly",
+      requestId, orgsProcessed, warned,
+    });
+  },
+);
+
+exports.upsertShiftBatch = callable("upsertShiftBatch", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertScheduler(caller);
@@ -76,8 +738,7 @@ exports.upsertShiftBatch = onCall({region: REGION}, async (request) => {
   return {savedIds, issues};
 });
 
-exports.publishShiftBatch = onCall({region: REGION}, async (request) => {
-  traceCallable("publishShiftBatch", request);
+exports.publishShiftBatch = callable("publishShiftBatch", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertScheduler(caller);
@@ -116,8 +777,7 @@ exports.publishShiftBatch = onCall({region: REGION}, async (request) => {
   return {savedIds, issues};
 });
 
-exports.upsertWorkEntry = onCall({region: REGION}, async (request) => {
-  traceCallable("upsertWorkEntry", request);
+exports.upsertWorkEntry = callable("upsertWorkEntry", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertTimeEntryEditor(caller);
@@ -157,8 +817,7 @@ exports.upsertWorkEntry = onCall({region: REGION}, async (request) => {
   };
 });
 
-exports.upsertWorkEntryBatch = onCall({region: REGION}, async (request) => {
-  traceCallable("upsertWorkEntryBatch", request);
+exports.upsertWorkEntryBatch = callable("upsertWorkEntryBatch", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   assertTimeEntryEditor(caller);
@@ -207,8 +866,7 @@ exports.upsertWorkEntryBatch = onCall({region: REGION}, async (request) => {
   return {savedIds, validations};
 });
 
-exports.previewCompliance = onCall({region: REGION}, async (request) => {
-  traceCallable("previewCompliance", request);
+exports.previewCompliance = callable("previewCompliance", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
   const orgId = requiredString(request.data?.orgId, "orgId");
@@ -245,6 +903,319 @@ exports.previewCompliance = onCall({region: REGION}, async (request) => {
     "Es wurde weder ein Schichtpaket noch ein Zeiteintrag uebergeben.",
   );
 });
+
+// === Arbeitsmodus / Laden-Tablet (Kiosk) ====================================
+// Server-gepruefte PIN fuer das geteilte Tablet (Plan
+// plan/arbeitsmodus-laden-tablet.md, Increment 2). PIN-Hash liegt in einer fuer
+// Clients UNLESBAREN Collection (organizations/{orgId}/userSecrets/{uid},
+// firestore.rules: read/write if false) — nur diese Functions (Admin SDK)
+// lesen/schreiben ihn. Der Mitarbeiter setzt die PIN auf dem EIGENEN Handy
+// (setKioskPin, request.auth = Mitarbeiter); das Kiosk-Geraet meldet ihn per
+// PIN an (kioskBeginSession, request.auth = Geraete-Konto).
+const KIOSK_PIN_REGEX = /^\d{4,8}$/;
+const KIOSK_MAX_PIN_ATTEMPTS = 5;
+const KIOSK_LOCKOUT_MS = 5 * 60 * 1000; // 5 Minuten Sperre nach zu vielen Fehlern
+const KIOSK_SESSION_TTL_MS = 10 * 60 * 1000; // harte Server-Obergrenze der Session
+
+// PIN-Hash: scrypt mit zufaelligem Salt (NIE Klartext, NIE Client-SHA1 — Plan E1).
+// Format "scrypt$<saltHex>$<hashHex>".
+function hashKioskPin(pin) {
+  const salt = crypto.randomBytes(16);
+  const derived = crypto.scryptSync(pin, salt, 64);
+  return `scrypt$${salt.toString("hex")}$${derived.toString("hex")}`;
+}
+
+function verifyKioskPin(pin, stored) {
+  if (typeof stored !== "string") return false;
+  const parts = stored.split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  const salt = Buffer.from(parts[1], "hex");
+  const expected = Buffer.from(parts[2], "hex");
+  const derived = crypto.scryptSync(pin, salt, expected.length);
+  return derived.length === expected.length &&
+    crypto.timingSafeEqual(derived, expected);
+}
+
+// setKioskPin: der Mitarbeiter setzt/aendert seine Kiosk-PIN auf dem eigenen
+// Handy. request.auth == Mitarbeiter; Hash landet in userSecrets/{uid}.
+exports.setKioskPin = callable("setKioskPin", {region: REGION}, async (request) => {
+  assertSupportedVersion(request);
+  const caller = await loadCallerProfile(request);
+  const pin = stringOrNull(request.data?.pin);
+  if (!pin || !KIOSK_PIN_REGEX.test(pin)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Die PIN muss aus 4 bis 8 Ziffern bestehen.",
+    );
+  }
+  await organizationCollection(caller.orgId, "userSecrets").doc(caller.uid).set({
+    orgId: caller.orgId,
+    uid: caller.uid,
+    pinHash: hashKioskPin(pin),
+    pinAlgo: "scrypt",
+    failedAttempts: 0,
+    lockedUntil: null,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true};
+});
+
+// resetKioskPin: ein Admin loescht die PIN eines Mitarbeiters (erzwingt Neu-
+// Setzen) und hebt eine Sperre auf.
+exports.resetKioskPin = callable("resetKioskPin", {region: REGION}, async (request) => {
+  assertSupportedVersion(request);
+  const caller = await loadCallerProfile(request);
+  if (!caller.isAdmin) {
+    throw new HttpsError(
+      "permission-denied",
+      "Nur Admins duerfen PINs zuruecksetzen.",
+    );
+  }
+  const employeeId = stringOrNull(request.data?.employeeId);
+  if (!employeeId) {
+    throw new HttpsError("invalid-argument", "employeeId fehlt.");
+  }
+  await organizationCollection(caller.orgId, "userSecrets")
+    .doc(employeeId).delete();
+  return {ok: true};
+});
+
+// kioskBeginSession: das Kiosk-Geraet meldet einen Mitarbeiter per PIN an.
+// request.auth == Geraete-Konto. Prueft PIN serverseitig (scrypt) + Rate-Limit/
+// Lockout + gleiche Org, legt eine kurzlebige Session an und gibt deren `sid`
+// zurueck. App Check erzwungen (nur die echte App darf anmelden).
+exports.kioskBeginSession = callable(
+  "kioskBeginSession",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request); // Geraete-Konto
+    const employeeId = stringOrNull(request.data?.employeeId);
+    const pin = stringOrNull(request.data?.pin);
+    const deviceId = stringOrNull(request.data?.deviceId);
+    if (!employeeId || !pin) {
+      throw new HttpsError("invalid-argument", "employeeId oder PIN fehlt.");
+    }
+
+    const empSnap = await db.collection("users").doc(employeeId).get();
+    if (!empSnap.exists) {
+      throw new HttpsError("not-found", "Mitarbeiter unbekannt.");
+    }
+    const empData = empSnap.data() || {};
+    const empOrg = stringFromEither(empData, "orgId", "org_id");
+    // Geraet und Mitarbeiter MUESSEN in derselben Org sein (Mandantengrenze).
+    assertSameOrg(caller, empOrg);
+    if (!isTruthy(valueFromEither(empData, "isActive", "is_active"))) {
+      throw new HttpsError("permission-denied", "Mitarbeiter ist deaktiviert.");
+    }
+
+    const secretRef = organizationCollection(empOrg, "userSecrets")
+      .doc(employeeId);
+    const secretSnap = await secretRef.get();
+    if (!secretSnap.exists) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Fuer diesen Mitarbeiter ist noch keine PIN hinterlegt.",
+      );
+    }
+    const secret = secretSnap.data() || {};
+    const lockedUntilMs = secret.lockedUntil?.toMillis?.() ?? 0;
+    if (lockedUntilMs > Date.now()) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Zu viele Fehlversuche. Bitte spaeter erneut versuchen.",
+      );
+    }
+
+    if (!verifyKioskPin(pin, secret.pinHash)) {
+      const attempts = (Number(secret.failedAttempts) || 0) + 1;
+      const update = {failedAttempts: attempts};
+      if (attempts >= KIOSK_MAX_PIN_ATTEMPTS) {
+        update.failedAttempts = 0;
+        update.lockedUntil = Timestamp.fromMillis(Date.now() + KIOSK_LOCKOUT_MS);
+      }
+      await secretRef.set(update, {merge: true});
+      throw new HttpsError("permission-denied", "Falsche PIN.");
+    }
+
+    // Erfolg: Zaehler zuruecksetzen, Session anlegen.
+    await secretRef.set({failedAttempts: 0, lockedUntil: null}, {merge: true});
+    const sid = crypto.randomUUID();
+    await organizationCollection(empOrg, "kioskSessions").doc(sid).set({
+      sid,
+      orgId: empOrg,
+      employeeId,
+      deviceId: deviceId || null,
+      createdByUid: caller.uid,
+      startedAt: FieldValue.serverTimestamp(),
+      expiresAt: Timestamp.fromMillis(Date.now() + KIOSK_SESSION_TTL_MS),
+      revokedAt: null,
+    });
+    return {sid, expiresInMs: KIOSK_SESSION_TTL_MS};
+  },
+);
+
+// kioskEndSession: Session serverseitig beenden (Logout/„Fertig").
+exports.kioskEndSession = callable(
+  "kioskEndSession",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    const caller = await loadCallerProfile(request);
+    const sid = stringOrNull(request.data?.sid);
+    if (!sid) throw new HttpsError("invalid-argument", "sid fehlt.");
+    await organizationCollection(caller.orgId, "kioskSessions").doc(sid).set(
+      {revokedAt: FieldValue.serverTimestamp()},
+      {merge: true},
+    );
+    return {ok: true};
+  },
+);
+
+// Laedt und prueft eine aktive Kiosk-Session (nicht abgelaufen/widerrufen) und
+// stellt sicher, dass sie zum aufrufenden Geraet (gleiche Org) gehoert.
+async function requireKioskSession(caller, sid) {
+  if (!sid) throw new HttpsError("invalid-argument", "sid fehlt.");
+  const ref = organizationCollection(caller.orgId, "kioskSessions").doc(sid);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("permission-denied", "Kiosk-Session ungueltig.");
+  }
+  const data = snap.data() || {};
+  const expiresMs = data.expiresAt?.toMillis?.() ?? 0;
+  if (data.revokedAt || expiresMs < Date.now()) {
+    throw new HttpsError("permission-denied", "Kiosk-Session abgelaufen.");
+  }
+  if (data.orgId !== caller.orgId) {
+    throw new HttpsError("permission-denied", "Kiosk-Session fremd.");
+  }
+  return data;
+}
+
+// kioskClockPunch: Stempeln (Kommen/Gehen) am Kiosk fuer den Session-Mitarbeiter.
+// Schreibt eine ClockEntry ALS der Mitarbeiter (Admin SDK) — autorisiert ueber
+// die Session, nicht ueber self/admin. `direction` = "in" (offene Session
+// anlegen) | "out" (offene Session schliessen).
+//
+// HINWEIS (emulator-pending): die volle WorkEntry-/ArbZG-Generierung wie im
+// Client-`ClockService`/`upsertWorkEntry` ist hier bewusst NOCH NICHT gebaut —
+// diese Funktion persistiert die Praesenz (Kommen/Gehen) revisionssicher mit
+// `source:'kiosk'` + `sessionId`; die Umwandlung in einen abrechnungsrelevanten
+// WorkEntry (inkl. Pausen nach ArbZG, Compliance-Spiegel) ist der verbleibende,
+// auf dem Emulator zu verifizierende Schritt (Kopplung #2).
+// ArbZG-Pflichtpause (Brutto-Minuten) — 1:1 zu ClockService.requiredBreakMinutes
+// (30 min ab >6 h, 45 min ab >9 h). Compliance-Spiegel (CLAUDE.md Kopplung #2).
+function kioskRequiredBreakMinutes(grossMinutes) {
+  if (grossMinutes > 540) return 45;
+  if (grossMinutes > 360) return 30;
+  return 0;
+}
+
+async function findOpenClockEntry(orgId, employeeId) {
+  const snap = await organizationCollection(orgId, "clockEntries")
+    .where("userId", "==", employeeId)
+    .where("status", "==", "ongoing")
+    .limit(1)
+    .get();
+  return snap.empty ? null : snap.docs[0];
+}
+
+exports.kioskClockPunch = callable(
+  "kioskClockPunch",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request); // Geraete-Konto
+    const sid = stringOrNull(request.data?.sid);
+    const direction = stringOrNull(request.data?.direction);
+    const session = await requireKioskSession(caller, sid);
+    const orgId = session.orgId;
+    const employeeId = session.employeeId;
+    const clockEntries = organizationCollection(orgId, "clockEntries");
+
+    // Nur-Abfrage: ist der Mitarbeiter eingestempelt? (für die Button-Anzeige)
+    if (direction === "status") {
+      const open = await findOpenClockEntry(orgId, employeeId);
+      return {clockedIn: Boolean(open)};
+    }
+
+    if (direction === "in") {
+      const existing = await findOpenClockEntry(orgId, employeeId);
+      if (existing) {
+        return {clockedIn: true, clockEntryId: existing.id};
+      }
+      const docRef = clockEntries.doc();
+      await docRef.set({
+        orgId,
+        userId: employeeId,
+        siteId: stringOrNull(request.data?.siteId),
+        siteName: stringOrNull(request.data?.siteName),
+        kommen: FieldValue.serverTimestamp(),
+        gehen: null,
+        pauseMinuten: 0,
+        nettoMinutes: 0,
+        status: "ongoing",
+        source: "kiosk",
+        deviceId: session.deviceId || null,
+        sessionId: sid,
+        createdByUid: caller.uid,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return {clockedIn: true, clockEntryId: docRef.id};
+    }
+
+    if (direction === "out") {
+      const doc = await findOpenClockEntry(orgId, employeeId);
+      if (!doc) {
+        return {clockedIn: false};
+      }
+      const data = doc.data() || {};
+      const kommenMs = data.kommen?.toMillis?.() ?? Date.now();
+      const nowMs = Date.now();
+      const grossMin = Math.max(0, Math.round((nowMs - kommenMs) / 60000));
+      const clientPause = Number(request.data?.pauseMinuten) || 0;
+      const pause = Math.max(clientPause, kioskRequiredBreakMinutes(grossMin));
+      const netto = Math.max(0, grossMin - pause);
+      const gehenTs = Timestamp.fromMillis(nowMs);
+
+      await doc.ref.set({
+        gehen: gehenTs,
+        pauseMinuten: pause,
+        nettoMinutes: netto,
+        status: "completed",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      // Abrechnungsrelevanten WorkEntry(submitted) erzeugen — best-effort, wie
+      // der Client-Stempel (der Admin gibt „submitted" frei). Compliance wird
+      // NICHT hart geprüft (Freigabe-Workflow fängt es), analog zum Client, der
+      // die WorkEntry-Erzeugung ebenfalls nicht blockierend macht.
+      // HINWEIS: emulator-pending — vor Produktiv-Deploy verifizieren.
+      await organizationCollection(orgId, "workEntries").add({
+        orgId,
+        userId: employeeId,
+        date: data.kommen ?? gehenTs,
+        startTime: data.kommen ?? gehenTs,
+        endTime: gehenTs,
+        breakMinutes: pause,
+        siteId: data.siteId ?? null,
+        siteName: data.siteName ?? null,
+        category: "stempel",
+        status: "submitted",
+        sourceClockEntryId: doc.id,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      return {clockedIn: false, clockEntryId: doc.id};
+    }
+
+    throw new HttpsError(
+      "invalid-argument",
+      "direction muss 'in', 'out' oder 'status' sein.",
+    );
+  },
+);
 
 async function loadCallerProfile(request) {
   if (!request.auth?.uid) {
@@ -1978,4 +2949,1441 @@ function toNullableDate(value) {
     return null;
   }
   return toDate(value);
+}
+
+// ===========================================================================
+// OktoPOS-Kassenanbindung — read-only Transaktions-Pull -> Bestandsabbuchung
+// ---------------------------------------------------------------------------
+// Sicherheit/Architektur:
+//  - X-API-KEY ist ein Secret (Secret Manager OKTOPOS_API_KEYS), NIE im
+//    Client. Der Aufruf gegen OktoPOS laeuft ausschliesslich serverseitig
+//    (Server-zu-Server) -> kein CORS, kein Schluessel im Bundle.
+//  - Bestandsbewegungen werden via Admin SDK geschrieben (umgeht die
+//    Client-Rules). Die Rules erlauben Clients KEINE source=='oktopos'
+//    -> keine gefaelschte Kassen-Provenienz vom Client.
+//  - Idempotent: deterministische Doc-ID je (Kasse, Beleg, Position) ->
+//    erneuter Lauf bucht NICHT doppelt (Transaktion + Existenz-Check).
+//  - Nur LESEN aus OktoPOS; kein Schreibpfad in die Kasse.
+//  - TLS-Pflicht: baseUrl muss https sein (Key nie im Klartext).
+//
+// Betrieb braucht den Blaze-Plan (ausgehende Netzwerk-Calls + Secret Manager
+// + Scheduler) sowie das Config-Dokument organizations/{orgId}/config/
+// oktoposSync mit baseUrl + sites[siteId].cashRegisterId. Siehe
+// plan/oktopos-kassenanbindung.md.
+// ===========================================================================
+
+const OKTOPOS_SYNC_CONFIG_ID = "oktoposSync";
+const OKTOPOS_FETCH_TIMEOUT_MS = 25000;
+const OKTOPOS_MAX_PAGES = 200; // Cap gegen Endlos-Pagination
+const OKTOPOS_DEFAULT_PAGE_SIZE = 50;
+const OKTOPOS_DEFAULT_LOOKBACK_DAYS = 3;
+// API10 (Fremddaten bounden): eingebettete Belegzeilen kappen, damit ein Beleg
+// nie das Firestore-1-MiB-Doc-Limit reisst (Kiosk-Bons sind klein; mehr ist eine
+// Anomalie). Ueberzaehlige Zeilen werden verworfen und im Beleg markiert.
+const OKTOPOS_MAX_RECEIPT_LINES = 200;
+
+// Manueller Kassenabgleich (Admin loest ihn pro Standort aus).
+exports.syncOktoposTransactions = callable(
+  "syncOktoposTransactions",
+  // Hoeheres Timeout als der Default (60s): ein Pull ueber mehrere Seiten mit
+  // je einer Bestands-Transaktion kann laenger dauern. Der Client wartet
+  // entsprechend laenger (siehe FirestoreService.syncOktoposTransactions).
+  {region: REGION, secrets: [OKTOPOS_API_KEYS], timeoutSeconds: 300,
+    memory: "256MiB"},
+  async (request, {requestId, fn}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    assertAdmin(caller);
+    const orgId = requiredString(request.data?.orgId, "orgId");
+    assertSameOrg(caller, orgId);
+    const siteId = requiredString(request.data?.siteId, "siteId");
+
+    const config = await loadOktoposConfig(orgId);
+    if (!config || !stringOrNull(config.baseUrl)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "OktoPOS ist noch nicht eingerichtet (baseUrl fehlt im " +
+          "Config-Dokument config/oktoposSync).",
+      );
+    }
+
+    return runOktoposSync({
+      orgId,
+      siteId,
+      config,
+      apiKeysRaw: OKTOPOS_API_KEYS.value(),
+      fromOverride: stringOrNull(request.data?.from),
+      untilOverride: stringOrNull(request.data?.until),
+      dryRun: request.data?.dryRun === true,
+      fn,
+      requestId,
+    });
+  },
+);
+
+// Naechtlicher autonomer Pull (opt-in: config.enabled === true je Org).
+exports.oktoposNightlySync = onSchedule(
+  {
+    region: REGION,
+    schedule: "every day 03:30",
+    timeZone: "Europe/Berlin",
+    secrets: [OKTOPOS_API_KEYS],
+    timeoutSeconds: 540,
+    memory: "256MiB",
+  },
+  async () => {
+    const orgsSnap = await db.collection("organizations").limit(50).get();
+    for (const orgDoc of orgsSnap.docs) {
+      const orgId = orgDoc.id;
+      let config;
+      try {
+        config = await loadOktoposConfig(orgId);
+      } catch (error) {
+        logger.error("oktopos_config_error", {
+          event: "oktopos_config_error",
+          fn: "oktoposNightlySync",
+          orgId,
+          error: truncateError(error),
+        });
+        continue;
+      }
+      if (!config || config.enabled !== true || !stringOrNull(config.baseUrl)) {
+        continue;
+      }
+      const sites = isPlainObject(config.sites) ? config.sites : {};
+      for (const siteId of Object.keys(sites)) {
+        // Eine Request-ID je Standort-Lauf, damit alle Logzeilen (HTTP-Calls,
+        // Abschluss/Fehler) dieses Laufs korrelierbar sind. Die Erfolgs-Summary
+        // loggt runOktoposSync selbst (oktopos_sync_done).
+        const requestId = crypto.randomUUID();
+        try {
+          await runOktoposSync({
+            orgId,
+            siteId,
+            config,
+            apiKeysRaw: OKTOPOS_API_KEYS.value(),
+            fn: "oktoposNightlySync",
+            requestId,
+          });
+        } catch (error) {
+          logger.error("oktopos_sync_error", {
+            event: "oktopos_sync_error",
+            fn: "oktoposNightlySync",
+            requestId,
+            orgId,
+            siteId,
+            error: truncateError(error),
+          });
+        }
+      }
+    }
+  },
+);
+
+async function loadOktoposConfig(orgId) {
+  const snap = await organizationCollection(orgId, "config")
+    .doc(OKTOPOS_SYNC_CONFIG_ID)
+    .get();
+  return snap.exists ? (snap.data() || null) : null;
+}
+
+function assertAdmin(caller) {
+  if (!caller.isAdmin) {
+    throw new HttpsError(
+      "permission-denied",
+      "Nur Administratoren duerfen den Kassenabgleich ausloesen.",
+    );
+  }
+}
+
+// Key-Aufloesung: JSON {"<siteId>":"<key>"} ODER einzelner Key-String.
+function resolveOktoposApiKey(apiKeysRaw, siteId) {
+  const raw = stringOrEmpty(apiKeysRaw).trim();
+  if (!raw) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Kein OktoPOS-API-Key hinterlegt (Secret OKTOPOS_API_KEYS).",
+    );
+  }
+  if (raw.startsWith("{")) {
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new HttpsError(
+        "failed-precondition",
+        "OKTOPOS_API_KEYS ist kein gueltiges JSON.",
+      );
+    }
+    const key = parsed?.[siteId] || parsed?.["*"] || parsed?.default;
+    if (!stringOrNull(key)) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Kein OktoPOS-API-Key fuer Standort ${siteId} in OKTOPOS_API_KEYS.`,
+      );
+    }
+    return String(key).trim();
+  }
+  return raw;
+}
+
+async function runOktoposSync({
+  orgId, siteId, config, apiKeysRaw,
+  fromOverride = null, untilOverride = null, dryRun = false,
+  fn = "runOktoposSync", requestId = null,
+}) {
+  const baseUrl = stringOrEmpty(config.baseUrl).trim().replace(/\/+$/, "");
+  // TLS-Pflicht: der API-Key darf nie im Klartext ueber http gehen.
+  if (!baseUrl.toLowerCase().startsWith("https://")) {
+    throw new HttpsError(
+      "failed-precondition", "OktoPOS baseUrl muss https sein.",
+    );
+  }
+  const apiKey = resolveOktoposApiKey(apiKeysRaw, siteId);
+  const siteConfig = isPlainObject(config.sites?.[siteId])
+    ? config.sites[siteId]
+    : {};
+  const rawCr = Number(siteConfig.cashRegisterId);
+  const cashRegisterId = Number.isFinite(rawCr) && rawCr > 0
+    ? Math.trunc(rawCr)
+    : null;
+  // Schutz gegen Doppelbuchung: teilen sich mehrere Laeden einen API-Key und
+  // ist keine Kassen-Nr. gesetzt, wuerde JEDER Lauf ALLE Verkaufsbuchungen
+  // ziehen und gegen die Produkte SEINES Standorts matchen -> ein Verkauf wird
+  // in beiden Laeden abgebucht. Bei mehreren konfigurierten Laeden ist die
+  // Kassen-Nr. daher Pflicht (manuell: Fehler; naechtlich: per try/catch geloggt).
+  const siteCount = isPlainObject(config.sites)
+    ? Object.keys(config.sites).length
+    : 0;
+  if (cashRegisterId == null && siteCount > 1) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Bei mehreren Laeden muss je Laden eine Kassen-Nr. gesetzt sein, " +
+        "sonst werden Verkaeufe doppelt gebucht.",
+    );
+  }
+  const pageSize = asInteger(config.defaultSize, OKTOPOS_DEFAULT_PAGE_SIZE) ||
+    OKTOPOS_DEFAULT_PAGE_SIZE;
+
+  // Zeitfenster (Cursor = letzter synchronisierter Geschaeftstag).
+  const until = parseOktoposDate(untilOverride) || new Date();
+  let from = parseOktoposDate(fromOverride);
+  if (!from) {
+    const cursor = parseOktoposDate(stringOrNull(siteConfig.lastBusinessDay));
+    from = cursor || daysAgo(until, OKTOPOS_DEFAULT_LOOKBACK_DAYS);
+  }
+  const fromIso = toOktoposDateTime(from);
+  const untilIso = toOktoposDateTime(until);
+
+  const lookups = await loadProductLookups(orgId, siteId);
+
+  const result = {
+    siteId,
+    fromUsed: fromIso,
+    untilUsed: untilIso,
+    cashRegisterId,
+    pages: 0,
+    processedTransactions: 0,
+    appliedMovements: 0,
+    reversedMovements: 0,
+    receiptsCollected: 0,
+    receiptsPersisted: 0,
+    skippedTraining: 0,
+    skippedNonSales: 0,
+    skippedNoReference: 0,
+    unmatchedLineItems: 0,
+    unmatchedSamples: [],
+    dryRun,
+  };
+
+  let maxBusinessDay = stringOrNull(siteConfig.lastBusinessDay);
+  let page = 1;
+  let lastPage = 1;
+  do {
+    const wrappers = await fetchOktoposTransactionsPage({
+      baseUrl, apiKey, fromIso, untilIso, page, size: pageSize, cashRegisterId,
+      fn, requestId,
+    });
+    result.pages += 1;
+    let pageLastPage = page;
+    const pending = [];
+    const pendingReceipts = [];
+    for (const wrapper of wrappers) {
+      pageLastPage = Math.max(pageLastPage, asInteger(wrapper.lastPage, page));
+      for (const tx of asArray(wrapper.transactions)) {
+        result.processedTransactions += 1;
+        const training = tx?.training === true;
+        const type = stringOrEmpty(tx?.type).trim().toLowerCase();
+        // sales bucht ab (-), refund bucht zurueck (+); cash/sonstiges bewegt
+        // KEINEN Bestand. cash- und training-Belege werden trotzdem als
+        // Verkaufsfaktum (posReceipts, P0) gesichert: Kassendifferenz/
+        // Tagesabschluss brauchen cash, Aggregate schliessen training/cash
+        // ueber die Flags `training`/`isRevenue` aus.
+        const sign = type === "sales" ? -1 : (type === "refund" ? 1 : 0);
+        const ref = stringOrNull(tx?.referenceNumber);
+        if (!ref) {
+          // Ohne Belegnummer gibt es keinen stabilen Idempotenz-Schluessel ->
+          // weder buchen NOCH als Beleg-Faktum schreiben (Doc-ID waere nicht
+          // deterministisch). Bei echten fiskalischen Belegen Pflichtfeld.
+          result.skippedNoReference += 1;
+          continue;
+        }
+        const businessDay = stringOrNull(tx?.businessDay);
+        if (businessDay && (!maxBusinessDay || businessDay > maxBusinessDay)) {
+          maxBusinessDay = businessDay;
+        }
+        const txDate = parseOktoposTxDate(tx);
+        // Telemetrie unveraendert (training hat Vorrang vor cash).
+        if (training) result.skippedTraining += 1;
+        else if (sign === 0) result.skippedNonSales += 1;
+
+        // (A) Verkaufsfaktum (P0): JEDEN Beleg mit Belegnummer denormalisiert
+        // sichern (Zeilen mit Name/Kategorie/Preis ZUM VERKAUFSZEITPUNKT, damit
+        // ein spaeter geloeschtes Produkt die Historie nicht verwaist).
+        const isRevenue = !training && sign !== 0;
+        const receiptLines = [];
+        let truncatedLines = false;
+        for (const item of asArray(tx?.items)) {
+          if (receiptLines.length >= OKTOPOS_MAX_RECEIPT_LINES) {
+            truncatedLines = true;
+            break;
+          }
+          const matched = matchProduct(lookups, item?.product);
+          receiptLines.push({
+            productId: matched ? matched.id : null,
+            name: stringOrNull(item?.product?.name),
+            externalReference: stringOrNull(item?.product?.externalReference),
+            scannedBarcode: stringOrNull(item?.product?.scannedBarcode),
+            category: stringOrNull(item?.product?.group?.token) ||
+              stringOrNull(item?.product?.category),
+            quantity: asInteger(item?.quantity, 0),
+            unitPriceCents: oktoposMoneyToCents(
+              item?.price ?? item?.unitPrice ?? item?.singlePrice,
+            ),
+            discountCents: oktoposMoneyToCents(
+              item?.discount ?? item?.discountAmount,
+            ),
+          });
+        }
+        if (!dryRun) {
+          pendingReceipts.push({
+            receiptId: buildOktoposReceiptId(cashRegisterId, siteId, ref),
+            referenceNumber: ref,
+            type: type || null,
+            training,
+            isRevenue,
+            businessDay: businessDay || null,
+            txDate,
+            grossCents: oktoposMoneyToCents(
+              tx?.grossAmount ?? tx?.gross ?? tx?.total ?? tx?.amount,
+            ),
+            taxes: parseOktoposReceiptTaxes(tx),
+            payments: parseOktoposPayments(tx),
+            lines: receiptLines,
+            lineCount: receiptLines.length,
+            truncatedLines,
+            // PII-Minimierung: nur IDs sichern, Namen erst im UI aus dem Team-/
+            // Kontaktbestand aufloesen (sofern OktoPOS sie liefert — gegen die
+            // Swagger verifizieren, hier tolerant/optional).
+            cashierId: stringOrNull(tx?.cashier?.id ?? tx?.cashierId),
+            customerId: stringOrNull(tx?.customer?.id ?? tx?.customerId),
+          });
+        }
+        result.receiptsCollected += 1;
+
+        // (B) Bestandsbewegungen NUR fuer echte Umsatzbelege (sales/refund, kein
+        // training, kein cash).
+        if (!isRevenue) {
+          continue;
+        }
+        for (const item of asArray(tx?.items)) {
+          const quantity = Math.abs(asInteger(item?.quantity, 0));
+          if (quantity <= 0) {
+            continue;
+          }
+          const product = matchProduct(lookups, item?.product);
+          if (!product) {
+            result.unmatchedLineItems += 1;
+            if (result.unmatchedSamples.length < 20) {
+              result.unmatchedSamples.push({
+                name: stringOrNull(item?.product?.name),
+                barcode: stringOrNull(item?.product?.scannedBarcode),
+                externalReference: stringOrNull(item?.product?.externalReference),
+              });
+            }
+            continue;
+          }
+          const delta = sign * quantity;
+          if (dryRun) {
+            if (sign < 0) result.appliedMovements += 1;
+            else result.reversedMovements += 1;
+            continue;
+          }
+          pending.push({
+            movementId: buildOktoposMovementId(
+              cashRegisterId, ref, asInteger(item?.id, 0),
+            ),
+            productId: product.id,
+            productName: product.name,
+            delta,
+            inFridge: product.inFridge === true,
+            referenceNumber: ref,
+            txDate,
+          });
+        }
+      }
+    }
+    // Verkaufsfakten zuerst sichern (idempotentes set(merge)) — unabhaengig von
+    // der Bestandsbuchung, damit ein Bewegungs-Fehler nicht die Belege verliert.
+    if (!dryRun && pendingReceipts.length > 0) {
+      result.receiptsPersisted += await applyOktoposReceiptsBatch(
+        orgId, siteId, cashRegisterId, pendingReceipts,
+      );
+    }
+    // Seitenweise GEBÜNDELT buchen statt einer Transaktion je Position:
+    // 1 getAll (Idempotenz) + <=500-Writes-Batches mit FieldValue.increment.
+    if (!dryRun && pending.length > 0) {
+      const appliedIds = await applyOktoposMovementsBatch(orgId, siteId, pending);
+      for (const p of pending) {
+        if (appliedIds.has(p.movementId)) {
+          if (p.delta < 0) result.appliedMovements += 1;
+          else result.reversedMovements += 1;
+        }
+      }
+    }
+    lastPage = pageLastPage;
+    page += 1;
+  } while (page <= lastPage && page <= OKTOPOS_MAX_PAGES);
+
+  // Cursor fortschreiben (nicht im dryRun).
+  if (!dryRun && maxBusinessDay) {
+    await organizationCollection(orgId, "config")
+      .doc(OKTOPOS_SYNC_CONFIG_ID)
+      .set({
+        sites: {
+          [siteId]: {
+            lastBusinessDay: maxBusinessDay,
+            lastSyncAt: FieldValue.serverTimestamp(),
+          },
+        },
+      }, {merge: true});
+  }
+
+  // Abschluss-Summary — gilt fuer den MANUELLEN Lauf (vorher log-los) UND den
+  // naechtlichen. Nur Aggregate, keine unmatchedSamples (koennen Produktnamen
+  // enthalten).
+  logger.info("oktopos_sync_done", {
+    event: "oktopos_sync_done",
+    fn,
+    requestId,
+    orgId,
+    siteId,
+    dryRun,
+    pages: result.pages,
+    processedTransactions: result.processedTransactions,
+    applied: result.appliedMovements,
+    reversed: result.reversedMovements,
+    receiptsPersisted: result.receiptsPersisted,
+    unmatched: result.unmatchedLineItems,
+  });
+  return result;
+}
+
+async function loadProductLookups(orgId, siteId) {
+  const snap = await organizationCollection(orgId, "products")
+    .where("siteId", "==", siteId)
+    .get();
+  const byBarcode = new Map();
+  const byExternal = new Map();
+  const bySku = new Map();
+  const byId = new Map();
+  for (const doc of snap.docs) {
+    const data = doc.data() || {};
+    const entry = {
+      id: doc.id,
+      name: stringOrNull(data.name),
+      inFridge: isTruthy(data.inFridge),
+    };
+    byId.set(doc.id, entry);
+    const barcode = stringOrNull(data.barcode);
+    const external = stringOrNull(data.externalPosId);
+    const sku = stringOrNull(data.sku);
+    if (barcode) byBarcode.set(barcode, entry);
+    if (external) byExternal.set(external, entry);
+    if (sku) bySku.set(sku, entry);
+  }
+  return {byBarcode, byExternal, bySku, byId};
+}
+
+// Join-Reihenfolge: gescannter Barcode -> externalPosId -> SKU -> Produkt-ID.
+// Die ID-Variante greift, wenn der Artikel via Push (externalReferenceNumber =
+// product.id) in die Kasse geschrieben wurde.
+function matchProduct(lookups, posProduct) {
+  if (!posProduct) return null;
+  const barcode = stringOrNull(posProduct.scannedBarcode);
+  if (barcode && lookups.byBarcode.has(barcode)) {
+    return lookups.byBarcode.get(barcode);
+  }
+  const external = stringOrNull(posProduct.externalReference);
+  if (external && lookups.byExternal.has(external)) {
+    return lookups.byExternal.get(external);
+  }
+  if (external && lookups.bySku.has(external)) {
+    return lookups.bySku.get(external);
+  }
+  if (external && lookups.byId.has(external)) {
+    return lookups.byId.get(external);
+  }
+  return null;
+}
+
+// Performanter Ersatz fuer die frueheren Einzel-Transaktionen: bucht eine ganze
+// Seite gebuendelt. (1) Ein `getAll` filtert bereits gebuchte Bewegungen heraus
+// (Idempotenz). (2) Pro Chunk (<=500 Writes) ein WriteBatch: je neue Bewegung
+// `create` (scheitert bei Race -> atomarer Batch-Rollback statt Doppelbuchung),
+// je betroffenem Produkt EIN `update` mit `FieldValue.increment` der Summe.
+// Gibt die Menge der tatsaechlich neu gebuchten movementIds zurueck.
+//
+// Trade-off: `balanceAfter` wird fuer Kassen-Bewegungen nicht gesetzt (null),
+// da der Bestand per increment fortgeschrieben wird (kein verlaesslicher
+// Snapshot-Stand ohne Lesen; manuelle Buchungen tragen weiterhin balanceAfter).
+async function applyOktoposMovementsBatch(orgId, siteId, pending) {
+  if (pending.length === 0) {
+    return new Set();
+  }
+  const movementsCol = organizationCollection(orgId, "stockMovements");
+  const productsCol = organizationCollection(orgId, "products");
+
+  // Innerhalb einer Seite nach movementId deduplizieren (defensiv).
+  const byId = new Map();
+  for (const p of pending) {
+    if (!byId.has(p.movementId)) {
+      byId.set(p.movementId, p);
+    }
+  }
+  const items = [...byId.values()];
+
+  // (1) Idempotenz: existierende Bewegungen herausfiltern (getAll, gechunkt).
+  const existing = new Set();
+  for (let i = 0; i < items.length; i += 300) {
+    const refs = items.slice(i, i + 300).map((p) => movementsCol.doc(p.movementId));
+    const snaps = await db.getAll(...refs);
+    for (const snap of snaps) {
+      if (snap.exists) {
+        existing.add(snap.id);
+      }
+    }
+  }
+  const fresh = items.filter((p) => !existing.has(p.movementId));
+  if (fresh.length === 0) {
+    return new Set();
+  }
+
+  // (2) In Chunks batchen (je Bewegung 1 create + je Produkt 1 update <= 500).
+  const applied = new Set();
+  const CHUNK = 200;
+  for (let i = 0; i < fresh.length; i += CHUNK) {
+    const slice = fresh.slice(i, i + CHUNK);
+    const deltaByProduct = new Map();
+    const fridgeDeltaByProduct = new Map();
+    for (const p of slice) {
+      deltaByProduct.set(
+        p.productId, (deltaByProduct.get(p.productId) || 0) + p.delta,
+      );
+      // Kuehlschrank-Artikel: derselbe Verkauf leert auch den Kuehlschrank-Ist.
+      if (p.inFridge) {
+        fridgeDeltaByProduct.set(
+          p.productId, (fridgeDeltaByProduct.get(p.productId) || 0) + p.delta,
+        );
+      }
+    }
+    const batch = db.batch();
+    for (const p of slice) {
+      const reason = p.delta < 0
+        ? `Kasse: Verkauf Beleg ${p.referenceNumber}`
+        : `Kasse: Erstattung Beleg ${p.referenceNumber}`;
+      batch.create(movementsCol.doc(p.movementId), {
+        orgId,
+        siteId,
+        productId: p.productId,
+        productName: p.productName || null,
+        type: p.delta < 0 ? "issue" : "receipt",
+        quantityDelta: p.delta,
+        balanceAfter: null,
+        reason,
+        relatedOrderId: null,
+        source: "oktopos",
+        externalRef: p.referenceNumber,
+        createdByUid: null,
+        createdAt: p.txDate
+          ? Timestamp.fromDate(p.txDate)
+          : FieldValue.serverTimestamp(),
+      });
+    }
+    for (const [productId, totalDelta] of deltaByProduct) {
+      // set(merge:true) statt update(): wurde ein Produkt zwischen
+      // loadProductLookups und dem Commit gelöscht, würde update() mit
+      // NOT_FOUND fehlschlagen und den GESAMTEN atomaren Batch (inkl. der
+      // Bewegungs-creates) verwerfen -> ganzer Sync-Lauf bricht ab. merge-set
+      // schreibt robust fort (legt im Extremfall ein Doc an, statt zu crashen).
+      const update = {
+        currentStock: FieldValue.increment(totalDelta),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      // Kuehlschrank-Ist mitfuehren (nur inFridge-Artikel). Kann roh negativ
+      // werden -> Flooring leseseitig via Product.fridgeStockClamped (Plan §7).
+      if (fridgeDeltaByProduct.has(productId)) {
+        update.fridgeStock = FieldValue.increment(
+          fridgeDeltaByProduct.get(productId),
+        );
+      }
+      batch.set(productsCol.doc(productId), update, {merge: true});
+    }
+    await batch.commit();
+    for (const p of slice) {
+      applied.add(p.movementId);
+    }
+  }
+  return applied;
+}
+
+// Verkaufsfakten-Layer (P0): schreibt je Beleg EIN posReceipts-Doc mit
+// eingebetteten `lines[]` (1 Write/Beleg statt 1+N). Im Gegensatz zu den
+// Bewegungen (batch.create, nie ueberschreiben) per `set(merge:true)`:
+// idempotent + ein Re-Pull aktualisiert ein evtl. korrigiertes Beleg-Faktum.
+// Doc-Schreiben ausschliesslich serverseitig (Admin SDK) — die Client-Rules
+// erlauben kein write auf posReceipts. Gibt die Anzahl geschriebener Belege.
+async function applyOktoposReceiptsBatch(orgId, siteId, cashRegisterId, items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return 0;
+  }
+  const col = organizationCollection(orgId, "posReceipts");
+  // Innerhalb des Laufs nach receiptId deduplizieren (letzter gewinnt).
+  const byId = new Map();
+  for (const r of items) {
+    byId.set(r.receiptId, r);
+  }
+  const unique = [...byId.values()];
+  let persisted = 0;
+  const CHUNK = 400; // je Beleg 1 Write -> sicher unter dem 500er-Batch-Limit.
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const batch = db.batch();
+    for (const r of slice) {
+      batch.set(col.doc(r.receiptId), {
+        orgId,
+        siteId,
+        cashRegisterId: cashRegisterId == null ? null : cashRegisterId,
+        referenceNumber: r.referenceNumber,
+        type: r.type,
+        training: r.training === true,
+        isRevenue: r.isRevenue === true,
+        businessDay: r.businessDay,
+        transactionDate: r.txDate ? Timestamp.fromDate(r.txDate) : null,
+        grossCents: r.grossCents,
+        taxes: r.taxes,
+        payments: r.payments,
+        lines: r.lines,
+        lineCount: r.lineCount,
+        truncatedLines: r.truncatedLines === true,
+        cashierId: r.cashierId,
+        customerId: r.customerId,
+        source: "oktopos",
+        syncedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    await batch.commit();
+    persisted += slice.length;
+  }
+  return persisted;
+}
+
+// Zentraler HTTP-Helfer fuer ALLE ausgehenden Kassen-Calls: AbortController +
+// Timeout, einheitliches X-API-KEY-Header-Setzen und GENAU EINE strukturierte
+// Log-Zeile je Call (siehe logOktoposHttp). Gibt die rohe Response zurueck;
+// Status-/JSON-Auswertung bleibt beim Aufrufer. Loggt NIE Header/Key/Body/PII.
+async function oktoposFetch({method, baseUrl, path, apiKey, body, fn, requestId}) {
+  const headers = {"X-API-KEY": apiKey, "Accept": "application/json"};
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OKTOPOS_FETCH_TIMEOUT_MS);
+  const startedAt = Date.now();
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    logOktoposHttp({
+      fn, requestId, method, path,
+      status: null, ok: false, durationMs: Date.now() - startedAt, error,
+    });
+    throw new HttpsError(
+      "unavailable", `OktoPOS nicht erreichbar: ${truncateError(error)}`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  logOktoposHttp({
+    fn, requestId, method, path,
+    status: response.status, ok: response.ok, durationMs: Date.now() - startedAt,
+  });
+  return response;
+}
+
+// Severity nach Status: 403 (Key abgelehnt) + Netzwerk-/Timeout-Fehler = error
+// (operativ kritisch, alarmfaehig); erwartete Idempotenz-Codes 404/409 + ok =
+// info; sonstige 4xx/5xx = warn. Loggt nur den (entschaerften) Pfad, nie
+// Query-/Body-Werte und nie den API-Key.
+function logOktoposHttp({fn, requestId, method, path, status, ok, durationMs,
+  error}) {
+  const entry = {
+    event: "oktopos_http",
+    fn: fn || null,
+    requestId: requestId || null,
+    method,
+    path: redactOktoposPath(path),
+    status: status == null ? null : status,
+    ok: ok === true,
+    durationMs,
+  };
+  if (error) {
+    entry.error = truncateError(error);
+  }
+  if (status === 403 || (status == null && error)) {
+    logger.error("oktopos_http", entry);
+  } else if (status != null && status >= 400 &&
+      status !== 404 && status !== 409) {
+    logger.warn("oktopos_http", entry);
+  } else {
+    logger.info("oktopos_http", entry);
+  }
+}
+
+// Dynamische Pfad-Segmente zu Platzhaltern normalisieren: haelt die Log-
+// Kardinalitaet niedrig und verhindert, dass IDs/Datumswerte ins Log lecken.
+// Statische Pfade (/articles, /customers, ...) bleiben unveraendert.
+function redactOktoposPath(path) {
+  return stringOrEmpty(path)
+    .replace(/\/from\/[^/]+/, "/from/:from")
+    .replace(/\/until\/[^/]+/, "/until/:until")
+    .replace(/\/page\/[^/]+/, "/page/:page")
+    .replace(/\/size\/[^/]+/, "/size/:size")
+    .replace(/\/cash-register\/[^/]+/, "/cash-register/:cr")
+    .replace(
+      /\/findByExternalIdentifier\/[^/]+/,
+      "/findByExternalIdentifier/:externalId",
+    );
+}
+
+async function fetchOktoposTransactionsPage({
+  baseUrl, apiKey, fromIso, untilIso, page, size, cashRegisterId, fn, requestId,
+}) {
+  // Path-Parameter (KEINE Query-Parameter); cash-register-Segment nur wenn
+  // gesetzt (sonst ganzes Segment weglassen, gemaess Spec).
+  let path = "/transactions" +
+    `/from/${encodeURIComponent(fromIso)}` +
+    `/until/${encodeURIComponent(untilIso)}` +
+    `/page/${page}` +
+    `/size/${size}`;
+  if (cashRegisterId != null) {
+    path += `/cash-register/${cashRegisterId}`;
+  }
+
+  const response = await oktoposFetch({
+    method: "GET", baseUrl, path, apiKey, fn, requestId,
+  });
+
+  if (response.status === 403) {
+    throw new HttpsError(
+      "permission-denied",
+      "OktoPOS lehnte den API-Key ab (403). Schluessel/Freischaltung pruefen.",
+    );
+  }
+  if (!response.ok) {
+    throw new HttpsError("unavailable", `OktoPOS-Fehler HTTP ${response.status}.`);
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new HttpsError("internal", "OktoPOS-Antwort war kein gueltiges JSON.");
+  }
+  // Antwort ist ein TransactionResponse-Objekt ODER ein Array davon
+  // (z.B. ein Wrapper je Kasse). Beide Formen normalisieren.
+  return Array.isArray(payload) ? payload : [payload];
+}
+
+function parseOktoposDate(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  // 'YYYY-MM-DD' (Geschaeftstag) und ISO-DateTime akzeptieren.
+  const d = new Date(s.length === 10 ? `${s}T00:00:00` : s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function parseOktoposTxDate(tx) {
+  return parseOktoposDate(tx?.transactionDate?.timestamp) ||
+    parseOktoposDate(tx?.businessDay);
+}
+
+function toOktoposDateTime(date) {
+  // OktoPOS-Beispielformat: 2021-12-01T12:00:00 (ohne Millis/Zone).
+  return date.toISOString().slice(0, 19);
+}
+
+function daysAgo(base, days) {
+  return new Date(base.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+function buildOktoposMovementId(cashRegisterId, referenceNumber, lineId) {
+  const raw = stringOrEmpty(referenceNumber);
+  // safeRef ist verlustbehaftet (Sonderzeichen -> "_"), daher wie bei
+  // buildOktoposReceiptId einen kollisionsfreien Hash der ROH-Belegnummer
+  // anhaengen: gleiche Rohnummer = gleiche ID (idempotent), verschiedene
+  // Rohnummern = verschiedene IDs (kein Doppel-/Fehlbuchen beim Re-Pull).
+  const safeRef = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
+  const cr = cashRegisterId == null ? "all" : String(cashRegisterId);
+  return `oktopos-${cr}-${safeRef}-${stableHash([raw]).slice(0, 12)}-${lineId}`;
+}
+
+// Doc-ID eines posReceipts (P0). `referenceNumber` ist nur JE KASSE eindeutig
+// -> mit Kassen-Nr. (oder, falls keine gesetzt, Standort) qualifizieren, sonst
+// Cross-Store-Kollision. Deterministisch = Idempotenz beim Re-Pull (set(merge)).
+// Der lesbare `safeRef` ersetzt Sonderzeichen verlustbehaftet (zwei
+// verschiedene Belegnummern könnten gleich normalisieren) -> ein
+// kollisionsfreier Hash der ROH-Belegnummer wird angehängt; gleiche Rohnummer
+// = gleiche ID (idempotent), verschiedene Rohnummern = verschiedene IDs.
+function buildOktoposReceiptId(cashRegisterId, siteId, referenceNumber) {
+  const raw = stringOrEmpty(referenceNumber);
+  const safeRef = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
+  const scope = cashRegisterId == null
+    ? stringOrEmpty(siteId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || "all"
+    : String(cashRegisterId);
+  return `${scope}-${safeRef}-${stableHash([raw]).slice(0, 12)}`;
+}
+
+// OktoPOS-Geldbetraege kommen je nach Endpoint als Zahl, String ("1,23"/"1.23")
+// oder Money-Objekt ({decimal|amount|value|cents}). Tolerant nach ganzen Cents
+// (Math.round, NICHT truncaten — sonst systematischer 1-Cent-Verlust). null,
+// wenn nicht ermittelbar. FELDNAMEN/Form gegen die OktoPOS-Swagger verifizieren,
+// bevor fachlich (Marge/USt) darauf gebaut wird (P0-Hinweis, Fremddaten).
+function oktoposMoneyToCents(value) {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.round(value * 100) : null;
+  }
+  if (typeof value === "string") {
+    const n = Number(value.replace(/\s/g, "").replace(",", "."));
+    return Number.isFinite(n) ? Math.round(n * 100) : null;
+  }
+  if (typeof value === "object") {
+    const inner = value.decimal ?? value.amount ?? value.value ?? value.gross;
+    if (inner != null && typeof inner !== "object") {
+      return oktoposMoneyToCents(inner);
+    }
+    if (value.cents != null) {
+      const c = Number(value.cents);
+      return Number.isFinite(c) ? Math.round(c) : null;
+    }
+  }
+  return null;
+}
+
+// Belegweite USt-Aufschluesselung (OktoPOS liefert den Satz NUR je Beleg, nicht
+// je Position — LineItem hat kein Steuerfeld). Einheit = ganze Prozent
+// (`ratePercent`, konsistent zu Product.taxRatePercent), Geld in Cents. Tolerant;
+// Feldnamen gegen die Swagger verifizieren.
+function parseOktoposReceiptTaxes(tx) {
+  const raw = asArray(tx?.taxes ?? tx?.receiptTaxes);
+  const out = [];
+  for (const t of raw) {
+    if (!isPlainObject(t)) continue;
+    const rate = Number(t.ratePercent ?? t.rate ?? t.taxRate ?? t.percentage);
+    out.push({
+      ratePercent: Number.isFinite(rate) ? Math.round(rate) : null,
+      netCents: oktoposMoneyToCents(t.net ?? t.netAmount ?? t.netValue),
+      taxCents: oktoposMoneyToCents(t.tax ?? t.taxAmount ?? t.vat),
+      grossCents: oktoposMoneyToCents(t.gross ?? t.grossAmount ?? t.grossValue),
+    });
+  }
+  return out;
+}
+
+// Zahlart-Aufschluesselung des Belegs (bar/Karte/...). Tolerant; method als
+// normalisierter Kleinbuchstaben-Token. Feldnamen gegen die OktoPOS-Swagger
+// verifizieren (P0, Fremddaten) — heute best-effort/optional.
+function parseOktoposPayments(tx) {
+  const raw = asArray(tx?.payments ?? tx?.paymentDetails ?? tx?.tenders);
+  const out = [];
+  for (const p of raw) {
+    if (!isPlainObject(p)) continue;
+    const method = stringOrNull(p.method ?? p.type ?? p.paymentType ?? p.tenderType);
+    out.push({
+      method: method ? method.toLowerCase() : null,
+      amountCents: oktoposMoneyToCents(p.amount ?? p.amountCents ?? p.value ?? p.sum),
+      subType: stringOrNull(p.subType ?? p.subtype ?? p.cardType),
+    });
+  }
+  return out;
+}
+
+function truncateError(error) {
+  return stringOrEmpty(error?.message || error).slice(0, 200);
+}
+
+// ===========================================================================
+// OktoPOS-Kassenanbindung — Artikel/Preise SCHREIBEN (WorkTime -> Kasse, M5)
+// ---------------------------------------------------------------------------
+// Schreibt Artikel-Stammdaten/Preise/Barcodes in die OktoPOS-Kasse (ArticleApi).
+// Gleiche Sicherheits-Eckpunkte wie der Pull (Secret-Key, https, X-API-KEY,
+// admin-only, server-zu-server). Idempotenz über externalReferenceNumber =
+// WorkTime-Produkt-ID: existiert der Artikel schon (HTTP 409 bei POST /articles),
+// wird auf POST /articles/change-prices ausgewichen. Barcodes werden best-effort
+// separat gepflegt (POST /articles/add-barcodes). Kein Schreiben in Firestore.
+// ===========================================================================
+
+// Lädt die Referenz-Tokens (Einheiten + Vertriebskanäle) aus der Kasse, damit
+// die Einstellungs-UI gültige Werte anbieten kann.
+exports.getOktoposLookups = callable(
+  "getOktoposLookups",
+  {region: REGION, secrets: [OKTOPOS_API_KEYS], timeoutSeconds: 60},
+  async (request, {requestId, fn}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    assertAdmin(caller);
+    const orgId = requiredString(request.data?.orgId, "orgId");
+    assertSameOrg(caller, orgId);
+    const siteId = requiredString(request.data?.siteId, "siteId");
+
+    const config = await loadOktoposConfig(orgId);
+    const baseUrl = resolveOktoposBaseUrl(config);
+    const apiKey = resolveOktoposApiKey(OKTOPOS_API_KEYS.value(), siteId);
+
+    const [units, channels] = await Promise.all([
+      fetchOktoposJson(baseUrl, apiKey, "/articles/units", fn, requestId),
+      fetchOktoposJson(
+        baseUrl, apiKey, "/articles/distribution-channels", fn, requestId,
+      ),
+    ]);
+    return {
+      units: normalizeTokenList(units),
+      distributionChannels: normalizeTokenList(channels),
+    };
+  },
+);
+
+// Schreibt (ausgewählte oder alle aktiven) Artikel eines Standorts in die Kasse.
+exports.pushOktoposArticles = callable(
+  "pushOktoposArticles",
+  {region: REGION, secrets: [OKTOPOS_API_KEYS], timeoutSeconds: 300,
+    memory: "256MiB"},
+  async (request, {requestId, fn}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    assertAdmin(caller);
+    const orgId = requiredString(request.data?.orgId, "orgId");
+    assertSameOrg(caller, orgId);
+    const siteId = requiredString(request.data?.siteId, "siteId");
+    const productIds = asStringArray(request.data?.productIds);
+    const dryRun = request.data?.dryRun === true;
+
+    const config = await loadOktoposConfig(orgId);
+    const baseUrl = resolveOktoposBaseUrl(config);
+    const apiKey = resolveOktoposApiKey(OKTOPOS_API_KEYS.value(), siteId);
+
+    const push = isPlainObject(config.push) ? config.push : {};
+    const opts = {
+      distributionChannel: stringOrNull(push.distributionChannel),
+      defaultUnitToken: stringOrNull(push.defaultUnitToken),
+      defaultTaxRate: asInteger(push.defaultTaxRate, 19),
+      cashierCanChangePrice: push.cashierCanChangePrice === true,
+      unitTokenMap: isPlainObject(push.unitTokenMap) ? push.unitTokenMap : {},
+    };
+    if (!opts.distributionChannel) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Kein Vertriebskanal (distributionChannel) in den Kassen-" +
+          "Einstellungen hinterlegt.",
+      );
+    }
+    if (!opts.defaultUnitToken) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Keine Standard-Einheit (defaultUnitToken) in den Kassen-" +
+          "Einstellungen hinterlegt.",
+      );
+    }
+
+    const products = await loadPushProducts(orgId, siteId, productIds);
+    const result = {
+      siteId,
+      total: products.length,
+      created: 0,
+      updated: 0,
+      failed: 0,
+      skipped: 0,
+      dryRun,
+      results: [],
+    };
+
+    for (const product of products) {
+      let outcome;
+      try {
+        outcome = await pushSingleArticle({
+          baseUrl, apiKey, product, opts, dryRun, fn, requestId,
+        });
+      } catch (error) {
+        // 403 (Key abgelehnt) bricht den ganzen Push ab; sonst pro Artikel
+        // protokollieren und weitermachen.
+        if (error instanceof HttpsError && error.code === "permission-denied") {
+          throw error;
+        }
+        outcome = {status: "failed", message: truncateError(error)};
+      }
+      if (outcome.status === "created") result.created += 1;
+      else if (outcome.status === "updated") result.updated += 1;
+      else if (outcome.status === "failed") result.failed += 1;
+      else result.skipped += 1;
+      if (result.results.length < 200) {
+        result.results.push({
+          productId: product.id,
+          name: product.name,
+          status: outcome.status,
+          message: outcome.message || null,
+        });
+      }
+    }
+    // Nur Aggregate loggen, nie result.results (enthaelt Produktnamen).
+    logger.info("oktopos_push_done", {
+      event: "oktopos_push_done",
+      fn,
+      requestId,
+      kind: "articles",
+      siteId,
+      total: result.total,
+      created: result.created,
+      updated: result.updated,
+      failed: result.failed,
+      skipped: result.skipped,
+      dryRun,
+    });
+    return result;
+  },
+);
+
+function resolveOktoposBaseUrl(config) {
+  const baseUrl = stringOrEmpty(config?.baseUrl).trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new HttpsError(
+      "failed-precondition",
+      "OktoPOS ist nicht eingerichtet (baseUrl fehlt im Config-Dokument " +
+        "config/oktoposSync).",
+    );
+  }
+  // TLS-Pflicht: der API-Key darf nie im Klartext ueber http gehen.
+  if (!baseUrl.toLowerCase().startsWith("https://")) {
+    throw new HttpsError("failed-precondition", "OktoPOS baseUrl muss https sein.");
+  }
+  return baseUrl;
+}
+
+function normalizeTokenList(list) {
+  return asArray(list)
+    .map((item) => ({
+      id: Number.isFinite(Number(item?.id)) ? Math.trunc(Number(item.id)) : null,
+      token: stringOrNull(item?.token),
+    }))
+    .filter((item) => item.token);
+}
+
+async function loadPushProducts(orgId, siteId, productIds) {
+  const snap = await organizationCollection(orgId, "products")
+    .where("siteId", "==", siteId)
+    .get();
+  const wanted = productIds.length > 0 ? new Set(productIds) : null;
+  const products = [];
+  for (const doc of snap.docs) {
+    if (wanted && !wanted.has(doc.id)) {
+      continue;
+    }
+    const data = doc.data() || {};
+    // Ohne explizite Auswahl nur aktive Artikel pushen.
+    if (!wanted && data.isActive === false) {
+      continue;
+    }
+    products.push({
+      id: doc.id,
+      name: stringOrNull(data.name),
+      sku: stringOrNull(data.sku),
+      barcode: stringOrNull(data.barcode),
+      category: stringOrNull(data.category),
+      unit: stringOrNull(data.unit),
+      sellingPriceCents: data.sellingPriceCents,
+      taxRatePercent: data.taxRatePercent,
+    });
+  }
+  return products;
+}
+
+async function pushSingleArticle(
+  {baseUrl, apiKey, product, opts, dryRun, fn, requestId},
+) {
+  const sellingCents = asInteger(product.sellingPriceCents, -1);
+  if (sellingCents < 0) {
+    return {status: "skipped", message: "kein Verkaufspreis"};
+  }
+  if (!stringOrNull(product.name)) {
+    return {status: "skipped", message: "kein Name"};
+  }
+  const unitToken = stringOrNull(opts.unitTokenMap[product.unit]) ||
+    opts.defaultUnitToken;
+  if (!unitToken) {
+    return {status: "failed", message: "keine Einheit"};
+  }
+  if (dryRun) {
+    return {status: "skipped", message: "dry-run"};
+  }
+
+  const body = buildOktoposArticleBody(product, opts, unitToken, sellingCents);
+  const createRes = await postOktoposJson(
+    baseUrl, apiKey, "/articles", body, fn, requestId,
+  );
+  if (createRes.status === 403) {
+    throw new HttpsError(
+      "permission-denied",
+      "OktoPOS lehnte den API-Key ab (403). Freischaltung/Schluessel pruefen.",
+    );
+  }
+  if (createRes.ok) {
+    await addBarcodesBestEffort(baseUrl, apiKey, product, fn, requestId);
+    return {status: "created"};
+  }
+  if (createRes.status === 409) {
+    // Artikel existiert bereits -> nur Preise aktualisieren.
+    const changeRes = await postOktoposJson(
+      baseUrl,
+      apiKey,
+      "/articles/change-prices",
+      {externalReferenceNumber: product.id, price: body.price},
+      fn,
+      requestId,
+    );
+    if (changeRes.status === 403) {
+      throw new HttpsError("permission-denied", "OktoPOS lehnte den API-Key ab (403).");
+    }
+    if (changeRes.ok) {
+      await addBarcodesBestEffort(baseUrl, apiKey, product, fn, requestId);
+      return {status: "updated"};
+    }
+    return {status: "failed", message: `Preisaenderung HTTP ${changeRes.status}`};
+  }
+  return {status: "failed", message: `Anlegen HTTP ${createRes.status}`};
+}
+
+function buildOktoposArticleBody(product, opts, unitToken, sellingCents) {
+  const taxRate = Number.isFinite(Number(product.taxRatePercent))
+    ? Math.trunc(Number(product.taxRatePercent))
+    : opts.defaultTaxRate;
+  const body = {
+    externalReferenceNumber: product.id,
+    description: product.name,
+    unit: {token: unitToken},
+    price: [
+      {
+        distributionChannel: {token: opts.distributionChannel},
+        price: sellingCents / 100,
+        taxRate: Number(taxRate).toFixed(2),
+      },
+    ],
+    cashierCanChangePrice: opts.cashierCanChangePrice,
+  };
+  if (stringOrNull(product.sku)) {
+    body.materialNumber = product.sku;
+  }
+  if (stringOrNull(product.category)) {
+    body.group = {token: product.category};
+  }
+  return body;
+}
+
+async function addBarcodesBestEffort(baseUrl, apiKey, product, fn, requestId) {
+  const barcode = stringOrNull(product.barcode);
+  if (!barcode) {
+    return;
+  }
+  try {
+    await postOktoposJson(baseUrl, apiKey, "/articles/add-barcodes", {
+      externalReferenceNumber: product.id,
+      barcodes: [{value: barcode, crate: false}],
+      forceReuse: true,
+    }, fn, requestId);
+  } catch (error) {
+    // Barcode-Pflege ist best-effort; der Artikel selbst ist schon geschrieben.
+    logger.warn("oktopos_add_barcodes_failed", {
+      event: "oktopos_add_barcodes_failed",
+      fn: fn || "pushOktoposArticles",
+      requestId: requestId || null,
+      productId: product.id,
+      error: truncateError(error),
+    });
+  }
+}
+
+async function fetchOktoposJson(baseUrl, apiKey, path, fn, requestId) {
+  const response = await oktoposFetch({
+    method: "GET", baseUrl, path, apiKey, fn, requestId,
+  });
+  if (response.status === 403) {
+    throw new HttpsError("permission-denied", "OktoPOS lehnte den API-Key ab (403).");
+  }
+  if (!response.ok) {
+    throw new HttpsError("unavailable", `OktoPOS-Fehler HTTP ${response.status}.`);
+  }
+  try {
+    return await response.json();
+  } catch (error) {
+    throw new HttpsError("internal", "OktoPOS-Antwort war kein gueltiges JSON.");
+  }
+}
+
+async function postOktoposJson(baseUrl, apiKey, path, body, fn, requestId) {
+  return oktoposFetch({
+    method: "POST", baseUrl, path, apiKey, body, fn, requestId,
+  });
+}
+
+async function getOktoposRaw(baseUrl, apiKey, path, fn, requestId) {
+  return oktoposFetch({
+    method: "GET", baseUrl, path, apiKey, fn, requestId,
+  });
+}
+
+// ===========================================================================
+// OktoPOS-Kassenanbindung — Kunden-Import (WorkTime Contacts -> Kasse, M6a)
+// ---------------------------------------------------------------------------
+// Schreibt Kunden-Kontakte (ContactType.customer) als OktoPOS-Customer in die
+// Kasse (CustomerApi). Gleiche Sicherheits-Eckpunkte wie Pull/Push. Die
+// CustomerApi hat KEINEN Update-Endpunkt, daher idempotent über
+// externalIdentifier = WorkTime-Contact-ID: zuerst
+// GET /customers/findByExternalIdentifier (404/409 = unbekannt) und nur dann
+// POST /customers (anlegen). Bereits vorhandene Kunden werden übersprungen.
+// (Bestell-Import/OrderApi bewusst NICHT umgesetzt — siehe plan-Datei: ein
+// stationärer Kiosk hat keine Quelldaten für pickupToken/pickupTime/taxRateId.)
+// ===========================================================================
+
+exports.pushOktoposCustomers = callable(
+  "pushOktoposCustomers",
+  {region: REGION, secrets: [OKTOPOS_API_KEYS], timeoutSeconds: 300,
+    memory: "256MiB"},
+  async (request, {requestId, fn}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    assertAdmin(caller);
+    const orgId = requiredString(request.data?.orgId, "orgId");
+    assertSameOrg(caller, orgId);
+    const siteId = requiredString(request.data?.siteId, "siteId");
+    const contactIds = asStringArray(request.data?.contactIds);
+    const dryRun = request.data?.dryRun === true;
+
+    const config = await loadOktoposConfig(orgId);
+    const baseUrl = resolveOktoposBaseUrl(config);
+    const apiKey = resolveOktoposApiKey(OKTOPOS_API_KEYS.value(), siteId);
+    const groupName = stringOrNull(config.customerGroupName) || "Stammkunde";
+
+    const contacts = await loadPushContacts(orgId, contactIds);
+    const result = {
+      total: contacts.length,
+      created: 0,
+      skipped: 0,
+      failed: 0,
+      dryRun,
+      results: [],
+    };
+    for (const contact of contacts) {
+      let outcome;
+      try {
+        outcome = await pushSingleCustomer({
+          baseUrl, apiKey, contact, groupName, dryRun, fn, requestId,
+        });
+      } catch (error) {
+        if (error instanceof HttpsError && error.code === "permission-denied") {
+          throw error;
+        }
+        outcome = {status: "failed", message: truncateError(error)};
+      }
+      if (outcome.status === "created") result.created += 1;
+      else if (outcome.status === "failed") result.failed += 1;
+      else result.skipped += 1;
+      if (result.results.length < 200) {
+        result.results.push({
+          contactId: contact.id,
+          name: contact.name,
+          status: outcome.status,
+          message: outcome.message || null,
+        });
+      }
+    }
+    // Nur Aggregate loggen, nie result.results (enthaelt Kundennamen/PII).
+    logger.info("oktopos_push_done", {
+      event: "oktopos_push_done",
+      fn,
+      requestId,
+      kind: "customers",
+      total: result.total,
+      created: result.created,
+      skipped: result.skipped,
+      failed: result.failed,
+      dryRun,
+    });
+    return result;
+  },
+);
+
+async function loadPushContacts(orgId, contactIds) {
+  const snap = await organizationCollection(orgId, "contacts")
+    .where("type", "==", "customer")
+    .get();
+  const wanted = contactIds.length > 0 ? new Set(contactIds) : null;
+  const contacts = [];
+  for (const doc of snap.docs) {
+    if (wanted && !wanted.has(doc.id)) {
+      continue;
+    }
+    const data = doc.data() || {};
+    if (!wanted && data.isActive === false) {
+      continue;
+    }
+    contacts.push({
+      id: doc.id,
+      name: stringOrNull(data.name),
+      email: stringOrNull(data.email),
+      phone: stringOrNull(data.phone),
+      mobile: stringOrNull(data.mobile),
+      street: stringOrNull(data.street),
+      postalCode: stringOrNull(data.postalCode),
+      city: stringOrNull(data.city),
+      taxId: stringOrNull(data.taxId),
+      customerNumber: stringOrNull(data.customerNumber),
+      notes: stringOrNull(data.notes),
+    });
+  }
+  return contacts;
+}
+
+async function pushSingleCustomer(
+  {baseUrl, apiKey, contact, groupName, dryRun, fn, requestId},
+) {
+  if (!stringOrNull(contact.name)) {
+    return {status: "skipped", message: "kein Name"};
+  }
+  if (dryRun) {
+    return {status: "skipped", message: "dry-run"};
+  }
+  // Idempotenz: existiert der Kunde bereits (per externalIdentifier)? Die
+  // CustomerApi kennt kein Update -> vorhandene Kunden werden übersprungen.
+  const lookup = await getOktoposRaw(
+    baseUrl,
+    apiKey,
+    `/customers/findByExternalIdentifier/${encodeURIComponent(contact.id)}`,
+    fn,
+    requestId,
+  );
+  if (lookup.status === 403) {
+    throw new HttpsError("permission-denied", "OktoPOS lehnte den API-Key ab (403).");
+  }
+  if (lookup.ok) {
+    return {status: "skipped", message: "existiert bereits"};
+  }
+  // 404/409 = unbekannt -> anlegen; andere Codes sind echte Fehler.
+  if (lookup.status !== 404 && lookup.status !== 409) {
+    return {status: "failed", message: `Lookup HTTP ${lookup.status}`};
+  }
+  const body = buildOktoposCustomerBody(contact, groupName);
+  const createRes = await postOktoposJson(
+    baseUrl, apiKey, "/customers", body, fn, requestId,
+  );
+  if (createRes.status === 403) {
+    throw new HttpsError("permission-denied", "OktoPOS lehnte den API-Key ab (403).");
+  }
+  if (createRes.ok) {
+    return {status: "created"};
+  }
+  return {status: "failed", message: `Anlegen HTTP ${createRes.status}`};
+}
+
+function buildOktoposCustomerBody(contact, groupName) {
+  const name = splitPersonName(contact.name);
+  const person = {name};
+  if (stringOrNull(contact.email)) {
+    person.email = contact.email;
+  }
+  // vatRegNo max. 15 Zeichen — sonst weglassen.
+  if (stringOrNull(contact.taxId) && contact.taxId.length <= 15) {
+    person.vatRegNo = contact.taxId;
+  }
+  const phones = [];
+  if (stringOrNull(contact.phone)) {
+    phones.push({type: "home", value: contact.phone});
+  }
+  if (stringOrNull(contact.mobile)) {
+    phones.push({type: "mobile", value: contact.mobile});
+  }
+  if (phones.length > 0) {
+    person.phone = phones.slice(0, 2);
+  }
+  const address = {};
+  if (stringOrNull(contact.street)) {
+    address.streetAddress = contact.street;
+  }
+  if (stringOrNull(contact.postalCode)) {
+    address.postalCode = contact.postalCode;
+  }
+  if (stringOrNull(contact.city)) {
+    address.addressLocality = contact.city;
+  }
+  if (Object.keys(address).length > 0) {
+    address.addressCountry = "DE";
+    person.address = address;
+  }
+  const body = {
+    externalIdentifier: contact.id,
+    groups: [{name: groupName}],
+    person,
+  };
+  const comments = [];
+  if (stringOrNull(contact.customerNumber)) {
+    comments.push({type: "INTERNAL", value: `Kundennr.: ${contact.customerNumber}`});
+  }
+  if (stringOrNull(contact.notes)) {
+    comments.push({type: "INTERNAL", value: contact.notes});
+  }
+  if (comments.length > 0) {
+    body.comments = comments;
+  }
+  return body;
+}
+
+// WorkTime führt einen einzelnen Namen; OktoPOS verlangt given- UND familyName.
+// Letztes Wort = Nachname, Rest = Vorname; Einzelwort (z.B. Firmenname) in beide.
+function splitPersonName(name) {
+  const trimmed = stringOrEmpty(name).trim().replace(/\s+/g, " ");
+  if (!trimmed) {
+    return {givenName: "-", familyName: "-"};
+  }
+  const parts = trimmed.split(" ");
+  if (parts.length === 1) {
+    return {givenName: parts[0], familyName: parts[0]};
+  }
+  return {
+    givenName: parts.slice(0, -1).join(" "),
+    familyName: parts[parts.length - 1],
+  };
 }

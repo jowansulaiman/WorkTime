@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
 import '../core/compliance_rule_set_utils.dart';
+import '../core/employment_contract_resolver.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/compliance_rule_set.dart';
@@ -256,13 +257,54 @@ class WorkProvider extends ChangeNotifier {
   /// (`isActiveOn`), nicht `now()`. Ohne aktiven Vertrag (oder hourlyRate 0)
   /// greift der bisherige `UserSettings.hourlyRate` als Fallback, damit nie
   /// still 0 entsteht.
-  double get totalWageThisMonth => _entries.fold(
-      0.0, (sum, entry) => sum + entry.workedHours * _hourlyRateOn(entry.date));
+  /// Brutto-**Selbstschätzung** des Monats (Richtwert, MA-Sicht). L1: bei einem
+  /// Festgehalts-Vertrag (`salaryKind==monthly` mit positivem `monthlyGrossCents`)
+  /// das Festgehalt statt still 0/Stunden×0 — sonst Stunden × Vertrags-/
+  /// Settings-Stundensatz.
+  double get totalWageThisMonth {
+    final festgehaltCents = _monthlySalaryCentsThisMonth();
+    if (festgehaltCents != null && festgehaltCents > 0) {
+      return festgehaltCents / 100.0;
+    }
+    return _entries.fold(
+        0.0, (sum, entry) => sum + entry.workedHours * _hourlyRateOn(entry.date));
+  }
+
+  /// Festgehalt (Cent) des aktuellen Nutzers für den angezeigten Monat, falls der
+  /// aktive Vertrag ein Monatsgehalt ist; sonst `null` (→ Stundenlohn-Schätzung).
+  int? _monthlySalaryCentsThisMonth() {
+    final date = _entries.isNotEmpty ? _entries.first.date : DateTime.now();
+    final contract = _activeContractForCurrentUser(date);
+    if (contract == null || contract.salaryKind != SalaryKind.monthly) {
+      return null;
+    }
+    return contract.monthlyGrossCents;
+  }
 
   double get overtimeThisMonth => _entries.fold(0.0, (sum, entry) {
         final diff = entry.workedHours - _dailyHoursOn(entry.date);
         return sum + (diff > 0 ? diff : 0);
       });
+
+  /// Z4: Tagessoll-Summe des Monats (Vertrag zuerst je Erfassungstag) — konsistent
+  /// zu [overtimeThisMonth] und **nicht** mehr aus dem selbstgemeldeten
+  /// `settings.dailyHours`. Ohne Vertrag greift der Settings-Fallback in
+  /// [_dailyHoursOn] (kein Regress).
+  double get targetHoursThisMonth {
+    final seenDays = <String>{};
+    var sum = 0.0;
+    for (final entry in _entries) {
+      final key = '${entry.date.year}-${entry.date.month}-${entry.date.day}';
+      if (seenDays.add(key)) {
+        sum += _dailyHoursOn(entry.date);
+      }
+    }
+    return sum;
+  }
+
+  /// Heute geltendes Tagessoll des aktuellen Nutzers (Vertrag zuerst) — für
+  /// Anzeige-Schwellen (z.B. Statistik-Ampel).
+  double get currentDailyHours => _dailyHoursOn(DateTime.now());
 
   /// Stundensatz, der am [date] für den aktuellen Nutzer gilt: Vertrag zuerst,
   /// sonst `UserSettings`-Fallback (nie still 0).
@@ -283,19 +325,17 @@ class WorkProvider extends ChangeNotifier {
     return settings.dailyHours;
   }
 
-  /// Am [date] gültiger Vertrag des aktuellen Nutzers (neuester `validFrom`
-  /// gewinnt bei Überlappung). Liest die bereits via PUSH vorliegende
-  /// `_contracts`-Kopie — **keine neue Provider→Provider-Kante** (H-B1).
+  /// Am [date] gültiger Vertrag des aktuellen Nutzers über den zentralen
+  /// **F1**-Resolver ([EmploymentContractResolver.activeOn], neuester
+  /// `validFrom` gewinnt, Fallback auf jüngsten Vertrag — identisch zum
+  /// Personal-Modul). Liest die bereits via PUSH vorliegende `_contracts`-Kopie
+  /// — **keine neue Provider→Provider-Kante** (H-B1).
   EmploymentContract? _activeContractForCurrentUser(DateTime date) {
     final uid = _currentUser?.uid;
     if (uid == null) {
       return null;
     }
-    final matches = _contracts
-        .where((c) => c.userId == uid && c.isActiveOn(date))
-        .toList(growable: false)
-      ..sort((a, b) => b.validFrom.compareTo(a.validFrom));
-    return matches.isEmpty ? null : matches.first;
+    return EmploymentContractResolver.activeOn(_contracts, uid, date);
   }
 
   String? _lastSessionKey;
@@ -340,6 +380,16 @@ class WorkProvider extends ChangeNotifier {
         _currentUser = user;
         if (_reportUser?.uid == user.uid) {
           _reportUser = user;
+        }
+        // #76: Im Hybrid-Modus geänderte UserSettings desselben Nutzers auch in
+        // den lokalen Cache spiegeln, damit ein Offline-Start nicht mit veralteten
+        // Settings (Stundensatz/Tagessoll) lädt.
+        if (usesHybridStorage) {
+          final scope = _localScope;
+          if (scope != null) {
+            unawaited(
+                DatabaseService.saveLocalUserSettings(user.settings, scope: scope));
+          }
         }
       }
       _ensureClockAvailabilityWatcher();
@@ -1108,8 +1158,13 @@ class WorkProvider extends ChangeNotifier {
     _isClockBusy = true;
     try {
       final user = _currentUser;
-      if (_clockInTime != null || user == null || !user.canEditTimeEntries) {
-        return;
+      if (_clockInTime != null) {
+        return; // bereits eingestempelt — idempotenter No-Op
+      }
+      if (user == null || !user.canEditTimeEntries) {
+        throw StateError(
+          'Keine Berechtigung zum Erfassen von Arbeitszeiten.',
+        );
       }
       final overlappingEntry = await findOverlappingEntryForRange(
         start: DateTime.now(),
@@ -1172,10 +1227,12 @@ class WorkProvider extends ChangeNotifier {
     try {
       final user = _currentUser;
       if ((!hasActiveClockSession && _clockInTime == null) || user == null) {
-        return;
+        return; // keine laufende Sitzung — idempotenter No-Op
       }
       if (!user.canEditTimeEntries) {
-        return;
+        throw StateError(
+          'Keine Berechtigung zum Erfassen von Arbeitszeiten.',
+        );
       }
 
       final activeEntry = _clockInTime == null
@@ -1289,7 +1346,9 @@ class WorkProvider extends ChangeNotifier {
     required String reason,
   }) async {
     final user = _currentUser;
-    if (user == null || !user.canEditTimeEntries) return;
+    if (user == null || !user.canEditTimeEntries) {
+      throw StateError('Keine Berechtigung zum Korrigieren von Zeiteintraegen.');
+    }
     final existingEntry = [
       ..._entries,
       ..._reportEntries,
@@ -2023,7 +2082,11 @@ class WorkProvider extends ChangeNotifier {
         await schedule.completeShiftForEntry(shiftId);
       }
     } catch (e) {
+      // #75: zusätzlich den Fehlerbereich setzen, damit ein wieder gesunder
+      // Stream die Meldung über `_markStreamHealthy('Schichtabschluss')` löschen
+      // kann und der Abschluss-Fehler nicht dauerhaft hängen bleibt.
       _errorMessage = 'Fehler beim Abschluss der Schicht: $e';
+      _errorArea = 'Schichtabschluss';
       _safeNotify();
     }
   }

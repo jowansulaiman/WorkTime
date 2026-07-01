@@ -25,6 +25,12 @@ abstract final class RedesignFlags {
   /// (`organizations/{orgId}/config/appFlags` → `featureFlags.redesign_v2`).
   static const String flagKey = 'redesign_v2';
 
+  /// Default, wenn die org-Config das Flag NICHT explizit setzt. Seit dem
+  /// V2-Cutover ist Signal-Teal (V2) der Auslieferungsstandard → `true`.
+  /// Eine Org kann durch explizites `redesign_v2: false` weiterhin bei V1
+  /// bleiben. Zentrale Quelle für alle `isEnabled(flagKey, fallback: …)`-Reads.
+  static const bool defaultEnabled = true;
+
   /// Lokaler Dev-/Test-Override. Gewinnt immer.
   static bool get devOverride => AppConfig.redesignV2Override;
 
@@ -42,7 +48,8 @@ abstract final class RedesignFlags {
   /// geladene Remote-Config ODER der Laufzeit-Schalter aus [ThemeProvider])
   /// loest ein Rebuild aus. Prioritaet: Laufzeit-Override → Dev-Define →
   /// org-Flag. Im Offline-/Demo-Modus liefert der FeatureFlagProvider nichts
-  /// (fallback `false`) ⇒ deterministisch V1, ausser Override/Dev-Define.
+  /// (fallback [defaultEnabled] = `true`) ⇒ V2, ausser die Org setzt explizit
+  /// `redesign_v2: false` oder ein Override/Dev-Define greift.
   static bool isOn(BuildContext context) {
     final override = context.watch<ThemeProvider>().redesignV2Override;
     if (override != null) {
@@ -52,7 +59,7 @@ abstract final class RedesignFlags {
       return true;
     }
     final flags = context.watch<FeatureFlagProvider>();
-    return flags.isEnabled(flagKey, fallback: false);
+    return flags.isEnabled(flagKey, fallback: defaultEnabled);
   }
 
   /// Wie [isOn], aber ohne Subscription (`context.read`) — fuer einmalige
@@ -67,6 +74,6 @@ abstract final class RedesignFlags {
     }
     return context
         .read<FeatureFlagProvider>()
-        .isEnabled(flagKey, fallback: false);
+        .isEnabled(flagKey, fallback: defaultEnabled);
   }
 }

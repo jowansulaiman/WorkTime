@@ -132,6 +132,57 @@ class AppConfig {
     defaultValue: 'europe-west3',
   );
 
+  /// Schaltet die OktoPOS-Kassenanbindung in der UI frei (Admin-Aktion
+  /// „Verkäufe aus Kasse übernehmen"). Default aus, bis die Schnittstelle beim
+  /// Hersteller freigeschaltet, der Secret-Key (`OKTOPOS_API_KEYS`) gesetzt und
+  /// das Config-Dokument `config/oktoposSync` (baseUrl + cashRegisterId je
+  /// Standort) gepflegt ist. Per `--dart-define=APP_OKTOPOS_ENABLED=true` an.
+  /// **Kein Secret** — nur ein Sichtbarkeits-Schalter; API-Key liegt
+  /// ausschließlich serverseitig im Secret Manager.
+  static const bool oktoposEnabled = bool.fromEnvironment(
+    'APP_OKTOPOS_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Schaltet mobile Push-Benachrichtigungen (FCM) frei. Default aus, bis der
+  /// APNs-Auth-Key (iOS), die sendenden Cloud Functions und (für Web, M6) der
+  /// VAPID-Key bereitstehen — also bis zum Blaze-Cutover. Per
+  /// `--dart-define=APP_PUSH_ENABLED=true` an. **Kein Secret** — nur ein
+  /// Sichtbarkeits-/Aktivierungs-Schalter. Die FCM-Init ist zusätzlich gegen
+  /// `DefaultFirebaseOptions.isConfigured` gegated → No-op im
+  /// APP_DISABLE_AUTH-/Offline-Demo-Modus (kein Firebase ⇒ kein Messaging).
+  static const bool pushEnabled = bool.fromEnvironment(
+    'APP_PUSH_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Schaltet den **Arbeitsmodus / Laden-Tablet (Kiosk)** frei. Ein dediziertes,
+  /// fest im Laden installiertes Tablet läuft mit `--dart-define=APP_KIOSK_ENABLED=true`
+  /// → der Gate-Redirect lenkt es auf das Vollbild-Board (`/arbeitsmodus`) und
+  /// die normale Shell ist nicht erreichbar. **Kein Secret** — nur ein
+  /// Geräte-/Build-Schalter. Default aus (normale App). In Increment 0 offline
+  /// testbar (zusammen mit `APP_DISABLE_AUTH`); die server-geprüfte PIN folgt.
+  static const bool kioskModeEnabled = bool.fromEnvironment(
+    'APP_KIOSK_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Fester Laden (Standort-`siteId`), an den das Kiosk-Tablet gebunden ist
+  /// (E2: „fest pro Laden"). Bestimmt die Filterung von Kundenwünschen,
+  /// Kühlschrank-Alarmen und Laden-To-Dos. Leer ⇒ erster verfügbarer Standort
+  /// (Demo/Increment 0). Per `--dart-define=APP_KIOSK_SITE_ID=<siteId>`.
+  static const String kioskSiteId = String.fromEnvironment(
+    'APP_KIOSK_SITE_ID',
+  );
+
+  /// Web-Push-Zertifikat (VAPID public key) aus Firebase-Console → Cloud
+  /// Messaging → Web Push certificates. NUR für Web nötig
+  /// (`getToken(vapidKey:)`); leer ⇒ es wird kein Web-Token angefordert
+  /// (mobiler Push bleibt davon unberührt). M6 (Stretch).
+  static const String webPushVapidKey = String.fromEnvironment(
+    'APP_WEB_PUSH_VAPID_KEY',
+  );
+
   /// Build-Nummer dieses Binaries (no-feature-flags-force-update). Wird von der
   /// Release-Pipeline via `--dart-define=APP_BUILD_NUMBER=<github.run_number>`
   /// gesetzt; lokale/Dev-Builds bleiben bei 0 und werden NIE per Force-Update

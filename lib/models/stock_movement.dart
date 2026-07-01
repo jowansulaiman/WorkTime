@@ -19,6 +19,11 @@ enum StockMovementType {
 
   /// Umlagerung zwischen zwei Standorten (gepaart: Abgang @A + Eingang @B).
   transfer,
+
+  /// Nachfuellen des Verkaufs-Kuehlschranks aus dem Lager. Rein informativ —
+  /// aendert den Gesamtbestand (currentStock) NICHT, nur Product.fridgeStock.
+  /// Darf nicht in Schwund/Warenwert/Velocity einfliessen.
+  fridgeRefill,
 }
 
 extension StockMovementTypeX on StockMovementType {
@@ -28,6 +33,7 @@ extension StockMovementTypeX on StockMovementType {
         StockMovementType.adjustment => 'adjustment',
         StockMovementType.stocktake => 'stocktake',
         StockMovementType.transfer => 'transfer',
+        StockMovementType.fridgeRefill => 'fridge_refill',
       };
 
   String get label => switch (this) {
@@ -36,6 +42,7 @@ extension StockMovementTypeX on StockMovementType {
         StockMovementType.adjustment => 'Korrektur',
         StockMovementType.stocktake => 'Inventur',
         StockMovementType.transfer => 'Umlagerung',
+        StockMovementType.fridgeRefill => 'Kühlschrank nachgefüllt',
       };
 
   static StockMovementType fromValue(String? value) => switch (value) {
@@ -43,6 +50,7 @@ extension StockMovementTypeX on StockMovementType {
         'issue' => StockMovementType.issue,
         'stocktake' => StockMovementType.stocktake,
         'transfer' => StockMovementType.transfer,
+        'fridge_refill' => StockMovementType.fridgeRefill,
         _ => StockMovementType.adjustment,
       };
 }
@@ -60,6 +68,8 @@ class StockMovement {
     this.balanceAfter,
     this.reason,
     this.relatedOrderId,
+    this.source,
+    this.externalRef,
     this.createdByUid,
     this.createdAt,
   });
@@ -78,8 +88,23 @@ class StockMovement {
   final int? balanceAfter;
   final String? reason;
   final String? relatedOrderId;
+
+  /// Herkunft der Buchung. `null`/`'manual'` = in der App erzeugt, `'oktopos'` =
+  /// aus einer Kassen-Verkaufsbuchung übernommen (serverseitig per Cloud
+  /// Function, umgeht die Client-Rules). Client-seitige Writes dürfen `source`
+  /// NICHT auf `'oktopos'` setzen (Rules-Constraint, gegen Audit-Spoofing).
+  final String? source;
+
+  /// Externe Referenz der Quelle, z.B. die OktoPOS-Belegnummer
+  /// (`Transaction.referenceNumber`). Macht eine importierte Bewegung im Beleg
+  /// nachvollziehbar; zusammen mit der deterministischen Doc-ID Idempotenz-Anker.
+  final String? externalRef;
+
   final String? createdByUid;
   final DateTime? createdAt;
+
+  /// True, wenn die Bewegung aus dem Kassensystem (OktoPOS) übernommen wurde.
+  bool get isFromPos => source == 'oktopos';
 
   factory StockMovement.fromFirestore(String id, Map<String, dynamic> map) {
     return StockMovement(
@@ -93,6 +118,8 @@ class StockMovement {
       balanceAfter: parse.toInt(map['balanceAfter']),
       reason: map['reason'] as String?,
       relatedOrderId: map['relatedOrderId'] as String?,
+      source: map['source'] as String?,
+      externalRef: map['externalRef'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
     );
@@ -110,6 +137,8 @@ class StockMovement {
       balanceAfter: parse.toInt(map['balance_after']),
       reason: map['reason'] as String?,
       relatedOrderId: map['related_order_id'] as String?,
+      source: map['source'] as String?,
+      externalRef: map['external_ref'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
     );
@@ -126,6 +155,8 @@ class StockMovement {
       'balanceAfter': balanceAfter,
       'reason': _trimmedOrNull(reason),
       'relatedOrderId': _trimmedOrNull(relatedOrderId),
+      'source': _trimmedOrNull(source),
+      'externalRef': _trimmedOrNull(externalRef),
       'createdByUid': createdByUid,
       'createdAt': FieldValue.serverTimestamp(),
     };
@@ -143,6 +174,8 @@ class StockMovement {
       'balance_after': balanceAfter,
       'reason': reason,
       'related_order_id': relatedOrderId,
+      'source': source,
+      'external_ref': externalRef,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
     };
@@ -159,6 +192,8 @@ class StockMovement {
     int? balanceAfter,
     String? reason,
     String? relatedOrderId,
+    String? source,
+    String? externalRef,
     String? createdByUid,
     DateTime? createdAt,
   }) {
@@ -173,6 +208,8 @@ class StockMovement {
       balanceAfter: balanceAfter ?? this.balanceAfter,
       reason: reason ?? this.reason,
       relatedOrderId: relatedOrderId ?? this.relatedOrderId,
+      source: source ?? this.source,
+      externalRef: externalRef ?? this.externalRef,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
     );

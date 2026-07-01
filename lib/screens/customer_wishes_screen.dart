@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_config.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
@@ -76,6 +77,24 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
         appBar: appBar,
         body: const Center(
           child: Text('Keine Berechtigung für die Kundenwünsche.'),
+        ),
+      );
+    }
+
+    // Kundenwünsche sind reine Cloud-Daten (öffentlicher /wunsch-Schreibpfad).
+    // Im Demo-/Offline-Modus ist keine Firebase-App initialisiert → ein direkter
+    // Firestore-Stream-Aufbau würde hier synchron werfen (rote Seite). Daher
+    // gegated, statt zu crashen.
+    if (AppConfig.disableAuthentication) {
+      return Scaffold(
+        appBar: appBar,
+        body: const Center(
+          child: EmptyState(
+            icon: Icons.cloud_off_outlined,
+            title: 'Im Demo-Modus nicht verfügbar',
+            message:
+                'Kundenwünsche gehen über die öffentliche Seite (/wunsch) in der Cloud ein und sind nur mit aktiver Firebase-Verbindung sichtbar.',
+          ),
         ),
       );
     }

@@ -33,6 +33,7 @@ import '../models/payroll_profile.dart';
 import '../models/payroll_record.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
+import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
 import '../models/shift.dart';
@@ -45,6 +46,7 @@ import '../models/supplier.dart';
 import '../models/team_definition.dart';
 import '../models/travel_time_rule.dart';
 import '../models/user_settings.dart';
+import '../models/store_task.dart';
 import '../models/user_invite.dart';
 import '../models/work_entry.dart';
 import '../models/work_task.dart';
@@ -99,6 +101,7 @@ class DatabaseService {
   static const _travelTimeRulesKey = 'travel_time_rules';
   static const _suppliersKey = 'suppliers';
   static const _productsKey = 'products';
+  static const _productBatchesKey = 'product_batches';
   static const _purchaseOrdersKey = 'purchase_orders';
   static const _stockMovementsKey = 'stock_movements';
   static const _priceHistoryKey = 'price_history';
@@ -109,6 +112,8 @@ class DatabaseService {
   static const _fridgeRefillListsKey = 'fridge_refill_lists';
   // Kontakte (Kunden/Lieferanten/Partner): org-skopiert, ohne Legacy-Migration.
   static const _contactsKey = 'contacts';
+  // Laden-To-Dos (Arbeitsmodus/Kiosk): org-skopiert, je Laden (Broadcast).
+  static const _storeTasksKey = 'store_tasks';
   // Personal-Bereich (nur Admin): org-skopiert, ohne Legacy-Migration.
   static const _workTasksKey = 'work_tasks';
   static const _payrollRecordsKey = 'payroll_records';
@@ -167,6 +172,9 @@ class DatabaseService {
     // (neue Collections ohne Altbestand).
     _suppliersKey,
     _productsKey,
+    // MHD-/Ablauf-Chargen: org-skopiert (bewegliche Nutzdaten, im Hybrid-Modus
+    // lokal gespiegelt).
+    _productBatchesKey,
     _purchaseOrdersKey,
     _stockMovementsKey,
     _priceHistoryKey,
@@ -179,6 +187,8 @@ class DatabaseService {
     _fridgeRefillListsKey,
     // Kontakte: org-skopiert, neue Collection ohne Altbestand.
     _contactsKey,
+    // Laden-To-Dos (Arbeitsmodus/Kiosk): org-skopiert (je Laden / org-weit).
+    _storeTasksKey,
     // Personal-Bereich: org-skopiert, neue Collections ohne Altbestand.
     _workTasksKey,
     _payrollRecordsKey,
@@ -608,6 +618,42 @@ class DatabaseService {
       key: _contractsKey,
       scope: scope,
       items: contracts,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  // --- Laden-To-Dos (Arbeitsmodus/Kiosk) ------------------------------------
+
+  static Future<List<StoreTask>> loadLocalStoreTasks({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _storeTasksKey,
+      scope: scope,
+      fromMap: StoreTask.fromMap,
+      compare: (a, b) {
+        // Erledigt ist jetzt je Standort (completedBySite) — hier nur nach
+        // Fälligkeit, dann Titel sortieren (die Board-Anzeige filtert je Laden).
+        final ad = a.dueDate;
+        final bd = b.dueDate;
+        if (ad == null && bd == null) {
+          return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+        }
+        if (ad == null) return 1;
+        if (bd == null) return -1;
+        return ad.compareTo(bd);
+      },
+    );
+  }
+
+  static Future<void> saveLocalStoreTasks(
+    List<StoreTask> tasks, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _storeTasksKey,
+      scope: scope,
+      items: tasks,
       toMap: (item) => item.toMap(),
     );
   }
@@ -1198,6 +1244,29 @@ class DatabaseService {
       key: _productsKey,
       scope: scope,
       items: products,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<ProductBatch>> loadLocalProductBatches({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _productBatchesKey,
+      scope: scope,
+      fromMap: ProductBatch.fromMap,
+      compare: (a, b) => a.expiryDate.compareTo(b.expiryDate),
+    );
+  }
+
+  static Future<void> saveLocalProductBatches(
+    List<ProductBatch> batches, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _productBatchesKey,
+      scope: scope,
+      items: batches,
       toMap: (item) => item.toMap(),
     );
   }

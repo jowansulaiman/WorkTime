@@ -443,13 +443,24 @@ class ScheduleProvider extends ChangeNotifier {
     }
   }
 
+  /// #74: `_restartSubscriptions` ist async — als fire-and-forget aus den
+  /// View-Settern aufgerufen, aber mit Fehlerbehandlung (sonst verschluckte
+  /// Exceptions + hängender Ladespinner).
+  void _restartSubscriptionsSafely() {
+    unawaited(_restartSubscriptions().catchError((Object error) {
+      _errorMessage = 'Fehler beim Laden der Schichten: $error';
+      _loading = false;
+      _safeNotify();
+    }));
+  }
+
   void setViewMode(ScheduleViewMode mode) {
     _viewMode = mode;
     if (usesHybridStorage) {
       _applyLocalState();
       _safeNotify();
     }
-    _restartSubscriptions();
+    _restartSubscriptionsSafely();
   }
 
   void setVisibleDate(DateTime date) {
@@ -458,7 +469,7 @@ class ScheduleProvider extends ChangeNotifier {
       _applyLocalState();
       _safeNotify();
     }
-    _restartSubscriptions();
+    _restartSubscriptionsSafely();
   }
 
   void setSelectedUserId(String? userId) {
@@ -471,7 +482,7 @@ class ScheduleProvider extends ChangeNotifier {
       _applyLocalState();
       _safeNotify();
     }
-    _restartSubscriptions();
+    _restartSubscriptionsSafely();
   }
 
   void setTeamFilter(String? teamId, {String? teamName}) {

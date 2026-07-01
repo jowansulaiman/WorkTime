@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../routing/shell_tab.dart';
 import '../core/abwesenheit_matrix.dart';
 import '../core/urlaub_calculator.dart';
 import '../models/absence_request.dart';
 import '../models/customer_order.dart';
+import '../core/expiry_warning.dart';
 import '../models/product.dart';
 import '../models/shift.dart';
 import '../models/shift_swap_request.dart';
@@ -40,7 +43,7 @@ Future<bool?> showAbsenceRequestSheet(
 
 enum _InboxFilter { all, urgent, requests, swaps, shifts, updates }
 
-enum _InboxItemKind { request, swap, shift, update }
+enum _InboxItemKind { request, swap, shift, update, expiry }
 
 /// In welchen der drei Anfragen-Bereiche ein Eintrag gehört. Wird an JEDER
 /// Erzeugungsstelle explizit gesetzt (Pflichtparameter, kein Default), damit
@@ -132,6 +135,10 @@ class _NotificationScreenState extends State<NotificationScreen> {
         canViewInventory ? inventory.ordersDueSoonNotPrepared() : <CustomerOrder>[];
     final lowStock =
         canViewInventory ? inventory.lowStockProducts() : <Product>[];
+    final fridgeShortfalls =
+        canViewInventory ? inventory.fridgeShortfallCount() : 0;
+    final expiryWarnings =
+        canViewInventory ? inventory.expiryWarnings() : const <ExpiryWarning>[];
     final canManageShifts = currentUser?.canManageShifts ?? false;
     final isTeamLead = currentUser?.isTeamLead ?? false;
     final canCreateOwnRequests =
@@ -176,6 +183,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
       upcomingOwnShifts: upcomingOwnShifts,
       dueCustomerOrders: dueCustomerOrders,
       lowStockProducts: lowStock,
+      fridgeShortfallCount: fridgeShortfalls,
+      expiryWarnings: expiryWarnings,
       canManageInventory: canManageInventory,
     );
     final filteredItems =
@@ -551,6 +560,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
     required List<Shift> upcomingOwnShifts,
     required List<CustomerOrder> dueCustomerOrders,
     required List<Product> lowStockProducts,
+    required int fridgeShortfallCount,
+    required List<ExpiryWarning> expiryWarnings,
     required bool canManageInventory,
   }) {
     final schedule = context.read<ScheduleProvider>();
@@ -882,6 +893,33 @@ class _NotificationScreenState extends State<NotificationScreen> {
       );
     }
 
+    // MHD-/Ablauf-Warnung: aktive Chargen, die in <= 3 Tagen ablaufen (oder
+    // schon abgelaufen sind), gebuendelt als eine dringende Warnung.
+    if (expiryWarnings.isNotEmpty) {
+      final expiredCount = expiryWarnings
+          .where((w) => w.severity == ExpirySeverity.expired)
+          .length;
+      final names = expiryWarnings
+          .take(4)
+          .map((w) => w.batch.productName ?? 'Artikel')
+          .join(', ');
+      final more = expiryWarnings.length > 4 ? ' …' : '';
+      items.add(
+        _InboxItem(
+          kind: _InboxItemKind.expiry,
+          section: _InboxSection.todo,
+          icon: Icons.timelapse_outlined,
+          title: '${expiryWarnings.length} '
+              '${expiryWarnings.length == 1 ? 'Artikel läuft' : 'Artikel laufen'} '
+              'bald ab',
+          subtitle: '$names$more',
+          time: now,
+          color: expiredCount > 0 ? colorScheme.error : warningColor,
+          badge: expiredCount > 0 ? 'Abgelaufen' : 'MHD',
+        ),
+      );
+    }
+
     // Artikel unter Meldebestand: als eine gebuendelte Nachbestell-Warnung.
     if (lowStockProducts.isNotEmpty) {
       final names = lowStockProducts.take(4).map((p) => p.name).join(', ');
@@ -896,6 +934,36 @@ class _NotificationScreenState extends State<NotificationScreen> {
           time: now,
           color: warningColor,
           badge: 'Nachbestellen',
+        ),
+      );
+    }
+
+    if (fridgeShortfallCount > 0) {
+      items.add(
+        _InboxItem(
+          kind: _InboxItemKind.update,
+          section: _InboxSection.todo,
+          icon: Icons.kitchen_outlined,
+          title: '$fridgeShortfallCount '
+              '${fridgeShortfallCount == 1 ? 'Getränk fehlt' : 'Getränke fehlen'} '
+              'im Kühlschrank',
+          subtitle: 'Aus dem Lager nachfüllen',
+          time: now,
+          color: warningColor,
+          badge: 'Nachfüllen',
+          actions: [
+            _InboxAction(
+              label: 'Zum Kühlschrank',
+              primary: true,
+              // Öffnet den Kühlschrank-Tab der Warenwirtschaft (Deeplink).
+              // Der Eintrag erscheint nur bei canViewInventory, daher ist der
+              // Zugriff hier immer erlaubt.
+              onPressed: (context) async {
+                context.push('${AppRoutes.inventory}?tab=kuehl');
+                return false; // reine Navigation, keine Erfolgsmeldung
+              },
+            ),
+          ],
         ),
       );
     }
@@ -2091,6 +2159,16 @@ class _AbsenceRequestSheetState extends State<_AbsenceRequestSheet> {
     final parsedHours = _type == AbsenceType.timeOff
         ? double.tryParse(_hoursController.text.trim().replaceAll(',', '.'))
         : null;
+    if (_type == AbsenceType.timeOff &&
+        (parsedHours == null || parsedHours <= 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Bitte eine gültige Stundenzahl (> 0) angeben.'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
     setState(() => _saving = true);
     try {
       await context.read<ScheduleProvider>().submitAbsenceRequest(

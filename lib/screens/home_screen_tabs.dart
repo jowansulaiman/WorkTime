@@ -285,29 +285,33 @@ class _ClockInOutWidget extends StatelessWidget {
                     ],
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: isClockedIn
-                        ? appColors.successContainer
-                        : colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    isClockedIn
-                        ? (provider.isClockBackedByEntry
-                            ? 'Aus Eintrag aktiv'
-                            : 'Im Dienst')
-                        : 'Nicht aktiv',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: isClockedIn
-                              ? appColors.onSuccessContainer
-                              : colorScheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w700,
-                        ),
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isClockedIn
+                          ? appColors.successContainer
+                          : colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      isClockedIn
+                          ? (provider.isClockBackedByEntry
+                              ? 'Aus Eintrag aktiv'
+                              : 'Im Dienst')
+                          : 'Nicht aktiv',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: isClockedIn
+                                ? appColors.onSuccessContainer
+                                : colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
                   ),
                 ),
               ],
@@ -317,7 +321,7 @@ class _ClockInOutWidget extends StatelessWidget {
               children: [
                 Expanded(
                   child: _ClockStatTile(
-                    label: 'STARTS',
+                    label: 'BEGINN',
                     time: startLabel,
                     icon: Icons.login_rounded,
                     color: appColors.success,
@@ -326,7 +330,7 @@ class _ClockInOutWidget extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: _ClockStatTile(
-                    label: 'ENDS',
+                    label: 'ENDE',
                     time: endLabel,
                     icon: Icons.logout_rounded,
                     color: colorScheme.error,
@@ -400,12 +404,18 @@ class _ClockInOutWidget extends StatelessWidget {
                 ),
                 if (!isClockedIn && _hasRecentClockEntry(provider)) ...[
                   const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: () => _showCorrectionDialog(context, provider),
-                    icon: const Icon(Icons.edit_note, size: 18),
-                    label: const Text('Korrigieren'),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(0, 52),
+                  Flexible(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showCorrectionDialog(context, provider),
+                      icon: const Icon(Icons.edit_note, size: 18),
+                      label: const Text(
+                        'Korrigieren',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 52),
+                      ),
                     ),
                   ),
                 ],
@@ -524,6 +534,14 @@ class _ClockCorrectionDialogState extends State<_ClockCorrectionDialog> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.login),
               title: const Text('Start'),
+              // Ganze Zeile antippbar (größeres Tap-Ziel als nur der Button).
+              onTap: () async {
+                final picked = await showTimePicker(
+                  context: context,
+                  initialTime: _startTime,
+                );
+                if (picked != null) setState(() => _startTime = picked);
+              },
               trailing: TextButton(
                 onPressed: () async {
                   final picked = await showTimePicker(
@@ -539,6 +557,13 @@ class _ClockCorrectionDialogState extends State<_ClockCorrectionDialog> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.logout),
               title: const Text('Ende'),
+              onTap: () async {
+                final picked = await showTimePicker(
+                  context: context,
+                  initialTime: _endTime,
+                );
+                if (picked != null) setState(() => _endTime = picked);
+              },
               trailing: TextButton(
                 onPressed: () async {
                   final picked = await showTimePicker(
@@ -579,21 +604,28 @@ class _ClockCorrectionDialogState extends State<_ClockCorrectionDialog> {
               return;
             }
             final date = widget.entry.date;
+            final start = DateTime(
+              date.year,
+              date.month,
+              date.day,
+              _startTime.hour,
+              _startTime.minute,
+            );
+            var end = DateTime(
+              date.year,
+              date.month,
+              date.day,
+              _endTime.hour,
+              _endTime.minute,
+            );
+            // Über Mitternacht laufende Schicht: liegt die Endzeit nicht nach
+            // der Startzeit, gehört sie auf den Folgetag.
+            if (!end.isAfter(start)) {
+              end = end.add(const Duration(days: 1));
+            }
             Navigator.of(context).pop(_ClockCorrectionResult(
-              start: DateTime(
-                date.year,
-                date.month,
-                date.day,
-                _startTime.hour,
-                _startTime.minute,
-              ),
-              end: DateTime(
-                date.year,
-                date.month,
-                date.day,
-                _endTime.hour,
-                _endTime.minute,
-              ),
+              start: start,
+              end: end,
               reason: _reasonCtrl.text.trim(),
             ));
           },
@@ -699,13 +731,18 @@ class _WeeklyProgressWidgetState extends State<_WeeklyProgressWidget> {
                     Icon(Icons.date_range,
                         color: colorScheme.primary, size: 20),
                     const SizedBox(width: 8),
-                    Text(
-                      'Wochenfortschritt',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                    Expanded(
+                      child: Text(
+                        'Wochenfortschritt',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                      ),
                     ),
-                    const Spacer(),
+                    const SizedBox(width: 8),
                     Text(
                       '${weeklyHours.toStringAsFixed(1)} / ${weeklyTarget.toStringAsFixed(1)} h',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -814,11 +851,15 @@ class _PendingAbsencesWidget extends StatelessWidget {
               children: [
                 Icon(Icons.pending_actions, color: colorScheme.tertiary),
                 const SizedBox(width: 8),
-                Text(
-                  'Offene Abwesenheitsantraege (${absences.length})',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                Expanded(
+                  child: Text(
+                    'Offene Abwesenheitsantraege (${absences.length})',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
                 ),
               ],
             ),

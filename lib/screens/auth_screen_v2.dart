@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../core/local_demo_data.dart';
@@ -53,55 +54,259 @@ class _AuthScreenV2State extends State<AuthScreenV2> {
           ),
         ),
         child: SafeArea(
-          child: SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(
-              pagePadding.left,
-              context.spacing.lg,
-              pagePadding.right,
-              context.spacing.lg,
-            ),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 980),
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final stacked = constraints.maxWidth < 760;
-                    const intro = _IntroPanelV2();
-                    final form = _AuthCardV2(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Grenze auf der vollen (Safe-Area-)Breite: Handys liegen immer
+              // darunter und bekommen die „Formular zuerst"-Variante.
+              final wide = constraints.maxWidth >= 760;
+              if (wide) {
+                // Tablet/Web/Desktop: bestehendes Zwei-Spalten-Layout
+                // (Intro-Panel neben Formular) bleibt unveraendert.
+                return SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(
+                    pagePadding.left,
+                    context.spacing.lg,
+                    pagePadding.right,
+                    context.spacing.lg,
+                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 980),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Expanded(child: _IntroPanelV2()),
+                          SizedBox(width: context.spacing.lg),
+                          Expanded(
+                            child: _AuthCardV2(
+                              tab: _tab,
+                              onTabChanged: (value) =>
+                                  setState(() => _tab = value),
+                              loginEmailController: _loginEmailController,
+                              loginPasswordController: _loginPasswordController,
+                              activateEmailController: _activateEmailController,
+                              activatePasswordController:
+                                  _activatePasswordController,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              // Handy (< 760): „Formular zuerst" — kompakter Marken-Header,
+              // dann sofort sichtbares Anmeldeformular (kein Marketing-Panel).
+              // Die Tastatur-Vermeidung uebernimmt das Scaffold (Viewport wird
+              // verkleinert); der Scroll-View haelt das fokussierte Feld per
+              // Auto-Scroll sichtbar. Das zusaetzliche untere Padding gibt dem
+              // CTA etwas Luft, damit er nicht am Tastaturrand klebt.
+              return SingleChildScrollView(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: EdgeInsets.fromLTRB(
+                  pagePadding.left,
+                  context.spacing.md,
+                  pagePadding.right,
+                  context.spacing.lg + context.spacing.md,
+                ),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: _MobileAuthBody(
                       tab: _tab,
                       onTabChanged: (value) => setState(() => _tab = value),
                       loginEmailController: _loginEmailController,
                       loginPasswordController: _loginPasswordController,
                       activateEmailController: _activateEmailController,
                       activatePasswordController: _activatePasswordController,
-                    );
-
-                    if (stacked) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          intro,
-                          SizedBox(height: context.spacing.md + context.spacing.xxs),
-                          form,
-                        ],
-                      );
-                    }
-
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Expanded(child: intro),
-                        SizedBox(width: context.spacing.lg),
-                        Expanded(child: form),
-                      ],
-                    );
-                  },
+                    ),
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Handy-Variante (< 760): „Formular zuerst". Kompakter Marken-Header (kleines
+/// Logo + einzeilige Tagline) statt des breiten Intro-Panels, danach das sofort
+/// sichtbare Anmeldeformular. Nutzt dieselben Formular-Widgets wie die
+/// Wide-Variante ([_AuthCardV2]) — nur ohne Marketing-Inhalte und mit dem
+/// Google-Button unter dem Formular.
+class _MobileAuthBody extends StatelessWidget {
+  const _MobileAuthBody({
+    required this.tab,
+    required this.onTabChanged,
+    required this.loginEmailController,
+    required this.loginPasswordController,
+    required this.activateEmailController,
+    required this.activatePasswordController,
+  });
+
+  final int tab;
+  final ValueChanged<int> onTabChanged;
+  final TextEditingController loginEmailController;
+  final TextEditingController loginPasswordController;
+  final TextEditingController activateEmailController;
+  final TextEditingController activatePasswordController;
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final spacing = context.spacing;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Semantics(
+          header: true,
+          child: Column(
+            children: [
+              const AppLogo(height: 56),
+              SizedBox(height: spacing.sm),
+              Text(
+                'Zeit, Schichten, Warenwirtschaft und Team an einem Ort.',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.titleSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: spacing.lg),
+        AppCard(
+          padding: EdgeInsets.all(spacing.md + spacing.xxs),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: spacing.sm + spacing.xs,
+                    vertical: spacing.sm,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.8),
+                    borderRadius: BorderRadius.circular(context.radii.pill),
+                  ),
+                  child: Text(
+                    auth.authDisabled ? 'Demo-Zugang' : 'Sicherer Zugang',
+                    style: textTheme.labelLarge
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+              SizedBox(height: spacing.md),
+              Text(
+                'Anmeldung',
+                style: textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              if (auth.errorMessage != null) ...[
+                SizedBox(height: spacing.md),
+                Semantics(
+                  liveRegion: true,
+                  child: AppStatusBanner(
+                    icon: Icons.error_outline,
+                    message: auth.errorMessage!,
+                    tone: AppStatusTone.error,
+                    action: IconButton(
+                      icon: Icon(Icons.close, size: context.iconSizes.sm),
+                      onPressed: auth.clearError,
+                      tooltip: 'Schliessen',
+                    ),
+                  ),
+                ),
+              ],
+              if (auth.authDisabled) ...[
+                SizedBox(height: spacing.md + spacing.xxs),
+                _DemoAccountsV2(accounts: auth.localDemoAccounts),
+                SizedBox(height: spacing.md + spacing.xxs),
+                _EmailLoginFormV2(
+                  emailController: loginEmailController,
+                  passwordController: loginPasswordController,
+                  submitLabel: 'Mit Demo-Account anmelden',
+                  enableCredentialAutofill: false,
+                ),
+              ] else ...[
+                SizedBox(height: spacing.md + spacing.xxs),
+                AppSegmented<int>(
+                  selected: tab,
+                  onChanged: onTabChanged,
+                  segments: const [
+                    AppSegment(value: 0, label: 'Login'),
+                    AppSegment(value: 1, label: 'Einladung'),
+                  ],
+                ),
+                SizedBox(height: spacing.md - spacing.xxs),
+                AnimatedSwitcher(
+                  duration: AppMotion.resolve(context, context.motion.short),
+                  switchInCurve: context.motion.emphasizedEnter,
+                  switchOutCurve: context.motion.emphasizedExit,
+                  child: KeyedSubtree(
+                    key: ValueKey(tab),
+                    child: tab == 0
+                        ? _EmailLoginFormV2(
+                            emailController: loginEmailController,
+                            passwordController: loginPasswordController,
+                          )
+                        : _InvitationActivationFormV2(
+                            emailController: activateEmailController,
+                            passwordController: activatePasswordController,
+                          ),
+                  ),
+                ),
+                if (tab == 0) ...[
+                  SizedBox(height: spacing.md),
+                  Row(
+                    children: [
+                      const Expanded(child: Divider()),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: spacing.sm),
+                        child: Text(
+                          'oder',
+                          style: textTheme.labelMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      const Expanded(child: Divider()),
+                    ],
+                  ),
+                  SizedBox(height: spacing.sm + spacing.xs),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          auth.busy ? null : () => auth.signInWithGoogle(),
+                      icon: const Icon(Icons.login),
+                      label: const Text('Mit Google anmelden'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -131,7 +336,7 @@ class _IntroPanelV2 extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _OnPrimaryPill(
-                label: 'Digitale Arbeitsorganisation',
+                label: 'Digitale Betriebsorganisation',
                 colorScheme: colorScheme,
                 textTheme: textTheme,
               ),
@@ -153,7 +358,7 @@ class _IntroPanelV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.lg),
               Text(
-                'Arbeitszeiten erfassen, Schichten planen und das Team im Blick behalten.',
+                'Arbeitszeit, Schichten, Warenwirtschaft und Team an einem Ort.',
                 style: (compact ? textTheme.headlineSmall : textTheme.headlineMedium)
                     ?.copyWith(
                   color: colorScheme.onPrimary,
@@ -162,9 +367,10 @@ class _IntroPanelV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.md - spacing.xxs),
               Text(
-                'Die Software unterstuetzt bei Zeiterfassung, Einsatzplanung, '
-                'Abwesenheiten und Auswertungen. So bleiben Arbeitsablaeufe '
-                'uebersichtlich und wichtige Informationen schnell verfuegbar.',
+                'Die Software buendelt Zeiterfassung, Einsatzplanung und '
+                'Abwesenheiten mit Warenwirtschaft, Bestellungen, Kontakten, '
+                'Personal und Buchhaltung. Auswertungen liefern den vollen '
+                'Ueberblick.',
                 style: textTheme.bodyLarge?.copyWith(
                   color: colorScheme.onPrimary.withValues(alpha: 0.92),
                   height: 1.35,
@@ -172,21 +378,21 @@ class _IntroPanelV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.lg),
               const _FeatureItemV2(
-                icon: Icons.badge_outlined,
-                title: 'Zeiterfassung',
-                text: 'Arbeitsbeginn, Pausen und Arbeitsende sauber dokumentieren.',
+                icon: Icons.schedule_outlined,
+                title: 'Zeit & Schicht',
+                text: 'Arbeitszeiten erfassen, Schichten planen und Abwesenheiten verwalten.',
               ),
               SizedBox(height: spacing.sm + spacing.xs),
               const _FeatureItemV2(
-                icon: Icons.schedule_outlined,
-                title: 'Schichtplanung',
-                text: 'Einsaetze uebersichtlich planen und Verfuegbarkeiten oder Abwesenheiten direkt beruecksichtigen.',
+                icon: Icons.inventory_2_outlined,
+                title: 'Warenwirtschaft',
+                text: 'Bestand, Bestellungen und Barcode-Scanner im Griff behalten.',
               ),
               SizedBox(height: spacing.sm + spacing.xs),
               const _FeatureItemV2(
                 icon: Icons.insights_outlined,
-                title: 'Auswertungen',
-                text: 'Monatsberichte, Uebersichten und Exporte fuer Verwaltung und Nachweise nutzen.',
+                title: 'Personal & Auswertungen',
+                text: 'Personal, Lohn, Buchhaltung und Berichte an einem Ort.',
               ),
             ],
           ),
@@ -348,7 +554,7 @@ class _AuthCardV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.sm),
               Text(
-                'Melde dich an, um Zeiten zu erfassen, Schichten einzusehen und Teamfunktionen zu nutzen.',
+                'Melde dich an, um alle Bereiche von der Zeiterfassung bis zur Warenwirtschaft zu nutzen.',
                 style: textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
               ),
               if (auth.errorMessage != null) ...[
@@ -361,7 +567,6 @@ class _AuthCardV2 extends StatelessWidget {
                     icon: Icon(Icons.close, size: context.iconSizes.sm),
                     onPressed: auth.clearError,
                     tooltip: 'Schliessen',
-                    visualDensity: VisualDensity.compact,
                   ),
                 ),
               ],
@@ -373,6 +578,7 @@ class _AuthCardV2 extends StatelessWidget {
                   emailController: loginEmailController,
                   passwordController: loginPasswordController,
                   submitLabel: 'Mit Demo-Account anmelden',
+                  enableCredentialAutofill: false,
                 ),
               ] else ...[
                 SizedBox(height: spacing.md + spacing.xxs),
@@ -431,11 +637,17 @@ class _EmailLoginFormV2 extends StatefulWidget {
     required this.emailController,
     required this.passwordController,
     this.submitLabel = 'Mit E-Mail anmelden',
+    this.enableCredentialAutofill = true,
   });
 
   final TextEditingController emailController;
   final TextEditingController passwordController;
   final String submitLabel;
+
+  /// Steuert die Anbindung an den Passwort-Manager (iOS-Keychain /
+  /// Android-Autofill / Google Password Manager). Im Demo-Modus aus, damit
+  /// Wegwerf-Demo-Zugangsdaten nicht im echten Passwortspeicher landen.
+  final bool enableCredentialAutofill;
 
   @override
   State<_EmailLoginFormV2> createState() => _EmailLoginFormV2State();
@@ -443,67 +655,104 @@ class _EmailLoginFormV2 extends StatefulWidget {
 
 class _EmailLoginFormV2State extends State<_EmailLoginFormV2> {
   final _formKey = GlobalKey<FormState>();
+  final _passwordFocus = FocusNode();
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _passwordFocus.dispose();
+    super.dispose();
+  }
+
+  void _submit(AuthProvider auth) {
+    if (auth.busy) return;
+    if (!_formKey.currentState!.validate()) return;
+    if (widget.enableCredentialAutofill) {
+      // Signalisiert iOS-Keychain / Android-Autofill / Google Password Manager,
+      // die eingegebenen Zugangsdaten zum Speichern anzubieten.
+      TextInput.finishAutofillContext();
+    }
+    auth.signInWithEmailPassword(
+      email: widget.emailController.text,
+      password: widget.passwordController.text,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     return Form(
       key: _formKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          AppFormField(
-            controller: widget.emailController,
-            label: 'E-Mail',
-            keyboardType: TextInputType.emailAddress,
-            prefixIcon: const Icon(Icons.mail_outline),
-            validator: (value) {
-              if (value == null || !_emailRegex.hasMatch(value.trim())) {
-                return 'Bitte eine gueltige E-Mail-Adresse eingeben';
-              }
-              return null;
-            },
-          ),
-          SizedBox(height: context.spacing.md - context.spacing.xs),
-          AppFormField(
-            controller: widget.passwordController,
-            label: 'Passwort',
-            obscureText: true,
-            prefixIcon: const Icon(Icons.lock_outline),
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Bitte ein Passwort eingeben';
-              }
-              return null;
-            },
-          ),
-          SizedBox(height: context.spacing.md),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: auth.busy
-                  ? null
-                  : () {
-                      if (!_formKey.currentState!.validate()) return;
-                      auth.signInWithEmailPassword(
-                        email: widget.emailController.text,
-                        password: widget.passwordController.text,
-                      );
-                    },
-              icon: auth.busy
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.login),
-              label: Text(widget.submitLabel),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(52),
+      child: AutofillGroup(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AppFormField(
+              controller: widget.emailController,
+              label: 'E-Mail',
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              autofillHints: widget.enableCredentialAutofill
+                  ? const [AutofillHints.username, AutofillHints.email]
+                  : null,
+              prefixIcon: const Icon(Icons.mail_outline),
+              onFieldSubmitted: (_) => _passwordFocus.requestFocus(),
+              validator: (value) {
+                if (value == null || !_emailRegex.hasMatch(value.trim())) {
+                  return 'Bitte eine gueltige E-Mail-Adresse eingeben';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: context.spacing.md - context.spacing.xs),
+            AppFormField(
+              controller: widget.passwordController,
+              focusNode: _passwordFocus,
+              label: 'Passwort',
+              obscureText: _obscure,
+              textInputAction: TextInputAction.done,
+              autofillHints: widget.enableCredentialAutofill
+                  ? const [AutofillHints.password]
+                  : null,
+              prefixIcon: const Icon(Icons.lock_outline),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+                tooltip: _obscure ? 'Passwort anzeigen' : 'Passwort verbergen',
+                onPressed: () => setState(() => _obscure = !_obscure),
+              ),
+              onFieldSubmitted: (_) => _submit(auth),
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'Bitte ein Passwort eingeben';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: context.spacing.md),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: auth.busy ? null : () => _submit(auth),
+                icon: auth.busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child:
+                            CircularProgressIndicator.adaptive(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.login),
+                label: Text(widget.submitLabel),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(52),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -526,11 +775,27 @@ class _InvitationActivationFormV2 extends StatefulWidget {
 class _InvitationActivationFormV2State extends State<_InvitationActivationFormV2> {
   final _formKey = GlobalKey<FormState>();
   final _confirmPasswordController = TextEditingController();
+  final _passwordFocus = FocusNode();
+  final _confirmFocus = FocusNode();
+  bool _obscurePassword = true;
+  bool _obscureConfirm = true;
 
   @override
   void dispose() {
     _confirmPasswordController.dispose();
+    _passwordFocus.dispose();
+    _confirmFocus.dispose();
     super.dispose();
+  }
+
+  void _submit(AuthProvider auth) {
+    if (auth.busy) return;
+    if (!_formKey.currentState!.validate()) return;
+    TextInput.finishAutofillContext();
+    auth.activateInvite(
+      email: widget.emailController.text,
+      password: widget.passwordController.text,
+    );
   }
 
   @override
@@ -539,81 +804,114 @@ class _InvitationActivationFormV2State extends State<_InvitationActivationFormV2
     final spacing = context.spacing;
     return Form(
       key: _formKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          AppFormField(
-            controller: widget.emailController,
-            label: 'E-Mail aus der Einladung',
-            keyboardType: TextInputType.emailAddress,
-            prefixIcon: const Icon(Icons.mail_outline),
-            validator: (value) {
-              if (value == null || !_emailRegex.hasMatch(value.trim())) {
-                return 'Bitte eine gueltige E-Mail-Adresse eingeben';
-              }
-              return null;
-            },
-          ),
-          SizedBox(height: spacing.md - spacing.xs),
-          AppFormField(
-            controller: widget.passwordController,
-            label: 'Neues Passwort',
-            obscureText: true,
-            prefixIcon: const Icon(Icons.lock_reset_outlined),
-            validator: (value) {
-              if (value == null || value.length < 6) {
-                return 'Mindestens 6 Zeichen erforderlich';
-              }
-              return null;
-            },
-          ),
-          SizedBox(height: spacing.md - spacing.xs),
-          AppFormField(
-            controller: _confirmPasswordController,
-            label: 'Passwort bestaetigen',
-            obscureText: true,
-            prefixIcon: const Icon(Icons.lock_outline),
-            validator: (value) {
-              if (value != widget.passwordController.text) {
-                return 'Passwoerter stimmen nicht ueberein';
-              }
-              return null;
-            },
-          ),
-          SizedBox(height: spacing.md - spacing.xs),
-          Text(
-            'Der Account wird nur angelegt, wenn eine aktive Admin-Einladung fuer diese E-Mail existiert.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+      child: AutofillGroup(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AppFormField(
+              controller: widget.emailController,
+              label: 'E-Mail aus der Einladung',
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              autofillHints: const [
+                AutofillHints.username,
+                AutofillHints.email,
+              ],
+              prefixIcon: const Icon(Icons.mail_outline),
+              onFieldSubmitted: (_) => _passwordFocus.requestFocus(),
+              validator: (value) {
+                if (value == null || !_emailRegex.hasMatch(value.trim())) {
+                  return 'Bitte eine gueltige E-Mail-Adresse eingeben';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: spacing.md - spacing.xs),
+            AppFormField(
+              controller: widget.passwordController,
+              focusNode: _passwordFocus,
+              label: 'Neues Passwort',
+              obscureText: _obscurePassword,
+              textInputAction: TextInputAction.next,
+              autofillHints: const [AutofillHints.newPassword],
+              prefixIcon: const Icon(Icons.lock_reset_outlined),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscurePassword
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
                 ),
-          ),
-          SizedBox(height: spacing.md),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: auth.busy
-                  ? null
-                  : () {
-                      if (!_formKey.currentState!.validate()) return;
-                      auth.activateInvite(
-                        email: widget.emailController.text,
-                        password: widget.passwordController.text,
-                      );
-                    },
-              icon: auth.busy
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.person_add_alt_1),
-              label: const Text('Einladung aktivieren'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(52),
+                tooltip: _obscurePassword
+                    ? 'Passwort anzeigen'
+                    : 'Passwort verbergen',
+                onPressed: () =>
+                    setState(() => _obscurePassword = !_obscurePassword),
+              ),
+              onFieldSubmitted: (_) => _confirmFocus.requestFocus(),
+              validator: (value) {
+                if (value == null || value.length < 6) {
+                  return 'Mindestens 6 Zeichen erforderlich';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: spacing.md - spacing.xs),
+            AppFormField(
+              controller: _confirmPasswordController,
+              focusNode: _confirmFocus,
+              label: 'Passwort bestaetigen',
+              obscureText: _obscureConfirm,
+              textInputAction: TextInputAction.done,
+              autofillHints: const [AutofillHints.newPassword],
+              prefixIcon: const Icon(Icons.lock_outline),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscureConfirm
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+                tooltip: _obscureConfirm
+                    ? 'Passwort anzeigen'
+                    : 'Passwort verbergen',
+                onPressed: () =>
+                    setState(() => _obscureConfirm = !_obscureConfirm),
+              ),
+              onFieldSubmitted: (_) => _submit(auth),
+              validator: (value) {
+                if (value != widget.passwordController.text) {
+                  return 'Passwoerter stimmen nicht ueberein';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: spacing.md - spacing.xs),
+            Text(
+              'Der Account wird nur angelegt, wenn eine aktive Admin-Einladung fuer diese E-Mail existiert.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            SizedBox(height: spacing.md),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: auth.busy ? null : () => _submit(auth),
+                icon: auth.busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child:
+                            CircularProgressIndicator.adaptive(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.person_add_alt_1),
+                label: const Text('Einladung aktivieren'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(52),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -718,40 +1016,57 @@ class FirebaseSetupScreenV2 extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pagePadding = MobileBreakpoints.screenPadding(context);
+    final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(
-                pagePadding.left,
-                context.spacing.lg,
-                pagePadding.right,
-                context.spacing.lg,
-              ),
-              child: AppCard(
-                padding: EdgeInsets.all(context.spacing.lg),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Center(child: AppLogo(height: 92)),
-                    SizedBox(height: context.spacing.md + context.spacing.xxs),
-                    Text(
-                      'Anmeldung derzeit nicht verfuegbar',
-                      style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
-                    ),
-                    SizedBox(height: context.spacing.sm + context.spacing.xs),
-                    const Text(
-                      'Die Anwendung kann in dieser Umgebung noch nicht fuer die Anmeldung bereitgestellt werden.',
-                    ),
-                    SizedBox(height: context.spacing.md),
-                    const Text(
-                      'Bitte wende dich an die zustaendige Person, damit die Bereitstellung abgeschlossen wird.',
-                    ),
-                  ],
+      body: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              colorScheme.secondaryContainer.withValues(alpha: 0.45),
+              colorScheme.surface,
+              colorScheme.primaryContainer.withValues(alpha: 0.28),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(
+              pagePadding.left,
+              context.spacing.lg,
+              pagePadding.right,
+              context.spacing.lg,
+            ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: AppCard(
+                  padding: EdgeInsets.all(context.spacing.lg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Center(child: AppLogo(height: 72)),
+                      SizedBox(
+                          height: context.spacing.md + context.spacing.xxs),
+                      Text(
+                        'Anmeldung derzeit nicht verfuegbar',
+                        style: textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      SizedBox(
+                          height: context.spacing.sm + context.spacing.xs),
+                      const Text(
+                        'Die Anwendung kann in dieser Umgebung noch nicht fuer die Anmeldung bereitgestellt werden.',
+                      ),
+                      SizedBox(height: context.spacing.md),
+                      const Text(
+                        'Bitte wende dich an die zustaendige Person, damit die Bereitstellung abgeschlossen wird.',
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -768,35 +1083,67 @@ class AccessBlockedScreenV2 extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final pagePadding = MobileBreakpoints.screenPadding(context);
+    final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: Padding(
-            padding: EdgeInsets.all(context.spacing.lg),
-            child: AppCard(
-              padding: EdgeInsets.all(context.spacing.lg),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.lock_person_outlined, size: context.iconSizes.hero),
-                  SizedBox(height: context.spacing.md),
-                  Text(
-                    'Konto deaktiviert',
-                    style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+      body: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              colorScheme.secondaryContainer.withValues(alpha: 0.45),
+              colorScheme.surface,
+              colorScheme.primaryContainer.withValues(alpha: 0.28),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(
+              pagePadding.left,
+              context.spacing.lg,
+              pagePadding.right,
+              context.spacing.lg,
+            ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: AppCard(
+                  padding: EdgeInsets.all(context.spacing.lg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.lock_person_outlined,
+                          size: context.iconSizes.hero),
+                      SizedBox(height: context.spacing.md),
+                      Text(
+                        'Konto deaktiviert',
+                        style: textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      SizedBox(height: context.spacing.sm),
+                      const Text(
+                        'Dieses Benutzerkonto wurde durch einen Admin deaktiviert. Bitte wende dich an die Verwaltung.',
+                        textAlign: TextAlign.center,
+                      ),
+                      SizedBox(
+                          height: context.spacing.lg - context.spacing.xs),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () =>
+                              context.read<AuthProvider>().signOut(),
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size.fromHeight(52),
+                          ),
+                          child: const Text('Abmelden'),
+                        ),
+                      ),
+                    ],
                   ),
-                  SizedBox(height: context.spacing.sm),
-                  const Text(
-                    'Dieses Benutzerkonto wurde durch einen Admin deaktiviert. Bitte wende dich an die Verwaltung.',
-                    textAlign: TextAlign.center,
-                  ),
-                  SizedBox(height: context.spacing.lg - context.spacing.xs),
-                  FilledButton(
-                    onPressed: () => context.read<AuthProvider>().signOut(),
-                    child: const Text('Abmelden'),
-                  ),
-                ],
+                ),
               ),
             ),
           ),

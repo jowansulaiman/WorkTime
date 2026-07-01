@@ -5,9 +5,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/screens/auth_screen.dart';
+import 'package:worktime_app/screens/auth_screen_v2.dart';
 import 'package:worktime_app/screens/force_update_screen.dart';
 import 'package:worktime_app/screens/inventory_screen.dart';
 import 'package:worktime_app/screens/team_management_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/abwesenheiten_screen.dart';
+import 'package:worktime_app/screens/zeitwirtschaft/abwesenheitskalender_screen.dart';
 import 'package:worktime_app/screens/zeitwirtschaft/lohnlauf_screen.dart';
 import 'package:worktime_app/screens/zeitwirtschaft/mitarbeiterabschluss_screen.dart';
 import 'package:worktime_app/screens/zeitwirtschaft/monatsabschluss_screen.dart';
@@ -92,7 +95,8 @@ void main() {
       profile: null,
       initialLocation: '/warenwirtschaft',
     );
-    expect(find.byType(AuthScreen), findsOneWidget);
+    // Unauth = keine org-Config → produktiver Default V2 → AuthScreenV2.
+    expect(find.byType(AuthScreenV2), findsOneWidget);
     expect(_loc(h.router), '/anmelden');
     await h.cleanup();
   });
@@ -190,6 +194,46 @@ void main() {
     );
     expect(find.byType(StundenkontoScreen), findsOneWidget);
     expect(_loc(h.router), '/zeit/stundenkonto');
+    await h.cleanup();
+  });
+
+  testWidgets('Deep-Link /zeit/abwesenheiten rendert die Abwesenheiten-Liste',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitAbwesenheiten,
+    );
+    expect(find.byType(AbwesenheitenScreen), findsOneWidget);
+    expect(find.byType(ZeitSectionPlaceholder), findsNothing);
+    expect(_loc(h.router), '/zeit/abwesenheiten');
+    await h.cleanup();
+  });
+
+  testWidgets(
+      'Deep-Link /zeit/abwesenheiten/kalender rendert den Abwesenheitskalender',
+      (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _admin,
+      initialLocation: AppRoutes.zeitAbwesenheitenKalender,
+    );
+    expect(find.byType(AbwesenheitskalenderScreen), findsOneWidget);
+    expect(find.byType(ZeitSectionPlaceholder), findsNothing);
+    expect(_loc(h.router), '/zeit/abwesenheiten/kalender');
+    await h.cleanup();
+  });
+
+  testWidgets(
+      'Deep-Link /zeit/abwesenheiten/kalender (Mitarbeiter) rendert die '
+      'eigene Zeile', (tester) async {
+    final h = await pumpApp(
+      tester,
+      profile: _employee,
+      initialLocation: AppRoutes.zeitAbwesenheitenKalender,
+    );
+    expect(find.byType(AbwesenheitskalenderScreen), findsOneWidget);
+    expect(_loc(h.router), '/zeit/abwesenheiten/kalender');
     await h.cleanup();
   });
 

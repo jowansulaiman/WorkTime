@@ -49,6 +49,8 @@ flutter test --coverage   # erzeugt coverage/lcov.info; pragmatisches Ziel: krit
 | `APP_DEFAULT_ORG_NAME` | `Worktime` | Name des lazy angelegten Org-Docs |
 | `APP_BOOTSTRAP_ADMIN_EMAILS` | `''` | CSV; per Login selbst-provisionierende Admins (nur Dev). Lies via `AppConfig.bootstrapAdminEmailList`. |
 | `APP_LEGAL_*` | `''` | Impressum/Datenschutz-Stammdaten der öffentlichen Seiten: `_OPERATOR_NAME`, `_STREET`, `_POSTAL_CITY`, `_EMAIL`, `_PHONE`, `_REPRESENTATIVE`, `_VAT_ID`, `_REGISTER`, `_CONTENT_RESPONSIBLE` (Opt-in § 18 MStV, nur bei redaktionellen Inhalten), `_LAST_UPDATED`. Gebündelt in `LegalInfo`. Leer ⇒ Rechtsseiten zeigen sichtbaren „noch zu hinterlegen"-Hinweis (`LegalInfo.isComplete` = Name+Anschrift+E-Mail+Telefon). |
+| `APP_PUSH_ENABLED` | `false` | Schaltet mobile Push-Benachrichtigungen (FCM) frei (Plan `plan/push-benachrichtigungen-plan.md`). **Kein Secret** — nur Sichtbarkeits-/Aktivierungs-Schalter; FCM-Init zusätzlich gegen `DefaultFirebaseOptions.isConfigured` gegated → No-op im Demo-/Offline-Modus. Default aus bis Blaze-Cutover (APNs-Key + sendende Functions deployt). |
+| `APP_WEB_PUSH_VAPID_KEY` | `''` | Web-Push-Zertifikat (VAPID public key), nur für Web-FCM (`getToken(vapidKey:)`). Leer ⇒ kein Web-Token. **Kein Secret** (public key). Der Web-Service-Worker `web/firebase-messaging-sw.js` braucht zusätzlich die Web-Firebase-Config (kann dart-defines nicht lesen → Build-Step/Hardcode, bewusste Ausnahme). M6/Stretch. |
 | `FIREBASE_FUNCTIONS_REGION` | `europe-west3` | Functions-Region. **Muss** `const REGION` in `functions/index.js` entsprechen. |
 | `FIREBASE_{ANDROID,IOS,WEB}_*` | – | Creds in `lib/firebase_options.dart` (`API_KEY`, `APP_ID`, `MESSAGING_SENDER_ID`, `PROJECT_ID`, …). Platzhalter `REPLACE_ME`/`YOUR_VALUE_HERE`/leer gelten als „unset" → Firebase still deaktiviert. |
 
@@ -129,6 +131,7 @@ Jedes Model hat **zwei** nicht austauschbare Formate:
 ## Cloud Functions & Compliance
 
 `functions/index.js` (v2 `onCall`, Region `europe-west3`, Node 20): `upsertShiftBatch`, `publishShiftBatch`, `upsertWorkEntry`, `upsertWorkEntryBatch`, `previewCompliance`.
+- **OktoPOS-Kassenanbindung** (`plan/oktopos-kassenanbindung.md`): **Pull** `syncOktoposTransactions` (onCall) + `oktoposNightlySync` (onSchedule) — Verkäufe→Bestand; **Artikel-Push** `pushOktoposArticles` + `getOktoposLookups` (onCall) — Artikel/Preise→Kasse; **Kunden-Push** `pushOktoposCustomers` (onCall) — Contacts(Typ Kunde)→Kasse, idempotent via `findByExternalIdentifier` create-if-absent (CustomerApi hat kein Update). OrderApi (Bestell-Import) bewusst NICHT gebaut (keine Kiosk-Quelldaten). **Einzige Functions mit ausgehendem HTTP** (`fetch` gegen die Kasse, Header `X-API-KEY`); Key im **Secret Manager `OKTOPOS_API_KEYS`**, NIE im Client. Pull schreibt Bestandsbewegungen via Admin SDK (umgeht Rules) mit `source:'oktopos'` (Client darf das laut `stockMovements`-Rules NICHT). Push-Idempotenz über `externalReferenceNumber = Produkt-ID` (409→change-prices). Config (baseUrl/cashRegisterId/push-Tokens) in `config/oktoposSync`. Brauchen **Blaze** (Outbound + Secret + Scheduler). UI-Schalter `AppConfig.oktoposEnabled` (`APP_OKTOPOS_ENABLED`, Default aus).
 - Nur **Schichten + Zeiteinträge** laufen über Callables (gated durch `!AppConfig.disableAuthentication`). Templates/Teams/Sites/Abwesenheiten/Verträge schreiben **direkt** in Firestore.
 - Callables prüfen Caller-Rolle/Permissions + Same-Org und re-validieren Compliance serverseitig. Bei blockierender Verletzung → `failed-precondition`. **Client wirft das als `StateError(deutscheMessage)` und verwirft die strukturierten `{issues}`/`{validations}`.** Batch-Limit = **50**.
 - **`previewCompliance` wird vom Dart-Client NICHT aufgerufen** — Preview macht clientseitig `ComplianceService`.
@@ -163,7 +166,7 @@ Jedes Model hat **zwei** nicht austauschbare Formate:
 - **Status-Farben (success/warning/info) nie hardcoden** → `Theme.of(context).appColors` (ThemeExtension `AppThemeColors`).
 - Reuse-Widgets in `home_screen.dart` (`_SectionCard`, `_HeaderSection`, `_EmptyState`, `_InfoChip` …) sind **file-private** → nicht importierbar, ggf. nach `lib/widgets/` heben statt kopieren.
 - Modals dominant via `showModalBottomSheet(showDragHandle: true, isScrollControlled: true, useSafeArea: true)`. Abwesenheiten immer über `showAbsenceRequestSheet(...)` (in `notification_screen.dart`).
-- Logo via `const AppLogo(...)` (remappt Markenfarben exakt per ARGB nur im Dark Mode). Rail-vs-BottomNav-Breakpoint ist hartes `>= 1120` in `home_screen` (nicht in `MobileBreakpoints`).
+- Logo via `const AppLogo(...)` (remappt Markenfarben exakt per ARGB nur im Dark Mode). Rail-vs-BottomNav-Breakpoint: Rail ab `mediumWindow=600` über `MobileBreakpoints.useNavigationRail(maxWidth)` (+ Höhen-Guard `maxHeight>=600`), volle Rail-Labels ab `expandedWindow=840` — definiert in `lib/widgets/responsive_layout.dart`, nicht hartkodiert in `home_screen`.
 - Permission-Getter in `lib/models/app_user.dart` (`isAdmin`, `canManageShifts`, `canViewSchedule`, `canViewTimeTracking`, `canEditTimeEntries`, `canViewReports`) gaten **sowohl UI als auch Provider-Mutatoren**.
 
 ## Erster (echter) Admin / „warum kann ich mich nicht einloggen"
@@ -203,9 +206,9 @@ Android-Release-Signierung läuft über `android/key.properties` (Upload-Keystor
 
 ## Claude Skills (Experten-Leitlinien)
 
-Im Verzeichnis `claude-skills/` liegen 19 Flutter-spezifische Experten-Rollen-Prompts (Web, iOS, Android, Desktop aus einer Codebasis). **Claude liest und wendet den jeweils passenden Skill aktiv an**, bevor es an einer Aufgabe in diesem Bereich arbeitet. Die Dateien sind die verbindliche Fachautorität für ihren Bereich — Entscheidungen sollen darin verankert sein.
+Im Verzeichnis `claude-skills/` liegen 23 Flutter-spezifische Experten-Rollen-Prompts (Web, iOS, Android, Desktop aus einer Codebasis). **Claude liest und wendet den jeweils passenden Skill aktiv an**, bevor es an einer Aufgabe in diesem Bereich arbeitet. Die Dateien sind die verbindliche Fachautorität für ihren Bereich — Entscheidungen sollen darin verankert sein.
 
-Diese 19 Prompts sind zusätzlich als **auto-ladende Claude-Code-Skills** unter `.claude/skills/flutter-<domäne>/SKILL.md` verfügbar (Slash-Command `/flutter-…`, greifen via `description`-Keywords automatisch). Sie sind dünne Pointer auf die Quell-Prompts (Single Source of Truth bleibt `claude-skills/`). Generiert/validiert via `node claude-skills/build-skills.mjs` (+ `--check`) und `node claude-skills/validate-skills.mjs`. **Quell-Prompt geändert → `build-skills.mjs` erneut ausführen** (Kompetenz-Liste/Titel werden aus der Quelle extrahiert).
+Diese 23 Prompts sind zusätzlich als **auto-ladende Claude-Code-Skills** unter `.claude/skills/flutter-<domäne>/SKILL.md` verfügbar (Slash-Command `/flutter-…`, greifen via `description`-Keywords automatisch). Sie sind dünne Pointer auf die Quell-Prompts (Single Source of Truth bleibt `claude-skills/`). Generiert/validiert via `node claude-skills/build-skills.mjs` (+ `--check`) und `node claude-skills/validate-skills.mjs`. **Quell-Prompt geändert → `build-skills.mjs` erneut ausführen** (Kompetenz-Liste/Titel werden aus der Quelle extrahiert).
 
 | Aufgabe | Skill-Datei(en) |
 |---|---|
@@ -215,9 +218,13 @@ Diese 19 Prompts sind zusätzlich als **auto-ladende Claude-Code-Skills** unter 
 | Lokale Persistenz, Firestore-Schema, Indexes, Queries | `daten/16_datenbank.md` · `daten/17_datenbankarchitektur.md` |
 | Cloud Functions, Backend-APIs, Daten-Pipelines | `daten/18_backend-daten.md` · `architektur/06_api-architektur.md` · `architektur/05_microservices.md` |
 | Offline-Sync, Konflikt­lösung, Eventual Consistency | `daten/19_datensynchronisierung.md` |
+| App offline nutzbar machen (Web/iOS/Android): PWA/Service-Worker-Caching, Plattform-Offline-Persistenz (Firestore Web vs. mobil), Konnektivitäts-State, Offline-UX | `daten/21_offline-modus.md` |
 | Tests (Unit/Widget/Integration/Golden) schreiben oder erweitern | `entwicklung/08_testing-qa.md` |
 | Fehler­behandlung, Retry, Resilience, Graceful Degradation | `entwicklung/12_error-handling-resilience.md` |
 | Performance, Jank, Flutter DevTools, Bundle-Größe | `entwicklung/10_performance.md` |
 | Code-Qualität (Effective Dart), Refactoring, Tech Debt | `entwicklung/07_clean-code.md` · `entwicklung/11_refactoring-techdebt.md` |
-| Logging, Crash-Reporting, Distributed Tracing, SLO | `entwicklung/14_observability.md` |
+| Crash-Reporting, Monitoring/RUM, Distributed Tracing, Analytics, SLO | `entwicklung/14_observability.md` |
+| Logging-Mechanik (Erzeugung/Struktur/Redaction/Routing), debugPrint→AppLogger, Request-Korrelation, API-/Functions-Logs | `entwicklung/20_logging.md` |
 | CI/CD, GitHub Actions, Signing, Store-Deployment | `entwicklung/09_cicd-devops.md` |
+| **Code-/Diff-/PR-Review vor Commit** (Korrektheit, Zwei-Serialisierungs- & Kopplungs-Check, Compliance-Spiegel, Quality Gates) | `review/22_code-entwicklungs-review.md` |
+| **Plan-Dokumente (plan/) abnehmen + Outputs/Antworten selbst-reviewen** (Vollständigkeit, Machbarkeit, Treue zur Anfrage, Definition of Done) | `review/23_plan-output-review.md` |

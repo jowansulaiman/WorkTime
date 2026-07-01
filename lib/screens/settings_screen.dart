@@ -22,6 +22,8 @@ import '../providers/theme_provider.dart';
 import '../providers/work_provider.dart';
 import '../providers/zeitwirtschaft_provider.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import 'kiosk/kiosk_pin_setup_sheet.dart';
+import 'notification_settings_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -154,6 +156,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   prefixIcon: Icon(Icons.person_outline),
                                 ),
                               ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          _sectionTitle('Benachrichtigungen'),
+                          Card(
+                            margin: EdgeInsets.zero,
+                            child: ListTile(
+                              leading:
+                                  const Icon(Icons.notifications_outlined),
+                              title: const Text('Push-Benachrichtigungen'),
+                              subtitle: const Text(
+                                  'Kategorien und Ruhezeiten festlegen.'),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      const NotificationSettingsScreen(),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          _sectionTitle('Arbeitsmodus (Laden-Tablet)'),
+                          Card(
+                            margin: EdgeInsets.zero,
+                            child: ListTile(
+                              leading: const Icon(Icons.password_outlined),
+                              title: const Text('Kiosk-PIN festlegen'),
+                              subtitle: const Text(
+                                  'PIN zum Anmelden am Laden-Tablet.'),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => showKioskPinSetupSheet(context),
                             ),
                           ),
                           const SizedBox(height: 20),

@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
+import '../core/daily_closing.dart';
+import '../core/daily_closing_posting.dart';
 import '../core/datev_export.dart';
 import '../core/finance_analytics.dart';
 import '../models/app_user.dart';
@@ -510,6 +512,40 @@ class FinanceProvider extends ChangeNotifier {
       reference: order.id!,
       costType: _resolveCostTypeByNeedles(_revenueNeedles),
     );
+  }
+
+  /// **P2.0 — Tagesabschluss buchen** (admin-explizite Aktion, KEINE Automatik).
+  /// Bucht je USt-Satz eine Erlös-Zeile (netto, negativ) auf das via
+  /// [revenueCostTypeIdByRate] **explizit** zugeordnete Erlöskonto (Satz →
+  /// CostType-ID). Idempotent über die deterministischen `pos-`-IDs
+  /// (Re-Buchung überschreibt). Sätze ohne zugeordnetes Konto werden
+  /// übersprungen + geloggt. Liefert die Anzahl gebuchter Zeilen.
+  ///
+  /// **Richtwert** (Steuerberater prüft; Kassendaten Swagger-unverifiziert).
+  Future<int> postDailyClosing(
+    DailyClosing closing, {
+    required Map<int, String> revenueCostTypeIdByRate,
+  }) async {
+    if (!isAdmin || _orgId == null) return 0;
+    final costCenter = _resolveSiteCostCenter(closing.siteId);
+    if (costCenter?.id == null) {
+      AppLogger.warning(
+        'Tagesabschluss übersprungen: keine eindeutige Kostenstelle für '
+        'Standort ${closing.siteId}.',
+      );
+      return 0;
+    }
+    final entries = buildDailyClosingEntries(
+      closing,
+      orgId: _orgId!,
+      costCenterId: costCenter!.id!,
+      revenueCostTypeIdByRate: revenueCostTypeIdByRate,
+      createdByUid: _currentUser?.uid,
+    );
+    for (final entry in entries) {
+      await saveJournalEntry(entry);
+    }
+    return entries.length;
   }
 
   Future<String?> _postOrderJournal({

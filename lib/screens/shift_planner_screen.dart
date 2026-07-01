@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -9,15 +10,19 @@ import 'package:collection/collection.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_violation.dart';
+import '../core/hex_color.dart';
 import '../core/shift_auto_assigner.dart';
 import '../models/shift.dart';
 import '../models/shift_swap_request.dart';
 import '../models/shift_template.dart';
+import '../models/qualification_definition.dart';
+import '../models/site_definition.dart';
 import '../models/team_definition.dart';
 import '../providers/auth_provider.dart';
 import '../providers/feature_flag_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/team_provider.dart';
+import '../routing/shell_tab.dart';
 import '../services/compliance_rejected_exception.dart';
 import '../services/export_service.dart';
 import '../theme/app_theme.dart';
@@ -739,11 +744,22 @@ class ShiftPlannerScreen extends StatelessWidget {
       return;
     }
 
-    final result = await schedule.proposeAutoAssignment(
-      openShifts: openShifts,
-      month: range.start,
-      settings: settings,
+    // Auto-Verteilung sammelt org-weit belegte Schichten + genehmigte
+    // Abwesenheiten für den vollen Monat — kann spürbar dauern. Blockierenden
+    // Spinner zeigen, damit der Nutzer den Fortschritt sieht.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
     );
+    final result = await schedule
+        .proposeAutoAssignment(
+          openShifts: openShifts,
+          month: range.start,
+          settings: settings,
+        )
+        .whenComplete(navigator.pop);
 
     if (!context.mounted) return;
     final confirmed = await showModalBottomSheet<bool>(
@@ -1003,6 +1019,7 @@ class ShiftPlannerScreen extends StatelessWidget {
     final result = await showModalBottomSheet<_ShiftEditorResult>(
       context: context,
       isScrollControlled: true,
+      showDragHandle: true,
       useSafeArea: true,
       builder: (sheetContext) => Padding(
         padding: EdgeInsets.only(
@@ -1168,7 +1185,18 @@ class ShiftPlannerScreen extends StatelessWidget {
       return;
     }
 
-    await scheduleProvider.submitAbsenceRequest(result);
+    try {
+      await scheduleProvider.submitAbsenceRequest(result);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Abwesenheit gemeldet.')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Fehler: $error')),
+      );
+    }
   }
 }
 
@@ -1844,28 +1872,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                           child: _outlineActionButton(context, 'AKTIONEN'),
                         ),
                         const SizedBox(width: 10),
-                        PopupMenuButton<String>(
-                          onSelected: (value) =>
-                              _handleToolbarActionSelection(context, value),
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(
-                              value: 'publish_changes',
-                              child: Text(
-                                'Veroeffentlichen und Benachrichtigungen bei Aenderungen',
-                              ),
-                            ),
-                            PopupMenuItem(
-                              value: 'publish_all',
-                              child: Text(
-                                  'Veroeffentlichen und alle benachrichtigen'),
-                            ),
-                            PopupMenuItem(
-                              value: 'publish_silent',
-                              child: Text(
-                                'Veroeffentlichen und niemanden benachrichtigen',
-                              ),
-                            ),
-                          ],
+                        InkWell(
+                          onTap: () =>
+                              _handleToolbarActionSelection(context, 'publish'),
+                          borderRadius: BorderRadius.circular(12),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 18,
@@ -1920,6 +1930,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         value: 'auto',
         child: Text('Automatisch planen'),
       ),
+      const PopupMenuItem(
+        value: 'staffing_profile',
+        child: Text('Besetzungs-Profil (Kassendaten)'),
+      ),
       const PopupMenuDivider(),
       const PopupMenuItem(
         value: 'pdf',
@@ -1943,16 +1957,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
       if (includePublishOptions) ...[
         const PopupMenuDivider(),
         const PopupMenuItem(
-          value: 'publish_changes',
-          child: Text('Veroeffentlichen und Aenderungen melden'),
-        ),
-        const PopupMenuItem(
-          value: 'publish_all',
-          child: Text('Veroeffentlichen und alle benachrichtigen'),
-        ),
-        const PopupMenuItem(
-          value: 'publish_silent',
-          child: Text('Veroeffentlichen ohne Benachrichtigung'),
+          value: 'publish',
+          child: Text('Veroeffentlichen'),
         ),
       ],
     ];
@@ -1974,6 +1980,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         await widget.onCopyWeek();
       case 'auto':
         await widget.onAutoPlan();
+      case 'staffing_profile':
+        context.push(AppRoutes.staffingProfile);
       case 'pdf':
         await widget.onExport(
           ShiftPlanExportFormat.pdf,
@@ -1988,24 +1996,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         setState(() => _layoutMode = _PlannerLayoutMode.employee);
       case 'layout_location':
         setState(() => _layoutMode = _PlannerLayoutMode.location);
-      case 'publish_changes':
-        await _publishVisibleShifts(
-          context,
-          shifts,
-          modeLabel: 'mit Aenderungsbenachrichtigung',
-        );
-      case 'publish_all':
-        await _publishVisibleShifts(
-          context,
-          shifts,
-          modeLabel: 'mit Benachrichtigung an alle',
-        );
-      case 'publish_silent':
-        await _publishVisibleShifts(
-          context,
-          shifts,
-          modeLabel: 'ohne Benachrichtigung',
-        );
+      case 'publish':
+        await _publishVisibleShifts(context, shifts);
     }
   }
 
@@ -3596,9 +3588,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
 
   Future<void> _publishVisibleShifts(
     BuildContext context,
-    List<Shift> shifts, {
-    required String modeLabel,
-  }) async {
+    List<Shift> shifts,
+  ) async {
     final publishable = shifts
         .where((shift) =>
             shift.status != ShiftStatus.completed &&
@@ -3611,23 +3602,75 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
       );
       return;
     }
-    await context.read<ScheduleProvider>().publishShifts(publishable);
-    if (!context.mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Schichtplan fuer ${publishable.length} Schichten veroeffentlicht ($modeLabel).',
+    try {
+      await context.read<ScheduleProvider>().publishShifts(publishable);
+      if (!context.mounted) {
+        return;
+      }
+      // Server-seitig (onShiftWritten-Trigger) wird jede neu bestaetigte,
+      // zugewiesene Schicht dem Mitarbeiter gemeldet (In-App + Push, pro Woche
+      // gebuendelt) — daher die Benachrichtigung hier ehrlich ansagen.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Schichtplan fuer ${publishable.length} Schichten veroeffentlicht. '
+            'Zugewiesene Mitarbeiter werden benachrichtigt.',
+          ),
         ),
+      );
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Fehler: $error'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  static Future<bool> _confirmShiftDeletion(
+    BuildContext context, {
+    required bool series,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(series ? 'Ganze Serie löschen?' : 'Schicht löschen?'),
+        content: Text(
+          series
+              ? 'Alle Schichten dieser Serie werden entfernt. Das kann nicht rückgängig gemacht werden.'
+              : 'Diese Schicht wird entfernt. Das kann nicht rückgängig gemacht werden.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            child: const Text('Löschen'),
+          ),
+        ],
       ),
     );
+    return confirmed ?? false;
   }
 
   Future<void> _deleteShift(BuildContext context, Shift shift) async {
     if (shift.id == null) {
       return;
     }
+    if (!await _confirmShiftDeletion(context, series: false)) {
+      return;
+    }
+    if (!context.mounted) return;
     try {
       await context.read<ScheduleProvider>().deleteShift(shift.id!);
     } catch (error) {
@@ -3644,6 +3687,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
   }
 
   Future<void> _deleteShiftSeries(BuildContext context, String seriesId) async {
+    if (!await _confirmShiftDeletion(context, series: true)) {
+      return;
+    }
+    if (!context.mounted) return;
     try {
       await context.read<ScheduleProvider>().deleteShiftSeries(seriesId);
     } catch (error) {
@@ -3823,12 +3870,16 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
+      child: ConstrainedBox(
+        // Mind. 48dp Tap-Ziel (vorher ~36dp).
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        child: Container(
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: colorScheme.onSurfaceVariant),
         ),
-        child: Icon(icon, color: colorScheme.onSurfaceVariant),
       ),
     );
   }
@@ -4656,9 +4707,7 @@ class _ShiftCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final startFmt = DateFormat('EEE, dd.MM. HH:mm', 'de_DE');
     final endFmt = DateFormat('HH:mm', 'de_DE');
-    final borderColor = shift.color != null
-        ? Color(int.parse(shift.color!.replaceFirst('#', '0xFF')))
-        : null;
+    final borderColor = tryParseHexColor(shift.color);
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       shape: borderColor != null
@@ -4799,8 +4848,13 @@ class _ShiftCard extends StatelessWidget {
             ],
           ),
           isThreeLine: true,
-          leading:
-              CircleAvatar(child: Text(shift.employeeName.substring(0, 1))),
+          leading: CircleAvatar(
+            child: Text(
+              shift.employeeName.trim().isEmpty
+                  ? '?'
+                  : shift.employeeName.trim().characters.first.toUpperCase(),
+            ),
+          ),
           trailing: isAdmin
               ? PopupMenuButton<String>(
                   onSelected: (value) {
@@ -5321,158 +5375,6 @@ class _ShiftConflictList extends StatelessWidget {
   }
 }
 
-class _AssigneeAvailabilityTile extends StatelessWidget {
-  const _AssigneeAvailabilityTile({
-    required this.availability,
-    this.title,
-  });
-
-  final ShiftAssigneeAvailability availability;
-  final String? title;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final appColors = theme.appColors;
-    final reasons = _buildAssigneeAvailabilityReasons(availability);
-    final hasBlocking = reasons.any(
-      (reason) => reason.tone == _AvailabilityReasonTone.blocking,
-    );
-    final accent = hasBlocking ? colorScheme.error : appColors.warning;
-    final accentContainer =
-        hasBlocking ? colorScheme.errorContainer : appColors.warningContainer;
-    final onAccentContainer = hasBlocking
-        ? colorScheme.onErrorContainer
-        : appColors.onWarningContainer;
-    final blockingViolationCount = availability.blockingViolations.length;
-    final warningCount = availability.warningViolations.length;
-
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: accent.withValues(alpha: 0.24)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (title != null) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              child: Text(
-                title!,
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: accent,
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-          Padding(
-            padding: EdgeInsets.fromLTRB(16, title == null ? 16 : 0, 16, 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                CircleAvatar(
-                  radius: 22,
-                  backgroundColor: accentContainer.withValues(alpha: 0.9),
-                  foregroundColor: onAccentContainer,
-                  child: Text(
-                    _initialsForName(availability.member.displayName),
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: onAccentContainer,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        availability.member.displayName,
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        availability.member.role.label,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                _EditorCountBadge(
-                  label: hasBlocking ? 'Blockiert' : 'Warnung',
-                  tone: hasBlocking
-                      ? _EditorBadgeTone.error
-                      : _EditorBadgeTone.warning,
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                if (availability.conflictingShifts.isNotEmpty)
-                  _AvailabilityMetaChip(
-                    icon: Icons.schedule_outlined,
-                    label:
-                        '${availability.conflictingShifts.length} Schicht${availability.conflictingShifts.length == 1 ? '' : 'en'}',
-                  ),
-                if (availability.blockingAbsences.isNotEmpty)
-                  _AvailabilityMetaChip(
-                    icon: Icons.event_busy_outlined,
-                    label:
-                        '${availability.blockingAbsences.length} Abwesenheit${availability.blockingAbsences.length == 1 ? '' : 'en'}',
-                  ),
-                if (blockingViolationCount > 0)
-                  _AvailabilityMetaChip(
-                    icon: Icons.gpp_bad_outlined,
-                    label:
-                        '$blockingViolationCount Regel${blockingViolationCount == 1 ? '' : 'n'} blockiert',
-                  ),
-                if (warningCount > 0)
-                  _AvailabilityMetaChip(
-                    icon: Icons.warning_amber_rounded,
-                    label:
-                        '$warningCount Hinweis${warningCount == 1 ? '' : 'e'}',
-                  ),
-              ],
-            ),
-          ),
-          Divider(
-            height: 1,
-            color: accent.withValues(alpha: 0.18),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-            child: Column(
-              children: [
-                for (var i = 0; i < reasons.length; i++) ...[
-                  _AvailabilityReasonRow(reason: reasons[i]),
-                  if (i < reasons.length - 1) const SizedBox(height: 8),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 enum _EditorNoticeTone { info, warning }
 
 enum _EditorBadgeTone { neutral, success, warning, error }
@@ -5602,105 +5504,6 @@ class _EditorCountBadge extends StatelessWidget {
           color: foreground,
           fontWeight: FontWeight.w700,
         ),
-      ),
-    );
-  }
-}
-
-class _AvailabilityMetaChip extends StatelessWidget {
-  const _AvailabilityMetaChip({
-    required this.icon,
-    required this.label,
-  });
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            icon,
-            size: 16,
-            color: colorScheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AvailabilityReasonRow extends StatelessWidget {
-  const _AvailabilityReasonRow({required this.reason});
-
-  final _AvailabilityReason reason;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final appColors = theme.appColors;
-    final isBlocking = reason.tone == _AvailabilityReasonTone.blocking;
-    final background = isBlocking
-        ? colorScheme.errorContainer.withValues(alpha: 0.72)
-        : appColors.warningContainer.withValues(alpha: 0.72);
-    final foreground = isBlocking
-        ? colorScheme.onErrorContainer
-        : appColors.onWarningContainer;
-    final accent = isBlocking ? colorScheme.error : appColors.warning;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              reason.icon,
-              size: 18,
-              color: accent,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              reason.message,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: foreground,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

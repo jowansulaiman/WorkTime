@@ -143,7 +143,19 @@ void main() {
     expect(await pumpIsOn(tester, flags: flags), isTrue);
   });
 
-  testWidgets('isOn ist false ohne Flag und ohne Override', (tester) async {
+  testWidgets(
+      'isOn ist true ohne Flag (produktiver Default V2, defaultEnabled)',
+      (tester) async {
+    final flags = FeatureFlagProvider(firestoreService: firestoreService);
+    await flags.updateSession(user, localStorageOnly: false);
+    expect(await pumpIsOn(tester, flags: flags), isTrue);
+  });
+
+  testWidgets('isOn ist false, wenn die Org explizit redesign_v2=false setzt',
+      (tester) async {
+    await seedConfig({
+      'featureFlags': {'redesign_v2': false},
+    });
     final flags = FeatureFlagProvider(firestoreService: firestoreService);
     await flags.updateSession(user, localStorageOnly: false);
     expect(await pumpIsOn(tester, flags: flags), isFalse);

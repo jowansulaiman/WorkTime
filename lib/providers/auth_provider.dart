@@ -9,6 +9,7 @@ import '../core/app_config.dart';
 import '../core/local_demo_data.dart';
 import '../firebase_options.dart';
 import '../models/app_user.dart';
+import '../models/notification_prefs.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
@@ -42,6 +43,30 @@ class AuthProvider extends ChangeNotifier {
   bool get isAuthenticated => authDisabled
       ? _profile != null
       : _firebaseUser != null && _profile != null;
+
+  /// Push-Präferenzen des eigenen Profils setzen (M5). Optimistisch lokal
+  /// übernommen (UI sofort), dann best-effort in die Cloud — im local-/Offline-
+  /// Modus bleibt die lokale Übernahme bestehen.
+  Future<void> updateNotificationPrefs(NotificationPrefs prefs) async {
+    final current = _profile;
+    if (current == null) {
+      return;
+    }
+    _profile = current.copyWith(notificationPrefs: prefs);
+    notifyListeners();
+    if (authDisabled) {
+      return;
+    }
+    try {
+      await _firestoreService.updateNotificationPrefs(
+        current.uid,
+        prefs.toFirestoreMap(),
+      );
+    } catch (error, stackTrace) {
+      AppLogger.error('Push-Präferenzen speichern fehlgeschlagen',
+          error: error, stackTrace: stackTrace);
+    }
+  }
   bool get isResolvingProfile =>
       !authDisabled &&
       _firebaseUser != null &&

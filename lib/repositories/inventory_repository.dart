@@ -1,8 +1,10 @@
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
+import '../models/pos_receipt.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
+import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
@@ -32,6 +34,29 @@ abstract interface class InventoryRepository {
     int limit = 100,
   });
 
+  /// Bestandsbewegungen im Zeitraum [from]..[to] (inklusive, nach `createdAt`),
+  /// optional auf einen Standort ([siteId]) gefiltert. Anders als
+  /// [watchStockMovements] OHNE hartes Limit — Auswertungen ueber Wochen
+  /// (Verkaufsgeschwindigkeit/Reichweite/Schwund) brauchen mehr als die
+  /// juengsten 100 Bewegungen. Einmaliger Read statt Stream.
+  Future<List<StockMovement>> getStockMovementsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  });
+
+  /// Verkaufsfakten (`posReceipts`, P0) im Zeitraum [from]..[to] nach
+  /// `transactionDate` (inklusive), optional standortgefiltert. **Cloud-only**
+  /// (read) — Basis der Finanz-/Marge-/Schwund-Auswertungen (P2). Serverseitig
+  /// geschrieben; es gibt keinen lokalen Fallback.
+  Future<List<PosReceipt>> getPosReceiptsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  });
+
   Future<void> saveSupplier(Supplier supplier);
 
   Future<void> deleteSupplier({
@@ -44,6 +69,24 @@ abstract interface class InventoryRepository {
   Future<void> deleteProduct({
     required String orgId,
     required String productId,
+  });
+
+  // --- MHD-/Ablauf-Chargen (productBatches) ------------------------------
+  // Warenchargen mit Mindesthaltbarkeitsdatum. Ein Artikel kann mehrere Chargen
+  // mit unterschiedlichem MHD haben. Reiner `orderBy(expiryDay)`-Stream
+  // (Single-Field, auto-indiziert) — die Warnung wird clientseitig via
+  // `computeExpiryWarnings` abgeleitet (kein Composite-Index in M1).
+
+  /// Warenchargen mit MHD (Collection `productBatches`), aufsteigend nach MHD.
+  Stream<List<ProductBatch>> watchProductBatches(String orgId);
+
+  /// Speichert eine Charge (Anlage oder Update; Doc-ID bei Anlage vergeben).
+  Future<void> saveProductBatch(ProductBatch batch);
+
+  /// Loescht eine Charge.
+  Future<void> deleteProductBatch({
+    required String orgId,
+    required String batchId,
   });
 
   /// Schreibt einen unveraenderlichen Preis-Historie-Eintrag in die
@@ -64,6 +107,18 @@ abstract interface class InventoryRepository {
     required StockMovementType type,
     String? reason,
     String? relatedOrderId,
+    String? createdByUid,
+    String? clientMutationId,
+  });
+
+  /// Setzt den Kühlschrank-Ist-Stand [fridgeStock] eines Artikels (absolut) und
+  /// protokolliert eine `fridgeRefill`-Bewegung über [refilledQty]. Ändert den
+  /// Gesamtbestand (`currentStock`) NICHT — reine Umlagerung Lager→Kühlschrank.
+  Future<void> setFridgeStock({
+    required String orgId,
+    required String productId,
+    required int fridgeStock,
+    required int refilledQty,
     String? createdByUid,
     String? clientMutationId,
   });

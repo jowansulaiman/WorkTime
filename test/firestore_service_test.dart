@@ -21,6 +21,32 @@ void main() {
       service = FirestoreService(firestore: firestore);
     });
 
+    test('saveWorkEntryBatch wirft bei gemischten Organisationen (orgId-Guard)',
+        () async {
+      final mixed = [
+        WorkEntry(
+          orgId: 'org-1',
+          userId: 'employee-1',
+          date: DateTime(2026, 4, 5),
+          startTime: DateTime(2026, 4, 5, 8),
+          endTime: DateTime(2026, 4, 5, 16),
+          breakMinutes: 30,
+        ),
+        WorkEntry(
+          orgId: 'org-2',
+          userId: 'employee-2',
+          date: DateTime(2026, 4, 5),
+          startTime: DateTime(2026, 4, 5, 8),
+          endTime: DateTime(2026, 4, 5, 16),
+          breakMinutes: 30,
+        ),
+      ];
+      expect(
+        () => service.saveWorkEntryBatch(mixed),
+        throwsA(isA<StateError>()),
+      );
+    });
+
     test(
       'saveSite returns the assigned doc id for a new site (audit linkage, H-F1)',
       () async {

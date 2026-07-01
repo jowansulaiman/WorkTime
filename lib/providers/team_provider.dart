@@ -192,9 +192,10 @@ class TeamProvider extends ChangeNotifier {
     final sessionKey =
         user == null ? null : '${user.uid}:${user.orgId}:$_storageModeKey';
     if (sessionKey == _lastSessionKey && user != null) {
-      if (!usesLocalStorage || _currentUser?.uid != user.uid) {
-        _currentUser = user;
-      }
+      // #64: Profil-/Rollen-/Rechte-/isActive-Änderung desselben Nutzers immer
+      // übernehmen (billige Referenz-Zuweisung, kein Stream-Neuaufbau) — der
+      // sessionKey enthält nur uid/orgId/Modus, nicht die Rolle.
+      _currentUser = user;
       return;
     }
     _lastSessionKey = sessionKey;
@@ -386,6 +387,10 @@ class TeamProvider extends ChangeNotifier {
         _members = [user];
         _invites = [];
         _teams = [];
+        // #63: Nicht-Manager haben keinen Mitglieder-Stream, der `_loading`
+        // zurücksetzt → Spinner hing dauerhaft. Stammdaten kommen über die
+        // Sites/Quali-Streams nach; die Mitglieder-Sicht ist sofort fertig.
+        _loading = false;
       }
 
       _sitesSubscription = _firestoreService.watchSites(user.orgId).listen(
@@ -1365,6 +1370,13 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
+    // #65: Defense-in-Depth — nur Mitglieder der eigenen Org (de)aktivieren
+    // (die Firestore-Rules erzwingen das ebenfalls; hier zusätzlich am Client).
+    final isOrgMember =
+        uid == currentUser.uid || _members.any((m) => m.uid == uid);
+    if (!isOrgMember) {
+      return;
+    }
     await _firestoreService.setUserActive(uid: uid, isActive: isActive);
     _audit?.call(
       action: AuditAction.updated,

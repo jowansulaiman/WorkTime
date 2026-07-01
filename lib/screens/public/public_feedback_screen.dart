@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/app_config.dart';
+import '../../core/app_logger.dart';
 import '../../models/customer_feedback.dart';
 import '../../services/firestore_service.dart';
 import '../../theme/app_theme.dart';
@@ -146,9 +147,11 @@ class _PublicFeedbackScreenState extends State<PublicFeedbackScreen> {
 
   void _handleError(String message, [Object? cause]) {
     if (cause != null) {
-      // In die Konsole loggen, damit die echte Ursache diagnostizierbar ist
-      // (der generische Text verschluckt sie sonst).
-      debugPrint('Feedback-Submit fehlgeschlagen: $cause');
+      // Zentral & release-fest loggen, damit die echte Ursache diagnostizierbar
+      // ist (der generische Text verschluckt sie sonst). AppLogger ist
+      // dependency-frei (nur dart:developer) und im public-Pfad ohne Provider
+      // sicher nutzbar; maskiert E-Mails automatisch.
+      AppLogger.warning('Feedback-Submit fehlgeschlagen', error: cause);
     }
     if (!mounted) {
       return;

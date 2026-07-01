@@ -15,6 +15,7 @@ import 'core/accessibility.dart';
 import 'core/app_config.dart';
 import 'core/app_logger.dart';
 import 'core/error_reporter.dart';
+import 'core/quick_actions_service.dart';
 import 'core/redesign_flags.dart';
 import 'firebase_options.dart';
 import 'providers/audit_provider.dart';
@@ -23,9 +24,12 @@ import 'providers/contact_provider.dart';
 import 'providers/feature_flag_provider.dart';
 import 'providers/finance_provider.dart';
 import 'providers/inventory_provider.dart';
+import 'providers/notification_provider.dart';
 import 'providers/personal_provider.dart';
+import 'providers/sales_insights_provider.dart';
 import 'providers/schedule_provider.dart';
 import 'providers/storage_mode_provider.dart';
+import 'providers/store_task_provider.dart';
 import 'providers/team_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/work_provider.dart';
@@ -37,6 +41,7 @@ import 'screens/public/public_legal_screen.dart';
 import 'screens/public/public_wish_app.dart';
 import 'services/auth_service.dart';
 import 'services/firestore_service.dart';
+import 'services/push_messaging_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/bootstrap_frame.dart';
 
@@ -169,6 +174,20 @@ class _AppBootstrapState extends State<AppBootstrap> {
       // sodass Reads auch offline bedient werden und beim Reconnect automatisch
       // synchronisiert werden. Reduziert Cloud-Reads erheblich.
       FirebaseFirestore.instance.settings = _buildFirestoreSettings();
+
+      // Push-Benachrichtigungen (FCM): nur mit aktivem Flag und außerhalb der
+      // öffentlichen Hüllen. No-op auf nicht unterstützten Plattformen; die
+      // eigentliche Token-Registrierung passiert erst nach Login über den
+      // NotificationProvider. Fail-open (Push darf den Start nie blockieren —
+      // analog App Check; sonst meldet runZonedGuarded einen fatalen Zonenfehler).
+      if (AppConfig.pushEnabled && !_publicMode) {
+        try {
+          await PushMessagingService.instance.initialize();
+        } catch (error, stackTrace) {
+          ErrorReporter.report(error, stackTrace,
+              context: 'PushMessagingService.initialize');
+        }
+      }
     }
 
     // Im öffentlichen Wunsch-Modus KEIN authProvider.init(): keine
@@ -276,6 +295,37 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
   // Consumer2-Build, weil FeatureFlag-/ThemeProvider von MultiProvider lazy
   // (create:) entstehen und vorher nicht als Instanz vorliegen.
   GoRouter? _router;
+
+  @override
+  void initState() {
+    super.initState();
+    // Schnellaktionen-Menü (Long-Press auf das App-Icon) an den go_router
+    // koppeln. Navigation läuft über den Root-Navigator-Context; ist der noch
+    // nicht montiert (Cold-Start), greift die pending-route-Zustellung im
+    // Gate-Redirect. Nur Mobile, sonst No-op.
+    QuickActionsService.instance.navigate = (route) {
+      final ctx = rootNavigatorKey.currentContext;
+      if (ctx != null) ctx.go(route);
+    };
+    // Push-Tap → Deep-Link (gleiche gate-konforme Zustellung wie Schnellaktionen:
+    // Warmstart navigiert direkt, Cold-Start/Hintergrund über die Pending-Route
+    // im Gate-Redirect, sobald Auth/Profil aufgelöst sind).
+    PushMessagingService.instance.navigate = (route) {
+      final ctx = rootNavigatorKey.currentContext;
+      if (ctx != null) ctx.go(route);
+    };
+    // fire-and-forget; Fehler beim Schnellaktionen-Setup dürfen den Start NICHT
+    // fatal machen (sonst meldet runZonedGuarded sie als fatalen Zonenfehler).
+    unawaited(
+      QuickActionsService.instance.init().catchError(
+        (Object error, StackTrace stack) => ErrorReporter.report(
+          error,
+          stack,
+          context: 'QuickActionsService.init',
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -395,6 +445,18 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
             return provider;
           },
         ),
+        // Auswertungs-Read-State (P1.1–P1.3): delegiert an die lebende
+        // InventoryProvider-Instanz (zustandslose Rechen-Methoden), hält nur das
+        // Ergebnis — daher NACH Inventory in der Kette, kein eigenes Cloud-Repo.
+        ChangeNotifierProxyProvider2<AuthProvider, InventoryProvider,
+            SalesInsightsProvider>(
+          create: (_) => SalesInsightsProvider(),
+          update: (_, auth, inventory, provider) {
+            provider ??= SalesInsightsProvider();
+            provider.bind(inventory, auth.profile);
+            return provider;
+          },
+        ),
         ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
             AuditProvider, ContactProvider>(
           create: (_) => ContactProvider(
@@ -411,6 +473,28 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
               ),
               'ContactProvider.updateSession',
               onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        // Laden-To-Dos (Arbeitsmodus/Kiosk): Broadcast-Aufgaben je Laden. Leiter
+        // legt an; jeder Mitarbeiter darf am Kiosk abhaken. Auth/Storage/Audit
+        // wie ContactProvider.
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, StoreTaskProvider>(
+          create: (_) => StoreTaskProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, audit, provider) {
+            provider ??= StoreTaskProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'StoreTaskProvider.updateSession',
             );
             return provider;
           },
@@ -532,6 +616,26 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
             return provider;
           },
         ),
+        // Push-Token-Lebenszyklus (M1): hängt nur von Auth + Storage ab → ans
+        // Kettenende. Registriert beim Login den FCM-Token, meldet ihn beim
+        // Logout ab; In-App-Inbox folgt in M2/M3. Service ist plattform-/flag-
+        // gegated → im Demo-/local-Modus No-op.
+        ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
+            NotificationProvider>(
+          create: (_) => NotificationProvider(),
+          update: (_, auth, storage, provider) {
+            provider ??= NotificationProvider();
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'NotificationProvider.updateSession',
+            );
+            return provider;
+          },
+        ),
       ],
       child: Consumer2<ThemeProvider, FeatureFlagProvider>(
         builder: (context, themeProvider, featureFlags, _) {
@@ -592,8 +696,10 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
 /// (APP_REDESIGN_V2) gewinnt, sonst zaehlt das org-seitige `redesign_v2`-Flag.
 bool _resolveUseV2(FeatureFlagProvider featureFlags, bool? runtimeOverride) =>
     RedesignFlags.resolve(
-      serverFlag:
-          featureFlags.isEnabled(RedesignFlags.flagKey, fallback: false),
+      serverFlag: featureFlags.isEnabled(
+        RedesignFlags.flagKey,
+        fallback: RedesignFlags.defaultEnabled,
+      ),
       runtimeOverride: runtimeOverride,
     );
 

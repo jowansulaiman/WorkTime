@@ -140,7 +140,11 @@ void main() {
         () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);
-      final pickup = DateTime(2026, 6, 19, 12);
+      // Bewusst ein bereits vergangener Abholtermin (spät abgeholte
+      // Wiederholung). Der Folgetermin muss trotzdem in der Zukunft landen.
+      final now = DateTime.now();
+      final pickup =
+          DateTime(now.year, now.month, now.day, 12).subtract(const Duration(days: 10));
       await provider.saveCustomerOrder(
         order(
           customer: 'Stammkunde',
@@ -158,7 +162,11 @@ void main() {
           .firstWhere((o) => o.status == CustomerOrderStatus.open);
       expect(pickedUp.customerName, 'Stammkunde');
       expect(followUp.customerName, 'Stammkunde');
-      expect(followUp.pickupDate, DateTime(2026, 6, 26, 12)); // +7 Tage
+      // Folgetermin liegt in der Zukunft ...
+      final today = DateTime(now.year, now.month, now.day);
+      expect(followUp.pickupDate!.isAfter(today), isTrue);
+      // ... und auf dem Wochen-Raster des Originaltermins (ganze Wochen).
+      expect(followUp.pickupDate!.difference(pickup).inDays % 7, 0);
       expect(followUp.isPrepared, isFalse);
       expect(followUp.recurrence, CustomerOrderRecurrence.weekly);
       expect(followUp.id, isNot(pickedUp.id));

@@ -1,63 +1,57 @@
 # WorkTime — Code-Review: Bugs & Probleme
 
-_Stand: 2026-06-21 · Automatisierter Multi-Agent-Review (Finder → adversariale Verifikation → Synthese), ergänzt um manuelle Verifikation der wichtigsten Befunde._
+> **Re-Verifikation 2026-06-29.** Alle 76 Befunde des Reviews vom 21.06. wurden gegen den
+> **aktuellen** Code neu geprüft (Multi-Agent, jeder Befund am echten Code, Zeilennummern
+> der Ursprungsbefunde sind veraltet). Ergebnis unten. Baseline weiterhin grün:
+> `flutter analyze` sauber (2 triviale Alt-Hinweise), **1067 Tests grün**.
 
-## Methodik
+## Kernergebnis der Re-Verifikation
 
-- **17 Review-Bereiche** (pro Modul + querschnittliche Lenses), jeder Befund mit `datei:zeile` belegt.
-- Befunde aus den Hauptläufen wurden **adversarial verifiziert** (ein zweiter Agent versuchte, jeden Befund am echten Code zu widerlegen; widerlegte Befunde sind nicht enthalten).
-- Ein Teil der Bereiche musste wegen temporärer API-Ausfälle in einem **Einzelpass ohne zweite Verifikation** laufen — diese sind als _„Einzelpass (unverifiziert)“_ markiert; die wichtigsten davon wurden **manuell am Code nachgeprüft** (_„selbst verifiziert“_).
-- **Baseline:** `flutter analyze` ist sauber (bis auf 2 triviale Hinweise), **alle 453 Tests grün** — die folgenden Befunde sind also Dinge, die Lint/Tests **nicht** fangen.
+- **Alle kritischen & hohen Befunde sind behoben.** Server-Compliance-Spiegel (validateSingleWorkEntry),
+  Minuten-Aggregations-Drift, Duplikat-Docs (stabile Client-UUID), `parseEuroToCents` (→ `Money.parseCents`),
+  Übernacht-Schichten — alle in den letzten 8 Tagen gefixt (am Code belegt).
+- **Verbleibend: 41 offene/teilweise Befunde, ausschließlich niedrig/mittel** (Test-Lücken,
+  kleine Provider-Edge-Cases, Doku-Drift, toter Code, Härtungs-Restpunkte).
+- **CSV-Formel-Injection, CSV-CR-Quoting, PDF/`DateFormat`-`de_DE`** ebenfalls bereits behoben.
 
-## Schweregrad-Übersicht
+| Schweregrad | 21.06. | offen/teilw. (29.06.) |
+|---|---|---|
+| 🔴 Kritisch | 1 | **0** |
+| 🟠 Hoch | 4 | **0** |
+| 🟡 Mittel | 17 | 4 |
+| ⚪ Niedrig | 54 | 37 |
 
-| Schweregrad | Anzahl |
-|---|---|
-| 🔴 Kritisch | 1 |
-| 🟠 Hoch | 4 |
-| 🟡 Mittel | 17 |
-| ⚪ Niedrig | 54 |
-| **Summe** | **76** |
+> Hinweis: Ein Teil dieser offenen Befunde wird im **Konsolidierungs-Lauf vom 29.06.**
+> miterledigt (z.B. core-lohn toter Steuersatz-Code → L4; Lohn-Prefill falscher Monat
+> #53 → L2). Stand der Umsetzung: siehe [plan/konsolidierung-duplikate-kopplung.md](../plan/konsolidierung-duplikate-kopplung.md).
 
-Verifizierungsstatus: adversarial verifiziert: 36, Einzelpass (unverifiziert): 32, selbst verifiziert: 8.
+## Offene / teilweise Befunde (mittel zuerst)
 
-## Dateien
+| Schwere | Status | Bereich | Befund |
+|---|---|---|---|
+| mittel | offen | provider-state | #22 Hybrid-LWW vergleicht client-lokales `updatedAt` (`DateTime.now`) mit `serverTimestamp` |
+| mittel | teilw. | services-firestore | Callable-Idempotenz ohne `clientMutationId` (Daten-Integrität via stabile UUID gelöst, Trace-ID instabil) |
+| mittel | teilw. | sicherheit | `customerWishes`: jeder Auth-Nutzer (auch fremde Org) kann unbegrenzt in main-org schreiben (App-Check/Rate-Limit) |
+| mittel | offen | test-lücken | #19 Hybrid-Offline-Fallback der Bestellkorb-Mutationen ungetestet |
+| niedrig | offen | compliance | Pausen-Rundungs-Drift (JS Gesamt vs. Dart break-vorab); Jugend-/Mutterschutz-Nachtfenster hartkodiert 06/20 |
+| niedrig | teilw. | core-lohn | toter Steuersatz-Code (`soliRate`/`incomeTaxRateByClass`/`taxTariff`-Jahr) — **wird via L4 angegangen** |
+| niedrig | offen | core-lohn | `_midijobBase` unter Minijob-Grenze ohne Übergangsminderung (Doku/Klassifikation) |
+| niedrig | offen | provider-state | #63 TeamProvider `loading` bleibt true (Nicht-Manager, cloud-only); #64 Local-Dedup verwirft Rollenwechsel; #65 setMemberActive ohne Org-Check |
+| niedrig | offen | provider-state | #74 fire-and-forget `_restartSubscriptions`; #75 `_notifyShiftWorked` ohne `_errorArea`; #76 Hybrid-Dedup spiegelt Settings nicht |
+| niedrig | offen | provider-state | #42/#43 Audit-Mirror (cloud-only Lesen vs. lokal; Hybrid-Doppel-Eintrag); #44 FeatureFlag kein Offline-Cache (teilw.) |
+| niedrig | offen | navigation | #56 Force-Update fail-open; #57 Strg+1..9 immer Rail; #58 PopScope erster Zurück; #59 CLAUDE.md-Breakpoint-Doku (1120 vs. 600) |
+| niedrig | offen | services-firestore | Abwesenheits-Reads ohne untere Datumsgrenze; Batch-Direktschreiber ohne orgId-Konsistenzcheck; Bestelllisten-Streams `onError` global |
+| niedrig | teilw. | sicherheit | `publicWishOrg()` hart 'main-org' vs. `APP_DEFAULT_ORG_ID` (Drift-Risiko) |
+| niedrig | offen | screens-ui | #54 Abwesenheiten je Board-Zelle neu sortiert (Perf); #51 Wunsch-`storeName`-Länge ungeprüft; #53 Lohn-Prefill falscher Monat (**→ via L2 behoben**) |
+| niedrig | offen | services-persistenz | Schema-Versionierung No-op; Legacy-Migration kopiert leere orgId breit; Scanner-Ton global; iOS-Share ohne `sharePositionOrigin` |
+| niedrig | offen | test-lücken | #66–#73 Widget-/Cloud-Tests für Wunsch/Bestellkorb/Standort-Isolation fehlen; `publicStoreNameList`-Parsing ungetestet |
 
-- [01-kritisch-hoch.md](01-kritisch-hoch.md) — **alle kritischen & hohen Befunde gebündelt (hier anfangen)**
-- [compliance.md](compliance.md) — Compliance-Spiegel (Dart ↔ Cloud Function)
-- [services-firestore.md](services-firestore.md) — FirestoreService / Callables · Repositories
-- [services-persistenz.md](services-persistenz.md) — DatabaseService / lokale Persistenz · Export / PDF / Scanner / Download
-- [provider-state.md](provider-state.md) — Work- & Schedule-Provider · Team- / Personal- / Auth-Provider · Inventory- / Contact- / Audit-Provider
-- [bestellkorb-kundenwuensche.md](bestellkorb-kundenwuensche.md) — Wochen-Bestellkorb & Kundenwünsche (neues Modul)
-- [sicherheit.md](sicherheit.md) — Sicherheit: Firestore-Rules & Permissions
-- [modelle-serialisierung.md](modelle-serialisierung.md) — Modelle & Serialisierung
-- [core-lohn.md](core-lohn.md) — Core-Logik (Config, Parser, Lohn, Steuer)
-- [navigation-bootstrap.md](navigation-bootstrap.md) — Shell / Navigation / Bootstrap
-- [screens-ui.md](screens-ui.md) — Screens: Schichtplaner & Team · Screens: Inventar / Scanner / Bestellkorb / Wünsche · Screens: Personal / Zeit / Reports / Settings
-- [test-luecken.md](test-luecken.md) — Test-Qualität & Lücken
+## Detail-Dateien (Volltext der Ursprungsbefunde, 21.06.)
 
-## Top-Prioritäten
-
-1. **Server-Compliance prüft nur 4 von ~12 Regeln (Spiegel-Drift)** — Direkte Client-Writes sind ohnehin möglich (Design-Lücke); die Cloud-Function als „validierter Pfad“ deckt für Zeiteinträge die meisten Regeln nicht ab → Compliance-Verstöße landen unbemerkt in Firestore.  ([Details](compliance.md))
-2. **Duplikat-Dokumente bei verlorenem Callable-Ack** — Server nutzt deterministische Doc-ID, der direkte Fallback eine zufällige → doppelte Zeiteinträge/Schichten → falsche Stunden/Lohn/Compliance.  ([Details](services-firestore.md))
-3. **Stunden-Rundung Dart vs. minutengenau JS** — Client-Preview und Server-Validierung können unterschiedlich entscheiden → Schichten/Einträge werden mal blockiert, mal nicht.  ([Details](compliance.md))
-4. **parseEuroToCents: Punkt = Tausendertrenner** — „1.99“ wird zu 199,00 € — stiller 100×-Preisfehler in EK/VK-Eingabe (Inventar, Scanner, Kundenbestellung).  ([Details](screens-ui.md))
-5. **Übernacht-Schichten nicht anlegbar** — Editor weist Endzeit < Startzeit ab, obwohl die Compliance-Logik Nachtarbeit (23–06) modelliert → Spät-/Nachtschichten über Mitternacht unmöglich.  ([Details](screens-ui.md))
-6. **orderCarts-Rules ohne Feld-Allowlist** — Jedes Mitglied kann beliebige Felder/`updatedByUid` fälschen (Mass Assignment / Audit-Spoofing) — abweichend vom sonst durchgezogenen Allowlist-Muster.  ([Details](sicherheit.md))
-7. **PersonalProvider startet Admin-Streams für alle** — Jeder Nicht-Admin-Login löst permission-denied auf Lohn-Streams aus + Ladespinner bleibt hängen.  ([Details](provider-state.md))
-8. **customerWishes: Cross-Tenant-/Spam-Write** — Jeder authentifizierte Nutzer (auch fremder Org) kann unbegrenzt in main-org schreiben, solange App Check nicht aktiv ist.  ([Details](sicherheit.md))
-9. **Statistik-CSV ohne UTF-8/BOM** — `.codeUnits` + kein BOM → Umlaute in deutschem Excel kaputt (ExportService macht es korrekt — hier nicht).  ([Details](screens-ui.md))
-10. **Stream-Leak: _allAbsenceSubscription nicht gecancelt** — dispose() lässt eine Subscription offen → Speicher-/Callback-Leak nach Provider-Wechsel.  ([Details](provider-state.md))
-
-## Querschnittliche Themen
-
-- **Compliance-Spiegel driftet** — `compliance_service.dart` (Client) und `functions/index.js` (Server) sollen identisch validieren, weichen aber in Regelumfang, Rundung (Stunden vs. Minuten), Pausenabzug, Dedup und Nachtfenster ab.
-- **Provider gaten Admin-Streams nicht & setzen `loading` bei Fehlern nicht zurück** — PersonalProvider/TeamProvider/InventoryProvider/ContactProvider starten Streams ohne Rollen-/Fehler-Guards → permission-denied-Spam und dauerhaft hängende Ladespinner.
-- **`DateFormat` ohne `'de_DE'`** — An vielen UI-Stellen (Schichtplaner, Statistik, Reports, PDF) fehlt das laut CLAUDE.md verpflichtende explizite Locale → AM/PM-Anzeige bzw. potenzieller Absturz auf nicht-deutschen Geräten.
-- **Geld-Parsing behandelt den Punkt als Tausendertrenner** — `parseEuroToCents`/`Money.parseCents` machen aus „1.99“ stillschweigend 199 € — über mehrere Eingabepfade hinweg.
-- **Idempotenz/Fallback der Callables unvollständig** — Verlorene Acks, deadline-exceeded und gemischte orgIds in Batches führen zu Duplikaten, harten Fehlern statt Fallback bzw. Fehl-Org-Writes.
-- **Neuer Bestellkorb-Schreibpfad ist bewusst breit, aber unter-validiert** — Leeres `siteId` → `.doc('')`-Absturz; keine Feld-Allowlist in den Rules; Stream-Fehler überschreiben die globale Fehleranzeige; viele Pfade ungetestet.
-
-## Hinweis zur Vollständigkeit
-
-Die Bereiche FirestoreService, einige Screens und das neue Bestellkorb-/Wunsch-Modul wurden teils unter erschwerten Infrastrukturbedingungen (API-Ausfälle) reviewt. Die als _kritisch_/_hoch_ eingestuften Befunde sind durchgehend (auch manuell) am Code verifiziert; bei _niedrig_/_mittel_ mit Status _„Einzelpass“_ empfiehlt sich vor dem Fix ein kurzer Gegen-Check. Keine Code-Änderungen wurden vorgenommen — dies ist ein reiner Review.
+[01-kritisch-hoch.md](01-kritisch-hoch.md) (✅ alle behoben) ·
+[compliance.md](compliance.md) · [services-firestore.md](services-firestore.md) ·
+[services-persistenz.md](services-persistenz.md) · [provider-state.md](provider-state.md) ·
+[bestellkorb-kundenwuensche.md](bestellkorb-kundenwuensche.md) · [sicherheit.md](sicherheit.md) ·
+[modelle-serialisierung.md](modelle-serialisierung.md) (✅ behoben) · [core-lohn.md](core-lohn.md) ·
+[navigation-bootstrap.md](navigation-bootstrap.md) · [screens-ui.md](screens-ui.md) ·
+[test-luecken.md](test-luecken.md)

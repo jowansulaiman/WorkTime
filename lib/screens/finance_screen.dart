@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -10,6 +11,7 @@ import '../models/finance_models.dart';
 import '../models/site_definition.dart';
 import '../providers/finance_provider.dart';
 import '../providers/team_provider.dart';
+import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 
@@ -133,6 +135,11 @@ class _FinanceScreenState extends State<FinanceScreen> {
             const BreadcrumbItem(label: 'Buchhaltung'),
           ],
           actions: [
+            IconButton(
+              tooltip: 'Tagesabschluss (Kasse)',
+              icon: const Icon(Icons.point_of_sale_outlined),
+              onPressed: () => context.push(AppRoutes.dailyClosing),
+            ),
             PopupMenuButton<String>(
               tooltip: 'Exportieren',
               icon: const Icon(Icons.ios_share_outlined),

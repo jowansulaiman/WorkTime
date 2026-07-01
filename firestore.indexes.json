@@ -1,6 +1,20 @@
 {
   "indexes": [
     {
+      "collectionGroup": "productBatches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expiryDay",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "clockEntries",
       "queryScope": "COLLECTION",
       "fields": [
@@ -187,16 +201,6 @@
       ]
     },
     {
-      "collectionGroup": "shifts",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "seriesId",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "shiftTemplates",
       "queryScope": "COLLECTION",
       "fields": [
@@ -237,7 +241,50 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "posReceipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "siteId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "transactionDate",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "clockEntries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "fcmTokens",
+      "fieldPath": "updatedAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION_GROUP"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION_GROUP"
+        }
+      ]
+    }
+  ]
 }

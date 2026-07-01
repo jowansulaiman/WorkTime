@@ -49,6 +49,13 @@ dependencies:
   # (APP_APPCHECK_RECAPTCHA_KEY) — sonst No-op. Enforcement zusätzlich in der
   # Firebase-Console schalten.
   firebase_app_check: ^0.3.1
+  # Push-Benachrichtigungen (FCM, M1: nur Geräte-Token-Registrierung).
+  # 15.1.0 ist die zu firebase_core ^3.4.0 passende Linie — 16.x verlangt
+  # firebase_core ^4 (Major-Bump, NICHT ziehen).
+  firebase_messaging: ^15.1.0
+  # Foreground-Anzeige (firebase_messaging zeigt im Vordergrund nichts) +
+  # Android-Notification-Channels (M4). Dart-SDK ^3.4.0 (vorhanden: 3.12.x).
+  flutter_local_notifications: ^19.0.0
   google_sign_in: ^7.2.0
   uuid: ^4.5.3
   collection: ^1.19.1
@@ -64,12 +71,18 @@ dependencies:
   # SystemSound liefert nur einen Ton und ist auf Web stumm).
   audioplayers: ^6.7.1
   go_router: ^17.3.0
+  quick_actions: ^1.1.0
+
+  # Bildschirm wach halten für den Arbeitsmodus/Kiosk (Laden-Tablet, Always-On).
+  # No-op auf nicht unterstützten Plattformen; nur im Kiosk-Build aktiviert.
+  wakelock_plus: ^1.2.8
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
   fake_cloud_firestore: ^3.1.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
@@ -87,3 +100,22 @@ flutter:
           weight: 700
         - asset: assets/fonts/NotoSans-Italic.ttf
           style: italic
+
+# App-Launcher-Icons (Marken-Emblem statt Flutter-Default).
+# Quellen: assets/icon/*.svg → gerendert nach assets/icon/*.png.
+# Neu generieren nach Icon-Änderung:  dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: true
+  # iOS + Android-Legacy (<API 26): undurchsichtiges Vollbild-Icon (Markenblau,
+  # kein Alpha — iOS verlangt das).
+  image_path: "assets/icon/app_icon.png"
+  remove_alpha_ios: true
+  background_color_ios: "#155E8C"
+  # Android adaptive icon (API 26+): Markenblau-Hintergrund + transparentes Emblem.
+  adaptive_icon_background: "#155E8C"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+  # Kein zusätzlicher Inset: der Sicherheitsrand steckt schon im foreground-SVG
+  # (Emblem ~57 % der Fläche). Sonst würde doppelt eingerückt → Emblem zu klein.
+  adaptive_icon_foreground_inset: 0
+  min_sdk_android: 21

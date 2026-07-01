@@ -1,12 +1,12 @@
 # Claude Skills für professionelle Flutter-Entwicklung
 
-Eine Sammlung von **19 hochwertigen System-Prompts („Skills")** für die professionelle Softwareentwicklung mit **Flutter** — eine Codebasis für **Web, iOS, Android und Desktop** (macOS, Windows, Linux). Jeder Skill macht Claude zum spezialisierten Experten für eine Domäne und ist auf den Flutter-/Dart-Cross-Platform-Stack zugeschnitten: Dart-Idiome, Flutter-Packages, plattformspezifische Unterschiede über alle vier Targets und ein Flutter-Client-orientierter Blick auf Backend-Themen.
+Eine Sammlung von **23 hochwertigen System-Prompts („Skills")** für die professionelle Softwareentwicklung mit **Flutter** — eine Codebasis für **Web, iOS, Android und Desktop** (macOS, Windows, Linux). Jeder Skill macht Claude zum spezialisierten Experten für eine Domäne und ist auf den Flutter-/Dart-Cross-Platform-Stack zugeschnitten: Dart-Idiome, Flutter-Packages, plattformspezifische Unterschiede über alle vier Targets und ein Flutter-Client-orientierter Blick auf Backend-Themen.
 
 Jeder Skill ist **eigenständig** und folgt demselben Aufbau: Rolle & Kontext, acht Kernkompetenzen mit konkreten Techniken/Packages und zahlenbasierten Faustregeln sowie ein definiertes Antwortverhalten inklusive Anti-Pattern-Warnungen.
 
 ---
 
-## Übersicht der 19 Skills
+## Übersicht der 23 Skills
 
 | #  | Skill | Ordner | Flutter-Schwerpunkte |
 |----|-------|--------|----------------------|
@@ -29,6 +29,10 @@ Jeder Skill ist **eigenständig** und folgt demselben Aufbau: Rolle & Kontext, a
 | 17 | Datenbankarchitektur (Backend) | `daten/` | Sync-taugliches Schema (`updated_at`, Tombstones, client-IDs), Delta-Queries, Multi-Tenancy/RLS, BaaS-Modellierung |
 | 18 | Backend-Daten | `daten/` | APIs/Sync-Endpunkte für Clients, Dart-Backends (Serverpod/Dart Frog), OLTP/OLAP-Trennung, pragmatische Pipelines |
 | 19 | Datensynchronisierung | `daten/` | **Offline-First**, Sync-Engines (PowerSync/Firestore), CRDTs (`crdt`), Konfliktauflösung (LWW/HLC), CAP/PACELC, Outbox |
+| 20 | Logging | `entwicklung/` | Logger-Fassade (`AppLogger`/`ErrorReporter`) statt `debugPrint`, Log-Level/Release (`warning+`), strukturiertes Schema + Korrelations-IDs Client→Function, PII-/Secret-Redaction, `firebase-functions/logger`, Abgrenzung zum `AuditProvider`-Trail |
+| 21 | Offline-Modus | `daten/` | Plattform-Offline-Mechanik (Web/iOS/Android): PWA/Service Worker (`flutter_service_worker.js`), IndexedDB-Quota/Eviction vs. App-Sandbox, Firestore-Persistenz (Web `kIsWeb`-Zweig vs. mobile default), Konnektivitäts-State (`connectivity_plus` + Reachability), Resume-Sync, Offline-UX |
+| 22 | Code- & Entwicklungs-Review | `review/` | Diff/Branch/PR gegen Definition of Done (`flutter analyze`/`test`, Offline-Lauf), Korrektheit & Bug-Klassen, **Zwei-Serialisierungs-Regel** (6 Stellen pro Feld), die **„Wenn du X änderst"-Kopplungen** (Compliance-Spiegel `compliance_service.dart` ↔ `functions/index.js`), Provider-/Architektur-/Sicherheits-/Test-/Konventions-Konformität (WorkTime-spezifisch) |
+| 23 | Plan- & Output-Review | `review/` | Plan-Dokumente (`plan/`, `MEMORY.md`-Index) auf Vollständigkeit/Machbarkeit/Architektur-Fit prüfen; **Output-Review** (Treue zur Anfrage, keine erfundenen Fakten, ehrlich berichtete Tests, Konventionen, Abnahme/Definition of Done) — WorkTime-spezifisch |
 
 ---
 
@@ -106,13 +110,14 @@ Für typische Szenarien lassen sich mehrere Skills sinnvoll kombinieren:
 | Szenario | Empfohlene Skills |
 |----------|-------------------|
 | **Neue Flutter-App aufsetzen** | 04 Architektur · 13 State-Management · 07 Clean Code · 15 Cross-Platform |
-| **Offline-First-App bauen** | 19 Datensynchronisierung · 16 Datenbank · 12 Error Handling · 17 Datenbankarchitektur |
+| **Offline-First-App bauen** | 21 Offline-Modus · 19 Datensynchronisierung · 16 Datenbank · 12 Error Handling · 17 Datenbankarchitektur |
 | **Backend für die App entwerfen** | 05 Microservices · 06 API-Architektur · 18 Backend-Daten · 17 Datenbankarchitektur |
 | **UI/UX über alle Plattformen** | 03 UX-/UI-Design · 15 Cross-Platform · 13 State-Management · 10 Performance |
 | **Sicherheit härten** | 02 Software-Sicherheit · 01 API-Sicherheit · 16 Datenbank (Encryption) |
-| **Qualität & Auslieferung** | 08 Testing & QA · 09 CI/CD & DevOps · 14 Observability · 11 Refactoring |
+| **Qualität & Auslieferung** | 08 Testing & QA · 09 CI/CD & DevOps · 14 Observability · 20 Logging · 11 Refactoring |
 | **Performance-Optimierung** | 10 Performance · 13 State-Management · 15 Cross-Platform · 14 Observability |
 | **Legacy-Code modernisieren** | 11 Refactoring · 08 Testing & QA · 04 Architektur · 07 Clean Code |
+| **Review & Abnahme** | 22 Code- & Entwicklungs-Review · 23 Plan- & Output-Review · 08 Testing & QA · 02 Software-Sicherheit |
 
 ---
 
@@ -128,10 +133,10 @@ Für typische Szenarien lassen sich mehrere Skills sinnvoll kombinieren:
 
 ## Variante C: Claude Code (auto-ladende Skills)
 
-Aus jedem der 19 Experten-Prompts wird ein **auto-ladender Claude-Code-Skill** unter `.claude/skills/flutter-<domäne>/SKILL.md` erzeugt. Claude Code entdeckt diese beim Start automatisch; die `description` im Frontmatter trägt die Trigger-Keywords, sodass der passende Skill bei einer relevanten Aufgabe von selbst greift (oder per Slash-Command `/flutter-cross-platform` usw.). Jede `SKILL.md` ist bewusst dünn: Frontmatter + Pointer auf den **verbindlichen** Quell-Prompt hier in `claude-skills/` (Single Source of Truth) + die extrahierten Kernkompetenzen.
+Aus jedem der 23 Experten-Prompts wird ein **auto-ladender Claude-Code-Skill** unter `.claude/skills/flutter-<domäne>/SKILL.md` erzeugt. Claude Code entdeckt diese beim Start automatisch; die `description` im Frontmatter trägt die Trigger-Keywords, sodass der passende Skill bei einer relevanten Aufgabe von selbst greift (oder per Slash-Command `/flutter-cross-platform` usw.). Jede `SKILL.md` ist bewusst dünn: Frontmatter + Pointer auf den **verbindlichen** Quell-Prompt hier in `claude-skills/` (Single Source of Truth) + die extrahierten Kernkompetenzen.
 
 ```bash
-node claude-skills/build-skills.mjs          # erzeugt/aktualisiert alle 19 Skills nach .claude/skills/
+node claude-skills/build-skills.mjs          # erzeugt/aktualisiert alle 21 Skills nach .claude/skills/
 node claude-skills/build-skills.mjs --check   # CI: schlägt fehl, wenn Skills veraltet sind (exit 1)
 node claude-skills/validate-skills.mjs        # Discovery-Check: parst jedes Frontmatter wie Claude Code
 ```

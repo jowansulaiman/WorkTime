@@ -525,9 +525,19 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
         month: first,
       );
     } catch (error) {
-      AppLogger.warning('Zeitwirtschaft: Org-Monatszeiten laden fehlgeschlagen',
+      // Z3: CLAUDE.md-Fehlermuster — im Hybrid lokal zurückfallen, im cloud-only
+      // weiterwerfen (Fehler nicht still als „keine Daten" verschlucken).
+      if (!usesHybridStorage) rethrow;
+      AppLogger.warning(
+          'Zeitwirtschaft: Org-Monatszeiten offline – lokaler Fallback',
           error: error);
-      return const [];
+      final all = await DatabaseService.loadLocalEntries(
+        scope: LocalStorageScope.fromUser(user),
+      );
+      return all
+          .where(
+              (e) => e.date.year == first.year && e.date.month == first.month)
+          .toList();
     }
   }
 

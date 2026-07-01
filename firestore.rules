@@ -438,6 +438,23 @@ service cloud.firestore {
           );
 
       allow delete: if false;
+
+      // FCM-Geräte-Tokens für Push-Benachrichtigungen (Plan
+      // push-benachrichtigungen-plan.md, M1). Ein Doc je Geräte-Installation.
+      // Lesen/Löschen nur durch den Eigentümer; Schreiben self + enge
+      // Feld-Allowlist (Mass-Assignment-Schutz, Muster wie stockMovements) und
+      // orgId == eigene Org (kein Org-Spoofing). Der Push-VERSAND liest Tokens
+      // ausschließlich serverseitig per Admin SDK (umgeht diese Rules) — Manager
+      // brauchen fremde Tokens nie.
+      match /fcmTokens/{tokenId} {
+        allow read, delete: if isSelf(uid);
+        allow create, update: if isSelf(uid)
+            && request.resource.data.keys().hasOnly([
+                 'token', 'platform', 'orgId', 'appVersion', 'updatedAt'
+               ])
+            && request.resource.data.token is string
+            && request.resource.data.orgId == currentOrgId();
+      }
     }
 
     match /userInvites/{inviteId} {
@@ -464,8 +481,14 @@ service cloud.firestore {
             && request.resource.data.emailLower == resource.data.emailLower
             && normalizedRoleValue(request.resource.data.role)
                 == normalizedRoleValue(resource.data.role)
-            && isTruthy(dataIsActive(request.resource.data))
-                == isTruthy(dataIsActive(resource.data))
+            // M4: Beim Annehmen darf der Nutzer die Einladung nur **deaktivieren**
+            // (verbrauchte Invite kann nicht latent re-provisionieren); inaktiv→aktiv
+            // bleibt admin-only.
+            && (
+              isTruthy(dataIsActive(request.resource.data))
+                  == isTruthy(dataIsActive(resource.data))
+              || !isTruthy(dataIsActive(request.resource.data))
+            )
             && permissionsEquivalent(
               request.resource.data,
               resource.data,
@@ -487,6 +510,21 @@ service cloud.firestore {
       match /config/{configId} {
         allow read: if sameOrg(orgId);
         allow write: if isAdmin();
+      }
+
+      // Push-Inbox (Plan push-benachrichtigungen-plan.md). Ein Doc je
+      // Empfaenger; ausschliesslich serverseitig (Cloud Function, Admin SDK,
+      // umgeht diese Rules) erzeugt/geloescht — analog posReceipts. Der Nutzer
+      // liest nur die EIGENEN Benachrichtigungen und darf ausschliesslich
+      // `readAt` setzen (gelesen-Toggle), nichts anderes aendern.
+      match /notifications/{notificationId} {
+        allow read: if sameOrg(orgId)
+            && resource.data.recipientUid == request.auth.uid;
+        allow create, delete: if false;
+        allow update: if sameOrg(orgId)
+            && resource.data.recipientUid == request.auth.uid
+            && request.resource.data.diff(resource.data)
+                .affectedKeys().hasOnly(['readAt']);
       }
 
       match /workEntries/{entryId} {
@@ -830,6 +868,44 @@ service cloud.firestore {
         allow delete: if isAdmin() && sameOrg(orgId);
       }
 
+      // Laden-To-Dos (Arbeitsmodus/Kiosk): Broadcast-Aufgaben je Laden. Der
+      // Leiter (canManageShifts/Admin) legt an, aendert und loescht. JEDES
+      // aktive Mitglied (inkl. des Kiosk-Geraete-Kontos) darf eine Aufgabe am
+      // Tablet abhaken — der schmale Pfad aendert AUSSCHLIESSLICH die
+      // Abhak-Felder, ohne Schreibrecht auf Titel/Beschreibung zu oeffnen.
+      match /storeTasks/{taskId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if canManageShifts()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow update: if sameOrg(orgId)
+            && request.resource.data
+                .diff(resource.data)
+                .affectedKeys()
+                .hasOnly(['completedBySite', 'updatedAt']);
+        allow delete: if canManageShifts() && sameOrg(orgId);
+      }
+
+      // === Arbeitsmodus / Laden-Tablet (Kiosk) ===============================
+      // PIN-Hashes: fuer Clients KOMPLETT unlesbar/unschreibbar. Nur die
+      // Cloud Functions (Admin SDK, setKioskPin/kioskBeginSession) beruehren sie.
+      match /userSecrets/{secretUid} {
+        allow read, write: if false;
+      }
+      // Aktive Kiosk-Sessions: ebenfalls nur serverseitig (kioskBeginSession/
+      // kioskClockPunch validieren sie). `sid` lebt am Tablet nur im Speicher.
+      match /kioskSessions/{sid} {
+        allow read, write: if false;
+      }
+      // Minimale Namensliste fuers Kiosk-Board (Name/Foto/Standort — KEINE
+      // Lohn-/Stammdaten). Lesbar fuer die eigene Org (auch das Geraete-Konto);
+      // gepflegt serverseitig bzw. durch einen Admin. So muss das geteilte
+      // Tablet NIE die vollen `users`-Dokumente (mit hourlyRate etc.) lesen.
+      match /kioskRoster/{rosterUid} {
+        allow read: if sameOrg(orgId);
+        allow write: if isAdmin() && sameOrg(orgId);
+      }
+
       // Lohndaten enthalten Verguetungsinformationen -> Lesen Admin-only.
       match /payrollRecords/{recordId} {
         // M7-Self-Read (L2): eigene Lohnabrechnung lesbar (Doc trägt userId),
@@ -1003,6 +1079,15 @@ service cloud.firestore {
         allow create, update: if sameOrg(orgId)
             && canManageInventory()
             && request.resource.data.orgId == orgId;
+        // Kuehlschrank-Nachfuellen: jedes aktive Mitglied darf AUSSCHLIESSLICH
+        // fridgeStock (+ updatedAt) aendern — der schmale Pfad fuer die Refill-
+        // Funktion (setFridgeStock), ohne canManageInventory fuer Preis/Bestand
+        // zu oeffnen. sameOrg() schliesst isActiveUser() bereits ein.
+        allow update: if sameOrg(orgId)
+            && request.resource.data
+                .diff(resource.data)
+                .affectedKeys()
+                .hasOnly(['fridgeStock', 'updatedAt']);
         allow delete: if sameOrg(orgId) && canManageInventory();
 
         // Preis-Historie ist ein Audit-Log (wie stockMovements): anlegen ja,
@@ -1038,6 +1123,28 @@ service cloud.firestore {
         allow create, update: if sameOrg(orgId)
             && canManageInventory()
             && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // MHD-/Ablauf-Chargen (Warencharge mit Mindesthaltbarkeitsdatum). Operative
+      // Nutzdaten: JEDES aktive Mitglied darf erfassen/aufloesen — sowohl der
+      // Scanner-Wareneingang als auch das Kiosk-Geraete-Konto (das kein
+      // canManageInventory hat), analog zum „direct-device"-Muster der
+      // Bestellkoerbe/Kuehlschrankliste. Feld-Allowlist gegen Mass Assignment
+      // (BOPLA), orgId an den Pfad gebunden, status auf die Enum-Werte begrenzt.
+      // Die weiche Menge/Attribution ist nicht sicherheitsrelevant. Loeschen nur
+      // Verwaltung; die Warnung wird ohnehin durch status='sold_out'/'discarded'
+      // (resolveBatch) beendet, nicht durch Loeschen.
+      match /productBatches/{batchId} {
+        allow read: if sameOrg(orgId);
+        allow create, update: if sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'productId', 'productName', 'expiryDate',
+                 'expiryDay', 'quantity', 'note', 'status', 'resolvedByUid',
+                 'resolvedAt', 'createdByUid', 'createdAt', 'updatedAt'
+               ])
+            && request.resource.data.status in ['active', 'sold_out', 'discarded'];
         allow delete: if sameOrg(orgId) && canManageInventory();
       }
 
@@ -1273,7 +1380,7 @@ service cloud.firestore {
             && request.resource.data.keys().hasOnly([
                  'orgId', 'siteId', 'productId', 'productName', 'type',
                  'quantityDelta', 'balanceAfter', 'reason', 'relatedOrderId',
-                 'createdByUid', 'createdAt'
+                 'source', 'externalRef', 'createdByUid', 'createdAt'
                ])
             && request.resource.data.type in
                  ['receipt', 'issue', 'adjustment', 'stocktake', 'transfer']
@@ -1282,10 +1389,32 @@ service cloud.firestore {
             && (!('balanceAfter' in request.resource.data)
                  || request.resource.data.balanceAfter == null
                  || request.resource.data.balanceAfter is number)
+            // Herkunft: Client-Writes duerfen NUR null/'manual' setzen. Aus der
+            // Kasse uebernommene Bewegungen (source 'oktopos') entstehen
+            // ausschliesslich serverseitig per Cloud Function (Admin SDK, umgeht
+            // diese Rules) -> keine gefaelschte Kassen-Provenienz vom Client.
+            && (!('source' in request.resource.data)
+                 || request.resource.data.source == null
+                 || request.resource.data.source == 'manual')
+            && (!('externalRef' in request.resource.data)
+                 || request.resource.data.externalRef == null
+                 || request.resource.data.externalRef is string)
             && (!('createdByUid' in request.resource.data)
                  || request.resource.data.createdByUid == null
                  || request.resource.data.createdByUid == request.auth.uid);
         allow update, delete: if false;
+      }
+
+      // Verkaufsfakten-Layer (P0): aus der Kasse uebernommene Belege (Umsatz,
+      // USt-Split, Belegzeilen, optional Kassierer-/Kunden-ID). Enthaelt
+      // potenziell PII -> Lesen ENG an Admin oder echte teamlead-Rolle binden
+      // (NICHT canManageInventory(), das schon canManageShifts() einschliesst).
+      // Schreiben ausschliesslich serverseitig (Cloud Function, Admin SDK,
+      // umgeht diese Rules) -> keine gefaelschten Kassen-Belege vom Client.
+      match /posReceipts/{posId} {
+        allow read: if sameOrg(orgId)
+            && (isAdmin() || roleIsTeamLeadValue(currentUser().data.role));
+        allow write: if false;
       }
 
       // Fortlaufende Zaehler (z.B. Bestellnummern): seq muss ganzzahlig sein und

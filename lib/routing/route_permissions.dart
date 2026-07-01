@@ -50,6 +50,19 @@ abstract final class RoutePermissions {
       case AppRoutes.finance:
       case AppRoutes.team:
       case AppRoutes.auditLog:
+      // Besetzungs-Profil (P3.1): Kassendaten-Auswertung -> admin-only.
+      case AppRoutes.staffingProfile:
+      // Tagesabschluss (P2.0): Kasse → Buchung -> admin-only.
+      case AppRoutes.dailyClosing:
+      // Laden-Benchmark (P2.3): Umsatz-/Beleg-Auswertung -> admin-only.
+      case AppRoutes.storeHealth:
+      // Kassierer-Prüfung (P3.2): Leistungskontrolle-sensibel -> admin-only.
+      case AppRoutes.cashierAnomaly:
+      // Bestand-Insights/Sortimentsanalyse zeigen EK-Preise / Marge / gebundenes
+      // Kapital -> admin-only, enger als die übrige Warenwirtschaft
+      // (canViewInventory == isActive).
+      case AppRoutes.bestandInsights:
+      case AppRoutes.sortiment:
         return p?.isAdmin ?? false;
       case AppRoutes.feedbackInbox:
         return p?.canManageFeedback ?? false;

@@ -41,6 +41,11 @@ abstract final class AppRoutes {
   static const String blocked = '/gesperrt';
   static const String update = '/aktualisierung';
 
+  // Arbeitsmodus / Laden-Tablet (Kiosk): Vollbild-Board statt Shell. Aktiv nur
+  // im Kiosk-Build (`AppConfig.kioskModeEnabled`); der Gate-Redirect erzwingt
+  // diese Route und sperrt die normale Navigation.
+  static const String kiosk = '/arbeitsmodus';
+
   // Hauptbereich-Routen (über die Shell gepusht, single canonical route je Screen).
   static const String inventory = '/warenwirtschaft';
   static const String customerOrders = '/bestellungen';
@@ -55,6 +60,12 @@ abstract final class AppRoutes {
   static const String customerWishes = '/kundenwuensche';
   static const String scanner = '/scanner';
   static const String orderAnalytics = '/bestell-auswertung';
+  static const String bestandInsights = '/bestand-insights';
+  static const String sortiment = '/sortimentsanalyse';
+  static const String staffingProfile = '/besetzungs-profil';
+  static const String dailyClosing = '/tagesabschluss';
+  static const String storeHealth = '/laden-benchmark';
+  static const String cashierAnomaly = '/kassierer-pruefung';
 
   // Zeitwirtschaft-Bereich (Sub-Routen unter dem `/zeit`-Tab-Hub). Der Hub
   // selbst ist der Tab-Inhalt von `ShellTab.time` (`/zeit`); diese Routen werden

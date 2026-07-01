@@ -518,7 +518,7 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
             onTap: () => _toggleDay(day),
             customBorder: const CircleBorder(),
             child: Container(
-              height: 40,
+              height: 44,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
@@ -687,11 +687,22 @@ class _CopyShiftSheetState extends State<_CopyShiftSheet> {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               ),
+              if (copyCount > _kMaxShiftsPerSave) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Zu viele Kopien: max. $_kMaxShiftsPerSave pro Vorgang. '
+                  'Bitte weniger Tage oder Mitarbeiter wählen.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.error),
+                ),
+              ],
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: (_assigneeUids.isEmpty || _days.isEmpty)
+                  onPressed: (_assigneeUids.isEmpty ||
+                          _days.isEmpty ||
+                          copyCount > _kMaxShiftsPerSave)
                       ? null
                       : () => Navigator.of(context).pop(
                             _CopyShiftSelection(
@@ -775,6 +786,10 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
   List<_AdditionalShiftAssignmentDraft> _additionalAssignments = const [];
   int _nextAdditionalAssignmentDraftId = 0;
   bool _validating = false;
+  // Aufgeklappte Sperrgruende je Mitarbeiter (kompakte Liste: Details on demand).
+  final Set<String> _expandedMemberIds = <String>{};
+  // Lange Teams: erst gekappt, dann auf Wunsch komplett zeigen.
+  bool _showAllMembers = false;
 
   @override
   void initState() {
@@ -938,848 +953,82 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     final selectedAvailability = availabilityItems
         .where((entry) => entry.member.uid == selectedUserId)
         .firstOrNull;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    final pagePad = spacing.md;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.92,
+      ),
       child: Form(
         key: _formKey,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              isEdit ? 'Schicht bearbeiten' : 'Neue Schicht',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
+            // Fixierter Kopf: Titel + Schliessen.
+            Padding(
+              padding: EdgeInsets.fromLTRB(pagePad, spacing.sm, spacing.sm, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      isEdit ? 'Schicht bearbeiten' : 'Neue Schicht',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                   ),
+                  IconButton(
+                    tooltip: 'Schliessen',
+                    onPressed: () => Navigator.of(context).maybePop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
-            Card(
-              margin: EdgeInsets.zero,
-              child: Padding(
-                padding: const EdgeInsets.all(12),
+            // Scrollbarer Formular-Inhalt in klaren Abschnitten.
+            Flexible(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  pagePad,
+                  spacing.sm,
+                  pagePad,
+                  spacing.lg,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text(
-                          'Schichtvorlagen',
-                          style:
-                              Theme.of(context).textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                        ),
-                        _EditorCountBadge(
-                          label:
-                              '${shiftTemplates.length} Vorlage${shiftTemplates.length == 1 ? '' : 'n'}',
-                        ),
-                      ],
+                    _buildTemplateBar(context, shiftTemplates, selectedTemplate),
+                    SizedBox(height: spacing.md),
+                    _buildCoreSection(context, sites, isEdit),
+                    SizedBox(height: spacing.md),
+                    _buildStaffingSection(
+                      context,
+                      isEdit: isEdit,
+                      availabilityItems: availabilityItems,
+                      availableMembers: availableMembers,
+                      unavailableMembers: unavailableMembers,
+                      selectedUserId: selectedUserId,
+                      selectedAvailability: selectedAvailability,
                     ),
-                    const SizedBox(height: 10),
-                    Text(
-                      selectedTemplate == null
-                          ? 'Speichere haeufige Schichten als Vorlage oder uebernimm bestehende Einstellungen mit einem Tippen.'
-                          : 'Aktive Vorlage: ${selectedTemplate.name}',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
+                    SizedBox(height: spacing.md),
+                    _buildDetailsSection(
+                      context,
+                      qualifications: qualifications,
+                      selectedTeam: selectedTeam,
+                      isEdit: isEdit,
                     ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OutlinedButton.icon(
-                          onPressed: shiftTemplates.isEmpty
-                              ? null
-                              : () => _pickTemplate(shiftTemplates),
-                          icon: const Icon(Icons.bookmarks_outlined),
-                          label: Text(
-                            selectedTemplate?.name ?? 'Aus Vorlage uebernehmen',
-                          ),
-                        ),
-                        FilledButton.tonalIcon(
-                          onPressed: _saveCurrentAsTemplate,
-                          icon: const Icon(Icons.bookmark_add_outlined),
-                          label: const Text('Als Vorlage speichern'),
-                        ),
-                        if (selectedTemplate != null) ...[
-                          FilledButton.tonalIcon(
-                            onPressed: () => _updateTemplate(selectedTemplate),
-                            icon: const Icon(Icons.edit_outlined),
-                            label: const Text('Vorlage aktualisieren'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: () => _deleteTemplate(selectedTemplate),
-                            icon: const Icon(Icons.delete_outline),
-                            label: const Text('Vorlage loeschen'),
-                          ),
-                        ],
-                      ],
-                    ),
-                    if (selectedTemplate != null) ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        _formatShiftTemplateSummary(context, selectedTemplate),
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                    ] else if (shiftTemplates.isEmpty) ...[
-                      const SizedBox(height: 12),
-                      const _EditorNoticeCard(
-                        icon: Icons.bookmark_border_outlined,
-                        title: 'Noch keine Schichtvorlagen vorhanden',
-                        message:
-                            'Lege aus dem aktuellen Formular eine Vorlage an, um wiederkehrende Schichten schneller zu planen.',
-                        tone: _EditorNoticeTone.info,
-                      ),
+                    if (_conflictIssues.isNotEmpty) ...[
+                      SizedBox(height: spacing.md),
+                      _buildConflictCard(context),
                     ],
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 16),
-            Card(
-              margin: EdgeInsets.zero,
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    Text(
-                      'Planung',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
-                    ChoiceChip(
-                      label: const Text('Mitarbeiter'),
-                      selected: !_saveAsUnassigned,
-                      onSelected: (selected) {
-                        if (!selected) {
-                          return;
-                        }
-                        _setDirty(
-                          () {
-                            _saveAsUnassigned = false;
-                            if (_selectedUserIds.isEmpty &&
-                                widget.members.isNotEmpty) {
-                              _selectedUserIds = {widget.members.first.uid};
-                            }
-                          },
-                          refreshAvailability: true,
-                        );
-                      },
-                    ),
-                    ChoiceChip(
-                      label: const Text('Freie Schicht'),
-                      selected: _saveAsUnassigned,
-                      onSelected: (selected) {
-                        if (!selected) {
-                          return;
-                        }
-                        _setDirty(() {
-                          _saveAsUnassigned = true;
-                          _selectedUserIds = <String>{};
-                          _additionalAssignments = const [];
-                        });
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            if (_saveAsUnassigned)
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    'Diese Schicht wird ohne feste Zuordnung gespeichert und erscheint im Bereich "Freie Schichten".',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                  ),
-                ),
-              )
-            else if (isEdit)
-              DropdownButtonFormField<String>(
-                isExpanded: true,
-                initialValue: selectedUserId,
-                decoration: const InputDecoration(
-                  labelText: 'Mitarbeiter',
-                  prefixIcon: Icon(Icons.person_outline),
-                ),
-                items: [
-                  for (final availability in availabilityItems)
-                    DropdownMenuItem(
-                      value: availability.member.uid,
-                      enabled: availability.isAvailable ||
-                          availability.member.uid == selectedUserId,
-                      child: Text(
-                        availability.isAvailable ||
-                                availability.member.uid == selectedUserId
-                            ? availability.member.displayName
-                            : '${availability.member.displayName} · nicht verfuegbar',
-                      ),
-                    ),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    _setDirty(() => _selectedUserIds = {value});
-                  }
-                },
-              )
-            else
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          Text(
-                            'Mitarbeiter',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                          _EditorCountBadge(
-                            label: '${_selectedUserIds.length} ausgewaehlt',
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      if (widget.members.isEmpty)
-                        const _EditorNoticeCard(
-                          icon: Icons.people_outline_rounded,
-                          title: 'Keine aktiven Mitarbeiter vorhanden',
-                          message:
-                              'Im Team sind aktuell keine aktiven Mitarbeiter hinterlegt.',
-                          tone: _EditorNoticeTone.warning,
-                        )
-                      else ...[
-                        const _EditorNoticeCard(
-                          icon: Icons.auto_awesome_outlined,
-                          title: 'Automatische Vorschlaege aktiv',
-                          message:
-                              'Freie Mitarbeiter werden vorgeschlagen. Bereits belegte oder abwesende Mitarbeiter bleiben gesperrt, bis der Konflikt behoben ist.',
-                          tone: _EditorNoticeTone.info,
-                        ),
-                        if (_loadingAvailability) ...[
-                          const SizedBox(height: 14),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(999),
-                            child: const LinearProgressIndicator(minHeight: 6),
-                          ),
-                        ],
-                        if (availableMembers.isNotEmpty) ...[
-                          const SizedBox(height: 16),
-                          // Wrap statt Row: bricht auf schmalen/Telefon-Breiten
-                          // um, statt überzulaufen (RenderFlex-Overflow).
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 4,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              Text(
-                                'Verfuegbar im gewaehlten Zeitraum',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleSmall
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              _EditorCountBadge(
-                                label: '${availableMembers.length} frei',
-                                tone: _EditorBadgeTone.success,
-                              ),
-                              TextButton.icon(
-                                onPressed: () => _setDirty(
-                                  () => _selectedUserIds = availableMembers
-                                      .map((entry) => entry.member.uid)
-                                      .toSet(),
-                                ),
-                                icon: const Icon(Icons.playlist_add_check),
-                                label: const Text('Alle freien auswaehlen'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              for (final availability in availableMembers)
-                                FilterChip(
-                                  label: Text(availability.member.displayName),
-                                  selected: _selectedUserIds
-                                      .contains(availability.member.uid),
-                                  onSelected: (selected) {
-                                    _setDirty(() {
-                                      if (selected) {
-                                        _selectedUserIds
-                                            .add(availability.member.uid);
-                                      } else {
-                                        _selectedUserIds
-                                            .remove(availability.member.uid);
-                                      }
-                                    });
-                                  },
-                                ),
-                            ],
-                          ),
-                        ],
-                        if (availableMembers.isEmpty && !_loadingAvailability)
-                          const Padding(
-                            padding: EdgeInsets.only(top: 16),
-                            child: _EditorNoticeCard(
-                              icon: Icons.person_search_outlined,
-                              title: 'Aktuell kein freier Mitarbeiter',
-                              message:
-                                  'Passe Zeitfenster, Standort oder Arbeitsbereich an oder speichere die Schicht als freie Schicht.',
-                              tone: _EditorNoticeTone.warning,
-                            ),
-                          ),
-                        if (unavailableMembers.isNotEmpty) ...[
-                          const SizedBox(height: 18),
-                          Wrap(
-                            spacing: 10,
-                            runSpacing: 10,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              Text(
-                                'Nicht verfuegbar',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleSmall
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              _EditorCountBadge(
-                                label: '${unavailableMembers.length} gesperrt',
-                                tone: _EditorBadgeTone.warning,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Diese Mitarbeiter koennen aktuell nicht eingeplant werden. Die Gruende werden pro Person aufgegliedert.',
-                            style:
-                                Theme.of(context).textTheme.bodySmall?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
-                                    ),
-                          ),
-                          const SizedBox(height: 12),
-                          Column(
-                            children: [
-                              for (final availability in unavailableMembers)
-                                _AssigneeAvailabilityTile(
-                                  availability: availability,
-                                ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _titleCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Schichttitel',
-                prefixIcon: Icon(Icons.badge_outlined),
-              ),
-              validator: (value) {
-                if ((value ?? '').trim().isEmpty) {
-                  return 'Bitte Titel eingeben';
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 12),
-            if (isEdit)
-              _DateTile(
-                label: 'Datum',
-                value: DateFormat('dd.MM.yyyy', 'de_DE').format(_date),
-                icon: Icons.calendar_today,
-                onTap: _pickDate,
-              )
-            else
-              _DateTile(
-                label: 'Tage',
-                value: _selectedDaysSummary(),
-                icon: Icons.event_available,
-                onTap: _openMultiDayPicker,
-              ),
-            const SizedBox(height: 12),
-            Card(
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.login),
-                    title: const Text('Beginn'),
-                    trailing: Text(_startTime.format(context)),
-                    onTap: _pickStart,
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.logout),
-                    title: const Text('Ende'),
-                    trailing: Text(_endTime.format(context)),
-                    onTap: _pickEnd,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _breakCtrl,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'Pause in Minuten',
-                prefixIcon: Icon(Icons.coffee_outlined),
-              ),
-              onChanged: (_) => _setDirty(
-                () {},
-                refreshAvailability: true,
-              ),
-            ),
-            if (!_saveAsUnassigned && widget.members.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          Text(
-                            'Weitere Besetzungen',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                          _EditorCountBadge(
-                            label:
-                                '${_additionalAssignments.length} Zusatzbesetzung${_additionalAssignments.length == 1 ? '' : 'en'}',
-                          ),
-                          FilledButton.tonalIcon(
-                            onPressed: _addAdditionalAssignment,
-                            icon: const Icon(Icons.person_add_alt_1_outlined),
-                            label: const Text('Person hinzufuegen'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Titel, Standort, Arbeitsbereich, Qualifikationen, Notiz, Status und Farbe werden vom Hauptblock uebernommen. Fuer jede Zusatzbesetzung kannst du einen eigenen Mitarbeiter und eigene Zeiten definieren. Konflikte werden beim Speichern gemeinsam geprueft.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                      const SizedBox(height: 14),
-                      if (_additionalAssignments.isEmpty)
-                        const _EditorNoticeCard(
-                          icon: Icons.schedule_send_outlined,
-                          title: 'Keine Zusatzbesetzung angelegt',
-                          message:
-                              'Nutze weitere Besetzungen, wenn dieselbe Schicht von mehreren Personen in unterschiedlichen Zeitfenstern uebernommen wird, zum Beispiel 08:00 - 10:00 und 10:00 - 13:00.',
-                          tone: _EditorNoticeTone.info,
-                        )
-                      else
-                        Column(
-                          children: [
-                            for (var index = 0;
-                                index < _additionalAssignments.length;
-                                index++) ...[
-                              _AdditionalShiftAssignmentCard(
-                                key: ValueKey(
-                                  'additional-assignment-${_additionalAssignments[index].id}',
-                                ),
-                                index: index,
-                                draft: _additionalAssignments[index],
-                                members: widget.members,
-                                onMemberChanged: (memberId) =>
-                                    _updateAdditionalAssignment(
-                                  _additionalAssignments[index].id,
-                                  (draft) => draft.copyWith(memberId: memberId),
-                                ),
-                                onRemove: () => _removeAdditionalAssignment(
-                                  _additionalAssignments[index].id,
-                                ),
-                                onPickStart: () => _pickAdditionalStart(
-                                  _additionalAssignments[index].id,
-                                ),
-                                onPickEnd: () => _pickAdditionalEnd(
-                                  _additionalAssignments[index].id,
-                                ),
-                                onBreakChanged: (value) =>
-                                    _updateAdditionalAssignment(
-                                  _additionalAssignments[index].id,
-                                  (draft) => draft.copyWith(
-                                    breakMinutes:
-                                        _parseBreakMinutesValue(value),
-                                  ),
-                                ),
-                              ),
-                              if (index < _additionalAssignments.length - 1)
-                                const SizedBox(height: 12),
-                            ],
-                          ],
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String?>(
-              isExpanded: true,
-              initialValue: _selectedTeamId,
-              decoration: const InputDecoration(
-                labelText: 'Gespeichertes Team',
-                prefixIcon: Icon(Icons.groups_2_outlined),
-              ),
-              items: [
-                const DropdownMenuItem<String?>(
-                  value: null,
-                  child: Text('Kein Team'),
-                ),
-                for (final team in widget.teams)
-                  DropdownMenuItem<String?>(
-                    value: team.id,
-                    child: Text(team.name),
-                  ),
-              ],
-              onChanged: (value) {
-                _setDirty(
-                  () {
-                    _selectedTeamId = value;
-                    if (value == null) {
-                      return;
-                    }
-                    final team = widget.teams
-                        .where((candidate) => candidate.id == value)
-                        .firstOrNull;
-                    if (team == null) {
-                      return;
-                    }
-                    _teamCtrl.text = team.name;
-                    if (!isEdit && team.memberIds.isNotEmpty) {
-                      _selectedUserIds = widget.members
-                          .where(
-                              (member) => team.memberIds.contains(member.uid))
-                          .map((member) => member.uid)
-                          .toSet();
-                    }
-                  },
-                  refreshAvailability: true,
-                );
-              },
-            ),
-            if (selectedTeam != null &&
-                selectedTeam.memberIds.isNotEmpty &&
-                !isEdit) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Teammitglieder werden automatisch uebernommen. Belegte Mitarbeiter werden darunter separat mit Konfliktgrund angezeigt.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _teamCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Team / Bereich',
-                prefixIcon: Icon(Icons.group_work_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (sites.isEmpty)
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    'Es sind noch keine Standorte angelegt. Bitte hinterlege zuerst Standorte in der Teamverwaltung.',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                  ),
-                ),
-              )
-            else
-              DropdownButtonFormField<String>(
-                isExpanded: true,
-                initialValue: _selectedSiteId,
-                decoration: const InputDecoration(
-                  labelText: 'Standort',
-                  prefixIcon: Icon(Icons.location_on_outlined),
-                ),
-                items: [
-                  for (final site in sites)
-                    DropdownMenuItem(
-                      value: site.id,
-                      child: Text(site.name),
-                    ),
-                ],
-                onChanged: (value) {
-                  _setDirty(
-                    () {
-                      _selectedSiteId = value;
-                      final selected =
-                          sites.where((site) => site.id == value).firstOrNull;
-                      _locationCtrl.text = selected?.name ?? '';
-                    },
-                    refreshAvailability: true,
-                  );
-                },
-              ),
-            if (qualifications.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Erforderliche Qualifikationen',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final qualification in qualifications)
-                    FilterChip(
-                      label: Text(qualification.name),
-                      selected:
-                          _requiredQualificationIds.contains(qualification.id),
-                      onSelected: (selected) {
-                        _setDirty(
-                          () {
-                            if (qualification.id == null) {
-                              return;
-                            }
-                            if (selected) {
-                              _requiredQualificationIds.add(qualification.id!);
-                            } else {
-                              _requiredQualificationIds
-                                  .remove(qualification.id);
-                            }
-                          },
-                          refreshAvailability: true,
-                        );
-                      },
-                    ),
-                ],
-              ),
-            ],
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _notesCtrl,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: 'Notiz',
-                prefixIcon: Icon(Icons.notes_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<ShiftStatus>(
-              isExpanded: true,
-              initialValue: _status,
-              decoration: const InputDecoration(
-                labelText: 'Status',
-                prefixIcon: Icon(Icons.flag_outlined),
-              ),
-              items: [
-                for (final status in ShiftStatus.values)
-                  DropdownMenuItem(
-                    value: status,
-                    child: Text(status.label),
-                  ),
-              ],
-              onChanged: (value) {
-                if (value != null) {
-                  _setDirty(() => _status = value);
-                }
-              },
-            ),
-            // Wiederholung nur im Bearbeiten-Modus sichtbar (read-only). Beim
-            // Anlegen ersetzt die Mehrtage-Auswahl ("Tage") das alte Muster –
-            // zwei parallele Wiederhol-Konzepte würden eine Doppel-Expansion
-            // auslösen.
-            if (isEdit) ...[
-              const SizedBox(height: 12),
-              DropdownButtonFormField<RecurrencePattern>(
-                isExpanded: true,
-                initialValue: _recurrencePattern,
-                decoration: const InputDecoration(
-                  labelText: 'Wiederholung',
-                  prefixIcon: Icon(Icons.repeat),
-                ),
-                items: [
-                  for (final pattern in RecurrencePattern.values)
-                    DropdownMenuItem(
-                      value: pattern,
-                      child: Text(pattern.label),
-                    ),
-                ],
-                onChanged: null,
-              ),
-            ],
-            const SizedBox(height: 12),
-            Text('Farbe', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final hex in const [
-                  '#4CAF50',
-                  '#2196F3',
-                  '#FF9800',
-                  '#E91E63',
-                  '#9C27B0',
-                  '#00BCD4',
-                  '#795548',
-                  '#607D8B',
-                ])
-                  GestureDetector(
-                    onTap: () => _setDirty(
-                      () => _shiftColor = _shiftColor == hex ? null : hex,
-                    ),
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: Color(int.parse(hex.replaceFirst('#', '0xFF'))),
-                        shape: BoxShape.circle,
-                        border: _shiftColor == hex
-                            ? Border.all(
-                                color: Theme.of(context).colorScheme.onSurface,
-                                width: 3)
-                            : null,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            if (isEdit && _loadingAvailability) ...[
-              const SizedBox(height: 12),
-              const LinearProgressIndicator(),
-            ],
-            if (isEdit &&
-                selectedAvailability != null &&
-                !selectedAvailability.isAvailable) ...[
-              const SizedBox(height: 12),
-              _AssigneeAvailabilityTile(
-                availability: selectedAvailability,
-                title: 'Ausgewaehlter Mitarbeiter ist nicht verfuegbar',
-              ),
-            ],
-            const SizedBox(height: 20),
-            if (_conflictIssues.isNotEmpty) ...[
-              Card(
-                color: Theme.of(context).colorScheme.errorContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _conflictIssues.length == 1
-                            ? '1 Konflikt gefunden'
-                            : '${_conflictIssues.length} Konflikte gefunden',
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onErrorContainer,
-                                ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Die betroffenen Schichten werden unten aufgelistet. Passe Zeiten, Mitarbeiter oder Abwesenheiten an und pruefe erneut.',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.onErrorContainer,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      _ShiftConflictList(
-                        issues: _conflictIssues,
-                        textColor:
-                            Theme.of(context).colorScheme.onErrorContainer,
-                      ),
-                      if (_canSkipConflicts) ...[
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                          onPressed: _validating ? null : _saveSkippingConflicts,
-                          icon: const Icon(Icons.playlist_add_check),
-                          label: const Text(
-                            'Betroffene ueberspringen und Rest speichern',
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor:
-                                Theme.of(context).colorScheme.onErrorContainer,
-                            side: BorderSide(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onErrorContainer
-                                  .withValues(alpha: 0.5),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-            FilledButton.icon(
-              onPressed: _validating ? null : _save,
-              icon: _validating
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.save),
-              label: Text(
-                _validating
-                    ? 'Pruefe Konflikte...'
-                    : (isEdit ? 'Aktualisieren' : 'Speichern'),
-              ),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(52),
-              ),
-            ),
+            // Fixierte Aktionsleiste (immer erreichbar).
+            _buildFooter(context, isEdit),
           ],
         ),
       ),
@@ -2677,6 +1926,1108 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     final normalized = value.trim().replaceAll(',', '.');
     return double.tryParse(normalized) ?? 0;
   }
+
+  // ---------------------------------------------------------------------------
+  // Abschnitts-Builder fuer den modernisierten Schicht-Editor (klare Abschnitte:
+  // Eckdaten -> Besetzung -> Details, kompakte Vorlagen-Leiste, fixierter
+  // Speichern-Button). Reine Layout-Umstrukturierung; die Formular-/Speicher-
+  // Logik (Controller, _setDirty, Validierung, _buildProposedShifts) bleibt
+  // unveraendert.
+  // ---------------------------------------------------------------------------
+
+  Widget _buildTemplateBar(
+    BuildContext context,
+    List<ShiftTemplate> shiftTemplates,
+    ShiftTemplate? selectedTemplate,
+  ) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: spacing.sm,
+          runSpacing: spacing.sm,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            OutlinedButton.icon(
+              onPressed: shiftTemplates.isEmpty
+                  ? null
+                  : () => _pickTemplate(shiftTemplates),
+              icon: const Icon(Icons.bookmarks_outlined),
+              label: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  selectedTemplate?.name ?? 'Aus Vorlage',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+            FilledButton.tonalIcon(
+              onPressed: _saveCurrentAsTemplate,
+              icon: const Icon(Icons.bookmark_add_outlined),
+              label: const Text('Als Vorlage'),
+            ),
+            if (selectedTemplate != null)
+              PopupMenuButton<String>(
+                tooltip: 'Vorlagen-Aktionen',
+                icon: const Icon(Icons.more_horiz),
+                onSelected: (value) {
+                  if (value == 'update') {
+                    _updateTemplate(selectedTemplate);
+                  } else if (value == 'delete') {
+                    _deleteTemplate(selectedTemplate);
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem<String>(
+                    value: 'update',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.edit_outlined),
+                      title: Text('Vorlage aktualisieren'),
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'delete',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.delete_outline),
+                      title: Text('Vorlage loeschen'),
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        ),
+        if (selectedTemplate != null) ...[
+          SizedBox(height: spacing.sm),
+          Text(
+            _formatShiftTemplateSummary(context, selectedTemplate),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildCoreSection(
+    BuildContext context,
+    List<SiteDefinition> sites,
+    bool isEdit,
+  ) {
+    final spacing = context.spacing;
+    return _EditorSection(
+      title: 'Eckdaten',
+      icon: Icons.event_note_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextFormField(
+            controller: _titleCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Schichttitel',
+              prefixIcon: Icon(Icons.badge_outlined),
+            ),
+            validator: (value) {
+              if ((value ?? '').trim().isEmpty) {
+                return 'Bitte Titel eingeben';
+              }
+              return null;
+            },
+          ),
+          SizedBox(height: spacing.md),
+          if (isEdit)
+            _PickerField(
+              icon: Icons.calendar_today,
+              label: 'Datum',
+              value: DateFormat('dd.MM.yyyy', 'de_DE').format(_date),
+              onTap: _pickDate,
+            )
+          else
+            _PickerField(
+              icon: Icons.event_available,
+              label: 'Tage',
+              value: _selectedDaysSummary(),
+              onTap: _openMultiDayPicker,
+            ),
+          SizedBox(height: spacing.md),
+          Row(
+            children: [
+              Expanded(
+                child: _PickerField(
+                  icon: Icons.login,
+                  label: 'Beginn',
+                  value: _startTime.format(context),
+                  onTap: _pickStart,
+                  showChevron: false,
+                ),
+              ),
+              SizedBox(width: spacing.sm),
+              Expanded(
+                child: _PickerField(
+                  icon: Icons.logout,
+                  label: 'Ende',
+                  value: _endTime.format(context),
+                  onTap: _pickEnd,
+                  showChevron: false,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: spacing.md),
+          if (sites.isEmpty) ...[
+            TextFormField(
+              controller: _breakCtrl,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Pause in Minuten',
+                prefixIcon: Icon(Icons.coffee_outlined),
+              ),
+              onChanged: (_) => _setDirty(() {}, refreshAvailability: true),
+            ),
+            SizedBox(height: spacing.md),
+            const _EditorNoticeCard(
+              icon: Icons.location_off_outlined,
+              title: 'Noch keine Standorte angelegt',
+              message:
+                  'Bitte hinterlege zuerst Standorte in der Teamverwaltung, um die Schicht einem Standort zuzuordnen.',
+              tone: _EditorNoticeTone.warning,
+            ),
+          ] else
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: TextFormField(
+                    controller: _breakCtrl,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Pause (Min.)',
+                      prefixIcon: Icon(Icons.coffee_outlined),
+                    ),
+                    onChanged: (_) =>
+                        _setDirty(() {}, refreshAvailability: true),
+                  ),
+                ),
+                SizedBox(width: spacing.sm),
+                Expanded(
+                  flex: 3,
+                  child: DropdownButtonFormField<String>(
+                    isExpanded: true,
+                    initialValue: _selectedSiteId,
+                    decoration: const InputDecoration(
+                      labelText: 'Standort',
+                      prefixIcon: Icon(Icons.location_on_outlined),
+                    ),
+                    items: [
+                      for (final site in sites)
+                        DropdownMenuItem(
+                          value: site.id,
+                          child: Text(
+                            site.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      _setDirty(
+                        () {
+                          _selectedSiteId = value;
+                          final selected = sites
+                              .where((site) => site.id == value)
+                              .firstOrNull;
+                          _locationCtrl.text = selected?.name ?? '';
+                        },
+                        refreshAvailability: true,
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStaffingSection(
+    BuildContext context, {
+    required bool isEdit,
+    required List<ShiftAssigneeAvailability> availabilityItems,
+    required List<ShiftAssigneeAvailability> availableMembers,
+    required List<ShiftAssigneeAvailability> unavailableMembers,
+    required String? selectedUserId,
+    required ShiftAssigneeAvailability? selectedAvailability,
+  }) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    final showAdditional = !_saveAsUnassigned && widget.members.isNotEmpty;
+
+    return _EditorSection(
+      title: 'Besetzung',
+      icon: Icons.groups_outlined,
+      trailing: (!_saveAsUnassigned && !isEdit && widget.members.isNotEmpty)
+          ? _EditorCountBadge(label: '${_selectedUserIds.length} ausgewaehlt')
+          : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment<bool>(
+                  value: false,
+                  label: Text('Mitarbeiter'),
+                  icon: Icon(Icons.person_outline),
+                ),
+                ButtonSegment<bool>(
+                  value: true,
+                  label: Text('Freie Schicht'),
+                  icon: Icon(Icons.event_available_outlined),
+                ),
+              ],
+              selected: {_saveAsUnassigned},
+              onSelectionChanged: (selection) {
+                final unassigned = selection.first;
+                if (unassigned == _saveAsUnassigned) {
+                  return;
+                }
+                if (unassigned) {
+                  _setDirty(() {
+                    _saveAsUnassigned = true;
+                    _selectedUserIds = <String>{};
+                    _additionalAssignments = const [];
+                  });
+                } else {
+                  _setDirty(
+                    () {
+                      _saveAsUnassigned = false;
+                      if (_selectedUserIds.isEmpty &&
+                          widget.members.isNotEmpty) {
+                        _selectedUserIds = {widget.members.first.uid};
+                      }
+                    },
+                    refreshAvailability: true,
+                  );
+                }
+              },
+            ),
+          ),
+          SizedBox(height: spacing.md),
+          if (_saveAsUnassigned)
+            Text(
+              'Diese Schicht wird ohne feste Zuordnung gespeichert und erscheint im Bereich "Freie Schichten".',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            )
+          else if (isEdit) ...[
+            DropdownButtonFormField<String>(
+              isExpanded: true,
+              initialValue: selectedUserId,
+              decoration: const InputDecoration(
+                labelText: 'Mitarbeiter',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+              items: [
+                for (final availability in availabilityItems)
+                  DropdownMenuItem(
+                    value: availability.member.uid,
+                    enabled: availability.isAvailable ||
+                        availability.member.uid == selectedUserId,
+                    child: Text(
+                      availability.isAvailable ||
+                              availability.member.uid == selectedUserId
+                          ? availability.member.displayName
+                          : '${availability.member.displayName} · nicht verfuegbar',
+                    ),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  _setDirty(() => _selectedUserIds = {value});
+                }
+              },
+            ),
+            if (_loadingAvailability) ...[
+              SizedBox(height: spacing.md),
+              const LinearProgressIndicator(),
+            ],
+            if (selectedAvailability != null &&
+                !selectedAvailability.isAvailable) ...[
+              SizedBox(height: spacing.md),
+              _buildBlockingNotice(context, selectedAvailability),
+            ],
+          ] else
+            _buildMemberPicker(context, availableMembers, unavailableMembers),
+          if (showAdditional) ..._buildAdditionalAssignments(context),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMemberPicker(
+    BuildContext context,
+    List<ShiftAssigneeAvailability> availableMembers,
+    List<ShiftAssigneeAvailability> unavailableMembers,
+  ) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+
+    if (widget.members.isEmpty) {
+      return const _EditorNoticeCard(
+        icon: Icons.people_outline_rounded,
+        title: 'Keine aktiven Mitarbeiter vorhanden',
+        message: 'Im Team sind aktuell keine aktiven Mitarbeiter hinterlegt.',
+        tone: _EditorNoticeTone.warning,
+      );
+    }
+
+    // Eine kompakte, scannbare Liste: frei (auswaehlbar) zuerst, dann gesperrt
+    // (Sperrgruende nur auf Tipp). Lange Teams werden gekappt -> kein endloses
+    // Scrollen mehr durch die frueheren Verfuegbarkeits-Grosskarten.
+    final ordered = [...availableMembers, ...unavailableMembers];
+    const cap = 8;
+    final showAll = _showAllMembers || ordered.length <= cap;
+    final visible = showAll ? ordered : ordered.take(cap).toList();
+    final hidden = ordered.length - visible.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Wrap(
+                spacing: spacing.sm,
+                runSpacing: spacing.xs,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _EditorCountBadge(
+                    label: '${availableMembers.length} frei',
+                    tone: _EditorBadgeTone.success,
+                  ),
+                  if (unavailableMembers.isNotEmpty)
+                    _EditorCountBadge(
+                      label: '${unavailableMembers.length} gesperrt',
+                      tone: _EditorBadgeTone.warning,
+                    ),
+                ],
+              ),
+            ),
+            if (availableMembers.isNotEmpty)
+              TextButton.icon(
+                onPressed: () => _setDirty(
+                  () => _selectedUserIds = availableMembers
+                      .map((entry) => entry.member.uid)
+                      .toSet(),
+                ),
+                icon: const Icon(Icons.done_all, size: 18),
+                label: const Text('Alle freien'),
+              ),
+          ],
+        ),
+        if (_loadingAvailability) ...[
+          SizedBox(height: spacing.sm),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(context.radii.pill),
+            child: const LinearProgressIndicator(minHeight: 4),
+          ),
+        ],
+        SizedBox(height: spacing.sm + spacing.xs),
+        if (availableMembers.isEmpty && !_loadingAvailability) ...[
+          Text(
+            'Aktuell kein freier Mitarbeiter im gewaehlten Zeitfenster. Passe Zeiten, Standort oder Qualifikationen an – oder speichere die Schicht als freie Schicht.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: colorScheme.onSurfaceVariant),
+          ),
+          SizedBox(height: spacing.sm + spacing.xs),
+        ],
+        for (final availability in visible)
+          _buildMemberTile(context, availability),
+        if (hidden > 0)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _showAllMembers = true),
+              icon: const Icon(Icons.expand_more, size: 18),
+              label: Text('Weitere $hidden anzeigen'),
+            ),
+          )
+        else if (showAll && ordered.length > cap)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _showAllMembers = false),
+              icon: const Icon(Icons.expand_less, size: 18),
+              label: const Text('Weniger anzeigen'),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Eine schlanke Mitarbeiter-Zeile: farbiger Status (frei/Warnung/gesperrt),
+  /// Name + einzeiliger Grund. Frei = antippbar (Auswahl), gesperrt = antippbar
+  /// (Sperrgruende ein-/ausklappen). Ersetzt die fruehere Verfuegbarkeits-
+  /// Grosskarte und haelt den Besetzungs-Abschnitt kurz.
+  Widget _buildMemberTile(BuildContext context, ShiftAssigneeAvailability av) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final appColors = theme.appColors;
+    final spacing = context.spacing;
+    final radius = BorderRadius.circular(context.radii.md);
+
+    final isAvailable = av.isAvailable;
+    final reasons = isAvailable
+        ? const <_AvailabilityReason>[]
+        : _buildAssigneeAvailabilityReasons(av);
+    final hasBlocking =
+        reasons.any((reason) => reason.tone == _AvailabilityReasonTone.blocking);
+    final statusColor = isAvailable
+        ? appColors.success
+        : (hasBlocking ? colorScheme.error : appColors.warning);
+    final selected = _selectedUserIds.contains(av.member.uid);
+    final expanded = _expandedMemberIds.contains(av.member.uid);
+    final summary = isAvailable
+        ? 'Verfuegbar'
+        : (reasons.isEmpty ? 'Nicht verfuegbar' : reasons.first.message);
+    final extra = reasons.length > 1 ? reasons.length - 1 : 0;
+    final statusIcon = isAvailable
+        ? Icons.check_circle
+        : (hasBlocking ? Icons.block : Icons.warning_amber_rounded);
+
+    return Container(
+      margin: EdgeInsets.only(bottom: spacing.sm),
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        color: selected
+            ? colorScheme.primaryContainer.withValues(alpha: 0.25)
+            : colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: selected
+              ? colorScheme.primary
+              : colorScheme.outlineVariant.withValues(alpha: 0.7),
+          width: selected ? 1.5 : 1,
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: radius,
+            onTap: isAvailable
+                ? () => _setDirty(() {
+                      if (selected) {
+                        _selectedUserIds.remove(av.member.uid);
+                      } else {
+                        _selectedUserIds.add(av.member.uid);
+                      }
+                    })
+                : () => setState(() {
+                      if (expanded) {
+                        _expandedMemberIds.remove(av.member.uid);
+                      } else {
+                        _expandedMemberIds.add(av.member.uid);
+                      }
+                    }),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: spacing.sm + spacing.xs,
+                vertical: spacing.sm,
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 17,
+                    backgroundColor: statusColor.withValues(alpha: 0.16),
+                    child: Text(
+                      _initialsForName(av.member.displayName),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: statusColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: spacing.sm + spacing.xs),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          av.member.displayName,
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        SizedBox(height: spacing.xxs),
+                        Row(
+                          children: [
+                            Icon(statusIcon, size: 14, color: statusColor),
+                            SizedBox(width: spacing.xs),
+                            Flexible(
+                              child: Text(
+                                summary,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (extra > 0) ...[
+                              SizedBox(width: spacing.xs),
+                              Text(
+                                '+$extra',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: statusColor,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(width: spacing.sm),
+                  if (isAvailable)
+                    Icon(
+                      selected
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      color:
+                          selected ? colorScheme.primary : colorScheme.outline,
+                    )
+                  else
+                    Icon(
+                      expanded ? Icons.expand_less : Icons.expand_more,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (!isAvailable && expanded)
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                spacing.sm + spacing.xs,
+                0,
+                spacing.sm + spacing.xs,
+                spacing.sm + spacing.xs,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Divider(
+                    height: spacing.md,
+                    color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                  ..._buildReasonLines(context, reasons),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Kompakte Sperrgrund-Zeilen (Icon + Text), genutzt im aufgeklappten Tile und
+  /// im Bearbeiten-Modus-Hinweis. [textColor] fuer getoente Hintergruende.
+  List<Widget> _buildReasonLines(
+    BuildContext context,
+    List<_AvailabilityReason> reasons, {
+    Color? textColor,
+  }) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final appColors = theme.appColors;
+    final spacing = context.spacing;
+    return [
+      for (var i = 0; i < reasons.length; i++) ...[
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              reasons[i].icon,
+              size: 16,
+              color: reasons[i].tone == _AvailabilityReasonTone.blocking
+                  ? colorScheme.error
+                  : appColors.warning,
+            ),
+            SizedBox(width: spacing.sm),
+            Expanded(
+              child: Text(
+                reasons[i].message,
+                style: theme.textTheme.bodySmall?.copyWith(color: textColor),
+              ),
+            ),
+          ],
+        ),
+        if (i < reasons.length - 1) SizedBox(height: spacing.xs),
+      ],
+    ];
+  }
+
+  /// Kompakter Sperr-Hinweis fuer den Bearbeiten-Modus (ausgewaehlter
+  /// Mitarbeiter nicht verfuegbar) – schlanke getoente Box statt Grosskarte.
+  Widget _buildBlockingNotice(
+    BuildContext context,
+    ShiftAssigneeAvailability availability,
+  ) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final appColors = theme.appColors;
+    final spacing = context.spacing;
+    final reasons = _buildAssigneeAvailabilityReasons(availability);
+    final hasBlocking =
+        reasons.any((reason) => reason.tone == _AvailabilityReasonTone.blocking);
+    final accent = hasBlocking ? colorScheme.error : appColors.warning;
+    final background =
+        hasBlocking ? colorScheme.errorContainer : appColors.warningContainer;
+    final foreground = hasBlocking
+        ? colorScheme.onErrorContainer
+        : appColors.onWarningContainer;
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(spacing.sm + spacing.xs),
+      decoration: BoxDecoration(
+        color: background.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(context.radii.md),
+        border: Border.all(color: accent.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                hasBlocking ? Icons.block : Icons.warning_amber_rounded,
+                size: 18,
+                color: accent,
+              ),
+              SizedBox(width: spacing.sm),
+              Expanded(
+                child: Text(
+                  'Ausgewaehlter Mitarbeiter ist nicht verfuegbar',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: foreground,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: spacing.sm),
+          ..._buildReasonLines(context, reasons, textColor: foreground),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildAdditionalAssignments(BuildContext context) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    return [
+      Divider(height: spacing.lg, color: theme.colorScheme.outlineVariant),
+      Wrap(
+        spacing: spacing.sm + spacing.xxs,
+        runSpacing: spacing.sm + spacing.xxs,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            'Weitere Besetzungen',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          _EditorCountBadge(
+            label:
+                '${_additionalAssignments.length} Zusatzbesetzung${_additionalAssignments.length == 1 ? '' : 'en'}',
+          ),
+          FilledButton.tonalIcon(
+            onPressed: _addAdditionalAssignment,
+            icon: const Icon(Icons.person_add_alt_1_outlined),
+            label: const Text('Person hinzufuegen'),
+          ),
+        ],
+      ),
+      SizedBox(height: spacing.sm + spacing.xxs),
+      Text(
+        'Titel, Standort, Arbeitsbereich, Qualifikationen, Notiz, Status und Farbe werden vom Hauptblock uebernommen. Fuer jede Zusatzbesetzung kannst du einen eigenen Mitarbeiter und eigene Zeiten definieren. Konflikte werden beim Speichern gemeinsam geprueft.',
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+      SizedBox(height: spacing.md),
+      if (_additionalAssignments.isEmpty)
+        const _EditorNoticeCard(
+          icon: Icons.schedule_send_outlined,
+          title: 'Keine Zusatzbesetzung angelegt',
+          message:
+              'Nutze weitere Besetzungen, wenn dieselbe Schicht von mehreren Personen in unterschiedlichen Zeitfenstern uebernommen wird, zum Beispiel 08:00 - 10:00 und 10:00 - 13:00.',
+          tone: _EditorNoticeTone.info,
+        )
+      else
+        for (var index = 0; index < _additionalAssignments.length; index++) ...[
+          _AdditionalShiftAssignmentCard(
+            key: ValueKey(
+              'additional-assignment-${_additionalAssignments[index].id}',
+            ),
+            index: index,
+            draft: _additionalAssignments[index],
+            members: widget.members,
+            onMemberChanged: (memberId) => _updateAdditionalAssignment(
+              _additionalAssignments[index].id,
+              (draft) => draft.copyWith(memberId: memberId),
+            ),
+            onRemove: () => _removeAdditionalAssignment(
+              _additionalAssignments[index].id,
+            ),
+            onPickStart: () => _pickAdditionalStart(
+              _additionalAssignments[index].id,
+            ),
+            onPickEnd: () => _pickAdditionalEnd(
+              _additionalAssignments[index].id,
+            ),
+            onBreakChanged: (value) => _updateAdditionalAssignment(
+              _additionalAssignments[index].id,
+              (draft) => draft.copyWith(
+                breakMinutes: _parseBreakMinutesValue(value),
+              ),
+            ),
+          ),
+          if (index < _additionalAssignments.length - 1)
+            SizedBox(height: spacing.sm + spacing.xs),
+        ],
+    ];
+  }
+
+  Widget _buildDetailsSection(
+    BuildContext context, {
+    required List<QualificationDefinition> qualifications,
+    required TeamDefinition? selectedTeam,
+    required bool isEdit,
+  }) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    return _EditorSection(
+      title: 'Details',
+      icon: Icons.tune,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          DropdownButtonFormField<String?>(
+            isExpanded: true,
+            initialValue: _selectedTeamId,
+            decoration: const InputDecoration(
+              labelText: 'Gespeichertes Team',
+              prefixIcon: Icon(Icons.groups_2_outlined),
+            ),
+            items: [
+              const DropdownMenuItem<String?>(
+                value: null,
+                child: Text('Kein Team'),
+              ),
+              for (final team in widget.teams)
+                DropdownMenuItem<String?>(
+                  value: team.id,
+                  child: Text(team.name),
+                ),
+            ],
+            onChanged: (value) {
+              _setDirty(
+                () {
+                  _selectedTeamId = value;
+                  if (value == null) {
+                    return;
+                  }
+                  final team = widget.teams
+                      .where((candidate) => candidate.id == value)
+                      .firstOrNull;
+                  if (team == null) {
+                    return;
+                  }
+                  _teamCtrl.text = team.name;
+                  if (!isEdit && team.memberIds.isNotEmpty) {
+                    _selectedUserIds = widget.members
+                        .where((member) => team.memberIds.contains(member.uid))
+                        .map((member) => member.uid)
+                        .toSet();
+                  }
+                },
+                refreshAvailability: true,
+              );
+            },
+          ),
+          if (selectedTeam != null &&
+              selectedTeam.memberIds.isNotEmpty &&
+              !isEdit) ...[
+            SizedBox(height: spacing.sm),
+            Text(
+              'Teammitglieder werden automatisch uebernommen. Belegte Mitarbeiter werden darunter separat mit Konfliktgrund angezeigt.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          SizedBox(height: spacing.md),
+          TextFormField(
+            controller: _teamCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Team / Bereich',
+              prefixIcon: Icon(Icons.group_work_outlined),
+            ),
+          ),
+          if (qualifications.isNotEmpty) ...[
+            SizedBox(height: spacing.md),
+            Text(
+              'Erforderliche Qualifikationen',
+              style: theme.textTheme.titleSmall,
+            ),
+            SizedBox(height: spacing.sm),
+            Wrap(
+              spacing: spacing.sm,
+              runSpacing: spacing.sm,
+              children: [
+                for (final qualification in qualifications)
+                  FilterChip(
+                    label: Text(qualification.name),
+                    selected:
+                        _requiredQualificationIds.contains(qualification.id),
+                    onSelected: (selected) {
+                      _setDirty(
+                        () {
+                          if (qualification.id == null) {
+                            return;
+                          }
+                          if (selected) {
+                            _requiredQualificationIds.add(qualification.id!);
+                          } else {
+                            _requiredQualificationIds.remove(qualification.id);
+                          }
+                        },
+                        refreshAvailability: true,
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ],
+          SizedBox(height: spacing.md),
+          DropdownButtonFormField<ShiftStatus>(
+            isExpanded: true,
+            initialValue: _status,
+            decoration: const InputDecoration(
+              labelText: 'Status',
+              prefixIcon: Icon(Icons.flag_outlined),
+            ),
+            items: [
+              for (final status in ShiftStatus.values)
+                DropdownMenuItem(
+                  value: status,
+                  child: Text(status.label),
+                ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                _setDirty(() => _status = value);
+              }
+            },
+          ),
+          // Wiederholung/Serien werden über den Mehrtage-Picker (mehrere Tage
+          // gleichzeitig anlegen) abgebildet, nicht über ein editierbares
+          // Wiederholungs-Muster. Bei bestehenden Serien-Schichten nur als
+          // Read-only-Hinweis anzeigen.
+          if (isEdit && _recurrencePattern != RecurrencePattern.none) ...[
+            SizedBox(height: spacing.md),
+            InputDecorator(
+              decoration: const InputDecoration(
+                labelText: 'Wiederholung',
+                prefixIcon: Icon(Icons.repeat),
+                border: OutlineInputBorder(),
+              ),
+              child: Text(_recurrencePattern.label),
+            ),
+          ],
+          SizedBox(height: spacing.md),
+          Text('Farbe', style: theme.textTheme.titleSmall),
+          SizedBox(height: spacing.sm),
+          Wrap(
+            spacing: spacing.sm,
+            runSpacing: spacing.sm,
+            children: [
+              for (final hex in const [
+                '#4CAF50',
+                '#2196F3',
+                '#FF9800',
+                '#E91E63',
+                '#9C27B0',
+                '#00BCD4',
+                '#795548',
+                '#607D8B',
+              ])
+                InkWell(
+                  onTap: () => _setDirty(
+                    () => _shiftColor = _shiftColor == hex ? null : hex,
+                  ),
+                  customBorder: const CircleBorder(),
+                  child: SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: Center(
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color:
+                              Color(int.parse(hex.replaceFirst('#', '0xFF'))),
+                          shape: BoxShape.circle,
+                          border: _shiftColor == hex
+                              ? Border.all(
+                                  color: theme.colorScheme.onSurface,
+                                  width: 3,
+                                )
+                              : Border.all(
+                                  color: theme.colorScheme.outlineVariant
+                                      .withValues(alpha: 0.5),
+                                ),
+                        ),
+                        child: _shiftColor == hex
+                            ? const Icon(
+                                Icons.check,
+                                color: Colors.white,
+                                size: 20,
+                              )
+                            : null,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          SizedBox(height: spacing.md),
+          TextFormField(
+            controller: _notesCtrl,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Notiz',
+              prefixIcon: Icon(Icons.notes_outlined),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConflictCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: colorScheme.errorContainer,
+      child: Padding(
+        padding: EdgeInsets.all(spacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _conflictIssues.length == 1
+                  ? '1 Konflikt gefunden'
+                  : '${_conflictIssues.length} Konflikte gefunden',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: colorScheme.onErrorContainer,
+              ),
+            ),
+            SizedBox(height: spacing.sm),
+            Text(
+              'Die betroffenen Schichten werden unten aufgelistet. Passe Zeiten, Mitarbeiter oder Abwesenheiten an und pruefe erneut.',
+              style: TextStyle(color: colorScheme.onErrorContainer),
+            ),
+            SizedBox(height: spacing.md - spacing.xs),
+            _ShiftConflictList(
+              issues: _conflictIssues,
+              textColor: colorScheme.onErrorContainer,
+            ),
+            if (_canSkipConflicts) ...[
+              SizedBox(height: spacing.md - spacing.xs),
+              OutlinedButton.icon(
+                onPressed: _validating ? null : _saveSkippingConflicts,
+                icon: const Icon(Icons.playlist_add_check),
+                label: const Text(
+                  'Betroffene ueberspringen und Rest speichern',
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: colorScheme.onErrorContainer,
+                  side: BorderSide(
+                    color:
+                        colorScheme.onErrorContainer.withValues(alpha: 0.5),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFooter(BuildContext context, bool isEdit) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+        spacing.md,
+        spacing.sm + spacing.xs,
+        spacing.md,
+        spacing.sm + spacing.xs,
+      ),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      ),
+      // top:false -> nur der untere Sicherheitsabstand (Home-Indicator); der
+      // Tastatur-Inset traegt bereits das aeussere Padding(viewInsets) am
+      // Aufrufer, daher hier kein Doppelzaehlen.
+      child: SafeArea(
+        top: false,
+        child: FilledButton.icon(
+          onPressed: _validating ? null : _save,
+          icon: _validating
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                )
+              : const Icon(Icons.save),
+          label: Text(
+            _validating
+                ? 'Pruefe Konflikte...'
+                : (isEdit ? 'Aktualisieren' : 'Speichern'),
+          ),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(52),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _AdditionalShiftAssignmentCard extends StatelessWidget {
@@ -2801,6 +3152,139 @@ class _AdditionalShiftAssignmentCard extends StatelessWidget {
             onChanged: onBreakChanged,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Tokenisierte Abschnittskarte des Schicht-Editors (klare Abschnitte:
+/// Eckdaten/Besetzung/Details). Kopf mit Icon + fettem Titel + optionaler
+/// Aktion rechts ([trailing]) auf Basis einer [Card]; Abstaende/Groessen aus
+/// den Design-Tokens.
+class _EditorSection extends StatelessWidget {
+  const _EditorSection({
+    required this.title,
+    required this.icon,
+    required this.child,
+    this.trailing,
+  });
+
+  final String title;
+  final IconData icon;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: EdgeInsets.all(spacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  icon,
+                  size: context.iconSizes.md,
+                  color: theme.colorScheme.primary,
+                ),
+                SizedBox(width: spacing.sm),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                if (trailing != null) trailing!,
+              ],
+            ),
+            SizedBox(height: spacing.md),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Antippbares Feld im Eingabefeld-Look (Rahmen + Label + Wert), z. B. fuer
+/// Datum/Tage und Beginn/Ende. Modernisiert die fruehere [ListTile]-Variante
+/// und erlaubt eine kompakte Nebeneinander-Anordnung (Beginn|Ende). [showChevron]
+/// blendet den Pfeil aus, wenn das Feld in einer Zeile mehrfach steht.
+class _PickerField extends StatelessWidget {
+  const _PickerField({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onTap,
+    this.showChevron = true,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+  final bool showChevron;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    final radius = BorderRadius.circular(context.radii.md);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: radius,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: spacing.md,
+          vertical: spacing.sm + spacing.xs,
+        ),
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          border: Border.all(color: colorScheme.outlineVariant),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: context.iconSizes.md,
+              color: colorScheme.onSurfaceVariant,
+            ),
+            SizedBox(width: spacing.sm + spacing.xs),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  SizedBox(height: spacing.xxs),
+                  Text(
+                    value,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            if (showChevron)
+              Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
+          ],
+        ),
       ),
     );
   }

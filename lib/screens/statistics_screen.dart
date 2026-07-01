@@ -24,7 +24,6 @@ class StatisticsScreen extends StatelessWidget {
     final work = context.watch<WorkProvider>();
     final currentUser = work.currentUser;
     final entries = work.entries;
-    final settings = work.settings;
     final selectedMonth = work.selectedMonth;
 
     if (!(currentUser?.canViewReports ?? false)) {
@@ -58,7 +57,9 @@ class StatisticsScreen extends StatelessWidget {
         .map((e) => '${e.date.year}-${e.date.month}-${e.date.day}')
         .toSet()
         .length;
-    final targetHours = workingDays * settings.dailyHours;
+    // Z4: Soll aus dem Vertrags-Tagessoll (konsistent zu overtimeThisMonth),
+    // nicht mehr aus dem selbstgemeldeten settings.dailyHours.
+    final targetHours = work.targetHoursThisMonth;
 
     return Scaffold(
       appBar: BreadcrumbAppBar(
@@ -98,7 +99,7 @@ class StatisticsScreen extends StatelessWidget {
                 _OvertimeTrafficLight(
                   totalHours: totalHours,
                   targetHours: targetHours,
-                  dailyHours: settings.dailyHours,
+                  dailyHours: work.currentDailyHours,
                 ),
                 const SizedBox(height: 20),
 

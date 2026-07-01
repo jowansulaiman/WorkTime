@@ -8,6 +8,7 @@ class DatevExportConfig {
     this.accountLength = 4,
     this.defaultContraAccount = '9000',
     this.designation = '',
+    this.revenueAccountByRate = const {},
   });
 
   /// Berater-Nummer.
@@ -25,12 +26,20 @@ class DatevExportConfig {
   /// Freie Bezeichnung des Stapels.
   final String designation;
 
+  /// **P2.0** — USt-Satz (ganze Prozent) → CostType-/Erlöskonto-ID für die
+  /// Tagesabschluss-Buchung (`postDailyClosing`). Explizite Zuordnung statt
+  /// Namens-Heuristik; persistiert, damit der Admin sie nur einmal setzt.
+  final Map<int, String> revenueAccountByRate;
+
   Map<String, dynamic> toMap() => {
         'consultant_number': consultantNumber,
         'client_number': clientNumber,
         'account_length': accountLength,
         'default_contra_account': defaultContraAccount,
         'designation': designation,
+        // JSON-Keys sind Strings -> Satz als String serialisieren.
+        'revenue_account_by_rate':
+            revenueAccountByRate.map((k, v) => MapEntry('$k', v)),
       };
 
   factory DatevExportConfig.fromMap(Map<String, dynamic> map) {
@@ -38,6 +47,16 @@ class DatevExportConfig {
     final length = lengthRaw is int
         ? lengthRaw
         : int.tryParse('${lengthRaw ?? ''}') ?? 4;
+    final rateMap = <int, String>{};
+    final rawRates = map['revenue_account_by_rate'];
+    if (rawRates is Map) {
+      rawRates.forEach((k, v) {
+        final rate = int.tryParse('$k');
+        if (rate != null && v != null && '$v'.isNotEmpty) {
+          rateMap[rate] = '$v';
+        }
+      });
+    }
     return DatevExportConfig(
       consultantNumber: (map['consultant_number'] ?? '').toString(),
       clientNumber: (map['client_number'] ?? '').toString(),
@@ -45,6 +64,7 @@ class DatevExportConfig {
       defaultContraAccount:
           (map['default_contra_account'] ?? '9000').toString(),
       designation: (map['designation'] ?? '').toString(),
+      revenueAccountByRate: rateMap,
     );
   }
 
@@ -54,6 +74,7 @@ class DatevExportConfig {
     int? accountLength,
     String? defaultContraAccount,
     String? designation,
+    Map<int, String>? revenueAccountByRate,
   }) {
     return DatevExportConfig(
       consultantNumber: consultantNumber ?? this.consultantNumber,
@@ -61,6 +82,7 @@ class DatevExportConfig {
       accountLength: accountLength ?? this.accountLength,
       defaultContraAccount: defaultContraAccount ?? this.defaultContraAccount,
       designation: designation ?? this.designation,
+      revenueAccountByRate: revenueAccountByRate ?? this.revenueAccountByRate,
     );
   }
 }

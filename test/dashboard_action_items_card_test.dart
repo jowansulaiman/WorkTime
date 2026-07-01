@@ -9,6 +9,7 @@ import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
+import 'package:worktime_app/providers/team_provider.dart';
 import 'package:worktime_app/services/auth_service.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
@@ -58,10 +59,13 @@ Future<InventoryProvider> _pump(
   for (final product in products) {
     await inventory.saveProduct(product);
   }
+  // Ohne Standort-Zuordnung -> Kühlschrank-Warnung org-weit (Fallback, §12.7).
+  final team = TeamProvider(firestoreService: firestoreService);
 
   addTearDown(() {
     inventory.dispose();
     auth.dispose();
+    team.dispose();
   });
 
   await tester.pumpWidget(
@@ -69,6 +73,7 @@ Future<InventoryProvider> _pump(
       providers: [
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+        ChangeNotifierProvider<TeamProvider>.value(value: team),
       ],
       child: MaterialApp(
         theme: AppTheme.resolveLight(useV2: true),

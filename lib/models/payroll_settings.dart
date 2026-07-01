@@ -55,7 +55,9 @@ class PayrollSettings {
   /// Rechner nicht mehr verwendet (jetzt: [taxTariff], § 32a-Tarif).
   final Map<TaxClass, double> incomeTaxRateByClass;
 
-  /// Solidaritätszuschlag auf die Lohnsteuer (5,5 %), erst ab Schwelle.
+  /// **Veraltet/unbenutzt** (L4) – der Soli wird in [GermanTaxService] mit den
+  /// gesetzlichen Literalen (5,5 % / Milderungszone) gerechnet, nicht aus diesen
+  /// Feldern. Bleiben nur für Serialisierungs-Rückwärtskompatibilität erhalten.
   final double soliRate;
   final int soliThresholdCents;
 
@@ -137,9 +139,6 @@ class PayrollSettings {
   /// Ob die U1-Umlage greift (i. d. R. nur Betriebe bis ~30 MA). Schaltet die
   /// U1-Belastung ab, ohne den hinterlegten [umlageU1Rate] zu verlieren.
   final bool u1Applies;
-
-  double incomeTaxRateFor(TaxClass taxClass) =>
-      incomeTaxRateByClass[taxClass] ?? 0.18;
 
   double churchTaxRateFor(String? federalState) {
     final code = _stateCode(federalState);

@@ -132,6 +132,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     ),
                   ),
                 ),
+                if (contactProvider.errorMessage != null)
+                  SliverToBoxAdapter(
+                    child: _ContactsErrorBanner(
+                      message: contactProvider.errorMessage!,
+                      onDismiss: contactProvider.clearError,
+                    ),
+                  ),
                 if (contactProvider.loading && all.isEmpty)
                   const SliverFillRemaining(
                     hasScrollBody: false,
@@ -140,7 +147,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 else if (filtered.isEmpty)
                   SliverFillRemaining(
                     hasScrollBody: false,
-                    child: _buildEmptyState(all.isEmpty, canManage),
+                    child: contactProvider.errorMessage != null
+                        ? const SizedBox.shrink()
+                        : _buildEmptyState(all.isEmpty, canManage),
                   )
                 else
                   SliverPadding(
@@ -515,6 +524,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
           '${result.errors.isNotEmpty ? ', ${result.errors.length} Zeile(n) übersprungen' : ''}.',
       icon: Icons.file_upload_outlined,
       confirmLabel: 'Importieren',
+      destructive: false,
     );
     if (!proceed || !mounted) {
       return;
@@ -555,6 +565,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   Future<void> _addActivity(Contact contact) async {
     var type = ContactActivityType.note;
+    var occurredAt = DateTime.now();
     final noteController = TextEditingController();
     final result = await showDialog<ContactActivity>(
       context: context,
@@ -573,6 +584,35 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 ],
                 onChanged: (value) {
                   if (value != null) setState(() => type = value);
+                },
+              ),
+              const SizedBox(height: 4),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.event_outlined),
+                title: const Text('Datum'),
+                subtitle: Text(
+                  '${occurredAt.day.toString().padLeft(2, '0')}.'
+                  '${occurredAt.month.toString().padLeft(2, '0')}.'
+                  '${occurredAt.year}',
+                ),
+                trailing: const Icon(Icons.edit_calendar_outlined),
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: occurredAt,
+                    firstDate: DateTime(occurredAt.year - 5),
+                    lastDate: DateTime.now(),
+                  );
+                  if (picked != null) {
+                    setState(() => occurredAt = DateTime(
+                          picked.year,
+                          picked.month,
+                          picked.day,
+                          occurredAt.hour,
+                          occurredAt.minute,
+                        ));
+                  }
                 },
               ),
               const SizedBox(height: 12),
@@ -596,7 +636,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
               onPressed: () => Navigator.of(context).pop(
                 ContactActivity(
                   type: type,
-                  occurredAt: DateTime.now(),
+                  occurredAt: occurredAt,
                   note: noteController.text.trim().isEmpty
                       ? null
                       : noteController.text.trim(),
@@ -647,6 +687,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
               '„${dups.first.contact.name}". Trotzdem neu anlegen?',
           icon: Icons.people_alt_outlined,
           confirmLabel: 'Trotzdem anlegen',
+          destructive: false,
         );
         if (!proceed || !mounted) {
           return;
@@ -1112,6 +1153,65 @@ class _ContactDetailSheet extends StatelessWidget {
   final Contact contact;
   final bool canManage;
 
+  /// Zeigt die vollständige Kontakthistorie in einem scrollbaren Sheet
+  /// (die Detailansicht selbst zeigt nur die letzten 8 Einträge).
+  void _showAllActivities(BuildContext context, Contact contact) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.7,
+          maxChildSize: 0.9,
+          builder: (context, scrollController) => ListView.separated(
+            controller: scrollController,
+            padding: const EdgeInsets.all(16),
+            itemCount: contact.activities.length + 1,
+            separatorBuilder: (_, __) => const Divider(height: 20),
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return Text(
+                  'Verlauf (${contact.activities.length})',
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                );
+              }
+              final activity = contact.activities[index - 1];
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(_activityIcon(activity.type),
+                      size: 18, color: theme.colorScheme.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${activity.type.label} · ${_formatActivityDate(activity.occurredAt)}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        if (activity.note != null &&
+                            activity.note!.trim().isNotEmpty)
+                          Text(activity.note!),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final spacing = context.spacing;
@@ -1254,6 +1354,14 @@ class _ContactDetailSheet extends StatelessWidget {
                       ),
                     ),
                   ],
+                ),
+              ),
+            if (contact.activities.length > 8)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: () => _showAllActivities(context, contact),
+                  child: Text('Alle ${contact.activities.length} anzeigen'),
                 ),
               ),
           ],
@@ -1739,3 +1847,37 @@ AppStatusTone _typeTone(ContactType type) => switch (type) {
       ContactType.taxAdvisor => AppStatusTone.tertiary,
       ContactType.other => AppStatusTone.neutral,
     };
+
+/// Fehler-Banner der Kontakteliste (Stream-/Ladefehler des ContactProvider).
+class _ContactsErrorBanner extends StatelessWidget {
+  const _ContactsErrorBanner({required this.message, required this.onDismiss});
+
+  final String message;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      color: colorScheme.errorContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline, color: colorScheme.onErrorContainer),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: colorScheme.onErrorContainer),
+            ),
+          ),
+          IconButton(
+            icon: Icon(Icons.close, color: colorScheme.onErrorContainer),
+            onPressed: onDismiss,
+          ),
+        ],
+      ),
+    );
+  }
+}

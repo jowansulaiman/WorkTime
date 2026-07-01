@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="173 -72 772 772" width="1024" height="1024">
+  <!-- Android adaptive-icon FOREGROUND: nur Emblem, transparent, mit extra
+       Rand (Safe-Zone ~66%). Hintergrund liefert adaptive_icon_background (#155E8C). -->
+  <g>
+    <path d="M 372.46 217.50 A 205.00 205.00 0 0 1 744.97 383.35" fill="none" stroke="#FFFFFF" stroke-width="48" stroke-linecap="round"/>
+    <path d="M 717.93 437.58 A 205.00 205.00 0 0 1 351.99 373.06" fill="none" stroke="#F39A1E" stroke-width="26" stroke-linecap="round" opacity="0.30"/>
+    <rect x="696.93" y="428.58" width="42" height="18" rx="9" fill="#F39A1E" transform="rotate(125.00 717.93 437.58)"/>
+    <rect x="640.65" y="482.93" width="42" height="18" rx="9" fill="#F39A1E" transform="rotate(147.00 661.65 491.93)"/>
+    <rect x="568.12" y="512.23" width="42" height="18" rx="9" fill="#F39A1E" transform="rotate(169.00 589.12 521.23)"/>
+    <rect x="489.88" y="512.23" width="42" height="18" rx="9" fill="#F39A1E" transform="rotate(191.00 510.88 521.23)"/>
+    <rect x="421.35" y="482.93" width="34" height="18" rx="9" fill="#F39A1E" transform="rotate(213.00 438.35 491.93)"/>
+    <circle cx="550" cy="320" r="88" fill="#FFFFFF" stroke="#D9E2E8" stroke-width="12"/>
+    <line x1="606.00" y1="320.00" x2="618.00" y2="320.00" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="589.60" y1="359.60" x2="598.08" y2="368.08" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="550.00" y1="376.00" x2="550.00" y2="388.00" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="510.40" y1="359.60" x2="501.92" y2="368.08" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="494.00" y1="320.00" x2="482.00" y2="320.00" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="510.40" y1="280.40" x2="501.92" y2="271.92" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="550.00" y1="264.00" x2="550.00" y2="252.00" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="589.60" y1="280.40" x2="598.08" y2="271.92" stroke="#155E8C" stroke-width="8" stroke-linecap="round"/>
+    <line x1="550" y1="320" x2="553.83" y2="276.17" stroke="#155E8C" stroke-width="14" stroke-linecap="round"/>
+    <line x1="550" y1="320" x2="574.57" y2="302.79" stroke="#F39A1E" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="550" cy="320" r="13" fill="#155E8C"/>
+    <circle cx="506" cy="468" r="11" fill="#FFFFFF"/>
+    <circle cx="550" cy="456" r="11" fill="#F39A1E"/>
+    <circle cx="594" cy="468" r="11" fill="#FFFFFF"/>
+    <path d="M 488 496 Q 550 472 612 496" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.45"/>
+    <path d="M 474 520 Q 550 502 626 520" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" fill="none" opacity="0.95"/>
+  </g>
+</svg>

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_config.dart';
 import '../core/money.dart';
 import '../core/site_name_resolver.dart';
 import '../models/contact.dart';
@@ -93,6 +94,10 @@ class InventoryScreen extends StatefulWidget {
   /// nicht die private Tab-Reihenfolge kennen müssen.
   static const int cartTabIndex = 3;
 
+  /// Öffnet direkt den Kühlschrank-Tab (Deeplink `?tab=kuehl`, z.B. aus der
+  /// Home-Aktionskarte „Kühlschrank nachfüllen").
+  static const int fridgeTabIndex = 1;
+
   @override
   State<InventoryScreen> createState() => _InventoryScreenState();
 }
@@ -164,6 +169,14 @@ class _InventoryScreenState extends State<InventoryScreen>
     // effektive Laden eindeutig, auch wenn kein Filter aktiv ist.
     final effectiveSiteId =
         _selectedSiteId ?? (sites.length == 1 ? sites.first.id : null);
+    // Kühlschrank-Badge: manuell offene Positionen ODER automatische Soll-Ist-
+    // Lücken (das Maximum), nur bei eindeutigem Laden (sonst kein Summen-Badge).
+    final fridgeBadgeCount = effectiveSiteId == null
+        ? 0
+        : [
+            inventory.fridgeRefillOpenCount(effectiveSiteId),
+            inventory.fridgeShortfallCount(effectiveSiteId),
+          ].reduce((a, b) => a > b ? a : b);
 
     return Scaffold(
       appBar: BreadcrumbAppBar(
@@ -175,10 +188,114 @@ class _InventoryScreenState extends State<InventoryScreen>
           const BreadcrumbItem(label: 'Warenwirtschaft'),
         ],
         actions: [
-          IconButton(
-            tooltip: 'Bestell-Auswertung',
+          if (AppConfig.oktoposEnabled && profile.isAdmin)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.point_of_sale_outlined),
+              tooltip: 'Kasse (OktoPOS)',
+              onSelected: (value) {
+                switch (value) {
+                  case 'sync':
+                    _syncFromOktopos(
+                        context, inventory, sites, effectiveSiteId);
+                  case 'push':
+                    _pushToOktopos(
+                        context, inventory, sites, effectiveSiteId);
+                  case 'pushCustomers':
+                    _pushCustomersToOktopos(
+                        context, inventory, sites, effectiveSiteId);
+                  case 'settings':
+                    _openOktoposSettings(context, inventory, sites);
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'sync',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.sync),
+                    title: Text('Verkäufe aus Kasse übernehmen'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'push',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.upload_outlined),
+                    title: Text('Artikel an Kasse senden'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'pushCustomers',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.people_alt_outlined),
+                    title: Text('Kunden an Kasse senden'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'settings',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.settings_outlined),
+                    title: Text('Einstellungen'),
+                  ),
+                ),
+              ],
+            ),
+          // Analyse-/Auswertungs-Ziele gebündelt in EIN Menü, damit die AppBar
+          // auf Handybreite nicht mit 5-7 Icons überläuft.
+          PopupMenuButton<String>(
             icon: const Icon(Icons.insights_outlined),
-            onPressed: () => context.push(AppRoutes.orderAnalytics),
+            tooltip: 'Auswertungen',
+            onSelected: (value) {
+              switch (value) {
+                case 'orderAnalytics':
+                  context.push(AppRoutes.orderAnalytics);
+                case 'bestandInsights':
+                  context.push(AppRoutes.bestandInsights);
+                case 'sortiment':
+                  context.push(AppRoutes.sortiment);
+                case 'storeHealth':
+                  context.push(AppRoutes.storeHealth);
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'orderAnalytics',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.insights_outlined),
+                  title: Text('Bestell-Auswertung'),
+                ),
+              ),
+              if (profile.isAdmin)
+                const PopupMenuItem(
+                  value: 'bestandInsights',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.query_stats_outlined),
+                    title: Text('Bestand-Insights'),
+                  ),
+                ),
+              if (profile.isAdmin)
+                const PopupMenuItem(
+                  value: 'sortiment',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.pie_chart_outline),
+                    title: Text('Sortimentsanalyse'),
+                  ),
+                ),
+              if (profile.isAdmin)
+                const PopupMenuItem(
+                  value: 'storeHealth',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.compare_arrows),
+                    title: Text('Laden-Benchmark'),
+                  ),
+                ),
+            ],
           ),
           IconButton(
             tooltip: 'Kundenwünsche',
@@ -207,6 +324,10 @@ class _InventoryScreenState extends State<InventoryScreen>
                   ),
                 TabBar(
                   controller: _tabController,
+                  // 5 Text-Tabs passen fix verteilt nicht auf Handybreite
+                  // (Labels/Badges abgeschnitten) → scrollbar + linksbündig.
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
                   tabs: [
                     Tab(
                       child: _TabLabel(
@@ -221,9 +342,7 @@ class _InventoryScreenState extends State<InventoryScreen>
                         label: 'Kühlschrank',
                         // Wie der Bestellkorb: ohne eindeutigen Laden kein
                         // Summen-Badge (der Tab zeigt dann „Laden wählen").
-                        badgeCount: effectiveSiteId == null
-                            ? 0
-                            : inventory.fridgeRefillOpenCount(effectiveSiteId),
+                        badgeCount: fridgeBadgeCount,
                       ),
                     ),
                     const Tab(
@@ -352,6 +471,251 @@ class _InventoryScreenState extends State<InventoryScreen>
         PopupMenuItem(value: 3, child: Text('Nachbestellliste (CSV)')),
       ],
     );
+  }
+
+  /// Admin-Aktion „Verkäufe aus Kasse übernehmen" (OktoPOS). Wählt den Laden
+  /// (eindeutig oder per Auswahl), löst den serverseitigen Abgleich aus und
+  /// meldet das Ergebnis. Der API-Key bleibt serverseitig — hier wird nur die
+  /// Cloud Function getriggert.
+  /// Liefert den Ziel-Laden für eine Kassen-Aktion: den eindeutigen Laden bzw.
+  /// per Auswahl-Sheet. `null` = abgebrochen / kein Laden.
+  Future<String?> _pickOktoposSite(
+    BuildContext context,
+    List<SiteDefinition> sites,
+    String? effectiveSiteId,
+  ) async {
+    if (effectiveSiteId != null) {
+      return effectiveSiteId;
+    }
+    if (sites.isEmpty) {
+      _showSnack(context, 'Kein Laden vorhanden.');
+      return null;
+    }
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Text('Welcher Laden?',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            for (final site in sites)
+              ListTile(
+                leading: const Icon(Icons.storefront_outlined),
+                title: Text(site.name),
+                onTap: () => Navigator.of(sheetContext).pop(site.id),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _syncFromOktopos(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<SiteDefinition> sites,
+    String? effectiveSiteId,
+  ) async {
+    final siteId = await _pickOktoposSite(context, sites, effectiveSiteId);
+    if (siteId == null || !context.mounted) {
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Kasse wird abgeglichen …')),
+    );
+    try {
+      final result = await inventory.triggerOktoposSync(siteId: siteId);
+      final applied = (result['appliedMovements'] as num?)?.toInt() ?? 0;
+      final reversed = (result['reversedMovements'] as num?)?.toInt() ?? 0;
+      final unmatched = (result['unmatchedLineItems'] as num?)?.toInt() ?? 0;
+      final parts = <String>[
+        '$applied Verkäufe übernommen',
+        if (reversed > 0) '$reversed Erstattungen',
+        if (unmatched > 0) '$unmatched Positionen ohne Artikel',
+      ];
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Kassenabgleich: ${parts.join(' · ')}.')),
+      );
+    } catch (error) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Kassenabgleich fehlgeschlagen: '
+            '${_friendlyError(error)}')),
+      );
+    }
+  }
+
+  /// Schreibt die Artikel eines Ladens in die Kasse (OktoPOS). Bestätigung
+  /// nötig, da hier IN die Kasse geschrieben wird (Stammdaten/Preise/Barcodes).
+  Future<void> _pushToOktopos(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<SiteDefinition> sites,
+    String? effectiveSiteId,
+  ) async {
+    final siteId = await _pickOktoposSite(context, sites, effectiveSiteId);
+    if (siteId == null || !context.mounted) {
+      return;
+    }
+    final siteName = sites
+        .firstWhere((s) => s.id == siteId, orElse: () => sites.first)
+        .name;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Artikel an Kasse senden?'),
+        content: Text(
+          'Alle aktiven Artikel von „$siteName" werden in die OktoPOS-Kasse '
+          'geschrieben (Stammdaten, Preise, Barcodes). Vorhandene Artikel '
+          'werden anhand der Artikelnummer aktualisiert.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Senden'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Artikel werden an die Kasse gesendet …')),
+    );
+    try {
+      final result = await inventory.pushOktoposArticles(siteId: siteId);
+      final created = (result['created'] as num?)?.toInt() ?? 0;
+      final updated = (result['updated'] as num?)?.toInt() ?? 0;
+      final failed = (result['failed'] as num?)?.toInt() ?? 0;
+      final skipped = (result['skipped'] as num?)?.toInt() ?? 0;
+      final parts = <String>[
+        '$created neu',
+        '$updated aktualisiert',
+        if (failed > 0) '$failed fehlgeschlagen',
+        if (skipped > 0) '$skipped übersprungen',
+      ];
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Artikelversand: ${parts.join(' · ')}.')),
+      );
+    } catch (error) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Artikelversand fehlgeschlagen: '
+            '${_friendlyError(error)}')),
+      );
+    }
+  }
+
+  /// Schreibt die Kunden-Kontakte in die Kasse (OktoPOS). Bestätigung nötig
+  /// (schreibend). Vorhandene Kunden werden serverseitig übersprungen.
+  Future<void> _pushCustomersToOktopos(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<SiteDefinition> sites,
+    String? effectiveSiteId,
+  ) async {
+    final siteId = await _pickOktoposSite(context, sites, effectiveSiteId);
+    if (siteId == null || !context.mounted) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Kunden an Kasse senden?'),
+        content: const Text(
+          'Alle aktiven Kunden-Kontakte werden als Kunden in die OktoPOS-Kasse '
+          'geschrieben. Bereits vorhandene Kunden werden übersprungen.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Senden'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Kunden werden an die Kasse gesendet …')),
+    );
+    try {
+      final result = await inventory.pushOktoposCustomers(siteId: siteId);
+      final created = (result['created'] as num?)?.toInt() ?? 0;
+      final skipped = (result['skipped'] as num?)?.toInt() ?? 0;
+      final failed = (result['failed'] as num?)?.toInt() ?? 0;
+      final parts = <String>[
+        '$created neu angelegt',
+        if (skipped > 0) '$skipped bereits vorhanden',
+        if (failed > 0) '$failed fehlgeschlagen',
+      ];
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Kundenversand: ${parts.join(' · ')}.')),
+      );
+    } catch (error) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Kundenversand fehlgeschlagen: '
+            '${_friendlyError(error)}')),
+      );
+    }
+  }
+
+  /// Öffnet die OktoPOS-Einstellungen (Basis-URL, Auto-Abgleich, Kassen-Nr. je
+  /// Laden). Der API-Key bleibt serverseitig und wird hier nie eingegeben.
+  Future<void> _openOktoposSettings(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<SiteDefinition> sites,
+  ) async {
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (_) => _OktoposSettingsSheet(inventory: inventory, sites: sites),
+    );
+    if (saved == true && context.mounted) {
+      _showSnack(context, 'Kassen-Einstellungen gespeichert.');
+    }
+  }
+
+  /// Extrahiert eine lesbare Meldung aus Callable-/Sonstigen Fehlern, ohne den
+  /// Screen an cloud_functions zu koppeln (FirebaseFunctionsException trägt eine
+  /// `.message`).
+  String _friendlyError(Object error) {
+    try {
+      final dynamic e = error;
+      final message = e.message;
+      if (message is String && message.trim().isNotEmpty) {
+        return message;
+      }
+    } catch (_) {
+      // kein .message-Feld – Fallback unten
+    }
+    return error.toString();
   }
 
   Widget? _buildFab(
@@ -950,9 +1314,15 @@ class _ProductTile extends StatelessWidget {
     if (quantity == null) {
       return;
     }
-    await inventory.addToCart(product: product, quantity: quantity);
-    if (context.mounted) {
-      _showSnack(context, '${product.name} in den Bestellkorb gelegt.');
+    try {
+      await inventory.addToCart(product: product, quantity: quantity);
+      if (context.mounted) {
+        _showSnack(context, '${product.name} in den Bestellkorb gelegt.');
+      }
+    } catch (error) {
+      if (context.mounted) {
+        _showSnack(context, 'Fehler: $error');
+      }
     }
   }
 
@@ -980,9 +1350,15 @@ class _ProductTile extends StatelessWidget {
       case 'delete':
         if (await _confirmDelete(context, product.name) &&
             product.id != null) {
-          await inventory.deleteProduct(product.id!);
-          if (context.mounted) {
-            _showSnack(context, 'Artikel geloescht.');
+          try {
+            await inventory.deleteProduct(product.id!);
+            if (context.mounted) {
+              _showSnack(context, 'Artikel geloescht.');
+            }
+          } catch (error) {
+            if (context.mounted) {
+              _showSnack(context, 'Fehler: $error');
+            }
           }
         }
         break;
@@ -998,9 +1374,15 @@ class _ProductTile extends StatelessWidget {
       product: product,
     );
     if (result != null) {
-      await inventory.saveProduct(result);
-      if (context.mounted) {
-        _showSnack(context, 'Artikel gespeichert.');
+      try {
+        await inventory.saveProduct(result);
+        if (context.mounted) {
+          _showSnack(context, 'Artikel gespeichert.');
+        }
+      } catch (error) {
+        if (context.mounted) {
+          _showSnack(context, 'Fehler: $error');
+        }
       }
     }
   }
@@ -1009,13 +1391,19 @@ class _ProductTile extends StatelessWidget {
       BuildContext context, InventoryProvider inventory) async {
     final delta = await _showStockDeltaDialog(context, product);
     if (delta != null && delta != 0 && product.id != null) {
-      await inventory.adjustStock(
-        productId: product.id!,
-        delta: delta,
-        reason: 'Manuelle Korrektur',
-      );
-      if (context.mounted) {
-        _showSnack(context, 'Bestand korrigiert.');
+      try {
+        await inventory.adjustStock(
+          productId: product.id!,
+          delta: delta,
+          reason: 'Manuelle Korrektur',
+        );
+        if (context.mounted) {
+          _showSnack(context, 'Bestand korrigiert.');
+        }
+      } catch (error) {
+        if (context.mounted) {
+          _showSnack(context, 'Fehler: $error');
+        }
       }
     }
   }
@@ -1040,9 +1428,16 @@ class _ProductTile extends StatelessWidget {
       BuildContext context, InventoryProvider inventory) async {
     final counted = await _showStocktakeDialog(context, product);
     if (counted != null) {
-      await inventory.recordStocktake(product: product, countedStock: counted);
-      if (context.mounted) {
-        _showSnack(context, 'Inventur gebucht.');
+      try {
+        await inventory.recordStocktake(
+            product: product, countedStock: counted);
+        if (context.mounted) {
+          _showSnack(context, 'Inventur gebucht.');
+        }
+      } catch (error) {
+        if (context.mounted) {
+          _showSnack(context, 'Fehler: $error');
+        }
       }
     }
   }
@@ -1163,9 +1558,15 @@ class _SuppliersTab extends StatelessWidget {
   ) async {
     final result = await showSupplierDialog(context, supplier: supplier);
     if (result != null) {
-      await inventory.saveSupplier(result);
-      if (context.mounted) {
-        _showSnack(context, 'Lieferant gespeichert.');
+      try {
+        await inventory.saveSupplier(result);
+        if (context.mounted) {
+          _showSnack(context, 'Lieferant gespeichert.');
+        }
+      } catch (error) {
+        if (context.mounted) {
+          _showSnack(context, 'Fehler: $error');
+        }
       }
     }
   }
@@ -1333,12 +1734,16 @@ class _ProductDialogState extends State<_ProductDialog> {
   late final TextEditingController _barcode;
   late final TextEditingController _purchasePrice;
   late final TextEditingController _sellingPrice;
+  late final TextEditingController _taxRate;
   late final TextEditingController _stock;
   late final TextEditingController _minStock;
   late final TextEditingController _targetStock;
   late final TextEditingController _reorderQty;
+  late final TextEditingController _fridgeTargetStock;
   String? _siteId;
   String? _supplierId;
+  bool _inFridge = false;
+  bool _suggestingFridge = false;
 
   @override
   void initState() {
@@ -1354,6 +1759,8 @@ class _ProductDialogState extends State<_ProductDialog> {
         text: _centsToEuroInput(product?.purchasePriceCents));
     _sellingPrice = TextEditingController(
         text: _centsToEuroInput(product?.sellingPriceCents));
+    _taxRate =
+        TextEditingController(text: product?.taxRatePercent?.toString() ?? '');
     _stock =
         TextEditingController(text: (product?.currentStock ?? 0).toString());
     _minStock =
@@ -1364,6 +1771,11 @@ class _ProductDialogState extends State<_ProductDialog> {
             : '');
     _reorderQty = TextEditingController(
         text: product?.reorderQuantity?.toString() ?? '');
+    _inFridge = product?.inFridge ?? false;
+    _fridgeTargetStock = TextEditingController(
+        text: (product?.fridgeTargetStock ?? 0) > 0
+            ? product!.fridgeTargetStock.toString()
+            : '');
     _siteId = product?.siteId ??
         widget.defaultSiteId ??
         (widget.sites.isNotEmpty ? widget.sites.first.id : null);
@@ -1379,10 +1791,12 @@ class _ProductDialogState extends State<_ProductDialog> {
     _barcode.dispose();
     _purchasePrice.dispose();
     _sellingPrice.dispose();
+    _taxRate.dispose();
     _stock.dispose();
     _minStock.dispose();
     _targetStock.dispose();
     _reorderQty.dispose();
+    _fridgeTargetStock.dispose();
     super.dispose();
   }
 
@@ -1508,8 +1922,15 @@ class _ProductDialogState extends State<_ProductDialog> {
                     Expanded(
                       child: TextFormField(
                         controller: _stock,
-                        decoration:
-                            const InputDecoration(labelText: 'Bestand'),
+                        readOnly: isEdit,
+                        enabled: !isEdit,
+                        decoration: InputDecoration(
+                          labelText: 'Bestand',
+                          helperText: isEdit
+                              ? 'Nur über „Bestand korrigieren“/„Inventur“'
+                              : null,
+                          helperMaxLines: 2,
+                        ),
                         keyboardType: TextInputType.number,
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'[0-9-]')),
@@ -1554,6 +1975,63 @@ class _ProductDialogState extends State<_ProductDialog> {
                   keyboardType: TextInputType.number,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _taxRate,
+                  decoration: const InputDecoration(
+                    labelText: 'USt-Satz % (optional)',
+                    helperText: 'Für den Versand an die Kasse, z.B. 19 oder 7. '
+                        'Leer ⇒ Standardsatz aus den Kassen-Einstellungen',
+                  ),
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                ),
+                const Divider(height: 24),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _inFridge,
+                  onChanged: (value) => setState(() => _inFridge = value),
+                  secondary: const Icon(Icons.kitchen_outlined),
+                  title: const Text('Im Verkaufs-Kühlschrank führen'),
+                  subtitle: const Text(
+                      'Aktiviert die Kühlschrank-Soll-Ist-Nachfüllung'),
+                ),
+                if (_inFridge)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _fridgeTargetStock,
+                          decoration: const InputDecoration(
+                            labelText: 'Kühlschrank-Soll',
+                            helperText: 'Voll-Füllstand des Kühlschranks',
+                          ),
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: TextButton.icon(
+                          onPressed:
+                              _suggestingFridge ? null : _applyFridgeSuggestion,
+                          icon: _suggestingFridge
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.auto_awesome, size: 18),
+                          label: const Text('Vorschlag'),
+                        ),
+                      ),
+                    ],
+                  ),
               ],
             ),
           ),
@@ -1612,13 +2090,54 @@ class _ProductDialogState extends State<_ProductDialog> {
       clearPurchasePrice: parseEuroToCents(_purchasePrice.text) == null,
       sellingPriceCents: parseEuroToCents(_sellingPrice.text),
       clearSellingPrice: parseEuroToCents(_sellingPrice.text) == null,
-      currentStock: int.tryParse(_stock.text.trim()) ?? 0,
+      taxRatePercent: int.tryParse(_taxRate.text.trim()),
+      clearTaxRatePercent: _taxRate.text.trim().isEmpty,
+      // Bestand nur bei Neuanlage aus dem Feld übernehmen. Beim Bearbeiten
+      // bleibt der Live-Bestand unangetastet — Änderungen laufen ausschließlich
+      // über adjustStock/recordStocktake (buchen StockMovement + Audit).
+      currentStock: widget.product == null
+          ? (int.tryParse(_stock.text.trim()) ?? 0)
+          : base.currentStock,
       minStock: int.tryParse(_minStock.text.trim()) ?? 0,
       targetStock: int.tryParse(_targetStock.text.trim()) ?? 0,
       reorderQuantity: int.tryParse(_reorderQty.text.trim()),
       clearReorderQuantity: _reorderQty.text.trim().isEmpty,
+      inFridge: _inFridge,
+      fridgeTargetStock:
+          _inFridge ? (int.tryParse(_fridgeTargetStock.text.trim()) ?? 0) : 0,
     );
     Navigator.of(context).pop(result);
+  }
+
+  /// Übernimmt den velocity-abgeleiteten Kühlschrank-Soll-Vorschlag (§12.4).
+  /// Nur für bereits gespeicherte Artikel (braucht Verkaufsdaten).
+  Future<void> _applyFridgeSuggestion() async {
+    final product = widget.product;
+    final messenger = ScaffoldMessenger.of(context);
+    if (product?.id == null) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text(
+            'Vorschlag erst nach dem ersten Speichern (braucht Verkaufsdaten).'),
+      ));
+      return;
+    }
+    final inventory = context.read<InventoryProvider>();
+    setState(() => _suggestingFridge = true);
+    try {
+      final suggestion =
+          await inventory.suggestFridgeTargetForProduct(product!);
+      if (!mounted) return;
+      if (suggestion == null || suggestion <= 0) {
+        messenger.showSnackBar(const SnackBar(
+          content:
+              Text('Noch kein belastbarer Vorschlag (zu wenig Verkaufsdaten).'),
+        ));
+      } else {
+        setState(() => _fridgeTargetStock.text = suggestion.toString());
+      }
+    } finally {
+      if (mounted) setState(() => _suggestingFridge = false);
+    }
   }
 }
 
@@ -1868,66 +2387,74 @@ Future<({Product target, int quantity})?> _showTransferDialog(
   return showDialog<({Product target, int quantity})>(
     context: context,
     builder: (_) => StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        title: Text('Umlagern: ${product.name}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Bestand ${product.siteName ?? 'Quelle'}: '
-                '${product.currentStock} ${product.unit}'),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<Product>(
-              initialValue: target,
-              decoration: const InputDecoration(
-                labelText: 'Ziel-Standort',
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                for (final candidate in candidates)
-                  DropdownMenuItem(
-                    value: candidate,
-                    child: Text(
-                      '${candidate.siteName ?? 'Standort'} · ${candidate.name}'
-                      ' (${candidate.currentStock})',
-                      overflow: TextOverflow.ellipsis,
+      builder: (context, setState) {
+        final qty = int.tryParse(quantityController.text.trim());
+        // Live-Validierung: nicht mehr umlagern, als am Quell-Standort da ist.
+        final String? qtyError = (qty == null || qty <= 0)
+            ? null
+            : (qty > product.currentStock
+                ? 'Nur ${product.currentStock} ${product.unit} verfügbar'
+                : null);
+        final canBook = qty != null && qty > 0 && qtyError == null;
+        return AlertDialog(
+          title: Text('Umlagern: ${product.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Bestand ${product.siteName ?? 'Quelle'}: '
+                  '${product.currentStock} ${product.unit}'),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<Product>(
+                initialValue: target,
+                decoration: const InputDecoration(
+                  labelText: 'Ziel-Standort',
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  for (final candidate in candidates)
+                    DropdownMenuItem(
+                      value: candidate,
+                      child: Text(
+                        '${candidate.siteName ?? 'Standort'} · ${candidate.name}'
+                        ' (${candidate.currentStock})',
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => target = value);
-              },
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: quantityController,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'Menge',
-                border: OutlineInputBorder(),
+                ],
+                onChanged: (value) {
+                  if (value != null) setState(() => target = value);
+                },
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: quantityController,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: 'Menge',
+                  border: const OutlineInputBorder(),
+                  errorText: qtyError,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Abbrechen'),
+            ),
+            FilledButton(
+              onPressed: canBook
+                  ? () => Navigator.of(context)
+                      .pop((target: target, quantity: qty))
+                  : null,
+              child: const Text('Umlagern'),
             ),
           ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Abbrechen'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final qty = int.tryParse(quantityController.text.trim());
-              if (qty == null || qty <= 0) {
-                Navigator.of(context).pop();
-                return;
-              }
-              Navigator.of(context).pop((target: target, quantity: qty));
-            },
-            child: const Text('Umlagern'),
-          ),
-        ],
-      ),
+        );
+      },
     ),
   );
 }
@@ -2079,4 +2606,416 @@ Future<int?> _showStocktakeDialog(BuildContext context, Product product) {
       ],
     ),
   );
+}
+
+/// Admin-Einstellungen der OktoPOS-Kassenanbindung: Basis-URL, nächtlicher
+/// Auto-Abgleich und Kassen-Nr. (`cash-register`) je Laden. Schreibt
+/// merge-sicher ins Config-Doc `config/oktoposSync` — der serverseitige
+/// Sync-Cursor bleibt erhalten. Der **API-Key wird hier nie eingegeben** (er
+/// liegt ausschließlich serverseitig im Secret Manager).
+class _OktoposSettingsSheet extends StatefulWidget {
+  const _OktoposSettingsSheet({required this.inventory, required this.sites});
+
+  final InventoryProvider inventory;
+  final List<SiteDefinition> sites;
+
+  @override
+  State<_OktoposSettingsSheet> createState() => _OktoposSettingsSheetState();
+}
+
+class _OktoposSettingsSheetState extends State<_OktoposSettingsSheet> {
+  final TextEditingController _baseUrlController = TextEditingController();
+  final Map<String, TextEditingController> _crControllers = {};
+  final Map<String, String> _lastBusinessDayBySite = {};
+  // Artikel-Versand (Push, M5).
+  final TextEditingController _channelController = TextEditingController();
+  final TextEditingController _unitTokenController = TextEditingController();
+  final TextEditingController _taxController = TextEditingController(text: '19');
+  final TextEditingController _customerGroupController =
+      TextEditingController(text: 'Stammkunde');
+  bool _cashierCanChange = false;
+  bool _loadingTokens = false;
+  // Seitengröße des Kassen-Pulls. Nicht in der UI editierbar (Default 50), wird
+  // aber round-getrippt, damit ein evtl. serverseitig gesetzter Wert beim
+  // Speichern erhalten bleibt.
+  int _defaultSize = 50;
+  bool _enabled = false;
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    for (final site in widget.sites) {
+      final id = site.id;
+      if (id != null) {
+        _crControllers[id] = TextEditingController();
+      }
+    }
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final config = await widget.inventory.loadOktoposConfig();
+      if (!mounted) {
+        return;
+      }
+      if (config != null) {
+        _baseUrlController.text = (config['baseUrl'] ?? '').toString();
+        _enabled = config['enabled'] == true;
+        final size = config['defaultSize'];
+        if (size is num && size.toInt() > 0) {
+          _defaultSize = size.toInt();
+        }
+        final sites = config['sites'];
+        if (sites is Map) {
+          sites.forEach((key, value) {
+            final siteId = key.toString();
+            if (value is Map) {
+              final cr = value['cashRegisterId'];
+              if (cr is num && _crControllers.containsKey(siteId)) {
+                _crControllers[siteId]!.text = cr.toInt().toString();
+              }
+              final last = value['lastBusinessDay'];
+              if (last != null) {
+                _lastBusinessDayBySite[siteId] = last.toString();
+              }
+            }
+          });
+        }
+        final push = config['push'];
+        if (push is Map) {
+          _channelController.text =
+              (push['distributionChannel'] ?? '').toString();
+          _unitTokenController.text =
+              (push['defaultUnitToken'] ?? '').toString();
+          final tax = push['defaultTaxRate'];
+          if (tax is num && tax.toInt() > 0) {
+            _taxController.text = tax.toInt().toString();
+          }
+          _cashierCanChange = push['cashierCanChangePrice'] == true;
+        }
+        final group = config['customerGroupName'];
+        if (group is String && group.trim().isNotEmpty) {
+          _customerGroupController.text = group;
+        }
+      }
+    } catch (error) {
+      _error = error.toString();
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _baseUrlController.dispose();
+    _channelController.dispose();
+    _unitTokenController.dispose();
+    _taxController.dispose();
+    _customerGroupController.dispose();
+    for (final controller in _crControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final baseUrl = _baseUrlController.text.trim();
+    if (baseUrl.isNotEmpty && !baseUrl.toLowerCase().startsWith('https://')) {
+      setState(() => _error = 'Die Basis-URL muss mit https:// beginnen.');
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    final cashRegisterBySiteId = <String, int?>{};
+    for (final entry in _crControllers.entries) {
+      final text = entry.value.text.trim();
+      cashRegisterBySiteId[entry.key] = text.isEmpty ? null : int.tryParse(text);
+    }
+    try {
+      await widget.inventory.saveOktoposConfig(
+        baseUrl: baseUrl,
+        enabled: _enabled,
+        defaultSize: _defaultSize,
+        cashRegisterBySiteId: cashRegisterBySiteId,
+        distributionChannel: _channelController.text.trim(),
+        defaultUnitToken: _unitTokenController.text.trim(),
+        defaultTaxRate: int.tryParse(_taxController.text.trim()) ?? 19,
+        cashierCanChangePrice: _cashierCanChange,
+        customerGroupName: _customerGroupController.text.trim().isEmpty
+            ? null
+            : _customerGroupController.text.trim(),
+      );
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).pop(true);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _saving = false;
+        _error = error.toString();
+      });
+    }
+  }
+
+  /// Holt Einheiten-/Vertriebskanal-Tokens aus der Kasse und lässt den Admin
+  /// einen in das jeweilige Feld übernehmen (Antippen = einsetzen).
+  Future<void> _loadTokens() async {
+    final siteId = widget.sites.isNotEmpty ? widget.sites.first.id : null;
+    if (siteId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kein Laden vorhanden.')),
+      );
+      return;
+    }
+    setState(() => _loadingTokens = true);
+    try {
+      final lookups = await widget.inventory.loadOktoposLookups(siteId: siteId);
+      if (!mounted) {
+        return;
+      }
+      final units = (lookups?['units'] as List?) ?? const [];
+      final channels = (lookups?['distributionChannels'] as List?) ?? const [];
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Kassen-Tokens'),
+          content: SizedBox(
+            width: 360,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Vertriebskanäle',
+                      style: Theme.of(dialogContext).textTheme.labelLarge),
+                  if (channels.isEmpty) const Text('—'),
+                  for (final c in channels)
+                    if (c is Map && c['token'] != null)
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.input, size: 18),
+                        title: Text(c['token'].toString()),
+                        onTap: () {
+                          _channelController.text = c['token'].toString();
+                          Navigator.of(dialogContext).pop();
+                        },
+                      ),
+                  const Divider(),
+                  Text('Einheiten',
+                      style: Theme.of(dialogContext).textTheme.labelLarge),
+                  if (units.isEmpty) const Text('—'),
+                  for (final u in units)
+                    if (u is Map && u['token'] != null)
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.input, size: 18),
+                        title: Text(u['token'].toString()),
+                        onTap: () {
+                          _unitTokenController.text = u['token'].toString();
+                          Navigator.of(dialogContext).pop();
+                        },
+                      ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Schließen'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Tokens laden fehlgeschlagen: $error')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _loadingTokens = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.point_of_sale_outlined),
+                const SizedBox(width: 8),
+                Text('Kassen-Einstellungen (OktoPOS)',
+                    style: theme.textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Der API-Schlüssel wird hier NICHT gespeichert – er liegt sicher '
+              'serverseitig. Hier nur Basis-URL und Kassen-Nr. je Laden.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 28),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else ...[
+              TextField(
+                controller: _baseUrlController,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Basis-URL',
+                  hintText: 'https://<instanz>/v1',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Nächtlicher Auto-Abgleich'),
+                subtitle: const Text('Täglich 03:30 automatisch übernehmen'),
+                value: _enabled,
+                onChanged: (value) => setState(() => _enabled = value),
+              ),
+              const SizedBox(height: 8),
+              Text('Kassen-Nr. je Laden', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 4),
+              for (final site in widget.sites)
+                if (site.id != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: TextField(
+                      controller: _crControllers[site.id],
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      decoration: InputDecoration(
+                        labelText: site.name,
+                        hintText: 'leer = alle Kassen',
+                        helperText: _lastBusinessDayBySite[site.id] != null
+                            ? 'Zuletzt abgeglichen bis '
+                                '${_lastBusinessDayBySite[site.id]}'
+                            : null,
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+              const SizedBox(height: 16),
+              const Divider(),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Artikel-Versand (Push)',
+                        style: theme.textTheme.labelLarge),
+                  ),
+                  TextButton.icon(
+                    onPressed: _loadingTokens ? null : _loadTokens,
+                    icon: _loadingTokens
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.download_outlined, size: 18),
+                    label: const Text('Tokens laden'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _channelController,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Vertriebskanal-Token',
+                  hintText: 'z.B. INHOUSE',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _unitTokenController,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Standard-Einheit-Token',
+                  hintText: 'z.B. Stück',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _taxController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'Standard-USt-Satz %',
+                  hintText: 'z.B. 19',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Kasse darf Preis ändern'),
+                value: _cashierCanChange,
+                onChanged: (value) => setState(() => _cashierCanChange = value),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _customerGroupController,
+                decoration: const InputDecoration(
+                  labelText: 'Kundengruppe (für Kunden-Versand)',
+                  hintText: 'z.B. Stammkunde',
+                  helperText: 'OktoPOS verlangt je Kunde eine Gruppe',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ],
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_outlined),
+                label: const Text('Speichern'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }

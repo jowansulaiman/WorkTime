@@ -5,7 +5,21 @@ import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
+import '../core/assortment_analysis.dart';
+import '../core/assortment_gap.dart';
+import '../core/basket_analysis.dart';
+import '../core/cashier_anomaly.dart';
+import '../core/daily_closing.dart';
+import '../core/dead_stock.dart';
+import '../core/expiry_warning.dart';
+import '../core/fridge_refill_shortfall.dart';
 import '../core/local_demo_data.dart';
+import '../core/reorder_suggestion.dart';
+import '../core/sales_velocity.dart';
+import '../core/seasonal_factor.dart';
+import '../core/shrinkage_report.dart';
+import '../core/staffing_profile.dart';
+import '../core/store_health.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/customer_order.dart';
@@ -13,6 +27,7 @@ import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
+import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
@@ -57,6 +72,7 @@ class InventoryProvider extends ChangeNotifier {
 
   StreamSubscription<List<Supplier>>? _suppliersSubscription;
   StreamSubscription<List<Product>>? _productsSubscription;
+  StreamSubscription<List<ProductBatch>>? _batchesSubscription;
   StreamSubscription<List<PurchaseOrder>>? _ordersSubscription;
   StreamSubscription<List<StockMovement>>? _movementsSubscription;
   StreamSubscription<List<CustomerOrder>>? _customerOrdersSubscription;
@@ -67,6 +83,7 @@ class InventoryProvider extends ChangeNotifier {
   AppUserProfile? _currentUser;
   List<Supplier> _suppliers = [];
   List<Product> _products = [];
+  List<ProductBatch> _batches = [];
   List<PurchaseOrder> _orders = [];
   List<StockMovement> _movements = [];
   List<PriceHistoryEntry> _priceHistory = [];
@@ -437,6 +454,52 @@ class InventoryProvider extends ChangeNotifier {
     return fridgeRefillListForSite(siteId)?.openCount ?? 0;
   }
 
+  /// **Kühlschrank-Soll-Ist-Automatik.** Artikel, deren Kühlschrank-Ist unter dem
+  /// Soll liegt und für die im Lager noch Ware vorhanden ist ("fehlt im
+  /// Kühlschrank"), absteigend nach Defizit. Rein berechnet aus dem laufenden
+  /// Produkt-Stand (kein neuer Stream), optional je Standort.
+  List<FridgeShortfall> fridgeShortfalls({String? siteId}) =>
+      computeFridgeShortfalls(_products, siteId: siteId);
+
+  /// Anzahl der Kühlschrank-Lücken (für Badge/Benachrichtigung), optional je Laden.
+  int fridgeShortfallCount([String? siteId]) =>
+      computeFridgeShortfalls(_products, siteId: siteId).length;
+
+  // --- MHD-/Ablauf-Chargen ------------------------------------------------
+
+  /// Alle erfassten Warenchargen (inkl. abverkaufter/entsorgter — die Warnung
+  /// filtert auf `active`).
+  List<ProductBatch> get productBatches => _batches;
+
+  /// MHD-/Ablauf-Warnungen (dringendste zuerst), optional je Standort. [now]
+  /// ist injizierbar (Tests); sonst die Wall-Clock. [leadDays] = Vorwarnzeit.
+  List<ExpiryWarning> expiryWarnings({
+    String? siteId,
+    int leadDays = 3,
+    DateTime? now,
+  }) =>
+      computeExpiryWarnings(
+        _batches,
+        now ?? DateTime.now(),
+        leadDays: leadDays,
+        siteId: siteId,
+      );
+
+  /// Anzahl der offenen Ablauf-Warnungen (für Badge/Kachel-Zähler).
+  int expiryWarningCount({String? siteId, int leadDays = 3, DateTime? now}) =>
+      expiryWarnings(siteId: siteId, leadDays: leadDays, now: now).length;
+
+  ProductBatch? _batchById(String id) {
+    for (final batch in _batches) {
+      if (batch.id == id) return batch;
+    }
+    return null;
+  }
+
+  String _formatDay(DateTime date) =>
+      '${date.day.toString().padLeft(2, '0')}.'
+      '${date.month.toString().padLeft(2, '0')}.${date.year}';
+
   Set<String> get categories {
     final result = <String>{};
     for (final product in _products) {
@@ -629,6 +692,7 @@ class InventoryProvider extends ChangeNotifier {
     final scope = _localScope;
     _suppliers = await DatabaseService.loadLocalSuppliers(scope: scope);
     _products = await DatabaseService.loadLocalProducts(scope: scope);
+    _batches = await DatabaseService.loadLocalProductBatches(scope: scope);
     _orders = await DatabaseService.loadLocalPurchaseOrders(scope: scope);
     _movements = await DatabaseService.loadLocalStockMovements(scope: scope);
     _priceHistory = await DatabaseService.loadLocalPriceHistory(scope: scope);
@@ -645,6 +709,8 @@ class InventoryProvider extends ChangeNotifier {
       DatabaseService.saveLocalSuppliers(_suppliers, scope: _localScope);
   Future<void> _persistProducts() =>
       DatabaseService.saveLocalProducts(_products, scope: _localScope);
+  Future<void> _persistBatches() =>
+      DatabaseService.saveLocalProductBatches(_batches, scope: _localScope);
   Future<void> _persistOrders() =>
       DatabaseService.saveLocalPurchaseOrders(_orders, scope: _localScope);
   Future<void> _persistMovements() =>
@@ -666,6 +732,7 @@ class InventoryProvider extends ChangeNotifier {
   Future<void> _persistAllLocal() async {
     await _persistSuppliers();
     await _persistProducts();
+    await _persistBatches();
     await _persistOrders();
     await _persistMovements();
     await _persistPriceHistory();
@@ -751,6 +818,7 @@ class InventoryProvider extends ChangeNotifier {
   void _resetData() {
     _suppliers = [];
     _products = [];
+    _batches = [];
     _orders = [];
     _movements = [];
     _priceHistory = [];
@@ -775,6 +843,12 @@ class InventoryProvider extends ChangeNotifier {
     _productsSubscription =
         _inventory.watchProducts(orgId).listen((items) {
       _products = items;
+      _safeNotify();
+    }, onError: _setError);
+
+    _batchesSubscription =
+        _inventory.watchProductBatches(orgId).listen((items) {
+      _batches = items;
       _safeNotify();
     }, onError: _setError);
 
@@ -818,6 +892,7 @@ class InventoryProvider extends ChangeNotifier {
   Future<void> _cancelSubscriptions() async {
     await _suppliersSubscription?.cancel();
     await _productsSubscription?.cancel();
+    await _batchesSubscription?.cancel();
     await _ordersSubscription?.cancel();
     await _movementsSubscription?.cancel();
     await _customerOrdersSubscription?.cancel();
@@ -826,6 +901,7 @@ class InventoryProvider extends ChangeNotifier {
     await _fridgeListsSubscription?.cancel();
     _suppliersSubscription = null;
     _productsSubscription = null;
+    _batchesSubscription = null;
     _ordersSubscription = null;
     _movementsSubscription = null;
     _customerOrdersSubscription = null;
@@ -932,9 +1008,16 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       throw StateError('Keine Organisation aktiv.');
     }
-    final prepared = product.copyWith(
+    var prepared = product.copyWith(
       orgId: orgId,
       createdByUid: product.createdByUid ?? _currentUser?.uid,
+    );
+    // Clobber-Schutz: saveProduct (Manager-Edit/Anlage) darf fridgeStock NIE
+    // ändern — allein setFridgeStock (Refill) + POS sind autoritativ. Bestehenden
+    // Wert erhalten, neue Artikel starten bei 0. Cloud-seitig zusätzlich im Repo
+    // aus dem Merge entfernt (Plan §7).
+    prepared = prepared.copyWith(
+      fridgeStock: productById(prepared.id)?.fridgeStock ?? 0,
     );
     // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
     final isNew = prepared.id == null || prepared.id!.isEmpty;
@@ -1124,6 +1207,620 @@ class InventoryProvider extends ChangeNotifier {
     );
   }
 
+  /// **P1.1 — Sell-Through & Reichweite je Artikel eines Standorts.** Liefert
+  /// für jeden Artikel von [siteId] die Verkaufsgeschwindigkeit (Einheiten/Tag)
+  /// und Lagerreichweite (Tage) über die letzten [windowDays] Tage.
+  ///
+  /// Read-only/zustandslos (hält keinen Velocity-State im Provider — die
+  /// Auswertungs-UI verwendet das Ergebnis ephemer). Die Bewegungen kommen in
+  /// cloud/hybrid aus der nicht-limitierten Range-Query (`getStockMovementsInRange`,
+  /// deckt das `limit=100` von `recentMovements` nicht ab), im lokalen Modus aus
+  /// dem vollständigen lokalen Cache. Die Berechnung selbst ist die pure Funktion
+  /// [computeProductVelocities].
+  Future<List<ProductVelocity>> computeSiteVelocities({
+    required String siteId,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    int minReliableDays = SalesVelocity.defaultReliableDays,
+    DateTime? asOf,
+  }) =>
+      _loadVelocities(
+        siteId: siteId,
+        windowDays: windowDays,
+        minReliableDays: minReliableDays,
+        asOf: asOf,
+      );
+
+  /// Wie [computeSiteVelocities], aber **org-weit über alle Standorte** — Basis
+  /// für die standortübergreifende Umlagerung A↔B (P1.2), die denselben Artikel
+  /// in beiden Läden vergleicht.
+  Future<List<ProductVelocity>> computeOrgVelocities({
+    int windowDays = SalesVelocity.defaultReliableDays,
+    int minReliableDays = SalesVelocity.defaultReliableDays,
+    DateTime? asOf,
+  }) =>
+      _loadVelocities(
+        siteId: null,
+        windowDays: windowDays,
+        minReliableDays: minReliableDays,
+        asOf: asOf,
+      );
+
+  /// **P1.2 — Umlagerungsvorschläge A↔B.** Schlägt vor, Ladenhüter eines Ladens
+  /// in den anderen umzulagern, wo derselbe Artikel läuft und knapp wird —
+  /// freigesetztes totes Kapital = barer Gewinn. Reine, deterministische
+  /// Heuristik [suggestCrossSiteTransfers]; der Aufrufer wendet einen Vorschlag
+  /// später über [transferStock] (`StockMovementType.transfer`) an. Sinnvolles
+  /// Fenster: ≥ 60 Tage (Ladenhüter = 0 Verkauf über lange Zeit).
+  Future<List<TransferSuggestion>> suggestStockTransfers({
+    int windowDays = 60,
+    double destinationMaxCoverageDays = 14,
+    double targetCoverageDays = 21,
+    int minTransferQuantity = 1,
+    DateTime? asOf,
+  }) async {
+    final velocities = await computeOrgVelocities(
+      windowDays: windowDays,
+      asOf: asOf,
+    );
+    return suggestCrossSiteTransfers(
+      velocities: velocities,
+      products: _products,
+      destinationMaxCoverageDays: destinationMaxCoverageDays,
+      targetCoverageDays: targetCoverageDays,
+      minTransferQuantity: minTransferQuantity,
+    );
+  }
+
+  /// **P1.3 — Datengetriebene Meldebestand-/Zielbestand-Vorschläge** je Artikel
+  /// von [siteId] aus Velocity + Lieferzeit (`Supplier.leadTimeDays`, sonst
+  /// [defaultLeadTimeDays]). Liefert nur Vorschläge fürs Artikel-Editor/Bestell-
+  /// korb — es wird **nichts** automatisch gespeichert (der Inhaber übernimmt).
+  Future<List<ReorderSuggestion>> suggestReorderLevels({
+    required String siteId,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    int safetyDays = 3,
+    int coverageDays = 14,
+    int defaultLeadTimeDays = 3,
+    DateTime? asOf,
+  }) async {
+    final velocities = await computeSiteVelocities(
+      siteId: siteId,
+      windowDays: windowDays,
+      asOf: asOf,
+    );
+    final siteProducts =
+        _products.where((p) => p.siteId == siteId).toList(growable: false);
+    final leadBySupplier = <String, int>{
+      for (final s in _suppliers)
+        if (s.id != null && s.leadTimeDays != null) s.id!: s.leadTimeDays!,
+    };
+    return computeReorderSuggestions(
+      velocities: velocities,
+      products: siteProducts,
+      leadTimeDaysBySupplierId: leadBySupplier,
+      defaultLeadTimeDays: defaultLeadTimeDays,
+      safetyDays: safetyDays,
+      coverageDays: coverageDays,
+    );
+  }
+
+  /// **Kühlschrank-Soll-Vorschlag** je `inFridge`-Artikel von [siteId] aus der
+  /// Velocity (Tagesabsatz × [coverageDays] Eindeckung). Reiner Vorschlag fürs
+  /// Artikel-Editor (§12.4) — speichert **nichts**. Liefert `productId →
+  /// vorgeschlagenes fridgeTargetStock`. Belastbar erst ab ~[windowDays] Daten.
+  Future<Map<String, int>> suggestFridgeTargets({
+    required String siteId,
+    int coverageDays = 2,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    DateTime? asOf,
+  }) async {
+    final velocities = await computeSiteVelocities(
+      siteId: siteId,
+      windowDays: windowDays,
+      asOf: asOf,
+    );
+    final result = <String, int>{};
+    for (final v in velocities) {
+      final product = productById(v.productId);
+      if (product == null || !product.inFridge) continue;
+      result[v.productId] =
+          suggestFridgeTarget(v.dailyVelocity, coverageDays: coverageDays);
+    }
+    return result;
+  }
+
+  /// Kühlschrank-Soll-Vorschlag für **einen** Artikel (fürs Artikel-Editor,
+  /// §12.4) — unabhängig vom `inFridge`-Flag, damit der Vorschlag schon beim
+  /// Aktivieren verfügbar ist. `null`, wenn der Artikel keine ID hat oder keine
+  /// Verkaufsdaten vorliegen.
+  Future<int?> suggestFridgeTargetForProduct(
+    Product product, {
+    int coverageDays = 2,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    DateTime? asOf,
+  }) async {
+    if (product.id == null) return null;
+    final velocities = await computeSiteVelocities(
+      siteId: product.siteId,
+      windowDays: windowDays,
+      asOf: asOf,
+    );
+    for (final v in velocities) {
+      if (v.productId == product.id) {
+        return suggestFridgeTarget(v.dailyVelocity, coverageDays: coverageDays);
+      }
+    }
+    return null;
+  }
+
+  /// **P3.2 — Storno-/Refund-Anomalie je Kassierer** für [siteId] über
+  /// [windowDays] Tage (z-Wert der Erstattungsquote ggü. Standort-Schnitt).
+  /// **Verdachtshinweis, kein Urteil; Einsatz erfordert Mitbestimmung/DSGVO.**
+  /// Cloud-only (`cashierId` aus den Belegen); lokal/ohne Firebase leer.
+  Future<CashierAnomalyReport> loadCashierAnomalies({
+    required String siteId,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    int minTransactions = 30,
+    double zThreshold = 2.0,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return CashierAnomalyReport(
+        stats: const [],
+        siteRefundRateMean: 0,
+        minTransactions: minTransactions,
+        zThreshold: zThreshold,
+      );
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    return computeCashierAnomalies(
+      receipts: receipts,
+      minTransactions: minTransactions,
+      zThreshold: zThreshold,
+    );
+  }
+
+  /// **P2.0 — Tagesabschluss** (Tagesumsatz mit USt-Split) für [siteId] über
+  /// [windowDays] Tage. Liest die Kassenbelege (`posReceipts`, cloud-only) und
+  /// gruppiert in-memory je Geschäftstag (nutzt den `(siteId,transactionDate)`-
+  /// Index, kein eigener businessDay-Index nötig). Lokal leer.
+  Future<List<DailyClosing>> loadDailyClosings({
+    required String siteId,
+    int windowDays = 31,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const [];
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    return computeDailyClosings(receipts);
+  }
+
+  /// **P4.2 — Warenkorb-/Cross-Sell-Analyse** für [siteId] über [windowDays]
+  /// Tage: welche Artikel häufig zusammen über denselben Beleg gehen. Liest die
+  /// Kassenbelege (`posReceipts`, cloud-only); lokal leer.
+  Future<BasketAnalysis> loadBasketAnalysis({
+    required String siteId,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    int minTogether = 2,
+    int topN = 25,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const BasketAnalysis(pairs: [], receiptsConsidered: 0);
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    return computeBasketAnalysis(
+      receipts: receipts,
+      minTogether: minTogether,
+      topN: topN,
+    );
+  }
+
+  /// **P2.1 — Sortimentsanalyse (Rohertrag & ABC nach Deckungsbeitrag)** für
+  /// [siteId] über [windowDays] Tage. Liest die Kassenbelege (`posReceipts`,
+  /// cloud-only) und verrechnet sie mit den aktuellen EK-Preisen. Im lokalen
+  /// Modus leer (ohne Firebase keine Kassenfakten). Zustandslos.
+  Future<AssortmentAnalysis> loadAssortmentAnalysis({
+    required String siteId,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const AssortmentAnalysis(
+        items: [],
+        totalRevenueCents: 0,
+        totalContributionCents: 0,
+        contributionByCategory: {},
+        unvaluatedCount: 0,
+      );
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts = await _inventory.getPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
+    final siteProducts =
+        _products.where((p) => p.siteId == siteId).toList(growable: false);
+    return computeAssortmentAnalysis(
+      receipts: receipts,
+      products: siteProducts,
+    );
+  }
+
+  /// **P4.1 — Listungslücken** für [siteId]: Artikel, die in einem ANDEREN Laden
+  /// laufen, von [siteId] aber nicht geführt werden (Listungschance). Org-weite
+  /// Velocity + alle Artikel; cloud/hybrid/lokal über `computeOrgVelocities`.
+  Future<List<ListingGap>> loadListingGaps({
+    required String siteId,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    int minSoldUnits = 1,
+    DateTime? asOf,
+  }) async {
+    final velocities =
+        await computeOrgVelocities(windowDays: windowDays, asOf: asOf);
+    return findListingGaps(
+      velocities: velocities,
+      products: _products,
+      siteIds: [siteId],
+      minSoldUnits: minSoldUnits,
+    );
+  }
+
+  /// **P4.3 — Wochentag-/Saison-Nachfragefaktoren** für [siteId] aus der eigenen
+  /// Beleg-Historie (Wochentag → Faktor relativ zum Durchschnittstag). Reines
+  /// Feintuning für Bestell-/Besetzungs-Vorschläge; der Wetter-Faktor kommt
+  /// separat (`weatherDemandFactor`, graceful = 1.0 ohne Daten). Cloud-only.
+  Future<Map<int, double>> loadWeekdayDemandFactors({
+    required String siteId,
+    int windowDays = 56,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) return const {};
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    return computeWeekdayDemandFactors(receipts);
+  }
+
+  /// **P3.1 — Umsatzbasiertes Besetzungs-Profil** für [siteId] über [windowDays]
+  /// Tage: anonymes Beleg-pro-Stunde-Profil (Wochentag×Stunde) als Grundlage für
+  /// `StaffingDemand.requiredCount`-Vorschläge. Liest die Kassenbelege
+  /// (`posReceipts`, cloud-only); lokal leer.
+  Future<StaffingProfile> loadStaffingProfile({
+    required String siteId,
+    int windowDays = 28,
+    int receiptsPerStaffPerHour = 30,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return StaffingProfile(
+        siteId: siteId,
+        cells: const [],
+        receiptsPerStaffPerHour: receiptsPerStaffPerHour,
+      );
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    return computeStaffingProfile(
+      siteId: siteId,
+      receipts: receipts,
+      receiptsPerStaffPerHour: receiptsPerStaffPerHour,
+    );
+  }
+
+  /// **P2.3 — Tages-Gesundheits-Check / Multi-Store-Benchmark.** Vergleicht die
+  /// Beleg-Anzahl von [evaluatedDay] (Default: heute) je Laden mit dem
+  /// Wochentag-Schnitt der letzten [windowDays] Tage. Liest org-weit die
+  /// Kassenbelege (`posReceipts`, cloud-only); lokal leer.
+  Future<StoreBenchmark> loadStoreBenchmark({
+    String? evaluatedDay,
+    int windowDays = SalesVelocity.defaultReliableDays,
+    DateTime? asOf,
+  }) async {
+    final now = asOf ?? DateTime.now();
+    final day = evaluatedDay ??
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+            '${now.day.toString().padLeft(2, '0')}';
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return StoreBenchmark(evaluatedDay: day, perSite: const []);
+    }
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: null);
+    return computeStoreBenchmark(receipts: receipts, evaluatedDay: day);
+  }
+
+  /// **P2.2 — Schwund-/Inventurdifferenz-Report** für [siteId] über [windowDays]
+  /// Tage. Bewertet Inventur-/Korrektur-Bewegungen mit dem EK. Zustandslos; nur
+  /// Artikel-/Warengruppenebene (nie je Mitarbeiter).
+  Future<ShrinkageReport> loadShrinkageReport({
+    required String siteId,
+    int windowDays = 30,
+    DateTime? asOf,
+  }) async {
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final movements = await _fetchMovementsInRange(siteId, from, now);
+    final siteProducts =
+        _products.where((p) => p.siteId == siteId).toList(growable: false);
+    return computeShrinkageReport(
+      movements: movements,
+      products: siteProducts,
+    );
+  }
+
+  /// Bestandsbewegungen im Zeitraum: cloud/hybrid via nicht-limitierter
+  /// Range-Query, lokal aus dem vollständigen Cache. [siteId] `null` = org-weit.
+  Future<List<StockMovement>> _fetchMovementsInRange(
+    String? siteId,
+    DateTime from,
+    DateTime to,
+  ) async {
+    final orgId = _orgId;
+    if (_usesFirestore && orgId != null) {
+      return _inventory.getStockMovementsInRange(orgId, from, to, siteId: siteId);
+    }
+    return _movements
+        .where((m) =>
+            (siteId == null || m.siteId == siteId) &&
+            m.createdAt != null &&
+            !m.createdAt!.isBefore(from) &&
+            !m.createdAt!.isAfter(to))
+        .toList(growable: false);
+  }
+
+  Future<List<ProductVelocity>> _loadVelocities({
+    required String? siteId,
+    required int windowDays,
+    required int minReliableDays,
+    required DateTime? asOf,
+  }) async {
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final movements = await _fetchMovementsInRange(siteId, from, now);
+
+    final products = siteId == null
+        ? _products
+        : _products.where((p) => p.siteId == siteId).toList(growable: false);
+    return computeProductVelocities(
+      products: products,
+      movements: movements,
+      windowStart: from,
+      asOf: now,
+      minReliableDays: minReliableDays,
+    );
+  }
+
+  /// Stösst den OktoPOS-Kassenabgleich für [siteId] an: die Cloud Function zieht
+  /// die Verkaufsbuchungen der Kasse und schreibt die Bestandsabgänge
+  /// serverseitig (Admin SDK). Der API-Key bleibt serverseitig — der Client löst
+  /// nur aus. Nur in cloud/hybrid verfügbar (Firebase nötig); im lokalen
+  /// Demo-Modus nicht. Bestand/Bewegungen aktualisieren sich anschließend über
+  /// die laufenden Firestore-Streams. Gibt die Ergebnis-Zusammenfassung zurück.
+  Future<Map<String, dynamic>> triggerOktoposSync({
+    required String siteId,
+    String? from,
+    String? until,
+    bool dryRun = false,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    if (!_usesFirestore) {
+      throw StateError(
+        'Der Kassenabgleich ist nur mit Firebase-Anbindung verfügbar '
+        '(nicht im lokalen Demo-Modus).',
+      );
+    }
+    final result = await _firestoreService.syncOktoposTransactions(
+      orgId: orgId,
+      siteId: siteId,
+      from: from,
+      until: until,
+      dryRun: dryRun,
+    );
+    if (!dryRun) {
+      final applied = (result['appliedMovements'] as num?)?.toInt() ?? 0;
+      final reversed = (result['reversedMovements'] as num?)?.toInt() ?? 0;
+      final unmatched = (result['unmatchedLineItems'] as num?)?.toInt() ?? 0;
+      final siteName = _siteNameFor(siteId) ?? siteId;
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Kassenabgleich',
+        entityId: siteId,
+        summary: 'OktoPOS-Abgleich $siteName: $applied Verkäufe, '
+            '$reversed Erstattungen übernommen'
+            '${unmatched > 0 ? ', $unmatched Positionen ohne Artikel' : ''}.',
+      );
+    }
+    return result;
+  }
+
+  /// Lädt das OktoPOS-Sync-Config-Doc (Admin-Einstellungen + Cursor) für die
+  /// Einstellungs-UI. Nur in cloud/hybrid; `null`, wenn nicht eingerichtet oder
+  /// ohne Firebase-Anbindung.
+  Future<Map<String, dynamic>?> loadOktoposConfig() async {
+    final orgId = _orgId;
+    if (orgId == null || !_usesFirestore) {
+      return null;
+    }
+    return _firestoreService.fetchOktoposConfig(orgId);
+  }
+
+  /// Speichert die OktoPOS-Admin-Einstellungen (baseUrl / Auto-Abgleich /
+  /// cashRegisterId je Standort) merge-sicher. Der API-Key bleibt serverseitig
+  /// und wird hier nie berührt.
+  Future<void> saveOktoposConfig({
+    required String baseUrl,
+    required bool enabled,
+    required int defaultSize,
+    required Map<String, int?> cashRegisterBySiteId,
+    String? distributionChannel,
+    String? defaultUnitToken,
+    int? defaultTaxRate,
+    bool? cashierCanChangePrice,
+    String? customerGroupName,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    if (!_usesFirestore) {
+      throw StateError(
+        'OktoPOS-Einstellungen sind nur mit Firebase-Anbindung verfügbar.',
+      );
+    }
+    await _firestoreService.saveOktoposConfig(
+      orgId: orgId,
+      baseUrl: baseUrl,
+      enabled: enabled,
+      defaultSize: defaultSize,
+      cashRegisterBySiteId: cashRegisterBySiteId,
+      distributionChannel: distributionChannel,
+      defaultUnitToken: defaultUnitToken,
+      defaultTaxRate: defaultTaxRate,
+      cashierCanChangePrice: cashierCanChangePrice,
+      customerGroupName: customerGroupName,
+    );
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Kassen-Einstellungen',
+      entityId: 'oktopos',
+      summary: 'OktoPOS-Einstellungen gespeichert'
+          '${enabled ? ' (Auto-Abgleich an)' : ''}.',
+    );
+  }
+
+  /// Schreibt Artikel/Preise eines Standorts in die OktoPOS-Kasse (M5). Ohne
+  /// [productIds] werden alle aktiven Artikel des Standorts gesendet. Nur in
+  /// cloud/hybrid; der API-Key bleibt serverseitig. Gibt die Zusammenfassung
+  /// (created/updated/failed/skipped) zurück.
+  Future<Map<String, dynamic>> pushOktoposArticles({
+    required String siteId,
+    List<String>? productIds,
+    bool dryRun = false,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    if (!_usesFirestore) {
+      throw StateError(
+        'Der Artikel-Versand an die Kasse ist nur mit Firebase-Anbindung '
+        'verfügbar (nicht im lokalen Demo-Modus).',
+      );
+    }
+    final result = await _firestoreService.pushOktoposArticles(
+      orgId: orgId,
+      siteId: siteId,
+      productIds: productIds,
+      dryRun: dryRun,
+    );
+    if (!dryRun) {
+      final created = (result['created'] as num?)?.toInt() ?? 0;
+      final updated = (result['updated'] as num?)?.toInt() ?? 0;
+      final failed = (result['failed'] as num?)?.toInt() ?? 0;
+      final siteName = _siteNameFor(siteId) ?? siteId;
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Kassen-Artikel',
+        entityId: siteId,
+        summary: 'OktoPOS-Artikelversand $siteName: $created neu, '
+            '$updated aktualisiert'
+            '${failed > 0 ? ', $failed fehlgeschlagen' : ''}.',
+      );
+    }
+    return result;
+  }
+
+  /// Schreibt Kunden-Kontakte (Typ Kunde) in die OktoPOS-Kasse (M6a). Ohne
+  /// [contactIds] alle aktiven Kunden-Kontakte der Org. Vorhandene Kunden
+  /// werden serverseitig übersprungen (CustomerApi hat kein Update). Gibt die
+  /// Zusammenfassung (created/skipped/failed) zurück.
+  Future<Map<String, dynamic>> pushOktoposCustomers({
+    required String siteId,
+    List<String>? contactIds,
+    bool dryRun = false,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    if (!_usesFirestore) {
+      throw StateError(
+        'Der Kunden-Versand an die Kasse ist nur mit Firebase-Anbindung '
+        'verfügbar (nicht im lokalen Demo-Modus).',
+      );
+    }
+    final result = await _firestoreService.pushOktoposCustomers(
+      orgId: orgId,
+      siteId: siteId,
+      contactIds: contactIds,
+      dryRun: dryRun,
+    );
+    if (!dryRun) {
+      final created = (result['created'] as num?)?.toInt() ?? 0;
+      final skipped = (result['skipped'] as num?)?.toInt() ?? 0;
+      final failed = (result['failed'] as num?)?.toInt() ?? 0;
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Kassen-Kunden',
+        entityId: siteId,
+        summary: 'OktoPOS-Kundenversand: $created neu, $skipped vorhanden'
+            '${failed > 0 ? ', $failed fehlgeschlagen' : ''}.',
+      );
+    }
+    return result;
+  }
+
+  /// Holt die Referenz-Tokens (Einheiten + Vertriebskanäle) aus der Kasse für
+  /// die Einstellungs-UI. Nur in cloud/hybrid; `null` ohne Firebase.
+  Future<Map<String, dynamic>?> loadOktoposLookups({
+    required String siteId,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null || !_usesFirestore) {
+      return null;
+    }
+    return _firestoreService.getOktoposLookups(orgId: orgId, siteId: siteId);
+  }
+
+  /// Lesbarer Standortname (aus den gestreamten Artikeln abgeleitet), für
+  /// Audit-/UI-Texte. `null`, wenn kein Artikel des Standorts einen Namen trägt.
+  String? _siteNameFor(String siteId) {
+    for (final product in _products) {
+      final name = product.siteName;
+      if (product.siteId == siteId && name != null && name.isNotEmpty) {
+        return name;
+      }
+    }
+    return null;
+  }
+
   /// Bucht eine Bestandsaenderung (Korrektur/Abgang). [delta] positiv = Zugang.
   ///
   /// [clientMutationId] erlaubt eine STABILE Idempotenz-Id von aussen: ohne sie
@@ -1133,6 +1830,96 @@ class InventoryProvider extends ChangeNotifier {
   /// Pfad (local-Modus + hybrid-Offline-Fallback) bucht synchron und einmalig
   /// und kennt keine Replays; gegen Doppel-Tap schuetzt dort der UI-Guard im
   /// Scanner (in-flight-Sperre + deaktivierte Buttons).
+  // --- MHD-/Ablauf-Chargen (Mutatoren) ------------------------------------
+
+  /// Legt eine Warencharge mit MHD an oder aktualisiert sie (drei Speichermodi).
+  Future<void> saveBatch(ProductBatch batch) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final prepared = batch.copyWith(
+      orgId: orgId,
+      createdByUid: batch.createdByUid ?? _currentUser?.uid,
+    );
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
+    final name = prepared.productName ?? 'Artikel';
+    final summary = 'Charge „$name" ${isNew ? 'angelegt' : 'aktualisiert'} '
+        '(MHD ${_formatDay(prepared.expiryDate)})';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveBatch',
+          () => _inventory.saveProductBatch(prepared),
+        )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Charge',
+        entityId: prepared.id,
+        summary: summary,
+      );
+      return;
+    }
+    final stored = prepared.id == null
+        ? prepared.copyWith(id: _nextLocalId('batch'))
+        : prepared;
+    _upsertLocal(_batches, stored, (item) => item.id);
+    _batches.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
+    await _persistBatches();
+    _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Charge',
+      entityId: stored.id,
+      summary: summary,
+    );
+  }
+
+  /// Markiert eine Charge als abverkauft/entsorgt (verschwindet aus der Warnung,
+  /// bleibt zur Historie erhalten). Setzt Bearbeiter + Zeitstempel.
+  Future<void> resolveBatch(
+    String batchId, {
+    required BatchStatus status,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) return;
+    final existing = _batchById(batchId);
+    if (existing == null) return;
+    final resolved = existing.copyWith(
+      status: status,
+      resolvedByUid: _currentUser?.uid,
+      resolvedAt: DateTime.now(),
+    );
+    final name = existing.productName ?? 'Artikel';
+    final verb = status == BatchStatus.discarded
+        ? 'entsorgt'
+        : status == BatchStatus.soldOut
+            ? 'abverkauft'
+            : 'wieder aktiv gesetzt';
+    final summary = 'Charge „$name" $verb';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'resolveBatch',
+          () => _inventory.saveProductBatch(resolved),
+        )) {
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Charge',
+        entityId: batchId,
+        summary: summary,
+      );
+      return;
+    }
+    _upsertLocal(_batches, resolved, (item) => item.id);
+    await _persistBatches();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Charge',
+      entityId: batchId,
+      summary: summary,
+    );
+  }
+
   Future<void> adjustStock({
     required String productId,
     required int delta,
@@ -1205,6 +1992,57 @@ class InventoryProvider extends ChangeNotifier {
       type: StockMovementType.stocktake,
       reason: 'Inventur',
     );
+  }
+
+  /// **Kühlschrank nachfüllen** (§12.5/§12.6). Setzt den Kühlschrank-Ist von
+  /// [product] — ohne [quantity] auf das Soll `fridgeTargetStock`, mit [quantity]
+  /// additiv (auf >= 0 geklemmt) — und protokolliert eine `fridgeRefill`-Bewegung.
+  /// `currentStock` bleibt unberührt (reine Umlagerung Lager→Kühlschrank). Für
+  /// ALLE aktiven Mitarbeiter (§12.2); kein Audit (die Bewegung ist das Protokoll).
+  Future<void> refillFridge(Product product, {int? quantity}) async {
+    final orgId = _orgId;
+    final productId = product.id;
+    if (orgId == null || productId == null) {
+      return;
+    }
+    // Frischen Stand bevorzugen (der gestreamte/cache-Wert ist aktueller als ein
+    // evtl. älteres übergebenes Objekt).
+    final current = productById(productId) ?? product;
+    final oldFridge = current.fridgeStockClamped;
+    final int newFridge;
+    if (quantity == null) {
+      newFridge = current.fridgeTargetStock;
+    } else {
+      final raw = oldFridge + quantity;
+      newFridge = raw < 0 ? 0 : raw;
+    }
+    final refilled = newFridge - oldFridge;
+    if (refilled == 0) {
+      return;
+    }
+    final mutationId = _uuid.v4();
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'refillFridge',
+          () => _inventory.setFridgeStock(
+            orgId: orgId,
+            productId: productId,
+            fridgeStock: newFridge,
+            refilledQty: refilled,
+            createdByUid: _currentUser?.uid,
+            clientMutationId: mutationId,
+          ),
+        )) {
+      return;
+    }
+    _applyLocalFridgeRefill(
+      product: current,
+      newFridgeStock: newFridge,
+      refilledQty: refilled,
+    );
+    await _persistProducts();
+    await _persistMovements();
+    _safeNotify();
   }
 
   /// Prueft, ob ein Abgang von [quantity] Stueck fuer [product] zulaessig ist.
@@ -1646,8 +2484,18 @@ class InventoryProvider extends ChangeNotifier {
     await saveCustomerOrder(
       order.copyWith(status: CustomerOrderStatus.pickedUp),
     );
-    final next = order.nextPickupDate;
+    var next = order.nextPickupDate;
     if (order.recurrence.isRecurring && next != null) {
+      // Folgetermin so weit vorschieben, bis er in der Zukunft liegt. Sonst
+      // legt eine spät abgeholte Wiederholung sofort wieder eine überfällige
+      // Folgebestellung an (probleme #57).
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      var guard = 0;
+      while (!next!.isAfter(today) && guard < 520) {
+        next = order.recurrence.advance(next);
+        guard++;
+      }
       await saveCustomerOrder(
         CustomerOrder(
           orgId: order.orgId,
@@ -2223,6 +3071,38 @@ class InventoryProvider extends ChangeNotifier {
         balanceAfter: newStock,
         reason: reason,
         relatedOrderId: relatedOrderId,
+        createdByUid: _currentUser?.uid,
+        createdAt: DateTime.now(),
+      ),
+      ..._movements,
+    ];
+  }
+
+  /// Lokales Pendant zu [FirestoreInventoryRepository.setFridgeStock]: setzt
+  /// `fridgeStock` (currentStock unberührt) und hängt eine `fridgeRefill`-
+  /// Bewegung an.
+  void _applyLocalFridgeRefill({
+    required Product product,
+    required int newFridgeStock,
+    required int refilledQty,
+  }) {
+    final index = _products.indexWhere((p) => p.id == product.id);
+    if (index < 0) {
+      return;
+    }
+    _products[index] = _products[index].copyWith(fridgeStock: newFridgeStock);
+    _products = [..._products];
+    _movements = [
+      StockMovement(
+        id: _nextLocalId('movement'),
+        orgId: product.orgId,
+        siteId: product.siteId,
+        productId: product.id!,
+        productName: product.name,
+        type: StockMovementType.fridgeRefill,
+        quantityDelta: refilledQty,
+        balanceAfter: newFridgeStock,
+        reason: 'Kühlschrank nachgefüllt',
         createdByUid: _currentUser?.uid,
         createdAt: DateTime.now(),
       ),

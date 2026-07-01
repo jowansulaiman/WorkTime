@@ -11,6 +11,9 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
+    <!-- Push-Benachrichtigungen (FCM, Plan push-benachrichtigungen-plan.md).
+         Ab Android 13 (API 33) Laufzeit-Berechtigung; darunter implizit. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
         android:label="timework"
@@ -43,6 +46,19 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Push (FCM): monochromes Status-Icon (sonst weisser Block) +
+             Marken-Akzentfarbe + Default-Channel fuer Data-Messages ohne
+             expliziten Channel. Channel-IDs werden zur Laufzeit via
+             flutter_local_notifications angelegt (PushMessagingService). -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/push_accent" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="aufgaben" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

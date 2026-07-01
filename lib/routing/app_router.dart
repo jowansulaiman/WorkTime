@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../core/analytics_service.dart';
+import '../core/app_config.dart';
+import '../core/quick_actions_service.dart';
 import '../core/redesign_flags.dart';
 import '../providers/auth_provider.dart';
 import '../providers/feature_flag_provider.dart';
@@ -10,27 +12,36 @@ import '../providers/theme_provider.dart';
 import '../screens/audit_log_screen.dart';
 import '../screens/auth_screen.dart';
 import '../screens/auth_screen_v2.dart';
+import '../screens/bestand_insights_screen.dart';
 import '../screens/customer_feedback_screen.dart';
 import '../screens/customer_order_screen.dart';
+import '../screens/cashier_anomaly_screen.dart';
 import '../screens/customer_wishes_screen.dart';
+import '../screens/daily_closing_screen.dart';
 import '../screens/finance_screen.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
+import '../screens/kiosk/kiosk_screen.dart';
 import '../screens/month_report_screen.dart';
 import '../screens/order_analytics_screen.dart';
 import '../screens/personal_screen.dart';
 import '../screens/scanner_screen.dart';
 import '../screens/settings_screen.dart';
+import '../screens/sortiment_screen.dart';
+import '../screens/staffing_profile_screen.dart';
+import '../screens/store_health_screen.dart';
 import '../screens/statistics_screen.dart';
 import '../screens/team_management_screen.dart';
+import '../screens/zeitwirtschaft/abwesenheiten_screen.dart';
+import '../screens/zeitwirtschaft/abwesenheitskalender_screen.dart';
 import '../screens/zeitwirtschaft/lohnlauf_screen.dart';
 import '../screens/zeitwirtschaft/mitarbeiterabschluss_screen.dart';
 import '../screens/zeitwirtschaft/monatsabschluss_screen.dart';
 import '../screens/zeitwirtschaft/stempel_screen.dart';
 import '../screens/zeitwirtschaft/stundenkonto_screen.dart';
-import '../screens/zeitwirtschaft/zeit_section_placeholder.dart';
 import '../screens/zeitwirtschaft/zeiterfassung_screen.dart';
+import '../services/push_messaging_service.dart';
 import '../widgets/bootstrap_frame.dart';
 import 'route_permissions.dart';
 import 'shell_tab.dart';
@@ -102,6 +113,14 @@ GoRouter buildAppRouter({
         },
       ),
 
+      // Arbeitsmodus / Laden-Tablet (Kiosk): Vollbild über dem Root-Navigator
+      // (ersetzt die Shell). Nur im Kiosk-Build erreichbar (Gate erzwingt es).
+      GoRoute(
+        path: AppRoutes.kiosk,
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const KioskScreen(),
+      ),
+
       // ---- Shell: 7 statische Branches (lazy IndexedStack, State je Branch) ----
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) =>
@@ -128,9 +147,11 @@ GoRouter buildAppRouter({
         // Redirect prüft state.matchedLocation (ohne Query).
         (c, s) => InventoryScreen(
           parentLabel: 'Laden',
-          initialTabIndex: s.uri.queryParameters['tab'] == 'korb'
-              ? InventoryScreen.cartTabIndex
-              : 0,
+          initialTabIndex: switch (s.uri.queryParameters['tab']) {
+            'korb' => InventoryScreen.cartTabIndex,
+            'kuehl' => InventoryScreen.fridgeTabIndex,
+            _ => 0,
+          },
         ),
       ),
       _sectionRoute(AppRoutes.customerOrders,
@@ -157,6 +178,18 @@ GoRouter buildAppRouter({
           (c, s) => const ScannerScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.orderAnalytics,
           (c, s) => const OrderAnalyticsScreen(parentLabel: 'Laden')),
+      _sectionRoute(AppRoutes.bestandInsights,
+          (c, s) => const BestandInsightsScreen(parentLabel: 'Warenwirtschaft')),
+      _sectionRoute(AppRoutes.sortiment,
+          (c, s) => const SortimentScreen(parentLabel: 'Warenwirtschaft')),
+      _sectionRoute(AppRoutes.staffingProfile,
+          (c, s) => const StaffingProfileScreen(parentLabel: 'Schichtplan')),
+      _sectionRoute(AppRoutes.dailyClosing,
+          (c, s) => const DailyClosingScreen(parentLabel: 'Buchhaltung')),
+      _sectionRoute(AppRoutes.storeHealth,
+          (c, s) => const StoreHealthScreen(parentLabel: 'Warenwirtschaft')),
+      _sectionRoute(AppRoutes.cashierAnomaly,
+          (c, s) => const CashierAnomalyScreen(parentLabel: 'Personal')),
 
       // ---- Zeitwirtschaft-Bereich (Sub-Routen unter dem `/zeit`-Tab-Hub) ----
       _sectionRoute(AppRoutes.zeitErfassung, (c, s) => const ZeiterfassungScreen()),
@@ -164,13 +197,9 @@ GoRouter buildAppRouter({
       _sectionRoute(
           AppRoutes.zeitStundenkonto, (c, s) => const StundenkontoScreen()),
       _sectionRoute(
-          AppRoutes.zeitAbwesenheiten,
-          (c, s) => const ZeitSectionPlaceholder(
-              title: 'Abwesenheiten', meilenstein: 'M4')),
-      _sectionRoute(
-          AppRoutes.zeitAbwesenheitenKalender,
-          (c, s) => const ZeitSectionPlaceholder(
-              title: 'Abwesenheitskalender', meilenstein: 'M4')),
+          AppRoutes.zeitAbwesenheiten, (c, s) => const AbwesenheitenScreen()),
+      _sectionRoute(AppRoutes.zeitAbwesenheitenKalender,
+          (c, s) => const AbwesenheitskalenderScreen()),
       _sectionRoute(AppRoutes.zeitMonatsabschluss,
           (c, s) => const MonatsabschlussScreen()),
       _sectionRoute(AppRoutes.zeitMitarbeiterabschluss,
@@ -213,6 +242,48 @@ String? _gateRedirect(BuildContext context, GoRouterState state) {
   }
   if (flags.requiresUpdate) {
     return loc == AppRoutes.update ? null : AppRoutes.update;
+  }
+
+  // Arbeitsmodus / Laden-Tablet: Im Kiosk-Build (dediziertes Gerät) ist das
+  // Vollbild-Board die EINZIGE erreichbare Oberfläche — auch Unterrouten
+  // `/arbeitsmodus/...` bleiben erlaubt, alles andere wird dorthin gelenkt.
+  // Steht NACH den Auth-Gates (Gerät muss angemeldet & aktiv sein), aber VOR der
+  // normalen Permission-/Deep-Link-Logik. Increment 0: rein flag-getrieben;
+  // später zusätzlich an `profile.role == kiosk` gebunden.
+  if (AppConfig.kioskModeEnabled) {
+    final inKiosk =
+        loc == AppRoutes.kiosk || loc.startsWith('${AppRoutes.kiosk}/');
+    return inKiosk ? null : AppRoutes.kiosk;
+  }
+
+  // Schnellaktion aus dem Long-Press-Menü (App-Icon) zustellen — erst HIER, da
+  // Auth/Profil jetzt sicher aufgelöst & aktiv sind. Deckt den Cold-Start ab
+  // (App per Schnellaktion gestartet → Ziel wartet bis nach dem Login). Beim
+  // Warmstart wurde meist schon direkt navigiert; `take` ist idempotent und
+  // verhindert eine Redirect-Schleife (zweiter Lauf liefert null).
+  // `profile != null` ist hier durch das isAuthenticated-Gate oben bereits
+  // garantiert (isAuthenticated ⟹ profile != null); explizit als Invariante,
+  // damit nie eine pending-Route bei noch nicht geladenem Profil verworfen wird.
+  final pendingQuickAction = profile == null
+      ? null
+      : QuickActionsService.instance.takePendingRoute();
+  if (pendingQuickAction != null &&
+      pendingQuickAction != loc &&
+      RoutePermissions.isLocationAllowed(pendingQuickAction, profile)) {
+    return pendingQuickAction;
+  }
+
+  // Getippte Push-Benachrichtigung (Cold-Start/Hintergrund) gate-konform
+  // zustellen — gleiche Pending-Route-Mechanik wie Schnellaktionen. Die
+  // Permission-Prüfung läuft auf dem Pfad ohne Query (z. B.
+  // '/warenwirtschaft?tab=korb').
+  final pendingPush = profile == null
+      ? null
+      : PushMessagingService.instance.takePendingRoute();
+  if (pendingPush != null &&
+      pendingPush != loc &&
+      RoutePermissions.isLocationAllowed(pendingPush.split('?').first, profile)) {
+    return pendingPush;
   }
 
   // Voll aufgelöst & erlaubt: auf einer Gate-Route sitzend -> raus auf Home.

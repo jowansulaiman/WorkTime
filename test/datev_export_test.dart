@@ -90,6 +90,7 @@ void main() {
         accountLength: 6,
         defaultContraAccount: '8400',
         designation: 'Stapel',
+        revenueAccountByRate: {19: 'ct19', 7: 'ct7'},
       );
       final r = DatevExportConfig.fromMap(c.toMap());
       expect(r.consultantNumber, '1234567');
@@ -97,6 +98,8 @@ void main() {
       expect(r.accountLength, 6);
       expect(r.defaultContraAccount, '8400');
       expect(r.designation, 'Stapel');
+      // P2.0: Satz→Erlöskonto-Mapping überlebt den Round-trip (String-JSON-Keys).
+      expect(r.revenueAccountByRate, {19: 'ct19', 7: 'ct7'});
       // Sachkontenlänge wird auf 4..8 geklemmt.
       expect(DatevExportConfig.fromMap({'account_length': 99}).accountLength, 8);
       expect(DatevExportConfig.fromMap({'account_length': 2}).accountLength, 4);

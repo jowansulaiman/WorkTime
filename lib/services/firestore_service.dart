@@ -47,6 +47,7 @@ import '../models/supplier.dart';
 import '../models/team_definition.dart';
 import '../models/travel_time_rule.dart';
 import '../models/user_invite.dart';
+import '../models/store_task.dart';
 import '../models/user_settings.dart';
 import '../models/work_entry.dart';
 import '../models/work_task.dart';
@@ -128,6 +129,63 @@ class FirestoreService {
         .collection('config')
         .doc(OrgSettings.documentId)
         .set(settings.toFirestoreMap(), SetOptions(merge: true));
+  }
+
+  /// Liest das OktoPOS-Sync-Config-Doc `config/oktoposSync` (baseUrl,
+  /// `enabled`, `sites[siteId].cashRegisterId` + serverseitiger Cursor).
+  /// Null, wenn die Kasse noch nicht eingerichtet ist. Enthält **keinen**
+  /// API-Key (der liegt im Secret Manager).
+  Future<Map<String, dynamic>?> fetchOktoposConfig(String orgId) async {
+    final snapshot = await _organizationDoc(orgId)
+        .collection('config')
+        .doc('oktoposSync')
+        .get();
+    return snapshot.data();
+  }
+
+  /// Schreibt die vom Admin gepflegten OktoPOS-Felder (baseUrl, enabled,
+  /// defaultSize, cashRegisterId je Standort) **merge-sicher**: der
+  /// serverseitig gepflegte Cursor (`sites[siteId].lastBusinessDay`/
+  /// `lastSyncAt`) bleibt dank Nested-Merge erhalten. Der API-Key wird hier
+  /// NICHT gespeichert (Secret Manager).
+  Future<void> saveOktoposConfig({
+    required String orgId,
+    required String baseUrl,
+    required bool enabled,
+    required int defaultSize,
+    required Map<String, int?> cashRegisterBySiteId,
+    String? distributionChannel,
+    String? defaultUnitToken,
+    int? defaultTaxRate,
+    bool? cashierCanChangePrice,
+    String? customerGroupName,
+  }) async {
+    final sites = <String, dynamic>{
+      for (final entry in cashRegisterBySiteId.entries)
+        entry.key: {'cashRegisterId': entry.value},
+    };
+    // Push-Einstellungen (Artikel-Schreiben, M5) unter `push` — nur die
+    // übergebenen Felder, merge-sicher (überschreibt Cursor/andere Felder nicht).
+    final push = <String, dynamic>{
+      if (distributionChannel != null)
+        'distributionChannel': distributionChannel.trim(),
+      if (defaultUnitToken != null) 'defaultUnitToken': defaultUnitToken.trim(),
+      if (defaultTaxRate != null) 'defaultTaxRate': defaultTaxRate,
+      if (cashierCanChangePrice != null)
+        'cashierCanChangePrice': cashierCanChangePrice,
+    };
+    await _organizationDoc(orgId)
+        .collection('config')
+        .doc('oktoposSync')
+        .set({
+      'baseUrl': baseUrl.trim(),
+      'enabled': enabled,
+      'defaultSize': defaultSize,
+      if (sites.isNotEmpty) 'sites': sites,
+      if (push.isNotEmpty) 'push': push,
+      if (customerGroupName != null && customerGroupName.trim().isNotEmpty)
+        'customerGroupName': customerGroupName.trim(),
+    }, SetOptions(merge: true));
   }
 
   CollectionReference<Map<String, dynamic>> _entryCollection(String orgId) =>
@@ -411,6 +469,21 @@ class FirestoreService {
       }
       return AppUserProfile.fromFirestore(snapshot.id, data);
     });
+  }
+
+  /// Schreibt nur die Push-Präferenzen ins eigene `users/{uid}`-Doc (Self-Update;
+  /// alle anderen Felder bleiben unverändert → Rules erlauben es). Plan M5.
+  Future<void> updateNotificationPrefs(
+    String uid,
+    Map<String, dynamic> notificationPrefs,
+  ) {
+    return _users.doc(uid).set(
+      {
+        'notificationPrefs': notificationPrefs,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
   }
 
   Future<AppUserProfile?> getUserProfile(String uid) async {
@@ -881,10 +954,23 @@ class FirestoreService {
     return chunks;
   }
 
+  /// Stellt sicher, dass ein Batch nur Dokumente **einer** Org enthält — die
+  /// Batch-Direktschreiber leiten Collection/orgId aus `first` ab; gemischte
+  /// orgIds würden sonst in die falsche Org geschrieben (probleme services-firestore).
+  void _assertSameOrg(Iterable<String> orgIds) {
+    final first = orgIds.first;
+    if (orgIds.any((id) => id != first)) {
+      throw StateError(
+        'Batch enthält gemischte Organisationen – nur ein Mandant pro Batch erlaubt.',
+      );
+    }
+  }
+
   Future<void> saveWorkEntryBatch(List<WorkEntry> entries) async {
     if (entries.isEmpty) {
       return;
     }
+    _assertSameOrg(entries.map((e) => e.orgId));
     for (final chunk in _chunked(entries, _maxCallableBatchSize)) {
       await _saveWorkEntryBatchChunk(chunk);
     }
@@ -1148,6 +1234,93 @@ class FirestoreService {
     required String taskId,
   }) {
     return _workTaskCollection(orgId).doc(taskId).delete();
+  }
+
+  // --- Laden-To-Dos (Arbeitsmodus/Kiosk) -----------------------------------
+  // Broadcast-Aufgaben je Laden (siteId) bzw. org-weit (siteId == null). Ohne
+  // orderBy in der Query (kleine org-skopierte Collection, `dueDate` darf null
+  // sein); die Sortierung übernimmt der Provider clientseitig.
+
+  CollectionReference<Map<String, dynamic>> _storeTaskCollection(String orgId) =>
+      _organizationDoc(orgId).collection('storeTasks');
+
+  Stream<List<StoreTask>> watchStoreTasks(String orgId) {
+    return _storeTaskCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => StoreTask.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveStoreTask(StoreTask task) async {
+    final collection = _storeTaskCollection(task.orgId);
+    final docRef = task.id == null ? collection.doc() : collection.doc(task.id);
+    await docRef.set(
+      task.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteStoreTask({
+    required String orgId,
+    required String taskId,
+  }) {
+    return _storeTaskCollection(orgId).doc(taskId).delete();
+  }
+
+  // --- Arbeitsmodus / Laden-Tablet (Kiosk): server-geprüfte PIN -------------
+  // Callables (Increment 2). PIN-Hash liegt server-only in `userSecrets`; hier
+  // nur die dünnen Client-Aufrufe. Fehler (falsche PIN etc.) kommen als
+  // FirebaseFunctionsException zurück und werden vom KioskPinService gemappt.
+
+  /// Setzt/ändert die Kiosk-PIN des ANGEMELDETEN Nutzers (auf dem eigenen Handy).
+  Future<void> setKioskPin(String pin) async {
+    await _callCloudFunction('setKioskPin', {'pin': pin});
+  }
+
+  /// Meldet am Kiosk-Gerät einen Mitarbeiter per PIN an und liefert die
+  /// Session-ID (`sid`). Wirft bei falscher PIN/Sperre.
+  Future<String> kioskBeginSession({
+    required String employeeId,
+    required String pin,
+    String? deviceId,
+  }) async {
+    final raw = await _callCloudFunction('kioskBeginSession', {
+      'employeeId': employeeId,
+      'pin': pin,
+      if (deviceId != null) 'deviceId': deviceId,
+    });
+    final sid = _callableResultData(raw)['sid']?.toString();
+    if (sid == null || sid.isEmpty) {
+      throw StateError('Kiosk-Anmeldung fehlgeschlagen.');
+    }
+    return sid;
+  }
+
+  /// Beendet eine Kiosk-Session serverseitig (Logout/„Fertig").
+  Future<void> kioskEndSession(String sid) async {
+    await _callCloudFunction('kioskEndSession', {'sid': sid});
+  }
+
+  /// Stempeln am Kiosk für den Session-Mitarbeiter. [direction] = `'in'` |
+  /// `'out'` | `'status'`. Liefert den resultierenden Zustand
+  /// (`clockedIn == true` = eingestempelt). Schreibt server-seitig als der
+  /// Mitarbeiter (Admin-SDK), autorisiert über die Session-`sid`.
+  Future<bool> kioskClockPunch({
+    required String sid,
+    required String direction,
+    String? siteId,
+    String? siteName,
+    int? pauseMinuten,
+  }) async {
+    final raw = await _callCloudFunction('kioskClockPunch', {
+      'sid': sid,
+      'direction': direction,
+      if (siteId != null) 'siteId': siteId,
+      if (siteName != null) 'siteName': siteName,
+      if (pauseMinuten != null) 'pauseMinuten': pauseMinuten,
+    });
+    return _callableResultData(raw)['clockedIn'] == true;
   }
 
   Stream<List<PayrollRecord>> watchPayrollRecords(String orgId) {
@@ -1945,6 +2118,9 @@ class FirestoreService {
       await inviteDoc.reference.set({
         'acceptedByUid': user.uid,
         'acceptedAt': FieldValue.serverTimestamp(),
+        // M4: verbrauchte Einladung deaktivieren, damit sie nicht latent
+        // re-provisionieren kann (das `users/{uid}`-Doc ist die Stammquelle).
+        'isActive': false,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       await _ensureOrganizationIfAdmin(profile);
@@ -2036,6 +2212,7 @@ class FirestoreService {
     if (shifts.isEmpty) {
       return;
     }
+    _assertSameOrg(shifts.map((s) => s.orgId));
     for (final chunk in _chunked(shifts, _maxCallableBatchSize)) {
       await _saveShiftBatchChunk(chunk);
     }
@@ -2484,6 +2661,108 @@ class FirestoreService {
         .toList(growable: false);
   }
 
+  /// Stösst den OktoPOS-Kassenabgleich für einen Standort an (read-only Pull der
+  /// Verkaufsbuchungen → Bestandsabbuchung). Reiner Callable-Pfad: der API-Key
+  /// liegt serverseitig im Secret Manager und verlässt nie den Client; der
+  /// HTTP-Call gegen OktoPOS passiert in der Cloud Function (Server-zu-Server).
+  /// Kein Hybrid-/Direkt-Fallback (es gibt keinen Client-seitigen Ersatzpfad) —
+  /// Fehler propagieren als [FirebaseFunctionsException]. Gibt die
+  /// Ergebnis-Zusammenfassung der Function zurück.
+  Future<Map<String, dynamic>> syncOktoposTransactions({
+    required String orgId,
+    required String siteId,
+    String? from,
+    String? until,
+    bool dryRun = false,
+  }) async {
+    final raw = await _callCloudFunction(
+      'syncOktoposTransactions',
+      {
+        'orgId': orgId,
+        'siteId': siteId,
+        if (from != null && from.isNotEmpty) 'from': from,
+        if (until != null && until.isNotEmpty) 'until': until,
+        if (dryRun) 'dryRun': true,
+      },
+      // Der Kassen-Pull kann über mehrere Seiten laufen; ein zu kurzes
+      // Client-Timeout würde einen serverseitig erfolgreichen Abgleich
+      // fälschlich als Fehler anzeigen. Server-Timeout = 300s.
+      timeout: const Duration(seconds: 120),
+    );
+    return _callableResultData(raw);
+  }
+
+  /// Schreibt Artikel/Preise in die OktoPOS-Kasse (M5, Richtung WorkTime→Kasse).
+  /// [productIds] leer/null ⇒ alle aktiven Artikel des Standorts. Reiner
+  /// Callable-Pfad (Key serverseitig). Gibt die Ergebnis-Zusammenfassung
+  /// (created/updated/failed/skipped + results[]) zurück.
+  Future<Map<String, dynamic>> pushOktoposArticles({
+    required String orgId,
+    required String siteId,
+    List<String>? productIds,
+    bool dryRun = false,
+  }) async {
+    final raw = await _callCloudFunction(
+      'pushOktoposArticles',
+      {
+        'orgId': orgId,
+        'siteId': siteId,
+        if (productIds != null && productIds.isNotEmpty) 'productIds': productIds,
+        if (dryRun) 'dryRun': true,
+      },
+      timeout: const Duration(seconds: 120),
+    );
+    return _callableResultData(raw);
+  }
+
+  /// Schreibt Kunden-Kontakte (Typ Kunde) als OktoPOS-Customer in die Kasse
+  /// (M6a). [contactIds] leer/null ⇒ alle aktiven Kunden-Kontakte. Idempotent
+  /// serverseitig (vorhandene Kunden werden übersprungen). Gibt
+  /// `{created, skipped, failed, total, results}` zurück.
+  Future<Map<String, dynamic>> pushOktoposCustomers({
+    required String orgId,
+    required String siteId,
+    List<String>? contactIds,
+    bool dryRun = false,
+  }) async {
+    final raw = await _callCloudFunction(
+      'pushOktoposCustomers',
+      {
+        'orgId': orgId,
+        'siteId': siteId,
+        if (contactIds != null && contactIds.isNotEmpty) 'contactIds': contactIds,
+        if (dryRun) 'dryRun': true,
+      },
+      timeout: const Duration(seconds: 120),
+    );
+    return _callableResultData(raw);
+  }
+
+  /// Holt die Referenz-Tokens (Einheiten + Vertriebskanäle) aus der Kasse, damit
+  /// die Einstellungs-UI gültige Werte anbieten kann. Gibt
+  /// `{units: [...], distributionChannels: [...]}` zurück.
+  Future<Map<String, dynamic>> getOktoposLookups({
+    required String orgId,
+    required String siteId,
+  }) async {
+    final raw = await _callCloudFunction('getOktoposLookups', {
+      'orgId': orgId,
+      'siteId': siteId,
+    });
+    return _callableResultData(raw);
+  }
+
+  /// Normalisiert das Ergebnis von [_callCloudFunction]: der echte Pfad liefert
+  /// ein [HttpsCallableResult] (Nutzdaten unter `.data`), der Test-Invoker gibt
+  /// die Map direkt zurück. Beide Formen auf eine `Map<String, dynamic>` bringen.
+  Map<String, dynamic> _callableResultData(dynamic raw) {
+    final data = raw is HttpsCallableResult ? raw.data : raw;
+    if (data is Map) {
+      return data.map((key, value) => MapEntry(key.toString(), value));
+    }
+    return <String, dynamic>{};
+  }
+
   /// Version des Callable-Payload-Vertrags (no-api-contract-versioning). Der
   /// Server kann über eine Mindestversion ein Force-Update erzwingen, ohne dass
   /// ein Feld-Rename alte Clients still falsch validieren lässt.
@@ -2491,8 +2770,9 @@ class FirestoreService {
 
   Future<dynamic> _callCloudFunction(
     String name,
-    Map<String, dynamic> payload,
-  ) {
+    Map<String, dynamic> payload, {
+    Duration timeout = const Duration(seconds: 30),
+  }) {
     // Jeden Callable-Payload zentral anreichern:
     //  - apiVersion: Vertragsversion (no-api-contract-versioning)
     //  - _request_id: Korrelations-/Trace-ID Client->Server (no-distributed-tracing),
@@ -2511,7 +2791,7 @@ class FirestoreService {
     return _firebaseFunctions
         .httpsCallable(
           name,
-          options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
+          options: HttpsCallableOptions(timeout: timeout),
         )
         .call(enriched);
   }

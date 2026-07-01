@@ -8,6 +8,7 @@ import '../core/ean.dart';
 import '../models/app_user.dart';
 import '../models/order_cart.dart';
 import '../models/product.dart';
+import '../models/product_batch.dart';
 import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
 import '../providers/auth_provider.dart';
@@ -644,6 +645,48 @@ class _ScannerScreenState extends State<ScannerScreen>
   }
 
   // --- Neuanlage / Reaktivierung ------------------------------------------
+
+  /// Erfasst beim Wareneingang ein Mindesthaltbarkeitsdatum (MHD) als Charge
+  /// ([ProductBatch]) mit der aktuell eingestellten Menge. Optional — nur fuer
+  /// Ware mit MHD (Getraenke/Suesswaren) relevant.
+  Future<void> _captureExpiry(Product product) async {
+    if (_booking || product.id == null) return;
+    final today = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime(today.year, today.month, today.day)
+          .add(const Duration(days: 7)),
+      firstDate: DateTime(today.year - 1),
+      lastDate: DateTime(today.year + 5),
+      helpText: 'Mindesthaltbarkeitsdatum (MHD)',
+      locale: const Locale('de', 'DE'),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _booking = true);
+    try {
+      await context.read<InventoryProvider>().saveBatch(
+            ProductBatch(
+              orgId: product.orgId,
+              siteId: product.siteId,
+              productId: product.id!,
+              productName: product.name,
+              expiryDate: ProductBatch.normalizeDay(picked),
+              quantity: _quantity,
+            ),
+          );
+      _flash(true);
+      unawaited(_feedback.success());
+      final d = '${picked.day.toString().padLeft(2, '0')}.'
+          '${picked.month.toString().padLeft(2, '0')}.${picked.year}';
+      _showSnack('MHD erfasst: ${product.name} — haltbar bis $d.');
+    } catch (error) {
+      _flash(false);
+      unawaited(_feedback.failure());
+      _showSnack('Fehler beim Speichern des MHD: $error');
+    } finally {
+      if (mounted) setState(() => _booking = false);
+    }
+  }
 
   Future<void> _createNew(String barcode) async {
     final inventory = context.read<InventoryProvider>();
@@ -1485,13 +1528,24 @@ class _ScannerScreenState extends State<ScannerScreen>
                 ),
               ],
             ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () => showPriceHistorySheet(context, product: product),
-                icon: const Icon(Icons.history),
-                label: const Text('Preisverlauf'),
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton.icon(
+                    onPressed: () =>
+                        showPriceHistorySheet(context, product: product),
+                    icon: const Icon(Icons.history),
+                    label: const Text('Preisverlauf'),
+                  ),
+                ),
+                Expanded(
+                  child: TextButton.icon(
+                    onPressed: _booking ? null : () => _captureExpiry(product),
+                    icon: const Icon(Icons.event_available_outlined),
+                    label: const Text('MHD erfassen'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

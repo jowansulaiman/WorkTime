@@ -124,7 +124,6 @@ class ShellBreadcrumb extends StatelessWidget {
           if (onBack != null) ...[
             IconButton(
               tooltip: 'Zurueck',
-              visualDensity: VisualDensity.compact,
               onPressed: onBack,
               icon: const Icon(Icons.arrow_back_rounded, size: 20),
             ),

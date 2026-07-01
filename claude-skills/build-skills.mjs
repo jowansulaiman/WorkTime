@@ -109,6 +109,12 @@ const SKILLS = [
     einsatz: 'Logging, Crash-Reporting, RUM/Monitoring, Tracing Client→Backend, Analytics, Health-Signale/SLOs.',
   },
   {
+    slug: 'flutter-logging',
+    src: 'claude-skills/entwicklung/20_logging.md',
+    desc: 'Logging-Mechanik der Flutter-App + Cloud Functions: zentrale Logger-Fassade (AppLogger/ErrorReporter) statt verstreuter debugPrint/print, Log-Level & Release-Verhalten (kein print im Release, produktiv warning+), strukturiertes Log-Schema mit Korrelations-/Request-IDs Client→Function, PII-/Secret-Redaction (E-Mail-Maskierung, niemals API-Keys/Tokens/PII/Header/Bodies), Sinks/Transport & externalSink-Adapter, plattformspezifische Ausgabe (Web-Konsole/os_log/Logcat/Desktop, kIsWeb), Performance-Kosten/Compile-Out, Abgrenzung technisches Logging vs. fachliches Audit-Trail (AuditProvider). Serverseitig firebase-functions/logger (strukturierte Cloud-Logs, Severity, niemals Secrets). Einsetzen beim Hinzufügen/Vereinheitlichen von Logs, debugPrint-Migration, Log-Redaction, Request-Korrelation, API-/Cloud-Functions-Logging.',
+    einsatz: 'Logs hinzufügen/vereinheitlichen, debugPrint→AppLogger migrieren, Log-Schema/Redaction, Request-Korrelation Client→Function, Cloud-Functions-/API-Logging.',
+  },
+  {
     slug: 'flutter-cross-platform',
     src: 'claude-skills/entwicklung/15_mobile-entwicklung.md',
     desc: 'Cross-Platform-Entwicklung der Flutter-App aus einer Codebasis (Web/iOS/Android/Desktop): kIsWeb-zuerst & Platform-Detection (dart:io wirft im Web), Platform Channels & natives Interop (Pigeon/FFI), federated Plugins, adaptive UI, Mobile-Spezifika (Push/Permissions/Deep-Links/Lifecycle), Desktop (Fenster/Menüs/Dateizugriff), Web (CanvasKit/PWA/js_interop). Einsetzen bei plattformspezifischem Code, Platform Channels, Web/Desktop-Eigenheiten.',
@@ -137,6 +143,24 @@ const SKILLS = [
     src: 'claude-skills/daten/19_datensynchronisierung.md',
     desc: 'Offline-First-Datensynchronisierung in Flutter: Offline-First-Architektur, fertige Sync-Engines (PowerSync/Firestore), Delta-Sync/Cursor/Tombstones, Outbox-Queue & zuverlässige Übertragung, Konfliktauflösung (LWW/HLC), CRDTs, CAP/PACELC-Trade-offs, Hintergrund-Sync & Konflikt-UX. Einsetzen bei Offline-Sync, Konfliktauflösung, Delta-Abgleich, eventual consistency.',
     einsatz: 'Offline-Sync, Konfliktauflösung (LWW/HLC/CRDT), Delta-Abgleich, Outbox, Hintergrund-Sync, Konflikt-UX.',
+  },
+  {
+    slug: 'flutter-offline-modus',
+    src: 'claude-skills/daten/21_offline-modus.md',
+    desc: 'Offline-Modus einer Flutter-App auf Web/iOS/Android: Scoping (read-only vs. read-write offline, degraded mode, was offline gesperrt wird), Konnektivität erkennen (connectivity_plus + echter Reachability-Check, navigator.onLine, entprelltes Online-Enum im App-State), Plattform-Persistenz-Matrix (Web IndexedDB-Quota/Eviction/Inkognito/Safari-ITP vs. mobile App-Sandbox), Web-Offline (PWA, Service Worker, App-Shell-/Asset-Caching, flutter_service_worker.js, manifest.json, Installierbarkeit), Firestore-/BaaS-Offline-Persistenz plattformgerecht (mobile default vs. Web kIsWeb-Zweig/cacheSettings, vor erstem Read), Offline-Schreiben/Optimistic UI/Pending-Zustand, Hintergrund-/Resume-Sync-Grenzen (workmanager/Doze, iOS BGTaskScheduler, kein Web-Background), Offline-UX (Banner/zuletzt-aktualisiert/Graceful Degradation) und Offline testen. Einsetzen, wenn die App offline nutzbar/installierbar sein soll, bei Offline-Banner/-Indikatoren, Caching, PWA, Offline-Verfügbarkeit pro Plattform.',
+    einsatz: 'App offline nutzbar machen (Web/iOS/Android), Offline-Verfügbarkeit scopen, Konnektivitäts-State, PWA/Service-Worker-Caching, Firestore-Offline-Persistenz, Offline-UX, Offline testen.',
+  },
+  {
+    slug: 'flutter-code-review',
+    src: 'claude-skills/review/22_code-entwicklungs-review.md',
+    desc: "Code- & Entwicklungs-Review der Flutter/WorkTime-App: Diff/Branch/PR prüfen gegen die Definition of Done (flutter analyze + flutter test, Offline-Lauf APP_DISABLE_AUTH), Korrektheit & Bug-Klassen (Null-Safety, await/mounted, _safeNotify, copyWith-clearX, Storage-Modus-Fallback), die Zwei-Serialisierungs-Regel (camelCase toFirestoreMap vs. snake_case toMap, 6 Stellen pro Model-Feld, Callable braucht snake_case), die kritischen Kopplungen (Compliance-Spiegel compliance_service.dart ↔ functions/index.js, Enum .value/fromValue, Provider-Kette, Firestore-Write-Pfade, Functions-Region, Gate-Route/Tab), Provider-/Architektur-Konformität (lazy Cloud-Repo, AuditSink nur auf Erfolgs-Pfad), Sicherheit & Multi-Tenancy (sameOrg ↔ assertSameOrg, Callable=validierter Pfad, Secrets nie im Client, Composite-Index), Test-Konventionen (Fakes statt echtem Firebase, de_DE) und UI-/Konventions-Konformität (Deutsch-only, appColors, Permission-Getter). Einsetzen beim Reviewen von Code, Diffs, Pull-Requests und vor dem Commit.",
+    einsatz: 'Code/Diff/Branch/PR reviewen vor Commit, Korrektheit & Bug-Suche, Kopplungs- & Zwei-Serialisierungs-Check, Compliance-Spiegel, Provider-/Architektur-/Konventions-Konformität, Quality Gates.',
+  },
+  {
+    slug: 'flutter-plan-output-review',
+    src: 'claude-skills/review/23_plan-output-review.md',
+    desc: "Plan- & Output-Review für WorkTime: Plan-Dokumente (versioniert im plan/-Ordner, MEMORY.md-Index) und von Claude erzeugte Outputs/Diffs vor Auslieferung prüfen. Plan-Review: Struktur & Vollständigkeit (Ziel/Scope, Meilensteine mit Status, Datenmodell, Deploy-Schritte, offene Punkte, absolute Daten), Machbarkeit & Architektur-Fit (Provider-Kette, drei Storage-Modi, Zwei-Serialisierung, Compliance-Spiegel, bewusste Grenzen wie öffentliche Web-Routen und Callable-Pfad), Kopplungs- & Risiko-Check (Composite-Index? Rules+Functions synchron? Blaze/Secret?), Scope & Inkrement-Schnitt (kleinster lauffähiger offline-testbarer Schritt, Batch-Limit 50). Output-Review: Korrektheit & Treue zur Anfrage (keine erfundenen Datei-/Symbolnamen, ehrlich berichtete Tests, offengelegte Annahmen), Konventionen (Deutsch, Datei-Links, Memory-/Plan-Ablage), Abnahme/Übergabe (Definition of Done, Restrisiken, nächste Schritte). Einsetzen beim Prüfen/Abnehmen von Plänen und beim Selbst-Review von Outputs vor der Übergabe.",
+    einsatz: 'Plan-Dokumente (plan/) prüfen/abnehmen (Vollständigkeit, Machbarkeit, Kopplungen, Meilenstein-Schnitt) und Outputs/Antworten/Diffs vor Übergabe selbst-reviewen (Korrektheit, Treue zur Anfrage, Konventionen, Definition of Done).',
   },
 ];
 

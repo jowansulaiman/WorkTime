@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
+import '../core/employment_contract_resolver.dart';
 import '../core/lohn_herleitung.dart';
 import '../core/payroll_calculator.dart';
 import '../core/urlaub_calculator.dart';
@@ -11,6 +12,7 @@ import '../core/urlaub_migration.dart';
 import '../models/urlaubsanpassung.dart';
 import '../models/urlaubskonto_jahr.dart';
 import '../core/zeitkonto_calculator.dart';
+import '../core/zeitkonto_snapshot_builder.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
@@ -299,6 +301,32 @@ class PersonalProvider extends ChangeNotifier {
     );
   }
 
+  /// Abgerechnete **Ist-Minuten** (geleistete Zeit + soll-angerechnete bezahlte
+  /// Abwesenheit) für [userId] im Monat [year]/[month] — dieselbe SSoT wie der
+  /// Lohnlauf ([buildZeitkontoSnapshot], M5). [monthEntries] = Zeiteinträge des
+  /// Monats. L2: speist den Brutto-Vorschlag im Lohn-Editor identisch zum
+  /// erzeugten Lohnentwurf (nicht mehr rohe `workedHours`-Summe).
+  int abgerechnetesIstMinutesFor(
+    String userId,
+    int year,
+    int month,
+    List<WorkEntry> monthEntries,
+  ) {
+    final snapshot = buildZeitkontoSnapshot(
+      orgId: '',
+      userId: userId,
+      jahr: year,
+      monat: month,
+      profiles: sollzeitProfilesForUser(userId),
+      entries: monthEntries.where((e) => e.userId == userId).toList(),
+      approvedAbsences: _absences
+          .where((a) =>
+              a.userId == userId && a.status == AbsenceStatus.approved)
+          .toList(),
+    );
+    return snapshot.istMinutes;
+  }
+
   /// Kanonischer Jahresurlaubsanspruch (Basis-Tage) nach Vorrangregel §5.1:
   /// aktives `SollzeitProfile.urlaubstageJahr` → `EmployeeProfile.annualVacationDays`
   /// → `EmploymentContract.vacationDays` → gesetzlicher Mindesturlaub. Liefert
@@ -440,6 +468,57 @@ class PersonalProvider extends ChangeNotifier {
       .where((r) => r.periodYear == year && r.periodMonth == month)
       .toList(growable: false);
 
+  /// **F2**-Brutto-Ableitung (Cent) pro Mitarbeiter — salaryKind-bewusst über
+  /// [LohnHerleitung.grundlohnCents] + F1-Vertrag (Festgehalt vs. Stundenlohn,
+  /// Vertrag → PayrollProfile-Cache). [istMinutes] = abgerechnete Ist-Zeit
+  /// (relevant nur für Stundenlöhner). Einzige Brutto-Ableitungsstelle.
+  int deriveGrossCentsFor(String userId, {required int istMinutes}) {
+    final contract = contractForUser(userId);
+    final profile = profileForUser(userId);
+    final salaryKind = contract?.salaryKind ?? SalaryKind.monthly;
+    final festgehalt =
+        contract?.monthlyGrossCents ?? profile?.monthlyGrossCents;
+    final hourlyRateCents = ((contract?.hourlyRate ?? 0) * 100).round();
+    return LohnHerleitung.grundlohnCents(
+      salaryKind: salaryKind,
+      festgehaltCents: festgehalt,
+      istMinutes: istMinutes,
+      hourlyRateCents: hourlyRateCents,
+    );
+  }
+
+  /// **F2**-Personalkosten-Resolver: einheitliche Brutto-/AG-Kosten pro
+  /// Mitarbeiter/Monat. Bevorzugt einen **freigegebenen** [PayrollRecord]
+  /// (eingefrorener Snapshot inkl. AG-Anteil), sonst eine als solche
+  /// gekennzeichnete Schätzung aus [deriveGrossCentsFor] (Festgehalt vs.
+  /// Stunden×Satz). So rechnen alle Kennzahl-Leser (Personalkosten je MA/
+  /// Standort, MA-Selbstschätzung) mit derselben Quelle und die Festgehalt-Lücke
+  /// (stilles 0 bei `salaryKind==monthly`) ist geschlossen.
+  ({int grossCents, int employerTotalCents, bool isEstimate}) personnelCostFor(
+    String userId,
+    int year,
+    int month, {
+    required int istMinutes,
+  }) {
+    final record = payrollForUserPeriod(userId, year, month);
+    if (record != null &&
+        record.status != PayrollStatus.storniert &&
+        record.grossCents > 0) {
+      // Echte Abrechnung (Entwurf oder freigegeben) ist autoritativer als eine
+      // Stunden×Satz-Schätzung — inkl. korrektem AG-Anteil.
+      return (
+        grossCents: record.grossCents,
+        employerTotalCents: record.employerTotalCents,
+        isEstimate: false,
+      );
+    }
+    return (
+      grossCents: deriveGrossCentsFor(userId, istMinutes: istMinutes),
+      employerTotalCents: 0,
+      isEstimate: true,
+    );
+  }
+
   /// Baut einen **Entwurfs-Lohndatensatz** (Richtwert) für [userId] im Monat
   /// [year]/[month] aus dem abgerechneten Ist [istMinutes] (inkl. bezahlter,
   /// soll-angerechneter Abwesenheit aus dem Stundenkonto). Reuse für den
@@ -461,20 +540,10 @@ class PersonalProvider extends ChangeNotifier {
     required int month,
     required int istMinutes,
   }) {
-    final contract = contractForUser(userId);
     final profile = profileForUser(userId);
     final employee = employeeProfileForUser(userId);
 
-    final salaryKind = contract?.salaryKind ?? SalaryKind.monthly;
-    final festgehalt =
-        contract?.monthlyGrossCents ?? profile?.monthlyGrossCents;
-    final hourlyRateCents = ((contract?.hourlyRate ?? 0) * 100).round();
-    final grossCents = LohnHerleitung.grundlohnCents(
-      salaryKind: salaryKind,
-      festgehaltCents: festgehalt,
-      istMinutes: istMinutes,
-      hourlyRateCents: hourlyRateCents,
-    );
+    final grossCents = deriveGrossCentsFor(userId, istMinutes: istMinutes);
     if (grossCents <= 0) return null;
 
     final taxClass = profile?.taxClass ?? TaxClass.i;
@@ -535,23 +604,11 @@ class PersonalProvider extends ChangeNotifier {
       _absences.where((absence) => absence.userId == userId).toList();
 
   /// Aktiver (oder jüngster) Arbeitsvertrag eines Mitarbeiters.
-  EmploymentContract? contractForUser(String userId) {
-    final now = DateTime.now();
-    EmploymentContract? active;
-    EmploymentContract? latest;
-    for (final contract in _contracts) {
-      if (contract.userId != userId) continue;
-      if (latest == null || contract.validFrom.isAfter(latest.validFrom)) {
-        latest = contract;
-      }
-      if (contract.isActiveOn(now)) {
-        if (active == null || contract.validFrom.isAfter(active.validFrom)) {
-          active = contract;
-        }
-      }
-    }
-    return active ?? latest;
-  }
+  /// Am heutigen Tag gültiger Vertrag des Mitarbeiters; fällt auf den jüngsten
+  /// Vertrag zurück, wenn keiner aktiv ist (zentraler **F1**-Resolver, identisch
+  /// zum Zeit-/Lohn-Modul — keine divergierende Implementierung mehr).
+  EmploymentContract? contractForUser(String userId) =>
+      EmploymentContractResolver.activeOn(_contracts, userId, DateTime.now());
 
   AppUserProfile? memberById(String userId) {
     for (final member in _members) {

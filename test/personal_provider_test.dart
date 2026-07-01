@@ -1502,4 +1502,80 @@ void main() {
       expect(draft, isNull);
     });
   });
+
+  group('PersonalProvider personnelCostFor (F2/L1)', () {
+    test('Festgehalt: Brutto aus monthlyGrossCents statt still 0 (Lücke zu)',
+        () async {
+      final provider = PersonalProvider(
+          firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      provider.updateReferenceData(
+        members: const [_employee],
+        contracts: [
+          EmploymentContract(
+            orgId: 'org-1',
+            userId: 'emp-1',
+            validFrom: DateTime(2020, 1, 1),
+            monthlyGrossCents: 280000,
+          ),
+        ],
+      );
+
+      // istMinutes 0 (Monatslöhner) → früher 0 €, jetzt das Festgehalt.
+      final cost =
+          provider.personnelCostFor('emp-1', 2026, 6, istMinutes: 0);
+      expect(cost.grossCents, 280000);
+      expect(cost.isEstimate, isTrue);
+      expect(cost.employerTotalCents, 0);
+    });
+
+    test('Stundenlöhner: Brutto = istMinutes × Satz', () async {
+      final provider = PersonalProvider(
+          firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      provider.updateReferenceData(
+        members: const [_employee],
+        contracts: [
+          EmploymentContract(
+            orgId: 'org-1',
+            userId: 'emp-1',
+            validFrom: DateTime(2020, 1, 1),
+            salaryKind: SalaryKind.hourly,
+            hourlyRate: 20,
+          ),
+        ],
+      );
+
+      // 600 min = 10 h × 20 € = 200 € = 20000 Cent.
+      final cost =
+          provider.personnelCostFor('emp-1', 2026, 6, istMinutes: 600);
+      expect(cost.grossCents, 20000);
+      expect(cost.isEstimate, isTrue);
+    });
+
+    test('bevorzugt eine vorhandene Abrechnung (kein Estimate)', () async {
+      final provider = PersonalProvider(
+          firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      await provider.savePayrollRecord(
+        const PayrollRecord(
+          orgId: 'org-1',
+          userId: 'emp-1',
+          periodYear: 2026,
+          periodMonth: 6,
+          grossCents: 310000,
+          employerTotalCents: 62000,
+        ),
+      );
+
+      final cost =
+          provider.personnelCostFor('emp-1', 2026, 6, istMinutes: 0);
+      expect(cost.grossCents, 310000);
+      expect(cost.employerTotalCents, 62000);
+      expect(cost.isEstimate, isFalse);
+    });
+  });
 }

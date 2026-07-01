@@ -108,16 +108,17 @@ Future<AppHarness> pumpApp(
         .doc(profile.uid)
         .set(profile.toFirestoreMap());
   }
-  if (flagOn) {
-    await firestore
-        .collection('organizations')
-        .doc('org-1')
-        .collection('config')
-        .doc('appFlags')
-        .set({
-      'featureFlags': {'redesign_v2': true},
-    });
-  }
+  // Flag IMMER explizit setzen (nicht nur bei flagOn), damit die Tests
+  // unabhängig vom produktiven Default (RedesignFlags.defaultEnabled = true)
+  // deterministisch bleiben: flagOn=false ⇒ explizit V1.
+  await firestore
+      .collection('organizations')
+      .doc('org-1')
+      .collection('config')
+      .doc('appFlags')
+      .set({
+    'featureFlags': {'redesign_v2': flagOn},
+  });
 
   final auth = FakeAuthProvider(
     firestoreService: firestoreService,

@@ -229,6 +229,51 @@ void main() {
     });
   });
 
+  group('AuthScreenV2 — Mobile-Modernisierung', () {
+    testWidgets('Passwort ist verborgen; Toggle schaltet Sichtbarkeit um',
+        (tester) async {
+      final auth = _FakeAuthProvider();
+      await _pump(tester, auth, const AuthScreenV2());
+
+      // Feld 1 (EditableText) = Passwort, initial verborgen.
+      EditableText passwordField() =>
+          tester.widget<EditableText>(find.byType(EditableText).at(1));
+      expect(passwordField().obscureText, isTrue);
+      expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.visibility_outlined));
+      await tester.pump();
+
+      expect(passwordField().obscureText, isFalse);
+      expect(find.byIcon(Icons.visibility_off_outlined), findsOneWidget);
+    });
+
+    testWidgets('Enter im Passwortfeld loest den Login aus', (tester) async {
+      final auth = _FakeAuthProvider();
+      await _pump(tester, auth, const AuthScreenV2());
+
+      await tester.enterText(
+          find.byType(TextFormField).at(0), 'chef@laden.test');
+      await tester.enterText(find.byType(TextFormField).at(1), 'geheim123');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      expect(auth.calls, contains('emailLogin'));
+      expect(auth.lastLoginEmail, 'chef@laden.test');
+    });
+
+    testWidgets('Google-Button nur im Login-Tab, nicht bei Einladung',
+        (tester) async {
+      final auth = _FakeAuthProvider();
+      await _pump(tester, auth, const AuthScreenV2());
+      expect(find.text('Mit Google anmelden'), findsOneWidget);
+
+      await tester.tap(find.text('Einladung'));
+      await tester.pumpAndSettle();
+      expect(find.text('Mit Google anmelden'), findsNothing);
+    });
+  });
+
   group('AccessBlockedScreenV2 + FirebaseSetupScreenV2', () {
     testWidgets('AccessBlocked: Abmelden ruft signOut', (tester) async {
       final auth = _FakeAuthProvider();

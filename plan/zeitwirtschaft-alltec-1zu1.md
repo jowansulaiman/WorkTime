@@ -342,6 +342,28 @@
     = copy-to-auto-id + delete), keine lokale Functions-Test-Infra, geringer Wert für 2-Läden-Setting. **App-Check
     bleibt bewusst AUS** (kein Callable `enforceAppCheck` — Aktivierung ohne konfigurierten App-Check-Provider
     bräche alle Callables in Dev/Demo; Go-Live-Härtung). Eigener vorsichtiger Schritt nach Nutzer-Entscheid.
+- ✅ **M8 — Abwesenheiten + Abwesenheitskalender (erledigt 2026-07-01).** Die letzten zwei
+  `ZeitSectionPlaceholder`-Kacheln des Hubs sind jetzt echte Screens (§5):
+  - **`AbwesenheitenScreen`** (`lib/screens/zeitwirtschaft/abwesenheiten_screen.dart`,
+    `/zeit/abwesenheiten`): rollen-adaptive Liste über `ScheduleProvider.allAbsenceRequests` (org-weit
+    für Manager, self-gescoped für Mitarbeiter). Antrags-Buttons (Urlaub/Krank/Zeitausgleich) →
+    `showAbsenceRequestSheet`; Status-Filter-Chips (Alle/Offen/Genehmigt/Abgelehnt, offene zuerst);
+    **AU-Nachweis-Schild** (Krank ≥ 3 Kalendertage: rot „fehlt"/grün „vorhanden" via `eauAttached`);
+    Manager **Genehmigen/Ablehnen** (`reviewAbsenceRequest`), eigener offener Antrag
+    **Bearbeiten/Löschen** (`showAbsenceRequestSheet`/`deleteAbsenceRequest`). Manager-Sprung in den Kalender.
+  - **`AbwesenheitskalenderScreen`** (`.../abwesenheitskalender_screen.dart`,
+    `/zeit/abwesenheiten/kalender`): Monatsraster **Mitarbeiter × Tage** mit eingefrorener Namensspalte +
+    horizontal scrollbarem Tagesraster; farbcodiert je Art **ausschließlich über Theme-Rollen**
+    (`appColors`/`colorScheme`, keine hartkodierten Farben) + Legende; **Laden-Filter** (Manager,
+    `team.siteAssignments`) bei > 1 Laden; rollen-adaptiv (Manager: alle aktiven Mitglieder; Mitarbeiter:
+    eigene Zeile). Liest `allAbsenceRequests`, filtert per `AbsenceRequest.overlaps` auf den Monat
+    (rejected ausgeblendet).
+  - **Reine Reuse-Screens** (kein neues Modell/Provider/Collection/Rules/Index). `route_permissions`
+    hatte beide Routen schon als `canViewTimeTracking`; der Kalender ist **rollen-adaptiv statt admin-only**
+    (vermeidet Redirect-on-Tap, da die Hub-Kachel allen sichtbar ist). Hub-Doc „folgen in M4" korrigiert.
+    `ZeitSectionPlaceholder` bleibt als wiederverwendbares Gerüst (nur noch in `router_test`
+    als Negativ-Assert referenziert). **analyze sauber (0 Fehler), 1218 Tests grün** (+3 Router-Deep-Link-
+    Tests: Abwesenheiten-Liste, Kalender als Admin, Kalender als Mitarbeiter-Eigenzeile).
 
 ## 10. „Wenn du X änderst" — neue Kopplungen dieses Plans
 
@@ -376,12 +398,14 @@ WorkTime-Ist) und 4 Nutzer-Leitentscheidungen (L1–L4). Verhältnis zum IDA-Pla
 nicht ersetzt; offene IDA-Reste (Monatsabschluss, Stempeln, Stundenkonto-Persistenz) werden hier
 **AllTec-konform** umgesetzt.
 
-**Stand 2026-06-28: M1–M6 + M7a fertig** (1042 Tests grün, analyze sauber, nichts committet). Damit sind
-**alle 8 AllTec-Screens + Status-Workflow + Monatsabschluss + Lohnlauf gebaut**, und reguläre Mitarbeiter sehen
+**Stand 2026-07-01: M1–M6 + M7a + M8 fertig** (1218 Tests grün, analyze sauber, nichts committet). Damit sind
+**alle 8 AllTec-Screens echt** (die letzten beiden Platzhalter — Abwesenheiten + Abwesenheitskalender — sind als
+Reuse-Screens gebaut, M8) **+ Status-Workflow + Monatsabschluss + Lohnlauf**, und reguläre Mitarbeiter sehen
 ihr eigenes Soll/Saldo (Self-Read). Offen: **M7b** (Callable-Härtung Stempeln + `{userId}-open` + App-Check —
 bewusst separat, s.o.). **Deploy ausstehend vor Cloud-Nutzung** (gebündelt): `firebase deploy --only
 firestore:rules,firestore:indexes` — Blöcke `clockEntries`/`zeitkontoSnapshots` (M3/M4) **+ neu M7a Self-Read auf
-`sollzeitProfiles`/`payrollRecords`**, Index `clockEntries(userId,kommen)` (M3).
+`sollzeitProfiles`/`payrollRecords`**, Index `clockEntries(userId,kommen)` (M3). M8 braucht **keinen** Deploy
+(kein neues Modell/Rules/Index).
 
 **Offene-Punkte-Abbau (2026-06-28):** ✅ **EFZG-42-Tage-Cap** (`anrechenbareAbwesenheitsMinutes`: `sickness` nur 42
 Kalendertage ab Antragsbeginn, §3 EFZG; +3 Tests, lohnrechtlich reviewt). ✅ **Januar-Übertrag** (cross-year

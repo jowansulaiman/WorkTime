@@ -1,6 +1,7 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -28,6 +29,7 @@ import '../models/work_entry.dart';
 import '../models/work_task.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/personal_provider.dart';
+import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 import 'abwesenheit_screen.dart';
@@ -91,6 +93,14 @@ class _PersonalScreenState extends State<PersonalScreen> {
               onTap: () => Navigator.of(context).maybePop(),
             ),
             const BreadcrumbItem(label: 'Personal'),
+          ],
+          actions: [
+            if (isAdmin)
+              IconButton(
+                tooltip: 'Kassierer-Prüfung (Verdachtshinweis)',
+                icon: const Icon(Icons.fact_check_outlined),
+                onPressed: () => context.push(AppRoutes.cashierAnomaly),
+              ),
           ],
         ),
         body: !isAdmin
@@ -207,14 +217,16 @@ List<PersonnelCostRow> _costByEmployee(
   final rows = <PersonnelCostRow>[];
   for (final member in members) {
     final hours = _hoursForUser(entries, member.uid);
-    final rate = provider.contractForUser(member.uid)?.hourlyRate ?? 0;
-    final payroll = provider.payrollForUserPeriod(member.uid, year, month);
-    if (hours <= 0 && payroll == null) continue;
+    // L1/F2: Brutto + AG-Kosten einheitlich über den Resolver — schließt die
+    // Festgehalt-Lücke (Monatslöhner erschienen vorher mit 0 €).
+    final cost = provider.personnelCostFor(member.uid, year, month,
+        istMinutes: (hours * 60).round());
+    if (hours <= 0 && cost.grossCents <= 0) continue;
     rows.add(PersonnelCostRow(
       label: member.displayName,
       workedHours: hours,
-      laborCostCents: (hours * rate * 100).round(),
-      employerTotalCents: payroll?.employerTotalCents ?? 0,
+      laborCostCents: cost.grossCents,
+      employerTotalCents: cost.employerTotalCents,
     ));
   }
   rows.sort((a, b) => b.laborCostCents.compareTo(a.laborCostCents));
@@ -222,17 +234,37 @@ List<PersonnelCostRow> _costByEmployee(
 }
 
 /// Personalkosten je Standort (aus den Zeiteinträgen, Lohn des jeweiligen MA).
+///
+/// L1/F2: Der effektive Stundensatz je MA wird aus dem **F2-Brutto** /
+/// geleisteten Stunden gebildet. So wird auch ein **Festgehalt** anteilig über
+/// die Standorte verteilt (vorher fiel es als 0 € durch, weil Monatslöhner
+/// `hourlyRate==0` haben).
 List<PersonnelCostRow> _costBySite(
   List<WorkEntry> entries,
   PersonalProvider provider,
+  int year,
+  int month,
 ) {
+  final hoursByUser = <String, double>{};
+  for (final entry in entries) {
+    hoursByUser.update(entry.userId, (v) => v + entry.workedHours,
+        ifAbsent: () => entry.workedHours);
+  }
+  final rateByUser = <String, double>{};
+  hoursByUser.forEach((uid, hours) {
+    final grossCents = provider
+        .personnelCostFor(uid, year, month, istMinutes: (hours * 60).round())
+        .grossCents;
+    rateByUser[uid] = hours > 0 ? (grossCents / 100.0) / hours : 0;
+  });
+
   final hoursBySite = <String, double>{};
   final costBySite = <String, double>{};
   for (final entry in entries) {
     final site = (entry.siteName == null || entry.siteName!.trim().isEmpty)
         ? 'Ohne Standort'
         : entry.siteName!.trim();
-    final rate = provider.contractForUser(entry.userId)?.hourlyRate ?? 0;
+    final rate = rateByUser[entry.userId] ?? 0;
     hoursBySite.update(site, (v) => v + entry.workedHours,
         ifAbsent: () => entry.workedHours);
     costBySite.update(site, (v) => v + entry.workedHours * rate,
@@ -1323,8 +1355,11 @@ class _ZeitkontoCard extends StatelessWidget {
               children: [
                 Expanded(
                     child: _AmountColumn(label: 'Soll', value: _h(result.sollHours))),
+                // Z5: explizit „gearbeitet" — der Brutto-Vorschlag rechnet mit dem
+                // abgerechneten Ist inkl. bezahlter Abwesenheit (kann abweichen).
                 Expanded(
-                    child: _AmountColumn(label: 'Ist', value: _h(result.istHours))),
+                    child: _AmountColumn(
+                        label: 'Ist (gearb.)', value: _h(result.istHours))),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1375,7 +1410,7 @@ class _FinanceTab extends StatelessWidget {
       month.year,
       month.month,
     );
-    final bySite = _costBySite(monthEntries, personal);
+    final bySite = _costBySite(monthEntries, personal, month.year, month.month);
     final totalCost = byEmployee.fold<int>(0, (s, r) => s + r.laborCostCents);
     final totalHours = byEmployee.fold<double>(0, (s, r) => s + r.workedHours);
     final totalEmployer =
@@ -2250,7 +2285,9 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
         return;
       }
     }
-    final gross = profile.monthlyGrossCents;
+    // L3: Festgehalt-Vertrag ist SSoT → Vertrag zuerst; `PayrollProfile.
+    // monthlyGrossCents` ist nur UI-Prefill-Fallback (kein zweiter Pflege-Ort).
+    final gross = contract?.monthlyGrossCents ?? profile.monthlyGrossCents;
     if (gross != null && gross > 0) {
       _gross.text = _centsToInput(gross);
     }
@@ -2575,16 +2612,23 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     setState(() => _gross.text = _eurosToInput(gross));
   }
 
-  /// Brutto-Vorschlag (Euro) aus `Stunden × Stundenlohn` des aktiven Vertrags;
-  /// ohne erfasste Stunden Fallback auf `Stundenlohn × Wochenstunden × 4,33`.
-  /// `null`, wenn kein Stundensatz hinterlegt ist (H-B3-Baustein).
+  /// Brutto-Vorschlag (Euro) — **L2/F2**: identisch zum erzeugten Lohnentwurf
+  /// (Lohnlauf-SSoT). Festgehalt → Monatsbrutto; Stundenlohn → abgerechnetes
+  /// **Ist** des Editor-Monats (geleistet **inkl. soll-angerechneter bezahlter
+  /// Abwesenheit**, [PersonalProvider.abgerechnetesIstMinutesFor]) × Satz. Fällt
+  /// für Stundenlöhner ohne erfasste Stunden auf `Satz × Wochenstunden × 4,33`
+  /// zurück. `null`, wenn nichts ermittelbar ist (H-B3-Baustein).
   double? _grossFromHours(String userId) {
-    final contract = context.read<PersonalProvider>().contractForUser(userId);
+    final personal = context.read<PersonalProvider>();
+    final istMinutes = personal.abgerechnetesIstMinutesFor(
+        userId, widget.month.year, widget.month.month, widget.monthEntries);
+    final grossCents = personal.deriveGrossCentsFor(userId, istMinutes: istMinutes);
+    if (grossCents > 0) return grossCents / 100.0;
+    final contract = personal.contractForUser(userId);
     final rate = contract?.hourlyRate ?? 0;
-    if (rate <= 0) return null;
-    final hours = _hoursForUser(widget.monthEntries, userId);
-    if (hours > 0) return hours * rate;
-    if (contract != null) return rate * contract.weeklyHours * 4.33;
+    if (contract != null && rate > 0) {
+      return rate * contract.weeklyHours * 4.33;
+    }
     return null;
   }
 

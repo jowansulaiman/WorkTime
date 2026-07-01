@@ -289,6 +289,11 @@ class PayrollCalculator {
   }
 
   /// Reduzierte beitragspflichtige Einnahme im Midijob-Übergangsbereich.
+  ///
+  /// Hinweis (probleme core-lohn): Liegt das Brutto **unterhalb** der unteren
+  /// Grenze (`gross <= g`), greift hier bewusst **keine** Übergangsbereich-
+  /// Minderung — der Datensatz wäre dann eigentlich kein Midijob. Die volle
+  /// Bemessung ist der konservative Pfad (keine ungerechtfertigte Minderung).
   static int _midijobBase(int gross, PayrollSettings settings) {
     final g = settings.minijobCeilingCents.toDouble(); // untere Grenze
     final o = settings.midijobUpperCents.toDouble(); // obere Grenze

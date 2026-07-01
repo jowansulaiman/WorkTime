@@ -107,6 +107,74 @@ void main() {
       expect(restored.reorderQuantity, 50);
     });
 
+    test('Kühlschrank-Felder round-trippen durch beide Serialisierungen', () {
+      const product = Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Cola 0,5l',
+        currentStock: 30,
+        inFridge: true,
+        fridgeTargetStock: 24,
+        fridgeStock: 8,
+      );
+
+      final local = Product.fromMap(product.toMap());
+      expect(local.inFridge, isTrue);
+      expect(local.fridgeTargetStock, 24);
+      expect(local.fridgeStock, 8);
+
+      final cloud = Product.fromFirestore('prod-1', product.toFirestoreMap());
+      expect(cloud.inFridge, isTrue);
+      expect(cloud.fridgeTargetStock, 24);
+      expect(cloud.fridgeStock, 8);
+
+      // Defaults, wenn die Felder fehlen (Vorwärts-Migration alter Dokumente).
+      final legacy = Product.fromMap(const {
+        'org_id': 'o',
+        'site_id': 's',
+        'name': 'Alt',
+      });
+      expect(legacy.inFridge, isFalse);
+      expect(legacy.fridgeTargetStock, 0);
+      expect(legacy.fridgeStock, 0);
+    });
+
+    test('Kühlschrank-Getter: Lager abgeleitet, Defizit, Nachfüllbedarf', () {
+      const p = Product(
+        orgId: 'o',
+        siteId: 's',
+        name: 'Cola',
+        currentStock: 30,
+        inFridge: true,
+        fridgeTargetStock: 24,
+        fridgeStock: 8,
+      );
+      expect(p.fridgeStockClamped, 8);
+      expect(p.warehouseStock, 22); // 30 - 8
+      expect(p.fridgeDeficit, 16); // 24 - 8
+      expect(p.fridgeNeedsRefill, isTrue);
+
+      // Roh-negativer fridgeStock (POS-Drift) wird leseseitig auf 0 geklemmt.
+      const drift = Product(
+        orgId: 'o',
+        siteId: 's',
+        name: 'Cola',
+        currentStock: 5,
+        inFridge: true,
+        fridgeTargetStock: 24,
+        fridgeStock: -3,
+      );
+      expect(drift.fridgeStockClamped, 0);
+      expect(drift.warehouseStock, 5); // 5 - 0
+      expect(drift.fridgeDeficit, 24);
+      expect(drift.fridgeNeedsRefill, isTrue);
+
+      // Kein Bedarf: nicht im Kühlschrank gefuehrt / Soll erreicht / nichts im Lager.
+      expect(p.copyWith(inFridge: false).fridgeNeedsRefill, isFalse);
+      expect(p.copyWith(fridgeStock: 24).fridgeNeedsRefill, isFalse);
+      expect(p.copyWith(currentStock: 8).fridgeNeedsRefill, isFalse);
+    });
+
     test('needsReorder triggers at or below the minimum stock', () {
       const above =
           Product(orgId: 'o', siteId: 's', name: 'x', currentStock: 11, minStock: 10);
@@ -317,6 +385,15 @@ void main() {
         StockMovementTypeX.fromValue('nonsense'),
         StockMovementType.adjustment,
       );
+    });
+
+    test('fridgeRefill round-trips über value/fromValue', () {
+      expect(StockMovementType.fridgeRefill.value, 'fridge_refill');
+      expect(
+        StockMovementTypeX.fromValue('fridge_refill'),
+        StockMovementType.fridgeRefill,
+      );
+      expect(StockMovementType.fridgeRefill.label, 'Kühlschrank nachgefüllt');
     });
   });
 }

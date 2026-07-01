@@ -40,6 +40,9 @@ class AuditProvider extends ChangeNotifier {
   String? _lastSessionKey;
   int _limit = pageSize;
   bool _hasMore = false;
+  // Ob der Firestore-Stream die Anzeige speist (Admin + Cloud/Hybrid) — steuert,
+  // ob `log()` zusätzlich lokal spiegelt (#43).
+  bool _streamActive = false;
 
   List<AuditLogEntry> get entries => _entries;
 
@@ -96,9 +99,16 @@ class AuditProvider extends ChangeNotifier {
     }
     // Protokoll nur für Admins streamen (Rules erlauben Lesen nur Admins).
     if (_usesFirestore && user.isAdmin) {
+      _streamActive = true;
       _subscribeFirestore(user.orgId);
     } else {
-      _entries = await DatabaseService.loadLocalAuditLog(scope: _localScope);
+      _streamActive = false;
+      // #42: Lese- und Schreibpfad konsistent halten — nur wenn lokal gespiegelt
+      // wird (local/hybrid) das lokale Log laden; im reinen cloud-only-Modus für
+      // Nicht-Admins gibt es keinen lokalen Mirror → leer statt veraltet.
+      _entries = _mirrorsLocally
+          ? await DatabaseService.loadLocalAuditLog(scope: _localScope)
+          : <AuditLogEntry>[];
       _safeNotify();
     }
   }
@@ -155,7 +165,11 @@ class AuditProvider extends ChangeNotifier {
         if (!usesHybridStorage) return;
       }
     }
-    if (_mirrorsLocally) {
+    // #43: Wenn der Firestore-Stream aktiv ist (Admin), liefert er den neuen
+    // Eintrag ohnehin — kein lokaler Prepend (sonst transienter Doppel-Eintrag
+    // bis zum nächsten Snapshot). Lokal gespiegelt wird nur, wenn kein Stream
+    // die Anzeige speist (local/hybrid-Nicht-Admin).
+    if (_mirrorsLocally && !_streamActive) {
       _localSeq += 1;
       final stored = entry.copyWith(
         id: 'local-audit-${DateTime.now().microsecondsSinceEpoch}-$_localSeq',

@@ -5,8 +5,10 @@ import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/customer_order.dart';
 import 'package:worktime_app/models/fridge_refill.dart';
 import 'package:worktime_app/models/order_cart.dart';
+import 'package:worktime_app/models/pos_receipt.dart';
 import 'package:worktime_app/models/price_history_entry.dart';
 import 'package:worktime_app/models/product.dart';
+import 'package:worktime_app/models/product_batch.dart';
 import 'package:worktime_app/models/purchase_order.dart';
 import 'package:worktime_app/models/stock_movement.dart';
 import 'package:worktime_app/models/supplier.dart';
@@ -59,6 +61,24 @@ class _OfflineInventoryRepository implements InventoryRepository {
       );
 
   @override
+  Future<List<StockMovement>> getStockMovementsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) =>
+      _delegate.getStockMovementsInRange(orgId, from, to, siteId: siteId);
+
+  @override
+  Future<List<PosReceipt>> getPosReceiptsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) =>
+      _delegate.getPosReceiptsInRange(orgId, from, to, siteId: siteId);
+
+  @override
   Future<void> deleteSupplier({
     required String orgId,
     required String supplierId,
@@ -75,6 +95,22 @@ class _OfflineInventoryRepository implements InventoryRepository {
     required String productId,
   }) =>
       _delegate.deleteProduct(orgId: orgId, productId: productId);
+
+  @override
+  Stream<List<ProductBatch>> watchProductBatches(String orgId) =>
+      _delegate.watchProductBatches(orgId);
+
+  @override
+  Future<void> saveProductBatch(ProductBatch batch) async {
+    throw Exception('offline');
+  }
+
+  @override
+  Future<void> deleteProductBatch({
+    required String orgId,
+    required String batchId,
+  }) =>
+      _delegate.deleteProductBatch(orgId: orgId, batchId: batchId);
 
   @override
   Future<int> adjustProductStock({
@@ -94,6 +130,24 @@ class _OfflineInventoryRepository implements InventoryRepository {
         type: type,
         reason: reason,
         relatedOrderId: relatedOrderId,
+        createdByUid: createdByUid,
+        clientMutationId: clientMutationId,
+      );
+
+  @override
+  Future<void> setFridgeStock({
+    required String orgId,
+    required String productId,
+    required int fridgeStock,
+    required int refilledQty,
+    String? createdByUid,
+    String? clientMutationId,
+  }) =>
+      _delegate.setFridgeStock(
+        orgId: orgId,
+        productId: productId,
+        fridgeStock: fridgeStock,
+        refilledQty: refilledQty,
         createdByUid: createdByUid,
         clientMutationId: clientMutationId,
       );
@@ -268,6 +322,54 @@ void main() {
       expect(restored.products.single.currentStock, 5);
     });
 
+    test('saveBatch/resolveBatch: MHD-Charge, Warnung, Erledigen, Persistenz',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final now = DateTime(2026, 7, 1, 9);
+      await provider.saveBatch(
+        ProductBatch(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          productId: 'p-1',
+          productName: 'Cola 0,33l',
+          expiryDate: DateTime(2026, 7, 2), // morgen → Warnung
+        ),
+      );
+      await provider.saveBatch(
+        ProductBatch(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          productId: 'p-2',
+          productName: 'Snack',
+          expiryDate: DateTime(2026, 8, 1), // weit weg → keine Warnung
+        ),
+      );
+
+      expect(provider.productBatches, hasLength(2));
+      expect(provider.productBatches.every((b) => b.id != null), isTrue);
+
+      final warnings = provider.expiryWarnings(now: now, leadDays: 3);
+      expect(warnings.map((w) => w.batch.productName).toList(), ['Cola 0,33l']);
+      expect(provider.expiryWarningCount(now: now), 1);
+
+      // Als abverkauft markieren → verschwindet aus der Warnung, bleibt in der
+      // Historie.
+      final colaId = warnings.single.batch.id!;
+      await provider.resolveBatch(colaId, status: BatchStatus.soldOut);
+      expect(provider.expiryWarnings(now: now), isEmpty);
+      expect(
+        provider.productBatches.firstWhere((b) => b.id == colaId).status,
+        BatchStatus.soldOut,
+      );
+
+      // App-Neustart: Chargen bleiben lokal persistiert.
+      final restored = newLocalProvider();
+      await restored.updateSession(user);
+      expect(restored.productBatches, hasLength(2));
+      expect(restored.expiryWarnings(now: now), isEmpty);
+    });
+
     test('adjustStock bucht eine Bewegung mit korrektem balanceAfter', () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);
@@ -294,6 +396,72 @@ void main() {
       expect(restored.products.single.currentStock, 7);
       expect(restored.recentMovements, hasLength(1));
     });
+
+    test(
+      'refillFridge fuellt auf Soll, bucht fridgeRefill-Bewegung, laesst currentStock',
+      () async {
+        final provider = newLocalProvider();
+        await provider.updateSession(user);
+        await provider.saveProduct(
+          const Product(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Cola',
+            currentStock: 30,
+            inFridge: true,
+            fridgeTargetStock: 24,
+          ),
+        );
+        final product = provider.products.single;
+        expect(product.fridgeStock, 0); // neue Artikel starten leer
+
+        await provider.refillFridge(product);
+
+        final refilled = provider.products.single;
+        expect(refilled.fridgeStock, 24); // auf Soll gesetzt
+        expect(refilled.currentStock, 30); // Gesamtbestand UNVERAENDERT
+        expect(refilled.warehouseStock, 6); // 30 - 24
+        expect(refilled.fridgeNeedsRefill, isFalse);
+
+        final move = provider.recentMovements.single;
+        expect(move.type, StockMovementType.fridgeRefill);
+        expect(move.quantityDelta, 24);
+        expect(move.balanceAfter, 24);
+
+        // Ueberlebt den Neustart.
+        final reloaded = newLocalProvider();
+        await reloaded.updateSession(user);
+        expect(reloaded.products.single.fridgeStock, 24);
+      },
+    );
+
+    test(
+      'saveProduct laesst fridgeStock nach dem Nachfuellen unangetastet (Clobber)',
+      () async {
+        final provider = newLocalProvider();
+        await provider.updateSession(user);
+        await provider.saveProduct(
+          const Product(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Cola',
+            currentStock: 30,
+            inFridge: true,
+            fridgeTargetStock: 24,
+          ),
+        );
+        await provider.refillFridge(provider.products.single);
+        expect(provider.products.single.fridgeStock, 24);
+
+        // Manager editiert den Artikel mit einem STALE Objekt (fridgeStock 0).
+        final stale = provider.products.single
+            .copyWith(fridgeStock: 0, name: 'Cola 0,5l');
+        await provider.saveProduct(stale);
+
+        expect(provider.products.single.name, 'Cola 0,5l');
+        expect(provider.products.single.fridgeStock, 24); // erhalten
+      },
+    );
 
     test('issueStock blockt Bestandsueberzug und bucht sonst einen Abgang',
         () async {

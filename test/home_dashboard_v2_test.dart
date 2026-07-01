@@ -48,11 +48,11 @@ void main() {
     await h.cleanup();
   });
 
-  testWidgets('Admin + Flag an -> V2-Dashboard (AppHeroCard + Plan oeffnen)',
+  testWidgets('Admin + Flag an -> V2-Dashboard (AppHeroCard + Plan öffnen)',
       (tester) async {
     final h = await pumpApp(tester, profile: _admin, flagOn: true);
     expect(find.byType(AppHeroCard), findsOneWidget);
-    expect(find.text('Plan oeffnen'), findsOneWidget);
+    expect(find.text('Plan öffnen'), findsOneWidget);
     await h.cleanup();
   });
 

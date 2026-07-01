@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/fridge_refill_shortfall.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
+import '../providers/team_provider.dart';
 import '../routing/shell_tab.dart';
 import '../ui/ui.dart';
 
@@ -28,13 +30,37 @@ class DashboardActionItemsCard extends StatelessWidget {
       return const SizedBox.shrink();
     }
     final inventory = context.watch<InventoryProvider>();
+    final team = context.watch<TeamProvider>();
     final dueOrders = inventory.ordersDueSoonNotPrepared();
     final lowStock = inventory.lowStockProducts();
-    if (dueOrders.isEmpty && lowStock.isEmpty) {
+
+    // §12.7: Kühlschrank-Warnung nur für die Läden des Mitarbeiters (aus den
+    // Standort-Zuordnungen). Ohne Zuordnung (z.B. Admin/Mehr-Laden-Überblick)
+    // org-weit als Fallback.
+    final mySiteIds = team.siteAssignments
+        .where((a) => a.userId == profile.uid && a.siteId.isNotEmpty)
+        .map((a) => a.siteId)
+        .toSet();
+    final fridgeShortfalls = mySiteIds.isEmpty
+        ? inventory.fridgeShortfallCount()
+        : mySiteIds.fold<int>(
+            0, (sum, siteId) => sum + inventory.fridgeShortfallCount(siteId));
+
+    if (dueOrders.isEmpty && lowStock.isEmpty && fridgeShortfalls == 0) {
       return const SizedBox.shrink();
     }
 
     final now = DateTime.now();
+    // „Tagesende vor Ladenschluss": stärker hervorheben, wenn ein relevanter
+    // Laden bald schließt (aus den Öffnungszeiten). Ohne hinterlegte Zeiten kein
+    // Boost.
+    final relevantSites = mySiteIds.isEmpty
+        ? team.sites
+        : team.sites
+            .where((s) => s.id != null && mySiteIds.contains(s.id))
+            .toList();
+    final fridgeNearClosing = fridgeShortfalls > 0 &&
+        relevantSites.any((site) => isNearClosing(site, now));
     final today = DateTime(now.year, now.month, now.day);
     final overdue = dueOrders
         .where((o) => o.pickupDate != null && o.pickupDate!.isBefore(today))
@@ -47,6 +73,7 @@ class DashboardActionItemsCard extends StatelessWidget {
 
     void openOrders() => context.push(AppRoutes.customerOrders);
     void openInventory() => context.push(AppRoutes.inventory);
+    void openFridge() => context.push('${AppRoutes.inventory}?tab=kuehl');
 
     final items = <_ActionItem>[
       if (overdue > 0)
@@ -76,6 +103,16 @@ class DashboardActionItemsCard extends StatelessWidget {
               '${lowStock.length == 1 ? 'Artikel sollte' : 'Artikel sollten'} '
               'nachbestellt werden',
           onTap: openInventory,
+        ),
+      if (fridgeShortfalls > 0)
+        _ActionItem(
+          severity: fridgeNearClosing ? 2 : 1,
+          icon: Icons.kitchen_outlined,
+          color: appColors.warning,
+          label: '${fridgeNearClosing ? 'Vor Ladenschluss: ' : ''}'
+              '$fridgeShortfalls ${fridgeShortfalls == 1 ? 'Getränk fehlt' : 'Getränke fehlen'} '
+              'im Kühlschrank — aus dem Lager nachfüllen',
+          onTap: openFridge,
         ),
     ]..sort((a, b) => b.severity.compareTo(a.severity));
 
@@ -140,7 +177,10 @@ class _ActionItemRow extends StatelessWidget {
     return InkWell(
       onTap: item.onTap,
       borderRadius: BorderRadius.circular(context.radii.sm),
-      child: Padding(
+      child: ConstrainedBox(
+        // Mind. 48dp hohe Tap-Zeile (Accessibility).
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Padding(
         padding: EdgeInsets.symmetric(vertical: context.spacing.sm),
         child: Row(
           children: [
@@ -162,6 +202,7 @@ class _ActionItemRow extends StatelessWidget {
                 size: context.iconSizes.sm,
                 color: theme.colorScheme.onSurfaceVariant),
           ],
+        ),
         ),
       ),
     );

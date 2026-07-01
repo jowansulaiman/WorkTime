@@ -240,6 +240,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               )
                             else ...[
                               NavigationRail(
+                                // Breit genug für den 96px-Profil-Header im
+                                // Leading (sonst RenderFlex-Overflow in der Rail).
+                                minWidth: 124,
                                 selectedIndex: railSelectedIndex == -1
                                     ? null
                                     : railSelectedIndex,
@@ -449,7 +452,9 @@ class _HomeScreenState extends State<HomeScreen> {
       selected = moreIndex == -1 ? 0 : moreIndex;
     }
     return MediaQuery.withClampedTextScaling(
-      maxScaleFactor: 1.0,
+      // Text-Scaling nicht hart auf 1.0 klemmen (Accessibility), aber moderat
+      // deckeln, damit die Nav-Labels nicht die Leiste sprengen.
+      maxScaleFactor: 1.3,
       child: NavigationBar(
         selectedIndex: selected,
         onDestinationSelected: (index) => _handleBottomNavTap(entries[index]),
@@ -1197,7 +1202,7 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final initial = user?.displayName.characters.first.toUpperCase() ?? '?';
+    final initial = _initialFor(user?.displayName);
     return AppBar(
       backgroundColor: Colors.transparent,
       elevation: 0,
@@ -1249,6 +1254,14 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
   }
 }
 
+/// Initial (Großbuchstabe) für Avatare — sicher bei leerem/null Namen.
+/// `''.characters.first` würde sonst einen StateError werfen.
+String _initialFor(String? name) {
+  final trimmed = (name ?? '').trim();
+  if (trimmed.isEmpty) return '?';
+  return trimmed.characters.first.toUpperCase();
+}
+
 class _RailProfileHeader extends StatelessWidget {
   const _RailProfileHeader({
     required this.user,
@@ -1290,9 +1303,7 @@ class _RailProfileHeader extends StatelessWidget {
             children: [
               CircleAvatar(
                 radius: 24,
-                child: Text(
-                  user?.displayName.characters.first.toUpperCase() ?? '?',
-                ),
+                child: Text(_initialFor(user?.displayName)),
               ),
               const SizedBox(height: 10),
               Text(
@@ -1631,25 +1642,45 @@ class _ShellStatusBanner extends StatelessWidget {
           color: color.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(16),
         ),
-        child: Row(
-          children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                text!,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: color,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-            ),
-            if (showSyncAction)
-              TextButton(
-                onPressed: () => _syncNow(context),
-                child: const Text('Jetzt synchronisieren'),
-              ),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final textWidget = Text(
+              text!,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w600,
+                  ),
+            );
+            final syncButton = TextButton(
+              onPressed: () => _syncNow(context),
+              child: const Text('Jetzt synchronisieren'),
+            );
+            // Auf schmalen Geräten Text und Sync-Aktion untereinander, sonst
+            // sprengt der Button bei langem Text/großem Text-Scaling die Row.
+            if (showSyncAction && constraints.maxWidth < 360) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(icon, color: color, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(child: textWidget),
+                    ],
+                  ),
+                  Align(alignment: Alignment.centerLeft, child: syncButton),
+                ],
+              );
+            }
+            return Row(
+              children: [
+                Icon(icon, color: color, size: 18),
+                const SizedBox(width: 10),
+                Expanded(child: textWidget),
+                if (showSyncAction) syncButton,
+              ],
+            );
+          },
         ),
       ),
     );
@@ -1923,16 +1954,18 @@ class _ActionStateTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.color,
+    this.onTap,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final Color color;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
@@ -1964,7 +1997,23 @@ class _ActionStateTile extends StatelessWidget {
             ],
           ),
         ),
+        if (onTap != null)
+          Icon(
+            Icons.chevron_right,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
       ],
+    );
+    if (onTap == null) {
+      return row;
+    }
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: row,
+      ),
     );
   }
 }
@@ -2262,10 +2311,15 @@ class _ManagerDecisionList extends StatelessWidget {
   const _ManagerDecisionList({
     required this.pendingAbsences,
     required this.pendingSwapRequests,
+    this.onOpenDecision,
   });
 
   final List<AbsenceRequest> pendingAbsences;
   final List<Shift> pendingSwapRequests;
+
+  /// Öffnet die Entscheidung (Anfragen-Tab). Ist er gesetzt, werden die
+  /// Einträge antippbar.
+  final VoidCallback? onOpenDecision;
 
   @override
   Widget build(BuildContext context) {
@@ -2288,7 +2342,17 @@ class _ManagerDecisionList extends StatelessWidget {
     return Column(
       children: [
         for (var i = 0; i < items.length; i++) ...[
-          items[i],
+          if (onOpenDecision != null)
+            InkWell(
+              onTap: onOpenDecision,
+              borderRadius: BorderRadius.circular(14),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: items[i],
+              ),
+            )
+          else
+            items[i],
           if (i < items.length - 1) const Divider(height: 20),
         ],
       ],
@@ -2908,11 +2972,7 @@ class _ProfileHubTab extends StatelessWidget {
                       final compact = constraints.maxWidth < 340;
                       final avatar = CircleAvatar(
                         radius: compact ? 24 : 28,
-                        child: Text(
-                          currentUser?.displayName.characters.first
-                                  .toUpperCase() ??
-                              '?',
-                        ),
+                        child: Text(_initialFor(currentUser?.displayName)),
                       );
                       final info = Column(
                         crossAxisAlignment: CrossAxisAlignment.start,

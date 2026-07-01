@@ -1,5 +1,37 @@
 # Verbesserungsplan: Duplikate entdoppeln & Komponenten koppeln
 
+> ## Umsetzungsstand 2026-06-29 (Aufräum-/Konsolidierungs-Lauf)
+>
+> **Erledigt & getestet** (alle hinter `flutter analyze` + `flutter test` grün):
+> - **F1** Zentraler `EmploymentContractResolver.activeOn` (`lib/core/employment_contract_resolver.dart`,
+>   + Tests) — Personal- und Work-Provider bedienen sich daraus, keine divergierende
+>   „aktiver Vertrag"-Implementierung mehr (fallbackToLatest in beiden identisch).
+> - **F2** `PersonalProvider.personnelCostFor` + `deriveGrossCentsFor` + `abgerechnetesIstMinutesFor`
+>   (einheitliche Brutto-/AG-Kosten + SSoT-Ist).
+> - **L1** `_costByEmployee`/`_costBySite`/`WorkProvider.totalWageThisMonth` über F2 →
+>   **Festgehalt-Lücke geschlossen** (Monatslöhner nicht mehr 0 €).
+> - **L2** Lohn-Editor-Brutto aus `abgerechnetesIstMinutesFor` (inkl. bezahlter Abwesenheit;
+>   behebt nebenbei screens-ui #53 falscher Monat). **L3** Festgehalt Vertrag-zuerst + Doku.
+>   **L4** toter `incomeTaxRateFor()` entfernt, `soliRate/soliThresholdCents` als veraltet markiert.
+> - **Z3** Zeitwirtschaft-Org-Monatslader: CLAUDE.md-Fehlermuster (hybrid→lokal/cloud-only→rethrow).
+>   **Z4** Statistik-Soll aus Vertrags-Tagessoll statt `settings.dailyHours`. **Z5** Zeitkonto-Card
+>   „Ist (gearb.)" klar gelabelt. (**Z1** war bereits erledigt.)
+> - **M4** verbrauchte Einladung wird beim Annehmen deaktiviert (+ Rules-Relaxation: nur Deaktivieren).
+>
+> **Noch offen** (eigene fokussierte Läufe empfohlen):
+> - **M1** Jahresurlaub-Konsolidierung auf `SollzeitProfile` + Migration + `UserSettings.vacationDays`
+>   entfernen (6-Stellen-Regel, MA-Anzeige-Risiko) — Resolver `effektiveUrlaubstage` existiert bereits.
+> - **M2** Quali-Gültigkeit (`gueltigBis`) in die Schichtverteilung (Compliance-Spiegel #2!) — bzw.
+>   Minimal-Variante Team-Editor-Warnung. **M3** Anzeige-Stundensatz Vertrag-zuerst in
+>   `pdf_service`/`month_report` (deferred: würde In-App↔PDF-Inkonsistenz erzeugen ohne weite API-Änderung).
+> - **M5** Ownership doppelt editierbarer Felder (read-only mit Quellhinweis). **Q1** `CostTypeRole`
+>   statt `name.contains` + sichtbare Warnung + Nachbuchung. **Q2** dedizierter `AbsenceProvider`
+>   (dreifacher Stream). **Q3** Summary-Card V1/V2-Dedup. **L5/Z2** bleiben user-gated.
+>
+> Details der offenen Problem-Befunde: [../probleme/README.md](../probleme/README.md).
+
+
+
 > Stand: 2026-06-28. Quelle: tiefe Multi-Agent-Code-Analyse (6 Domänen kartiert,
 > 31 Befunde, 23 am Code bestätigt, 7 als bewusste/dokumentierte Trade-offs
 > widerlegt). Dieser Plan ist der **Konsolidierungs-Fahrplan** — er baut kein

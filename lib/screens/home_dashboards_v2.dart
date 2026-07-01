@@ -61,7 +61,7 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
               SectionHeader(
                 title: 'Heute',
                 subtitle:
-                    'Naechste Schicht, Arbeitszeit und offene Aufgaben ohne Umwege.',
+                    'Nächste Schicht, Arbeitszeit und offene Aufgaben ohne Umwege.',
                 breadcrumbs: const [BreadcrumbItem(label: 'Heute')],
                 onBack: canNavigateBack ? onNavigateBack : null,
               ),
@@ -124,9 +124,9 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
                         _ActionStateTile(
                           icon: Icons.pending_actions,
                           title:
-                              '${pendingAbsences.length} Abwesenheitsantraege offen',
+                              '${pendingAbsences.length} Abwesenheitsanträge offen',
                           subtitle:
-                              'Deine Antraege sind eingereicht und warten auf Rueckmeldung.',
+                              'Deine Anträge sind eingereicht und warten auf Rückmeldung.',
                           color: Theme.of(context).colorScheme.tertiary,
                         ),
                       if (pendingAbsences.isNotEmpty && pendingSwapCount > 0)
@@ -137,7 +137,7 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
                           title:
                               '$pendingSwapCount Tausch-Anfragen in Bearbeitung',
                           subtitle:
-                              'Sobald entschieden wurde, erscheint die Rueckmeldung in Anfragen.',
+                              'Sobald entschieden wurde, erscheint die Rückmeldung in Anfragen.',
                           color: Theme.of(context).colorScheme.primary,
                         ),
                     ],
@@ -156,7 +156,7 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
               ],
               SizedBox(height: spacing.lg),
               AppSectionCard(
-                title: 'Naechste Schichten',
+                title: 'Nächste Schichten',
                 child: upcomingShifts.isEmpty
                     ? const EmptyState(
                         icon: Icons.event_busy_outlined,
@@ -178,11 +178,11 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.lg),
               AppSectionCard(
-                title: 'Letzte Eintraege',
+                title: 'Letzte Einträge',
                 child: recentEntries.isEmpty
                     ? const EmptyState(
                         icon: Icons.inbox_outlined,
-                        message: 'Noch keine Arbeitszeiteintraege vorhanden.',
+                        message: 'Noch keine Arbeitszeiteinträge vorhanden.',
                       )
                     : Column(
                         children: recentEntries.take(5).map((entry) {
@@ -198,7 +198,7 @@ class _EmployeeDashboardTabV2 extends StatelessWidget {
   }
 }
 
-/// V2-Hero des Mitarbeiter-Dashboards: gleiche Stempeluhr-/Naechste-Schicht-
+/// V2-Hero des Mitarbeiter-Dashboards: gleiche Stempeluhr-/Nächste-Schicht-
 /// Logik wie [_EmployeeHeroCard], aber in der [AppHeroCard]-Huelle.
 class _EmployeeHeroCardV2 extends StatelessWidget {
   const _EmployeeHeroCardV2({required this.nextShift, required this.provider});
@@ -213,16 +213,15 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
     final colorScheme = theme.colorScheme;
     final spacing = context.spacing;
     final nextShift = this.nextShift;
-    final activeShift = provider.activeShiftNow;
-    final isClockActive = provider.hasActiveClockSession;
+    // Frei stempelbare, persistente Stempeluhr (ZeitwirtschaftProvider) — wie
+    // V1. Der Button führt zum dedizierten Stempel-Screen (kein Schicht-Gate).
+    final isClockActive = context.watch<ZeitwirtschaftProvider>().isClockedIn;
     final primaryAssignment =
         _resolvePrimaryAssignment(team, provider.currentUser?.uid);
     final primarySite = _resolvePrimarySite(
       team.sites.isNotEmpty ? team.sites : provider.sites,
       primaryAssignment,
     );
-    final canStartClock = primaryAssignment != null && activeShift != null;
-    final canUseClock = isClockActive || canStartClock;
     final siteLabel = primarySite?.name ??
         primaryAssignment?.siteName ??
         'Kein Standort hinterlegt';
@@ -234,7 +233,7 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
           Text(
             nextShift == null
                 ? 'Heute ohne geplante Schicht'
-                : 'Naechste Schicht',
+                : 'Nächste Schicht',
             style: theme.textTheme.titleLarge?.copyWith(
               fontWeight: FontWeight.w800,
             ),
@@ -243,7 +242,7 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
           if (nextShift == null)
             Text(
               primaryAssignment != null
-                  ? 'Arbeitszeit kann nur waehrend einer geplanten Schicht erfasst werden.'
+                  ? 'Arbeitszeit kann nur während einer geplanten Schicht erfasst werden.'
                   : 'Zum Einstempeln fehlt aktuell ein zugewiesener Standort.',
               style: theme.textTheme.bodyLarge?.copyWith(
                 color: colorScheme.onSurfaceVariant,
@@ -280,9 +279,7 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
             runSpacing: spacing.sm + spacing.xs,
             children: [
               FilledButton.icon(
-                onPressed: !canUseClock
-                    ? null
-                    : () => _handlePunchClockAction(context, provider),
+                onPressed: () => context.push(AppRoutes.zeitStempeln),
                 icon: Icon(
                   isClockActive ? Icons.stop_circle : Icons.play_circle,
                 ),
@@ -307,23 +304,7 @@ class _EmployeeHeroCardV2 extends StatelessWidget {
               ),
             ],
           ),
-          if (!canStartClock && !isClockActive) ...[
-            SizedBox(height: spacing.sm + spacing.xs),
-            Text(
-              primaryAssignment == null
-                  ? 'Bitte zuerst in der Teamverwaltung einen Primaerstandort hinterlegen.'
-                  : nextShift != null &&
-                          nextShift.startTime.isAfter(DateTime.now())
-                      ? 'Einstempeln ist erst ab ${DateFormat('HH:mm', 'de_DE').format(nextShift.startTime)} innerhalb deiner geplanten Schicht moeglich.'
-                      : 'Aktuell liegt keine laufende Schicht fuer die Stempeluhr vor.',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: primaryAssignment == null
-                    ? colorScheme.error
-                    : colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ] else if (nextShift == null) ...[
+          if (nextShift == null) ...[
             SizedBox(height: spacing.sm + spacing.xs),
             Text(
               'Stempeluhr-Standort: $siteLabel',
@@ -361,10 +342,14 @@ class _EmployeeWeekStripV2 extends StatelessWidget {
       (index) => DateTime(today.year, today.month, today.day + index),
     );
 
+    // Höhe an das Text-Scaling koppeln, sonst schneidet die feste 110px-Höhe
+    // die Tageszellen bei großer Schrift ab (vertikaler Overflow).
+    final textScale =
+        MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.6);
     return AppSectionCard(
       title: 'Deine Woche',
       child: SizedBox(
-        height: 110,
+        height: 110 * textScale,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemBuilder: (context, index) {
@@ -413,13 +398,15 @@ class _EmployeeWeekStripV2 extends StatelessWidget {
                   Text(
                     dayShifts.isEmpty && dayAbsences.isEmpty
                         ? 'Keine'
-                        : '${dayShifts.length + dayAbsences.length} ${dayShifts.length + dayAbsences.length == 1 ? 'Eintrag' : 'Eintraege'}',
+                        : '${dayShifts.length + dayAbsences.length} ${dayShifts.length + dayAbsences.length == 1 ? 'Eintrag' : 'Einträge'}',
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   Text(
                     detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: colorScheme.onSurfaceVariant,
                     ),
@@ -472,13 +459,33 @@ class _MonthlyShiftSummaryCardsV2State
       future: _future,
       builder: (context, snapshot) {
         final plannedHours = _sumShiftHours(snapshot.data ?? const <Shift>[]);
-        return _SummaryCardsV2(
+        final cards = _SummaryCardsV2(
           provider: widget.provider,
           plannedHours: plannedHours > 0 ? plannedHours : null,
           loadingPlannedHours:
               snapshot.connectionState == ConnectionState.waiting &&
                   !snapshot.hasData,
         );
+        // Ladefehler nicht still verschlucken (sonst wirkt es wie „0 Stunden").
+        if (snapshot.hasError) {
+          final theme = Theme.of(context);
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              cards,
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Geplante Stunden konnten nicht geladen werden.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+        return cards;
       },
     );
   }
@@ -522,7 +529,7 @@ class _SummaryCardsV2 extends StatelessWidget {
               loading: loadingPlannedHours,
             ),
           AppStatCard(
-            label: 'Ueberstunden',
+            label: 'Überstunden',
             value: '${provider.overtimeThisMonth.toStringAsFixed(1)} h',
             subtitle: 'Zeit oberhalb deiner Tagesvorgabe',
             icon: Icons.trending_up,
@@ -635,7 +642,7 @@ class _AdminDashboardTabV2 extends StatelessWidget {
               SectionHeader(
                 title: 'Heute',
                 subtitle:
-                    'Filialbetrieb, Ausnahmen und Entscheidungen fuer den laufenden Tag.',
+                    'Filialbetrieb, Ausnahmen und Entscheidungen für den laufenden Tag.',
                 breadcrumbs: const [BreadcrumbItem(label: 'Heute')],
                 onBack: canNavigateBack ? onNavigateBack : null,
               ),
@@ -654,7 +661,7 @@ class _AdminDashboardTabV2 extends StatelessWidget {
                 children: [
                   AppQuickActionCard(
                     icon: Icons.view_timeline_outlined,
-                    title: 'Plan oeffnen',
+                    title: 'Plan öffnen',
                     subtitle: 'Direkt in die mobile Tagesplanung springen',
                     onTap: onOpenPlan,
                   ),
@@ -667,7 +674,7 @@ class _AdminDashboardTabV2 extends StatelessWidget {
                     ),
                   AppQuickActionCard(
                     icon: Icons.inbox_outlined,
-                    title: 'Anfragen pruefen',
+                    title: 'Anfragen prüfen',
                     subtitle:
                         'Krankmeldungen und Tausch ohne Umwege entscheiden',
                     // Tab-Ziel -> go (Branch wechseln), nicht push (kein Duplikat).
@@ -721,8 +728,12 @@ class _AdminDashboardTabV2 extends StatelessWidget {
                       title:
                           '${pendingAbsences.length + pendingSwapRequests.length} Entscheidungen offen',
                       subtitle:
-                          'Abwesenheiten und Tauschanfragen sollten vor der naechsten Schicht geklaert werden.',
+                          'Abwesenheiten und Tauschanfragen sollten vor der nächsten Schicht geklärt werden.',
                       color: colorScheme.tertiary,
+                      onTap: (pendingAbsences.isEmpty &&
+                              pendingSwapRequests.isEmpty)
+                          ? null
+                          : () => context.go(shellTabPaths[ShellTab.inbox]!),
                     ),
                     const Divider(height: 20),
                     _ActionStateTile(
@@ -738,7 +749,7 @@ class _AdminDashboardTabV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.lg),
               AppSectionCard(
-                title: 'Naechste Schichten',
+                title: 'Nächste Schichten',
                 child: upcomingShifts.isEmpty
                     ? const EmptyState(
                         icon: Icons.event_busy_outlined,
@@ -760,10 +771,12 @@ class _AdminDashboardTabV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.lg),
               AppSectionCard(
-                title: 'Naechste Entscheidungen',
+                title: 'Nächste Entscheidungen',
                 child: _ManagerDecisionList(
                   pendingAbsences: pendingAbsences,
                   pendingSwapRequests: pendingSwapRequests,
+                  onOpenDecision: () =>
+                      context.go(shellTabPaths[ShellTab.inbox]!),
                 ),
               ),
               SizedBox(height: spacing.lg),

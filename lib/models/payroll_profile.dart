@@ -37,7 +37,10 @@ class PayrollProfile {
   /// Bundesland (für den Kirchensteuersatz 8 % BY/BW vs. 9 % sonst).
   final String? federalState;
 
-  /// Zuletzt bekanntes Monatsbrutto (Cent) – nur Vorbefüllungs-Startwert.
+  /// Zuletzt bekanntes Monatsbrutto (Cent) – **nur UI-Prefill-Fallback** (L3).
+  /// SSoT für das Festgehalt ist `EmploymentContract.monthlyGrossCents`; dieser
+  /// Wert greift nur, wenn kein aktiver Vertrag existiert. Kein zweiter
+  /// Pflege-Ort.
   final int? monthlyGrossCents;
 
   final String? createdByUid;

@@ -2,7 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:uuid/uuid.dart';
+import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/purchase_order.dart';
+import 'package:worktime_app/models/stock_movement.dart';
 import 'package:worktime_app/repositories/firestore_inventory_repository.dart';
 
 /// Firestore-Fake, dessen Zaehler-Transaktion dauerhaft scheitert
@@ -59,6 +61,93 @@ void main() {
       }
       expect(numbers[0], isNot(numbers[1]),
           reason: 'UUID-Suffix verhindert Kollision in derselben Minute');
+    },
+  );
+
+  test(
+    'saveProduct lässt fridgeStock unangetastet (Clobber-Schutz)',
+    () async {
+      final firestore = FakeFirebaseFirestore();
+      final repo = FirestoreInventoryRepository(
+        firestore: firestore,
+        uuid: const Uuid(),
+      );
+      final products = firestore
+          .collection('organizations')
+          .doc(orgId)
+          .collection('products');
+
+      // Server-Stand: der Kühlschrank wurde befüllt (fridgeStock=10).
+      await products.doc('prod-1').set({
+        'orgId': orgId,
+        'siteId': 'site-1',
+        'name': 'Cola',
+        'currentStock': 30,
+        'inFridge': true,
+        'fridgeTargetStock': 24,
+        'fridgeStock': 10,
+      });
+
+      // Manager editiert den Artikel mit einem STALE fridgeStock (0).
+      await repo.saveProduct(const Product(
+        id: 'prod-1',
+        orgId: orgId,
+        siteId: 'site-1',
+        name: 'Cola neu',
+        currentStock: 30,
+        inFridge: true,
+        fridgeTargetStock: 24,
+        fridgeStock: 0,
+      ));
+
+      final snap = await products.doc('prod-1').get();
+      final restored = Product.fromFirestore(snap.id, snap.data()!);
+      expect(restored.name, 'Cola neu'); // andere Felder werden geschrieben
+      expect(restored.fridgeStock, 10); // fridgeStock NICHT überschrieben
+    },
+  );
+
+  test(
+    'setFridgeStock setzt fridgeStock, lässt currentStock + bucht fridgeRefill',
+    () async {
+      final firestore = FakeFirebaseFirestore();
+      final repo = FirestoreInventoryRepository(
+        firestore: firestore,
+        uuid: const Uuid(),
+      );
+      final org =
+          firestore.collection('organizations').doc(orgId);
+      await org.collection('products').doc('cola').set({
+        'orgId': orgId,
+        'siteId': 'site-1',
+        'name': 'Cola',
+        'currentStock': 30,
+        'inFridge': true,
+        'fridgeTargetStock': 24,
+        'fridgeStock': 8,
+      });
+
+      await repo.setFridgeStock(
+        orgId: orgId,
+        productId: 'cola',
+        fridgeStock: 24,
+        refilledQty: 16,
+      );
+
+      final snap = await org.collection('products').doc('cola').get();
+      final p = Product.fromFirestore(snap.id, snap.data()!);
+      expect(p.fridgeStock, 24);
+      expect(p.currentStock, 30); // UNVERÄNDERT (reine Umlagerung)
+
+      final moves = await org.collection('stockMovements').get();
+      expect(moves.docs, hasLength(1));
+      final m = StockMovement.fromFirestore(
+        moves.docs.first.id,
+        moves.docs.first.data(),
+      );
+      expect(m.type, StockMovementType.fridgeRefill);
+      expect(m.quantityDelta, 16);
+      expect(m.balanceAfter, 24);
     },
   );
 }

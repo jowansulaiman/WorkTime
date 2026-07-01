@@ -1701,10 +1701,22 @@ class _ManagementCardShell extends StatelessWidget {
               ),
               if (badges.isNotEmpty) ...[
                 const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: badges,
+                // Badges auf die Kartenbreite begrenzen: ein einzelnes Chip mit
+                // langem Label (z. B. Berechtigungs-/Vertrags-Zusammenfassung)
+                // sprengte sonst im Wrap die rechte Kartenkante (Pixel-Overflow).
+                LayoutBuilder(
+                  builder: (context, constraints) => Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final badge in badges)
+                        ConstrainedBox(
+                          constraints:
+                              BoxConstraints(maxWidth: constraints.maxWidth),
+                          child: badge,
+                        ),
+                    ],
+                  ),
                 ),
               ],
               if (child != null) ...[
@@ -1743,12 +1755,15 @@ class _TeamMetaChip extends StatelessWidget {
         children: [
           Icon(icon, size: 15, color: color),
           const SizedBox(width: 6),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w600,
-                ),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
           ),
         ],
       ),

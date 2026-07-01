@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_config.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/customer_feedback.dart';
@@ -68,6 +69,24 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
         appBar: appBar,
         body: const Center(
           child: Text('Keine Berechtigung für das Kundenfeedback.'),
+        ),
+      );
+    }
+
+    // Rückmeldungen sind reine Cloud-Daten (öffentlicher /feedback-Schreibpfad).
+    // Im Demo-/Offline-Modus ist keine Firebase-App initialisiert → ein direkter
+    // Firestore-Stream-Aufbau würde hier synchron werfen (rote Seite). Daher
+    // gegated, statt zu crashen.
+    if (AppConfig.disableAuthentication) {
+      return Scaffold(
+        appBar: appBar,
+        body: const Center(
+          child: EmptyState(
+            icon: Icons.cloud_off_outlined,
+            title: 'Im Demo-Modus nicht verfügbar',
+            message:
+                'Kundenfeedback geht über die öffentliche Seite (/feedback) in der Cloud ein und ist nur mit aktiver Firebase-Verbindung sichtbar.',
+          ),
         ),
       );
     }

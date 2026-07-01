@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
+import 'notification_prefs.dart';
 import 'user_settings.dart';
 
 enum UserRole { admin, teamlead, employee }
@@ -286,6 +287,7 @@ class AppUserProfile {
     required this.settings,
     this.workRuleSettings = const WorkRuleSettings(),
     this.permissions,
+    this.notificationPrefs = const NotificationPrefs(),
     this.photoUrl,
     this.createdAt,
     this.updatedAt,
@@ -299,6 +301,7 @@ class AppUserProfile {
   final UserSettings settings;
   final WorkRuleSettings workRuleSettings;
   final UserPermissions? permissions;
+  final NotificationPrefs notificationPrefs;
   final String? photoUrl;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -391,6 +394,9 @@ class AppUserProfile {
         parse.toMap(map['permissions']),
         fallbackRole: role,
       ),
+      notificationPrefs: NotificationPrefs.fromMap(
+        parse.toMap(map['notification_prefs'] ?? map['notificationPrefs']),
+      ),
       photoUrl: map['photo_url']?.toString(),
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -419,6 +425,9 @@ class AppUserProfile {
         parse.toMap(map['permissions']),
         fallbackRole: role,
       ),
+      notificationPrefs: NotificationPrefs.fromMap(
+        parse.toMap(map['notificationPrefs'] ?? map['notification_prefs']),
+      ),
       photoUrl: (map['photoUrl'] ?? map['photo_url'])?.toString(),
       createdAt:
           FirestoreDateParser.readDate(map['createdAt'] ?? map['created_at']),
@@ -436,6 +445,7 @@ class AppUserProfile {
       'settings': settings.toFirestoreMap(),
       'workRuleSettings': workRuleSettings.toFirestoreMap(),
       'permissions': effectivePermissions.toFirestoreMap(),
+      'notificationPrefs': notificationPrefs.toFirestoreMap(),
       'photoUrl': photoUrl,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -451,6 +461,7 @@ class AppUserProfile {
       'settings': settings.toMap(),
       'work_rule_settings': workRuleSettings.toMap(),
       'permissions': effectivePermissions.toMap(),
+      'notification_prefs': notificationPrefs.toMap(),
       'photo_url': photoUrl,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -466,6 +477,7 @@ class AppUserProfile {
     UserSettings? settings,
     WorkRuleSettings? workRuleSettings,
     UserPermissions? permissions,
+    NotificationPrefs? notificationPrefs,
     String? photoUrl,
     bool clearPhotoUrl = false,
     DateTime? createdAt,
@@ -480,6 +492,7 @@ class AppUserProfile {
       settings: settings ?? this.settings,
       workRuleSettings: workRuleSettings ?? this.workRuleSettings,
       permissions: permissions ?? this.permissions,
+      notificationPrefs: notificationPrefs ?? this.notificationPrefs,
       photoUrl: clearPhotoUrl ? null : (photoUrl ?? this.photoUrl),
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

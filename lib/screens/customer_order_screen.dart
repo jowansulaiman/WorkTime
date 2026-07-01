@@ -164,6 +164,8 @@ class _CustomerOrderScreenState extends State<CustomerOrderScreen> {
           PopupMenuButton<String>(
             icon: const Icon(Icons.ios_share),
             tooltip: 'Exportieren',
+            // Ohne Bestellungen gibt es nichts zu exportieren → deaktiviert.
+            enabled: orders.isNotEmpty,
             onSelected: (value) => _export(context, value, orders),
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'pdf', child: Text('Als PDF exportieren')),
@@ -653,53 +655,59 @@ class _CustomerOrderTile extends StatelessWidget {
     InventoryProvider inventory,
     String value,
   ) async {
-    switch (value) {
-      case 'edit':
-        await _edit(context, inventory);
-        break;
-      case 'prepare':
-        await inventory.markCustomerOrderPrepared(order);
-        if (context.mounted) {
-          _showSnack(context, 'Als vorbereitet markiert.');
-        }
-        break;
-      case 'unprepare':
-        await inventory.markCustomerOrderPrepared(order, prepared: false);
-        if (context.mounted) {
-          _showSnack(context, 'Vorbereitung zurückgenommen.');
-        }
-        break;
-      case 'pickup':
-        await inventory.markCustomerOrderPickedUp(order);
-        if (context.mounted) {
-          _showSnack(
-            context,
-            order.recurrence.isRecurring
-                ? 'Abgeholt. Folgetermin wurde angelegt.'
-                : 'Als abgeholt markiert.',
-          );
-        }
-        break;
-      case 'cancel':
-        if (await _confirm(context, 'Bestellung stornieren?',
-                '${order.customerName}: Bestellung wird storniert.') &&
-            context.mounted) {
-          await inventory.cancelCustomerOrder(order);
+    try {
+      switch (value) {
+        case 'edit':
+          await _edit(context, inventory);
+          break;
+        case 'prepare':
+          await inventory.markCustomerOrderPrepared(order);
           if (context.mounted) {
-            _showSnack(context, 'Bestellung storniert.');
+            _showSnack(context, 'Als vorbereitet markiert.');
           }
-        }
-        break;
-      case 'delete':
-        if (await _confirm(context, 'Bestellung löschen?',
-                '${order.customerName}: Bestellung wird unwiderruflich gelöscht.') &&
-            order.id != null) {
-          await inventory.deleteCustomerOrder(order.id!);
+          break;
+        case 'unprepare':
+          await inventory.markCustomerOrderPrepared(order, prepared: false);
           if (context.mounted) {
-            _showSnack(context, 'Bestellung gelöscht.');
+            _showSnack(context, 'Vorbereitung zurückgenommen.');
           }
-        }
-        break;
+          break;
+        case 'pickup':
+          await inventory.markCustomerOrderPickedUp(order);
+          if (context.mounted) {
+            _showSnack(
+              context,
+              order.recurrence.isRecurring
+                  ? 'Abgeholt. Folgetermin wurde angelegt.'
+                  : 'Als abgeholt markiert.',
+            );
+          }
+          break;
+        case 'cancel':
+          if (await _confirm(context, 'Bestellung stornieren?',
+                  '${order.customerName}: Bestellung wird storniert.') &&
+              context.mounted) {
+            await inventory.cancelCustomerOrder(order);
+            if (context.mounted) {
+              _showSnack(context, 'Bestellung storniert.');
+            }
+          }
+          break;
+        case 'delete':
+          if (await _confirm(context, 'Bestellung löschen?',
+                  '${order.customerName}: Bestellung wird unwiderruflich gelöscht.') &&
+              order.id != null) {
+            await inventory.deleteCustomerOrder(order.id!);
+            if (context.mounted) {
+              _showSnack(context, 'Bestellung gelöscht.');
+            }
+          }
+          break;
+      }
+    } catch (error) {
+      if (context.mounted) {
+        _showSnack(context, 'Fehler: $error');
+      }
     }
   }
 
@@ -710,9 +718,15 @@ class _CustomerOrderTile extends StatelessWidget {
       order: order,
     );
     if (result != null) {
-      await inventory.saveCustomerOrder(result);
-      if (context.mounted) {
-        _showSnack(context, 'Kundenbestellung gespeichert.');
+      try {
+        await inventory.saveCustomerOrder(result);
+        if (context.mounted) {
+          _showSnack(context, 'Kundenbestellung gespeichert.');
+        }
+      } catch (error) {
+        if (context.mounted) {
+          _showSnack(context, 'Fehler: $error');
+        }
       }
     }
   }
@@ -1260,7 +1274,9 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
                   onSelected: (value) => _category.text = value,
                   fieldViewBuilder:
                       (context, controller, focusNode, onSubmit) {
-                    controller.text = _category.text;
+                    // controller.text NICHT bei jedem Rebuild überschreiben —
+                    // das setzt den Cursor zurück und zerstört die Eingabe.
+                    // initialValue (oben) seedet den Startwert einmalig.
                     return TextField(
                       controller: controller,
                       focusNode: focusNode,
@@ -1270,42 +1286,62 @@ class _CustomerOrderItemDialogState extends State<_CustomerOrderItemDialog> {
                     );
                   },
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _quantity,
-                        decoration: const InputDecoration(labelText: 'Menge *'),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                        ],
-                        validator: (value) {
-                          final qty = int.tryParse((value ?? '').trim());
-                          return (qty == null || qty <= 0)
-                              ? 'Menge > 0'
-                              : null;
-                        },
+                Builder(
+                  builder: (context) {
+                    final quantityField = TextFormField(
+                      controller: _quantity,
+                      decoration: const InputDecoration(labelText: 'Menge *'),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      validator: (value) {
+                        final qty = int.tryParse((value ?? '').trim());
+                        return (qty == null || qty <= 0) ? 'Menge > 0' : null;
+                      },
+                    );
+                    final unitField = TextFormField(
+                      controller: _unit,
+                      decoration: const InputDecoration(labelText: 'Einheit'),
+                    );
+                    final priceField = TextFormField(
+                      controller: _price,
+                      decoration: const InputDecoration(labelText: 'Preis €'),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _unit,
-                        decoration: const InputDecoration(labelText: 'Einheit'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _price,
-                        decoration: const InputDecoration(labelText: 'Preis €'),
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                      ),
-                    ),
-                  ],
+                    );
+                    return LayoutBuilder(
+                      builder: (context, constraints) {
+                        // Auf schmalen Geräten (iPhone SE/kleines Android)
+                        // brechen drei Felder in einer Row die Labels ab →
+                        // zweizeilig: Menge+Einheit oben, Preis darunter.
+                        if (constraints.maxWidth < 340) {
+                          return Column(
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(child: quantityField),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: unitField),
+                                ],
+                              ),
+                              priceField,
+                            ],
+                          );
+                        }
+                        return Row(
+                          children: [
+                            Expanded(child: quantityField),
+                            const SizedBox(width: 12),
+                            Expanded(child: unitField),
+                            const SizedBox(width: 12),
+                            Expanded(child: priceField),
+                          ],
+                        );
+                      },
+                    );
+                  },
                 ),
               ],
             ),

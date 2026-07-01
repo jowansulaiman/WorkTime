@@ -383,6 +383,27 @@ void main() {
   );
 
   testWidgets(
+    'Neue Schicht: kompakte Mitarbeiter-Liste statt Verfuegbarkeits-Grosskarten',
+    (tester) async {
+      await _pumpAdminPlanner(tester, absences: const []);
+
+      await tester.tap(find.text('Neue Schicht'));
+      await _settlePlanner(tester);
+
+      // Neuer Besetzungs-Abschnitt + kompakte Status-Badges (z. B. "0 frei").
+      expect(find.text('Besetzung'), findsOneWidget);
+      expect(find.textContaining('frei'), findsWidgets);
+      // Mitarbeiter erscheinen als kompakte Zeilen.
+      expect(find.text('Anna'), findsWidgets);
+      expect(find.text('Ben'), findsWidgets);
+      // Die alte, lange Verfuegbarkeits-Darstellung ist entfernt.
+      expect(find.text('Verfuegbar im gewaehlten Zeitraum'), findsNothing);
+      expect(find.text('Nicht verfuegbar'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'Toolbar laeuft bei schmaler Breite nicht ueber',
     (tester) async {
       await _pumpAdminPlanner(

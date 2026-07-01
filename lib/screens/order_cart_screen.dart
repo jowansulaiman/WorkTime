@@ -514,7 +514,7 @@ class _QuickAddRow extends StatelessWidget {
         children: [
           if (inCart) ...[
             IconButton(
-              visualDensity: VisualDensity.compact,
+              visualDensity: VisualDensity.standard,
               onPressed: onRemoveOne,
               icon: const Icon(Icons.remove_circle_outline),
             ),
@@ -527,7 +527,7 @@ class _QuickAddRow extends StatelessWidget {
             ),
           ],
           IconButton(
-            visualDensity: VisualDensity.compact,
+            visualDensity: VisualDensity.standard,
             tooltip: 'In den Warenkorb',
             onPressed: product.id == null ? null : onAdd,
             icon: Icon(
@@ -928,7 +928,7 @@ class _CartItemTile extends StatelessWidget {
             ),
             IconButton(
               tooltip: 'Entfernen',
-              visualDensity: VisualDensity.compact,
+              visualDensity: VisualDensity.standard,
               icon: Icon(Icons.delete_outline, color: colorScheme.error),
               onPressed: productId == null
                   ? null
@@ -957,7 +957,7 @@ class _QuantityStepper extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
-          visualDensity: VisualDensity.compact,
+          visualDensity: VisualDensity.standard,
           onPressed: (onChanged == null || value <= 1)
               ? null
               : () => onChanged!(value - 1),
@@ -972,7 +972,7 @@ class _QuantityStepper extends StatelessWidget {
           ),
         ),
         IconButton(
-          visualDensity: VisualDensity.compact,
+          visualDensity: VisualDensity.standard,
           onPressed: onChanged == null ? null : () => onChanged!(value + 1),
           icon: const Icon(Icons.add_circle_outline),
         ),
@@ -1121,7 +1121,7 @@ class _WeeklyOrderListEditorScreenState
                                     ),
                                     IconButton(
                                       tooltip: 'Entfernen',
-                                      visualDensity: VisualDensity.compact,
+                                      visualDensity: VisualDensity.standard,
                                       icon: const Icon(Icons.delete_outline),
                                       onPressed: () => setState(
                                           () => _items.removeAt(index)),

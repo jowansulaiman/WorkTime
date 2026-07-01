@@ -17,8 +17,8 @@ import '../../ui/ui.dart';
 /// Lohnlauf) sind nur für Admins sichtbar.
 ///
 /// Reine Lese-Ansicht — KPI kommen aus den bereits vorhandenen, mitarbeiter-
-/// sichtbaren Daten (`WorkProvider`-Getter + geplante Schichten). Persistentes
-/// Stundenkonto/Resturlaub folgen in M4.
+/// sichtbaren Daten (`WorkProvider`-Getter + geplante Schichten); das
+/// persistente Stundenkonto/Resturlaub liegt im Stundenkonto-Bereich.
 class ZeitwirtschaftHubScreen extends StatefulWidget {
   const ZeitwirtschaftHubScreen({
     super.key,
