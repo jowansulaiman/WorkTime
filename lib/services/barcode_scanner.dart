@@ -38,9 +38,35 @@ abstract interface class BarcodeScanner {
 /// Der Controller wird erst bei Bedarf erzeugt und nur auf unterstuetzten
 /// Plattformen — so wird auf Windows/Linux/Web-ohne-Kamera nichts angefasst.
 class MobileScannerAdapter implements BarcodeScanner {
-  MobileScannerAdapter();
+  MobileScannerAdapter() {
+    _ensureWebLibraryScriptUrl();
+  }
 
   MobileScannerController? _controller;
+
+  /// Auf Web laedt `mobile_scanner` die ZXing-Bibliothek sonst zur Laufzeit von
+  /// `https://unpkg.com/@zxing/library@0.21.3` nach. Das blockiert unsere
+  /// strenge CSP (`script-src` in `web/index.html` erlaubt kein unpkg) — der
+  /// Scanner meldet dann nur „Could not load the BarcodeReader script due to a
+  /// network error". Wir hosten die Bibliothek stattdessen selbst unter
+  /// `web/vendor/zxing.min.js` (von `script-src 'self'` gedeckt, keine
+  /// CDN-Abhaengigkeit) und zeigen den Loader dorthin. Pfad bewusst relativ
+  /// (loest gegen `<base href>` auf → funktioniert auch unter Sub-Pfaden).
+  /// Idempotent (Plattform merkt sich die erste URL via `??=`), No-op
+  /// ausserhalb des Webs.
+  ///
+  /// HINWEIS Offline: Flutter 3.41 liefert einen sich selbst abmeldenden
+  /// Service-Worker (kein Precache); zusammen mit `no-store`-Hosting-Headern
+  /// hat die Web-App aktuell KEINE Offline-Faehigkeit. Der Scanner ist damit
+  /// nur online nutzbar — echtes Offline braucht einen eigenen PWA-SW (separat).
+  static bool _webScriptUrlConfigured = false;
+  static void _ensureWebLibraryScriptUrl() {
+    if (!kIsWeb || _webScriptUrlConfigured) return;
+    _webScriptUrlConfigured = true;
+    MobileScannerPlatform.instance.setBarcodeLibraryScriptUrl(
+      'vendor/zxing.min.js',
+    );
+  }
 
   static bool get _platformSupported {
     if (kIsWeb) return true; // ZXing, braucht Secure Context (HTTPS/localhost)
