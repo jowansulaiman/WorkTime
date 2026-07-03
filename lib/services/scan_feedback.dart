@@ -40,24 +40,30 @@ class AudioHapticFeedback implements ScanFeedback {
 
   Future<void> _ensureConfigured() async {
     if (_configured) return;
-    _configured = true;
     try {
+      // Default-Modus (mediaPlayer) statt PlayerMode.lowLatency: der
+      // lowLatency-/SoundPool-Pfad spielt Asset-Toene auf Android haeufig gar
+      // nicht ab (bekanntes audioplayers-Problem). Quelle EINMAL vorladen ->
+      // trotzdem geringe Latenz beim Abspielen (seek(0) + resume).
       await _okPlayer.setReleaseMode(ReleaseMode.stop);
       await _errorPlayer.setReleaseMode(ReleaseMode.stop);
-      await _okPlayer.setPlayerMode(PlayerMode.lowLatency);
-      await _errorPlayer.setPlayerMode(PlayerMode.lowLatency);
+      await _okPlayer.setSource(AssetSource(_okAsset));
+      await _errorPlayer.setSource(AssetSource(_errorAsset));
+      // Erst nach erfolgreichem Vorladen als konfiguriert markieren, damit ein
+      // transienter Fehler beim naechsten Scan erneut versucht wird.
+      _configured = true;
     } catch (_) {
       // Audio nicht verfuegbar (z. B. Web ohne Nutzergeste) — Haptik/visuell
       // reicht. Kein Rethrow: Feedback darf den Scan-Flow nie blockieren.
     }
   }
 
-  Future<void> _play(AudioPlayer player, String asset) async {
+  Future<void> _play(AudioPlayer player) async {
     if (!soundEnabled) return;
     await _ensureConfigured();
     try {
-      await player.stop();
-      await player.play(AssetSource(asset));
+      await player.seek(Duration.zero);
+      await player.resume();
     } catch (_) {
       // Ton stumm schlucken — visuelles Feedback bleibt.
     }
@@ -65,22 +71,35 @@ class AudioHapticFeedback implements ScanFeedback {
 
   @override
   Future<void> success() async {
-    if (hapticsEnabled) {
-      try {
-        await HapticFeedback.mediumImpact();
-      } catch (_) {}
-    }
-    await _play(_okPlayer, _okAsset);
+    // Haptik + Ton parallel, damit die Vibration den Ton nicht verzoegert.
+    await Future.wait<void>([
+      if (hapticsEnabled) _vibrateSuccess(),
+      _play(_okPlayer),
+    ]);
   }
 
   @override
   Future<void> failure() async {
-    if (hapticsEnabled) {
-      try {
-        await HapticFeedback.vibrate();
-      } catch (_) {}
-    }
-    await _play(_errorPlayer, _errorAsset);
+    await Future.wait<void>([
+      if (hapticsEnabled) _vibrateFailure(),
+      _play(_errorPlayer),
+    ]);
+  }
+
+  /// Kurzer, deutlicher Buzz zur Erfolgs-Bestaetigung.
+  Future<void> _vibrateSuccess() async {
+    try {
+      await HapticFeedback.heavyImpact();
+    } catch (_) {}
+  }
+
+  /// Doppel-Buzz fuer Fehler — klar von der Erfolgs-Haptik unterscheidbar.
+  Future<void> _vibrateFailure() async {
+    try {
+      await HapticFeedback.heavyImpact();
+      await Future<void>.delayed(const Duration(milliseconds: 130));
+      await HapticFeedback.heavyImpact();
+    } catch (_) {}
   }
 
   @override

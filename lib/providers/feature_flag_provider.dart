@@ -64,6 +64,10 @@ class FeatureFlagProvider extends ChangeNotifier {
   /// Bequemer Zugriff: ob Stundengrenzen im Verteiler hart durchgesetzt werden.
   bool get enforceHourCapHard => orgSettings.enforceHourCapHard;
 
+  /// Bequemer Zugriff (Kassen-Modul E1/§3.4): ob die gepflegten Einkaufspreise
+  /// MwSt enthalten (brutto) und für Rohertrag/Wareneinsatz normalisiert werden.
+  bool get purchasePricesIncludeVat => orgSettings.purchasePricesIncludeVat;
+
   Future<void> updateSession(
     AppUserProfile? user, {
     bool localStorageOnly = false,
@@ -175,7 +179,8 @@ class FeatureFlagProvider extends ChangeNotifier {
         current.enforceHourCapHard == settings.enforceHourCapHard &&
         current.defaultShiftMinutes == settings.defaultShiftMinutes &&
         current.defaultBreakMinutes == settings.defaultBreakMinutes &&
-        current.defaultRequiredCount == settings.defaultRequiredCount) {
+        current.defaultRequiredCount == settings.defaultRequiredCount &&
+        current.purchasePricesIncludeVat == settings.purchasePricesIncludeVat) {
       return;
     }
     _orgSettings = settings;

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:worktime_app/models/audit_log_entry.dart';
+import 'package:worktime_app/models/payroll_record.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/services/export_service.dart';
 
@@ -83,6 +84,39 @@ Shift _shift({
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => initializeDateFormatting('de_DE'));
+
+  group('ExportService.buildLohnjournalCsv (PA-6.3)', () {
+    test('BOM, Kopf, alphabetische Sortierung + Umlagen-Spalten', () {
+      final records = [
+        const PayrollRecord(
+          orgId: 'org-1', userId: 'u-b', periodYear: 2026, periodMonth: 6,
+          grossCents: 300000, netCents: 210000, employerTotalCents: 360000,
+          employerU1Cents: 1200, employerU2Cents: 800,
+          status: PayrollStatus.freigegeben,
+        ),
+        const PayrollRecord(
+          orgId: 'org-1', userId: 'u-a', periodYear: 2026, periodMonth: 6,
+          grossCents: 50000, netCents: 50000, status: PayrollStatus.freigegeben,
+        ),
+      ];
+      final csv = ExportService.buildLohnjournalCsv(
+        records: records,
+        employeeName: (uid) => uid == 'u-a' ? 'Anna' : 'Bernd',
+        monthLabel: '06/2026',
+      );
+      expect(csv.codeUnitAt(0), 0xFEFF); // BOM
+      expect(csv, contains('Lohnjournal'));
+      expect(csv, contains('06/2026'));
+      final rows = _parseCsv(csv);
+      // Header-Zeile hat 18 Spalten.
+      final header = rows.firstWhere((r) => r.contains('Mitarbeiter'));
+      expect(header.length, 18);
+      // Datenzeilen: Anna VOR Bernd (alphabetisch).
+      final dataRows = rows.where((r) => r.isNotEmpty &&
+          (r.first == 'Anna' || r.first == 'Bernd')).toList();
+      expect(dataRows.map((r) => r.first), ['Anna', 'Bernd']);
+    });
+  });
 
   group('ExportService.buildAuditLogCsv', () {
     test('BOM, Kopfzeile und neueste-zuerst-Sortierung', () {

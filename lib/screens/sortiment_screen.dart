@@ -7,6 +7,7 @@ import '../core/money.dart';
 import '../core/sales_velocity.dart';
 import '../models/product.dart';
 import '../providers/auth_provider.dart';
+import '../providers/feature_flag_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../theme/theme_extensions.dart';
 import '../widgets/breadcrumb_app_bar.dart';
@@ -43,8 +44,13 @@ class _SortimentScreenState extends State<SortimentScreen> {
     });
     try {
       final inventory = context.read<InventoryProvider>();
-      final analysis =
-          await inventory.loadAssortmentAnalysis(siteId: siteId, windowDays: _windowDays);
+      // §3.4-Schalter (M6-C): EK netto/brutto konsistent mit dem Kassenbericht.
+      final includeVat =
+          context.read<FeatureFlagProvider>().purchasePricesIncludeVat;
+      final analysis = await inventory.loadAssortmentAnalysis(
+          siteId: siteId,
+          windowDays: _windowDays,
+          purchasePricesIncludeVat: includeVat);
       final basket =
           await inventory.loadBasketAnalysis(siteId: siteId, windowDays: _windowDays);
       if (!mounted || siteId != _siteId) return;

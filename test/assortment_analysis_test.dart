@@ -174,4 +174,42 @@ void main() {
     );
     expect(analysis.items.single.isValuated, isFalse);
   });
+
+  test('§3.4-Schalter (M6-C): Brutto-EK wird über taxRatePercent normalisiert',
+      () {
+    Product taxed(String id, {int? ek, int? rate}) => Product(
+          id: id,
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: id,
+          purchasePriceCents: ek,
+          taxRatePercent: rate,
+        );
+    final receipts = [
+      receipt([line('a', qty: 10, unit: 200)]), // Umsatz 2000
+    ];
+
+    // Default (EK netto): DB = 2000 − 119×10 = 810.
+    final netto = computeAssortmentAnalysis(
+      receipts: receipts,
+      products: [taxed('a', ek: 119, rate: 19)],
+    );
+    expect(netto.items.single.contributionCents, 2000 - 119 * 10);
+
+    // Brutto-Schalter: EK 119 brutto → 100 netto → DB = 2000 − 100×10 = 1000.
+    final brutto = computeAssortmentAnalysis(
+      receipts: receipts,
+      products: [taxed('a', ek: 119, rate: 19)],
+      purchasePricesIncludeVat: true,
+    );
+    expect(brutto.items.single.contributionCents, 2000 - 100 * 10);
+
+    // Brutto-Schalter, aber kein Steuersatz → unbewertet (kein stilles Raten).
+    final ohneSatz = computeAssortmentAnalysis(
+      receipts: receipts,
+      products: [taxed('a', ek: 119)],
+      purchasePricesIncludeVat: true,
+    );
+    expect(ohneSatz.items.single.isValuated, isFalse);
+  });
 }

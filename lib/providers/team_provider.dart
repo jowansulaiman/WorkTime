@@ -420,9 +420,18 @@ class TeamProvider extends ChangeNotifier {
         _setStreamError('Qualifikationen', error);
       });
 
-      _contractsSubscription = _firestoreService
-          .watchEmploymentContracts(user.orgId)
-          .listen((items) {
+      // PA-0.2: Vertraege sind seit der Leck-Schliessung nicht mehr org-weit
+      // lesbar. Manager streamen weiterhin alle (Planung/Compliance/Verteiler),
+      // Nicht-Manager nur den eigenen Vertrag (self-Query) — sonst liefert der
+      // org-weite Stream permission-denied und der Mitarbeiter verliert auch
+      // seine eigenen Referenzdaten fuer die Compliance-Vorschau.
+      final contractsStream = user.canManageShifts
+          ? _firestoreService.watchEmploymentContracts(user.orgId)
+          : _firestoreService.watchEmploymentContractsForUser(
+              user.orgId,
+              user.uid,
+            );
+      _contractsSubscription = contractsStream.listen((items) {
         if (usesHybridStorage) {
           unawaited(_storeHybridContractsSnapshot(items));
           return;

@@ -480,4 +480,87 @@ void main() {
       expect(resolved, const Duration(milliseconds: 300));
     });
   });
+
+  group('AppErrorState', () {
+    testWidgets('zeigt Titel + Nachricht, Retry ruft Rueckruf', (tester) async {
+      var retried = false;
+      await _pump(
+        tester,
+        AppErrorState(
+          message: 'Keine Verbindung zum Server.',
+          onRetry: () => retried = true,
+        ),
+      );
+      expect(find.text('Etwas ist schiefgelaufen'), findsOneWidget);
+      expect(find.text('Keine Verbindung zum Server.'), findsOneWidget);
+      await tester.tap(find.text('Erneut versuchen'));
+      expect(retried, isTrue);
+    });
+
+    testWidgets('ohne onRetry: kein Button; eigener Titel wird gezeigt',
+        (tester) async {
+      await _pump(
+        tester,
+        const AppErrorState(message: 'Fehler.', title: 'Laden gescheitert'),
+      );
+      expect(find.text('Laden gescheitert'), findsOneWidget);
+      expect(find.text('Erneut versuchen'), findsNothing);
+    });
+  });
+
+  group('AppOfflineBanner', () {
+    testWidgets('offline: zeigt Warnung + cloud_off-Icon', (tester) async {
+      await _pump(tester, const AppOfflineBanner(offline: true));
+      expect(find.byIcon(Icons.cloud_off_rounded), findsOneWidget);
+      expect(find.textContaining('Offline'), findsOneWidget);
+    });
+
+    testWidgets('online: kein Banner-Inhalt', (tester) async {
+      await _pump(tester, const AppOfflineBanner(offline: false));
+      expect(find.byIcon(Icons.cloud_off_rounded), findsNothing);
+    });
+  });
+
+  group('AppSearchField', () {
+    testWidgets('meldet Eingabe und zeigt Loeschen-Button erst bei Text',
+        (tester) async {
+      String? changed;
+      final controller = TextEditingController();
+      await _pump(
+        tester,
+        AppSearchField(
+          controller: controller,
+          hint: 'Kontakte suchen',
+          onChanged: (v) => changed = v,
+        ),
+      );
+      expect(find.text('Kontakte suchen'), findsOneWidget);
+      expect(find.byIcon(Icons.close_rounded), findsNothing);
+      await tester.enterText(find.byType(TextField), 'Meier');
+      await tester.pump();
+      expect(changed, 'Meier');
+      expect(find.byIcon(Icons.close_rounded), findsOneWidget);
+    });
+
+    testWidgets('Loeschen leert Feld und meldet leeren String + onClear',
+        (tester) async {
+      String? changed;
+      var cleared = false;
+      final controller = TextEditingController(text: 'Meier');
+      await _pump(
+        tester,
+        AppSearchField(
+          controller: controller,
+          onChanged: (v) => changed = v,
+          onClear: () => cleared = true,
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.close_rounded));
+      await tester.pump();
+      expect(controller.text, isEmpty);
+      expect(changed, '');
+      expect(cleared, isTrue);
+    });
+  });
 }

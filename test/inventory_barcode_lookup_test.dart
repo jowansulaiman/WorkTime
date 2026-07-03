@@ -174,6 +174,38 @@ void main() {
       expect(provider.productByBarcode('0000000000000'), isNull);
       expect(provider.productsByBarcode('0000000000000'), isEmpty);
     });
+
+    test('UPC-A (12) wird von EAN-13-mit-fuehrender-Null gefunden (#1653)',
+        () async {
+      final provider = await seededLocalProvider(const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'US-Artikel',
+          barcode: '036000291452', // 12-stelliger UPC-A
+        ),
+      ]);
+
+      // iOS liefert UPC-A teils als EAN-13 mit fuehrender Null.
+      final hit = provider.productByBarcode('0036000291452');
+      expect(hit, isNotNull);
+      expect(hit!.name, 'US-Artikel');
+    });
+
+    test('EAN-13-mit-fuehrender-Null wird von UPC-A (12) gefunden', () async {
+      final provider = await seededLocalProvider(const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'US-Artikel 13',
+          barcode: '0036000291452', // 13-stellig, fuehrende Null
+        ),
+      ]);
+
+      final hit = provider.productByBarcode('036000291452');
+      expect(hit, isNotNull);
+      expect(hit!.name, 'US-Artikel 13');
+    });
   });
 
   group('adjustStock – stabile clientMutationId (Doppel-Scan-Schutz)', () {

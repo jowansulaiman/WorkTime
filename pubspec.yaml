@@ -44,6 +44,10 @@ dependencies:
   firebase_auth: ^5.2.0
   cloud_firestore: ^5.4.0
   cloud_functions: ^5.1.0
+  # Dokumenten-Upload der digitalen Personalakte (PA-3). 12.2.x ist die zur
+  # aktuellen firebase_core ^3.4.0-/web ^0.5-Linie passende Version (12.3+ zieht
+  # web ^1.0, 13.x verlangt firebase_core ^4).
+  firebase_storage: ^12.2.0
   # App Check: Bot-/Abuse-Schutz für den öffentlichen Schreibpfad (/wunsch).
   # Aktivierung nur, wenn ein reCAPTCHA-Key per dart-define gesetzt ist
   # (APP_APPCHECK_RECAPTCHA_KEY) — sonst No-op. Enforcement zusätzlich in der
@@ -76,6 +80,11 @@ dependencies:
   # Bildschirm wach halten für den Arbeitsmodus/Kiosk (Laden-Tablet, Always-On).
   # No-op auf nicht unterstützten Plattformen; nur im Kiosk-Build aktiviert.
   wakelock_plus: ^1.2.8
+  connectivity_plus: ^7.2.0
+  url_launcher: ^6.3.2
+  local_auth: ^3.0.1
+  permission_handler: ^12.0.3
+  file_picker: ^8.0.7
 
 dev_dependencies:
   flutter_test:

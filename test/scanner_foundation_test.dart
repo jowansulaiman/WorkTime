@@ -39,6 +39,38 @@ void main() {
     });
   });
 
+  group('gtinLookupVariants (UPC-A <-> EAN-13 Leading-Zero, #1653)', () {
+    test('UPC-A (12) ergibt zusaetzlich die EAN-13-Variante mit fuehrender Null',
+        () {
+      expect(
+        gtinLookupVariants('036000291452'),
+        {'036000291452', '0036000291452'},
+      );
+    });
+
+    test('EAN-13 mit fuehrender Null ergibt zusaetzlich die UPC-A-Variante', () {
+      expect(
+        gtinLookupVariants('0036000291452'),
+        {'0036000291452', '036000291452'},
+      );
+    });
+
+    test('EAN-13 ohne fuehrende Null bleibt unveraendert (einziger Kandidat)',
+        () {
+      expect(gtinLookupVariants('4011200296908'), {'4011200296908'});
+    });
+
+    test('EAN-8 und Nicht-GTIN-Laengen bleiben unveraendert', () {
+      expect(gtinLookupVariants('96385074'), {'96385074'}); // EAN-8
+      expect(gtinLookupVariants('12345'), {'12345'});
+    });
+
+    test('nicht-numerische/leerer Code = nur der Code selbst', () {
+      expect(gtinLookupVariants('ABC-123'), {'ABC-123'});
+      expect(gtinLookupVariants('  4006381333931 '), {'4006381333931'});
+    });
+  });
+
   group('MobileBreakpoints.isNativeMobile', () {
     tearDown(() => debugDefaultTargetPlatformOverride = null);
 

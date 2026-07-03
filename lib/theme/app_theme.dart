@@ -1,8 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'strichmaennchen_tokens.dart';
 import 'theme_extensions.dart';
 
+export 'strichmaennchen_tokens.dart';
 export 'theme_extensions.dart';
 
 abstract final class AppTheme {
@@ -23,6 +25,32 @@ abstract final class AppTheme {
       useV2 ? lightV2 : light;
 
   static ThemeData resolveDark({required bool useV2}) => useV2 ? darkV2 : dark;
+
+  /// **Strichmännchen-Theme** (Marken-Rebrand, Memory `strichmaennchen-farbpalette`):
+  /// nutzt die M3-Expressive-Maschinerie von V2 (Radien/Typografie/Komponenten),
+  /// aber mit der 1:1 aus der Ladenseite übernommenen Palette ([StrichTokens]) —
+  /// navy=primary, gold=secondary, gelb=tertiary/Aktion, rose=error,
+  /// paper/white=Flächen. Bewusst **opt-in** (eigene Variante via [Theme] bzw.
+  /// [StrichmaennchenTheme]), NICHT der App-Default. Für einen app-weiten Wechsel
+  /// `resolveLight`/`resolveDark` auf diese Getter zeigen lassen.
+  static ThemeData get strichmaennchenLight => _buildThemeV2(
+        Brightness.light,
+        colorSchemeOverride: _buildStrichColorScheme(Brightness.light),
+        appColorsOverride: AppThemeColors.strichmaennchenLight,
+      );
+
+  static ThemeData get strichmaennchenDark => _buildThemeV2(
+        Brightness.dark,
+        colorSchemeOverride: _buildStrichColorScheme(Brightness.dark),
+        appColorsOverride: AppThemeColors.strichmaennchenDark,
+      );
+
+  /// Strichmännchen-Theme für die gegebene [brightness].
+  static ThemeData strichmaennchen(Brightness brightness) =>
+      brightness == Brightness.dark ? strichmaennchenDark : strichmaennchenLight;
+
+  static ColorScheme strichmaennchenColorScheme(Brightness brightness) =>
+      _buildStrichColorScheme(brightness);
 
   static ThemeData theme(Brightness brightness) => _buildTheme(brightness);
 
@@ -472,10 +500,15 @@ abstract final class AppTheme {
   // gehalten, damit der V1-Pfad unangetastet bleibt (Strangler).
   // ===========================================================================
 
-  static ThemeData _buildThemeV2(Brightness brightness) {
+  static ThemeData _buildThemeV2(
+    Brightness brightness, {
+    ColorScheme? colorSchemeOverride,
+    AppThemeColors? appColorsOverride,
+  }) {
     final isDark = brightness == Brightness.dark;
-    final colorScheme = _buildColorSchemeV2(brightness);
-    final appColors = isDark ? AppThemeColors.darkV2 : AppThemeColors.lightV2;
+    final colorScheme = colorSchemeOverride ?? _buildColorSchemeV2(brightness);
+    final appColors = appColorsOverride ??
+        (isDark ? AppThemeColors.darkV2 : AppThemeColors.lightV2);
     final borderColor = colorScheme.outlineVariant.withValues(alpha: 0.7);
     const radii = AppRadii.v2;
     final typography = Typography.material2021(platform: defaultTargetPlatform);
@@ -918,6 +951,168 @@ abstract final class AppTheme {
       scrim: Colors.black,
       inversePrimary:
           isDark ? const Color(0xFF0E7C7B) : const Color(0xFF5FD4CE),
+    );
+  }
+
+  // ===========================================================================
+  // Strichmännchen-Theme — ColorScheme aus StrichTokens (Marken-Rebrand).
+  // M3 verlangt ~30 Rollen; die flache Store-Palette (11 Farben) definiert nur
+  // Marken-/Statustöne, keine Container-/Neutral-Stufen. Deshalb: fromSeed(navy)
+  // liefert eine harmonische Navy-Tonpalette als Basis, danach überschreiben wir
+  // JEDE Rolle, für die der Store einen exakten Wert hat (primary/secondary/
+  // tertiary/error/Flächen), und leiten die fehlenden Neutral-/Container-Töne
+  // per Color.alphaBlend/lerp NACHVOLLZIEHBAR aus Store-Tokens ab (kein
+  // erfundener Hex). outlineVariant hell = exakt `--line` (ink@14 % über paper).
+  // ===========================================================================
+  static ColorScheme _buildStrichColorScheme(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final base = ColorScheme.fromSeed(
+      seedColor: StrichTokens.navy,
+      brightness: brightness,
+    );
+    if (isDark) {
+      // Store ist light-first (`color-scheme: light`). Der Dunkelmodus leitet
+      // sich aus den DUNKELFLÄCHEN der Store-Seite ab: Navy-Grund, warmweißer
+      // Text, Gold/Gelb als helle Akzente.
+      return base.copyWith(
+        primary: StrichTokens.gold,
+        onPrimary: StrichTokens.navy,
+        primaryContainer: Color.lerp(
+          StrichTokens.navy,
+          StrichTokens.navySoft,
+          0.6,
+        ),
+        onPrimaryContainer: StrichTokens.paper,
+        secondary: StrichTokens.yellow,
+        onSecondary: StrichTokens.ink,
+        tertiary: const Color(0xFF7FB0DF), // aufgehelltes --blue für Dunkel
+        onTertiary: StrichTokens.navy,
+        error: const Color(0xFFE4899A), // aufgehelltes --rose für Dunkel
+        onError: StrichTokens.navy,
+        surface: StrichTokens.navy,
+        onSurface: StrichTokens.paper,
+        surfaceContainerLowest: Color.lerp(
+          StrichTokens.navy,
+          StrichTokens.shadow,
+          0.25,
+        ),
+        surfaceContainerLow: StrichTokens.navy,
+        surfaceContainer: Color.lerp(
+          StrichTokens.navy,
+          StrichTokens.navySoft,
+          0.45,
+        ),
+        surfaceContainerHigh: StrichTokens.navySoft,
+        surfaceContainerHighest: Color.lerp(
+          StrichTokens.navySoft,
+          StrichTokens.paper,
+          0.12,
+        ),
+        onSurfaceVariant: Color.alphaBlend(
+          StrichTokens.paper.withValues(alpha: 0.72),
+          StrichTokens.navy,
+        ),
+        outline: Color.alphaBlend(
+          StrichTokens.pureWhite.withValues(alpha: 0.30),
+          StrichTokens.navy,
+        ),
+        outlineVariant: Color.alphaBlend(
+          StrichTokens.pureWhite.withValues(alpha: 0.14),
+          StrichTokens.navy,
+        ),
+        surfaceTint: Colors.transparent,
+        shadow: StrichTokens.shadow,
+        scrim: StrichTokens.shadow,
+        inversePrimary: StrichTokens.navy,
+      );
+    }
+    return base.copyWith(
+      primary: StrichTokens.navy,
+      onPrimary: StrichTokens.white,
+      primaryContainer: Color.alphaBlend(
+        StrichTokens.navy.withValues(alpha: 0.14),
+        StrichTokens.paper,
+      ),
+      onPrimaryContainer: StrichTokens.navy,
+      secondary: StrichTokens.gold,
+      onSecondary: StrichTokens.navy,
+      secondaryContainer: Color.alphaBlend(
+        StrichTokens.gold.withValues(alpha: 0.22),
+        StrichTokens.white,
+      ),
+      onSecondaryContainer: Color.alphaBlend(
+        StrichTokens.ink.withValues(alpha: 0.75),
+        StrichTokens.gold,
+      ),
+      tertiary: StrichTokens.yellow, // Gelb = Aktion/Aufmerksamkeit (CTA)
+      onTertiary: StrichTokens.ink,
+      tertiaryContainer: Color.alphaBlend(
+        StrichTokens.yellow.withValues(alpha: 0.28),
+        StrichTokens.white,
+      ),
+      onTertiaryContainer: StrichTokens.ink,
+      error: StrichTokens.rose,
+      onError: StrichTokens.white,
+      errorContainer: Color.alphaBlend(
+        StrichTokens.rose.withValues(alpha: 0.16),
+        StrichTokens.white,
+      ),
+      onErrorContainer: Color.alphaBlend(
+        StrichTokens.ink.withValues(alpha: 0.70),
+        StrichTokens.rose,
+      ),
+      surface: StrichTokens.paper,
+      onSurface: StrichTokens.ink,
+      surfaceContainerLowest: StrichTokens.white,
+      surfaceContainerLow: StrichTokens.white,
+      surfaceContainer: Color.lerp(
+        StrichTokens.paper,
+        StrichTokens.paperDeep,
+        0.5,
+      ),
+      surfaceContainerHigh: StrichTokens.paperDeep,
+      surfaceContainerHighest: Color.lerp(
+        StrichTokens.paperDeep,
+        StrichTokens.ink,
+        0.06,
+      ),
+      onSurfaceVariant: Color.alphaBlend(
+        StrichTokens.ink.withValues(alpha: 0.72),
+        StrichTokens.paper,
+      ),
+      outline: Color.alphaBlend(
+        StrichTokens.ink.withValues(alpha: 0.42),
+        StrichTokens.paper,
+      ),
+      outlineVariant: Color.alphaBlend(
+        StrichTokens.ink.withValues(alpha: 0.14), // = --line
+        StrichTokens.paper,
+      ),
+      surfaceTint: Colors.transparent,
+      shadow: StrichTokens.shadow,
+      scrim: StrichTokens.shadow,
+      inversePrimary: StrichTokens.gold,
+    );
+  }
+}
+
+/// Opt-in-Wrapper: hüllt [child] in das [AppTheme.strichmaennchen]-Theme der
+/// aktuellen Helligkeit. So bekommen einzelne neue Screens (MHD-/Ablauf-Warnung,
+/// Zeitwirtschaft-Ausbau) die Ladenseiten-Optik, ohne den App-Default zu ändern:
+///
+/// ```dart
+/// StrichmaennchenTheme(child: Scaffold(...))
+/// ```
+class StrichmaennchenTheme extends StatelessWidget {
+  const StrichmaennchenTheme({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: AppTheme.strichmaennchen(Theme.of(context).brightness),
+      child: child,
     );
   }
 }

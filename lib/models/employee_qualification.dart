@@ -26,6 +26,10 @@ extension QualiErwerbX on QualiErwerb {
       };
 }
 
+/// Gültigkeitsstatus einer Qualifikation relativ zu einem Stichtag (PA-1.3):
+/// gültig, läuft bald ab (innerhalb der Warnfrist) oder abgelaufen.
+enum QualiGueltigkeit { gueltig, laeuftAb, abgelaufen }
+
 /// Einem Mitarbeiter zugeordnete Qualifikation (HR-Sub-Entität, M-H) –
 /// mit Erwerb/Gültigkeit/Doku. Bezieht sich optional auf eine
 /// [QualificationDefinition] (`qualificationId`, Schicht-Anforderung), trägt
@@ -69,6 +73,19 @@ class EmployeeQualification {
     if (bis == null) return true;
     final end = DateTime(bis.year, bis.month, bis.day, 23, 59, 59);
     return !date.isAfter(end);
+  }
+
+  /// Gültigkeitsstatus am [date] (PA-1.3, pure): `abgelaufen`, wenn `gueltigBis`
+  /// vor dem Tag liegt; `laeuftAb`, wenn es innerhalb der nächsten [warnTage]
+  /// Tage abläuft; sonst `gueltig` (auch unbefristet ohne `gueltigBis`).
+  QualiGueltigkeit gueltigkeitStatus(DateTime date, {int warnTage = 30}) {
+    final bis = gueltigBis;
+    if (bis == null) return QualiGueltigkeit.gueltig;
+    final end = DateTime(bis.year, bis.month, bis.day, 23, 59, 59);
+    if (date.isAfter(end)) return QualiGueltigkeit.abgelaufen;
+    final warnAb = end.subtract(Duration(days: warnTage));
+    if (!date.isBefore(warnAb)) return QualiGueltigkeit.laeuftAb;
+    return QualiGueltigkeit.gueltig;
   }
 
   // Tages-Datum auf lokale Mittagszeit normalisieren (Konvention: 12:00).

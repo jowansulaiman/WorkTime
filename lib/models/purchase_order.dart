@@ -67,6 +67,7 @@ class PurchaseOrderItem {
     required this.quantityOrdered,
     this.quantityReceived = 0,
     this.unitPriceCents,
+    this.taxRatePercent,
   });
 
   final String? productId;
@@ -75,7 +76,15 @@ class PurchaseOrderItem {
   final String unit;
   final int quantityOrdered;
   final int quantityReceived;
+
+  /// Einzelpreis in Cent — als **Netto**-Einkaufspreis interpretiert
+  /// (B2B-Konvention: Lieferantenrechnungen weisen netto + USt getrennt aus).
   final int? unitPriceCents;
+
+  /// **Kassen-Modul M6 — USt-Satz der Position** in ganzen Prozent (7/19),
+  /// `null` = ohne ausgewiesene Steuer (dann netto = brutto). Macht die
+  /// Käufe-Auswertung echt netto/brutto statt eines Netto-Richtwerts (§8a).
+  final int? taxRatePercent;
 
   /// Noch offene (nicht gelieferte) Menge.
   int get outstandingQuantity {
@@ -85,13 +94,35 @@ class PurchaseOrderItem {
 
   bool get isFullyReceived => quantityReceived >= quantityOrdered;
 
-  /// Positionssumme in Cent (bestellte Menge * Einzelpreis).
+  /// Positionssumme (Netto) in Cent (bestellte Menge * Einzelpreis).
   int get lineTotalCents {
     final price = unitPriceCents;
     if (price == null) {
       return 0;
     }
     return price * quantityOrdered;
+  }
+
+  /// Netto-Positionssumme in Cent. [priceIncludesVat] = Org-Schalter §3.4:
+  /// ob der erfasste [unitPriceCents] MwSt enthält. `true` → aus dem
+  /// Brutto-Preis herausrechnen; `false` (B2B-Default) → der Preis IST netto.
+  /// Ohne USt-Satz gleich [lineTotalCents].
+  int lineNetCents({required bool priceIncludesVat}) {
+    final rate = taxRatePercent;
+    if (rate == null || rate <= 0) return lineTotalCents;
+    return priceIncludesVat
+        ? (lineTotalCents / (1 + rate / 100)).round()
+        : lineTotalCents;
+  }
+
+  /// Brutto-Positionssumme in Cent (Netto + USt). Ohne USt-Satz gleich
+  /// [lineTotalCents]. [priceIncludesVat] wie [lineNetCents].
+  int lineGrossCents({required bool priceIncludesVat}) {
+    final rate = taxRatePercent;
+    if (rate == null || rate <= 0) return lineTotalCents;
+    return priceIncludesVat
+        ? lineTotalCents
+        : (lineTotalCents * (1 + rate / 100)).round();
   }
 
   factory PurchaseOrderItem.fromMap(Map<String, dynamic> map) {
@@ -108,6 +139,8 @@ class PurchaseOrderItem {
           parse.toInt(map['quantityReceived'] ?? map['quantity_received']) ?? 0,
       unitPriceCents:
           parse.toInt(map['unitPriceCents'] ?? map['unit_price_cents']),
+      taxRatePercent:
+          parse.toInt(map['taxRatePercent'] ?? map['tax_rate_percent']),
     );
   }
 
@@ -120,6 +153,7 @@ class PurchaseOrderItem {
       'quantityOrdered': quantityOrdered,
       'quantityReceived': quantityReceived,
       'unitPriceCents': unitPriceCents,
+      'taxRatePercent': taxRatePercent,
     };
   }
 
@@ -132,6 +166,7 @@ class PurchaseOrderItem {
       'quantity_ordered': quantityOrdered,
       'quantity_received': quantityReceived,
       'unit_price_cents': unitPriceCents,
+      'tax_rate_percent': taxRatePercent,
     };
   }
 
@@ -145,6 +180,8 @@ class PurchaseOrderItem {
     int? quantityReceived,
     int? unitPriceCents,
     bool clearUnitPrice = false,
+    int? taxRatePercent,
+    bool clearTaxRate = false,
   }) {
     return PurchaseOrderItem(
       productId: productId ?? this.productId,
@@ -157,6 +194,8 @@ class PurchaseOrderItem {
       quantityReceived: quantityReceived ?? this.quantityReceived,
       unitPriceCents:
           clearUnitPrice ? null : (unitPriceCents ?? this.unitPriceCents),
+      taxRatePercent:
+          clearTaxRate ? null : (taxRatePercent ?? this.taxRatePercent),
     );
   }
 
@@ -219,6 +258,18 @@ class PurchaseOrder {
 
   int get totalCents =>
       items.fold(0, (total, item) => total + item.lineTotalCents);
+
+  /// Netto-Gesamtsumme in Cent. [priceIncludesVat] = Org-Schalter §3.4.
+  int totalNetCents({required bool priceIncludesVat}) => items.fold(
+      0, (total, item) => total + item.lineNetCents(priceIncludesVat: priceIncludesVat));
+
+  /// Brutto-Gesamtsumme in Cent (netto + USt je Position).
+  int totalGrossCents({required bool priceIncludesVat}) => items.fold(0,
+      (total, item) => total + item.lineGrossCents(priceIncludesVat: priceIncludesVat));
+
+  /// Ob mindestens eine Position einen USt-Satz trägt (dann weichen netto/
+  /// brutto voneinander ab; schalter-unabhängig).
+  bool get hasTaxRates => items.any((item) => (item.taxRatePercent ?? 0) > 0);
 
   bool get hasPrices => items.any((item) => item.unitPriceCents != null);
 

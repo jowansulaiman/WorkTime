@@ -188,6 +188,126 @@ void main() {
     });
   });
 
+  group('Klärung & Korrektur (ZV-3)', () {
+    const manager = AppUserProfile(
+      uid: 'mgr-1',
+      orgId: 'org-1',
+      email: 'mgr@example.com',
+      role: UserRole.admin,
+      isActive: true,
+      settings: UserSettings(name: 'Chef'),
+    );
+
+    Future<ZeitwirtschaftProvider> mgrProvider() async {
+      final provider = ZeitwirtschaftProvider(
+        firestoreService: FirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      await provider.updateSession(manager, localStorageOnly: true);
+      return provider;
+    }
+
+    test('clockIn schreibt shiftId + source app', () async {
+      final provider = await mgrProvider();
+      await provider.clockIn(
+        siteId: 'site-1',
+        siteName: 'Strichmännchen',
+        shiftId: 'shift-42',
+        at: DateTime(2026, 6, 10, 8),
+      );
+      final open = provider.openEntry!;
+      expect(open.shiftId, 'shift-42');
+      expect(open.source, 'app');
+    });
+
+    test('resolveKlaerung schließt ab + erzeugt genau einen WorkEntry', () async {
+      WorkEntry? posted;
+      final provider = await mgrProvider();
+      provider.setWorkEntryPoster((e) async => posted = e);
+
+      // Klärungsfall erzeugen (Vortag-Buchung).
+      await provider.clockIn(at: DateTime(2026, 6, 9, 22));
+      await provider.clockOut(at: DateTime(2026, 6, 10, 6));
+      expect(posted, isNull); // Klärung erzeugt zunächst keinen WorkEntry
+
+      final open = (await storedFor(manager))
+          .firstWhere((e) => e.status == ClockStatus.klaerung);
+      await provider.resolveKlaerung(
+        open,
+        kommen: DateTime(2026, 6, 9, 22),
+        gehen: DateTime(2026, 6, 10, 2),
+        grund: 'Ausstempeln vergessen',
+      );
+
+      expect(posted, isNotNull);
+      expect(posted!.status, WorkEntryStatus.submitted);
+      final resolved = (await storedFor(manager))
+          .firstWhere((e) => e.id == open.id);
+      expect(resolved.status, ClockStatus.completed);
+      expect(resolved.korrigiertVonUid, 'mgr-1');
+      expect(resolved.korrekturGrund, 'Ausstempeln vergessen');
+      expect(resolved.manuellErfasst, isTrue);
+    });
+
+    test('dismissKlaerung setzt deaktiviert, kein WorkEntry', () async {
+      WorkEntry? posted;
+      final provider = await mgrProvider();
+      provider.setWorkEntryPoster((e) async => posted = e);
+
+      await provider.clockIn(at: DateTime(2026, 6, 9, 22));
+      await provider.clockOut(at: DateTime(2026, 6, 10, 6));
+      final open = (await storedFor(manager))
+          .firstWhere((e) => e.status == ClockStatus.klaerung);
+
+      await provider.dismissKlaerung(open, grund: 'Doppelbuchung');
+      final dismissed =
+          (await storedFor(manager)).firstWhere((e) => e.id == open.id);
+      expect(dismissed.status, ClockStatus.deaktiviert);
+      expect(posted, isNull);
+    });
+
+    test('addManualClockEntry erzeugt fertige Buchung + WorkEntry', () async {
+      WorkEntry? posted;
+      final provider = await mgrProvider();
+      provider.setWorkEntryPoster((e) async => posted = e);
+
+      await provider.addManualClockEntry(
+        userId: 'emp-1',
+        userName: 'Peter',
+        kommen: DateTime(2026, 6, 10, 8),
+        gehen: DateTime(2026, 6, 10, 16),
+        siteId: 'site-1',
+        siteName: 'Strichmännchen',
+        grund: 'Handy vergessen',
+      );
+
+      expect(posted, isNotNull);
+      expect(posted!.userId, 'emp-1');
+      expect(posted!.sourceShiftId, isNull);
+      final stored = (await storedFor(manager))
+          .firstWhere((e) => e.userId == 'emp-1');
+      expect(stored.status, ClockStatus.completed);
+      expect(stored.manuellErfasst, isTrue);
+      expect(stored.korrekturGrund, 'Handy vergessen');
+    });
+
+    test('Mitarbeiter ohne Manager-Recht darf nicht korrigieren', () async {
+      final provider = ZeitwirtschaftProvider(
+        firestoreService: FirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      await provider.updateSession(employee, localStorageOnly: true);
+      await provider.clockIn(at: DateTime(2026, 6, 9, 22));
+      await provider.clockOut(at: DateTime(2026, 6, 10, 6));
+      final open = (await storedFor(employee))
+          .firstWhere((e) => e.status == ClockStatus.klaerung);
+
+      await provider.dismissKlaerung(open, grund: 'x');
+      final after =
+          (await storedFor(employee)).firstWhere((e) => e.id == open.id);
+      // employee (kein canManageShifts) → No-Op, bleibt Klärung.
+      expect(after.status, ClockStatus.klaerung);
+    });
+  });
+
   group('Stundenkonto-Snapshots (M4b)', () {
     test('saveSnapshot + loadSnapshots round-trip (lokal)', () async {
       final provider = ZeitwirtschaftProvider(

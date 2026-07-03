@@ -50,6 +50,7 @@ abstract final class AppRoutes {
   static const String inventory = '/warenwirtschaft';
   static const String customerOrders = '/bestellungen';
   static const String personal = '/personal';
+  static const String meineAkte = '/meine-akte'; // Mitarbeiter-Selbstsicht (PA-2.4)
   static const String finance = '/buchhaltung';
   static const String feedbackInbox = '/feedback-eingang';
   static const String auditLog = '/protokoll';
@@ -64,6 +65,7 @@ abstract final class AppRoutes {
   static const String sortiment = '/sortimentsanalyse';
   static const String staffingProfile = '/besetzungs-profil';
   static const String dailyClosing = '/tagesabschluss';
+  static const String kassenbericht = '/kassenbericht';
   static const String storeHealth = '/laden-benchmark';
   static const String cashierAnomaly = '/kassierer-pruefung';
 

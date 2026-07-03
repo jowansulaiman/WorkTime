@@ -5,12 +5,14 @@ import 'package:flutter/foundation.dart';
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/clock_service.dart';
+import '../core/dienst_abgleich.dart';
 import '../core/monatsabschluss_service.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/clock_entry.dart';
 import '../models/payroll_record.dart';
+import '../models/shift.dart';
 import '../models/work_entry.dart';
 import '../models/zeitkonto_snapshot.dart';
 import '../services/database_service.dart';
@@ -45,10 +47,14 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
 
   AuditSink? _audit;
 
-  StreamSubscription<ClockEntry?>? _openSubscription;
+  StreamSubscription<({ClockEntry? entry, bool pending, bool fromCache})>?
+      _openSubscription;
   StreamSubscription<List<ClockEntry>>? _ongoingSubscription;
+  StreamSubscription<List<ClockEntry>>? _klaerungSubscription;
   ClockEntry? _openEntry;
+  bool _openEntryPending = false;
   List<ClockEntry> _ongoingEntries = <ClockEntry>[];
+  List<ClockEntry> _klaerungEntries = <ClockEntry>[];
   List<ClockEntry> _localEntries = <ClockEntry>[];
   List<ClockEntry> _monthEntries = <ClockEntry>[];
   DateTime _selectedMonth = _currentMonth();
@@ -80,6 +86,14 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
   /// Aktuell laufende Buchungen der Org („wer ist eingestempelt") — nur für
   /// Manager/Admin befüllt (Mitarbeiter sehen nur die eigene offene Buchung).
   List<ClockEntry> get ongoingEntries => _ongoingEntries;
+
+  /// Offene Klärungsfälle der Org (ZV-3.1) — nur für Manager/Admin befüllt,
+  /// nach `kommen` absteigend sortiert.
+  List<ClockEntry> get klaerungEntries => _klaerungEntries;
+
+  /// Hat die eigene offene Buchung noch nicht bestätigte lokale Schreibvorgänge
+  /// (offline gepuffert, ZV-1.2)? Treibt das „ausstehend"-Badge.
+  bool get openEntryPending => _openEntryPending;
 
   /// Eigene Buchungen des [selectedMonth].
   List<ClockEntry> get monthEntries => _monthEntries;
@@ -212,6 +226,7 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     _disposed = true;
     _openSubscription?.cancel();
     _ongoingSubscription?.cancel();
+    _klaerungSubscription?.cancel();
     super.dispose();
   }
 
@@ -236,7 +251,11 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     _openSubscription = null;
     await _ongoingSubscription?.cancel();
     _ongoingSubscription = null;
+    await _klaerungSubscription?.cancel();
+    _klaerungSubscription = null;
     _ongoingEntries = <ClockEntry>[];
+    _klaerungEntries = <ClockEntry>[];
+    _openEntryPending = false;
 
     if (user == null) {
       _openEntry = null;
@@ -249,10 +268,11 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
 
     if (_usesFirestore) {
       _openSubscription = _firestoreService
-          .watchOpenClockEntry(orgId: user.orgId, userId: user.uid)
+          .watchOpenClockEntryMeta(orgId: user.orgId, userId: user.uid)
           .listen(
-        (entry) {
-          _openEntry = entry;
+        (snapshot) {
+          _openEntry = snapshot.entry;
+          _openEntryPending = snapshot.pending;
           _safeNotify();
         },
         onError: (Object error) {
@@ -275,6 +295,20 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
                 error: error);
           },
         );
+        _klaerungSubscription = _firestoreService
+            .watchKlaerungClockEntries(orgId: user.orgId)
+            .listen(
+          (entries) {
+            final sorted = List<ClockEntry>.from(entries)
+              ..sort((a, b) => b.kommen.compareTo(a.kommen));
+            _klaerungEntries = sorted;
+            _safeNotify();
+          },
+          onError: (Object error) {
+            AppLogger.warning('Zeitwirtschaft: klaerung-clock-stream Fehler',
+                error: error);
+          },
+        );
       }
     } else {
       await _loadLocal();
@@ -288,6 +322,21 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
   Future<void> selectMonth(DateTime month) async {
     _selectedMonth = DateTime(month.year, month.month);
     await _loadMonthEntries();
+    _safeNotify();
+  }
+
+  /// Lädt die Einmal-Read-Sichten (Monatsbuchungen + Jahres-Snapshots) neu
+  /// (ZV-1.4). Von App-Resume / Reconnect-Flanke aufgerufen, damit die nicht-
+  /// gestreamten Sichten selbstheilend werden. Streams (offene Buchung, org-weit,
+  /// Klärung) aktualisieren sich ohnehin selbst.
+  Future<void> refetch() async {
+    if (_currentUser == null) return;
+    if (usesLocalStorage) {
+      await _loadLocal();
+      _recomputeOpenFromLocal();
+    }
+    await _loadMonthEntries();
+    await loadSnapshots(_snapshotYear);
     _safeNotify();
   }
 
@@ -413,6 +462,7 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     required ZeitkontoSnapshot? vormonat,
     PayrollRecord? draftPayroll,
     String? actorUid,
+    int offeneKlaerungen = 0,
     DateTime? now,
   }) async {
     final user = _currentUser;
@@ -428,6 +478,7 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
       entries: monthEntries,
       vormonat: vormonat,
       now: clock,
+      offeneKlaerungen: offeneKlaerungen,
     );
     if (!validation.canClose) return validation;
 
@@ -625,7 +676,16 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
 
   // ── Stempeln ──────────────────────────────────────────────────────────────
   /// Einstempeln. No-Op, wenn bereits eine offene Buchung läuft.
-  Future<void> clockIn({String? siteId, String? siteName, DateTime? at}) async {
+  ///
+  /// [shiftId] verknüpft den Stempel mit der geplanten Schicht (ZV-2.1); das
+  /// beim Ausstempeln erzeugte `WorkEntry` erbt sie als `sourceShiftId`
+  /// (Schicht-Completion-Hook).
+  Future<void> clockIn({
+    String? siteId,
+    String? siteName,
+    String? shiftId,
+    DateTime? at,
+  }) async {
     final user = _currentUser;
     // Stempeln braucht Bearbeitungsrecht (wie WorkProvider-Clock + firestore.rules);
     // sonst entstünde nur lokal eine Geister-Buchung ohne WorkEntry.
@@ -639,6 +699,8 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
       userName: user.settings.name,
       siteId: siteId,
       siteName: siteName,
+      shiftId: shiftId,
+      source: 'app',
       kommen: at ?? DateTime.now(),
       status: ClockStatus.ongoing,
       createdByUid: user.uid,
@@ -710,6 +772,7 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
         breakMinutes: pause.toDouble(),
         siteId: updated.siteId,
         siteName: updated.siteName,
+        sourceShiftId: updated.shiftId,
         note: anmerkung,
         category: 'stempel',
         status: WorkEntryStatus.submitted,
@@ -730,6 +793,244 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     }
     await _loadMonthEntries();
     _safeNotify();
+  }
+
+  // ── Dienst-heute Soll-Ist (ZV-2.2b) ─────────────────────────────────────────
+  /// Berechnet den Soll-Ist-Abgleich des Tages (verspätet / nicht erschienen /
+  /// früher gegangen / ungeplant) für die Manager-Tagessicht. Lädt die org-weiten
+  /// Schichten + Stempelungen + genehmigten Abwesenheiten des Tages selbst; nur
+  /// Manager/Admin. Cloud/Hybrid via Firestore, Local aus dem (i. d. R. eigenen)
+  /// Cache (dokumentierte Degradation — ohne Cloud keine org-weite Sicht).
+  Future<List<DienstAbgleich>> loadDienstHeute({DateTime? now}) async {
+    final user = _currentUser;
+    if (user == null || !user.canManageShifts) return const [];
+    final clock = now ?? DateTime.now();
+    final dayStart = DateTime(clock.year, clock.month, clock.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+
+    List<ClockEntry> stempel;
+    List<Shift> schichten;
+    List<AbsenceRequest> abwesenheiten;
+
+    if (usesLocalStorage) {
+      stempel = _localEntries
+          .where((e) => !e.kommen.isBefore(dayStart) && e.kommen.isBefore(dayEnd))
+          .toList();
+      // Ohne Cloud kein org-weiter Schicht-/Abwesenheits-Zugriff.
+      schichten = const [];
+      abwesenheiten = const [];
+    } else {
+      try {
+        final results = await Future.wait([
+          _firestoreService.getOrgClockEntriesForDay(
+              orgId: user.orgId, day: clock),
+          _firestoreService.getShiftsInRange(
+              orgId: user.orgId, start: dayStart, end: dayEnd),
+          _firestoreService.getApprovedAbsencesInRange(
+              orgId: user.orgId, start: dayStart, end: dayEnd),
+        ]);
+        stempel = results[0] as List<ClockEntry>;
+        schichten = results[1] as List<Shift>;
+        abwesenheiten = results[2] as List<AbsenceRequest>;
+      } catch (error) {
+        AppLogger.warning('Zeitwirtschaft: Dienst-heute laden fehlgeschlagen',
+            error: error);
+        // Live-Fallback: wenigstens die laufenden Buchungen zeigen.
+        stempel = _ongoingEntries
+            .where(
+                (e) => !e.kommen.isBefore(dayStart) && e.kommen.isBefore(dayEnd))
+            .toList();
+        schichten = const [];
+        abwesenheiten = const [];
+      }
+    }
+
+    return DienstAbgleichService.berechne(
+      schichten: schichten,
+      stempel: stempel,
+      abwesenheiten: abwesenheiten,
+      now: clock,
+    );
+  }
+
+  // ── Klärung & Korrektur (ZV-3) ──────────────────────────────────────────────
+  /// Anzahl offener Klärungsfälle eines Nutzers im [month] (ZV-5.2, aus dem
+  /// org-weiten Klärungs-Stream gefiltert — kein zusätzlicher Read). Für den
+  /// Monatsabschluss-Blocker.
+  int openKlaerungenCountForMonth(String userId, DateTime month) {
+    return _klaerungEntries
+        .where((e) =>
+            e.userId == userId &&
+            e.kommen.year == month.year &&
+            e.kommen.month == month.month)
+        .length;
+  }
+
+  /// Löst einen Klärungsfall auf (ZV-3.1): setzt die korrekten Zeiten, schließt
+  /// die Buchung (`completed`) und erzeugt — wie ein sauberes Ausstempeln — einen
+  /// `WorkEntry(submitted)` (läuft durch die Compliance-Freigabe). Nur
+  /// Manager/Admin. [grund] ist Pflicht (Korrektur-Historie + Audit).
+  Future<void> resolveKlaerung(
+    ClockEntry entry, {
+    required DateTime kommen,
+    required DateTime gehen,
+    int? pauseMinuten,
+    required String grund,
+  }) async {
+    final user = _currentUser;
+    if (user == null || !user.canManageShifts) return;
+    final pause = ClockService.effectivePauseMinutes(
+      kommen: kommen,
+      gehen: gehen,
+      pauseMinuten: pauseMinuten,
+    );
+    final netto = ClockService.netMinutes(
+      kommen: kommen,
+      gehen: gehen,
+      pauseMinuten: pause,
+    );
+    final corrected = entry.copyWith(
+      kommen: kommen,
+      gehen: gehen,
+      pauseMinuten: pause,
+      nettoMinutes: netto,
+      status: ClockStatus.completed,
+      klaerung: false,
+      manuellErfasst: true,
+      korrigiertVonUid: user.uid,
+      korrekturGrund: grund,
+    );
+    await _persist(corrected, ongoing: false);
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Stempelzeit',
+      entityId: corrected.id,
+      summary:
+          'Klärung gelöst (${(netto / 60).toStringAsFixed(1)} h) · $grund',
+    );
+    await _postWorkEntryFor(corrected, user: user, note: grund);
+    await _loadMonthEntries();
+    _safeNotify();
+  }
+
+  /// Verwirft einen Klärungsfall (ZV-3.1) — z. B. Doppel-Buchung: Status
+  /// `deaktiviert`, kein `WorkEntry`. Nur Manager/Admin. [grund] Pflicht.
+  Future<void> dismissKlaerung(
+    ClockEntry entry, {
+    required String grund,
+  }) async {
+    final user = _currentUser;
+    if (user == null || !user.canManageShifts) return;
+    final dismissed = entry.copyWith(
+      status: ClockStatus.deaktiviert,
+      klaerung: false,
+      manuellErfasst: true,
+      korrigiertVonUid: user.uid,
+      korrekturGrund: grund,
+    );
+    await _persist(dismissed, ongoing: false);
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Stempelzeit',
+      entityId: dismissed.id,
+      summary: 'Klärung verworfen · $grund',
+    );
+    _safeNotify();
+  }
+
+  /// Trägt eine Buchung manuell nach (ZV-3.3) — „Handy vergessen"-Fälle. Erzeugt
+  /// direkt eine abgeschlossene Buchung + `WorkEntry(submitted)`. Nur Manager/Admin.
+  Future<void> addManualClockEntry({
+    required String userId,
+    String? userName,
+    required DateTime kommen,
+    required DateTime gehen,
+    int? pauseMinuten,
+    String? siteId,
+    String? siteName,
+    String? shiftId,
+    required String grund,
+  }) async {
+    final user = _currentUser;
+    if (user == null || !user.canManageShifts) return;
+    final pause = ClockService.effectivePauseMinutes(
+      kommen: kommen,
+      gehen: gehen,
+      pauseMinuten: pauseMinuten,
+    );
+    final netto = ClockService.netMinutes(
+      kommen: kommen,
+      gehen: gehen,
+      pauseMinuten: pause,
+    );
+    final entry = ClockEntry(
+      id: 'clock-manual-${DateTime.now().microsecondsSinceEpoch}',
+      orgId: user.orgId,
+      userId: userId,
+      userName: userName,
+      siteId: siteId,
+      siteName: siteName,
+      shiftId: shiftId,
+      source: 'app',
+      kommen: kommen,
+      gehen: gehen,
+      pauseMinuten: pause,
+      nettoMinutes: netto,
+      status: ClockStatus.completed,
+      manuellErfasst: true,
+      korrigiertVonUid: user.uid,
+      korrekturGrund: grund,
+      createdByUid: user.uid,
+    );
+    await _persist(entry, ongoing: false);
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Stempelzeit',
+      entityId: entry.id,
+      summary:
+          'Buchung nachgetragen (${(netto / 60).toStringAsFixed(1)} h) · $grund',
+    );
+    await _postWorkEntryFor(entry, user: user, note: grund);
+    await _loadMonthEntries();
+    _safeNotify();
+  }
+
+  /// Erzeugt für [entry] einen `WorkEntry(submitted)` über den [_workEntryPoster]
+  /// und schreibt die `workEntryId` zurück (Duplikat-Schutz). Best-effort — ein
+  /// Fehler (z. B. Compliance) bricht die bereits gespeicherte Korrektur NICHT ab.
+  Future<void> _postWorkEntryFor(
+    ClockEntry entry, {
+    required AppUserProfile user,
+    String? note,
+  }) async {
+    final poster = _workEntryPoster;
+    final gehen = entry.gehen;
+    if (poster == null || gehen == null || entry.workEntryId != null) return;
+    final workEntry = WorkEntry(
+      orgId: entry.orgId,
+      userId: entry.userId,
+      date: entry.kommen,
+      startTime: entry.kommen,
+      endTime: gehen,
+      breakMinutes: entry.pauseMinuten.toDouble(),
+      siteId: entry.siteId,
+      siteName: entry.siteName,
+      sourceShiftId: entry.shiftId,
+      note: note,
+      category: 'stempel',
+      status: WorkEntryStatus.submitted,
+      sourceClockEntryId: entry.id,
+    );
+    try {
+      await poster(workEntry);
+    } catch (error) {
+      AppLogger.warning(
+          'Zeitwirtschaft: WorkEntry aus Korrektur fehlgeschlagen',
+          error: error);
+      sessionError =
+          'Die korrigierte Zeit konnte nicht als Zeiteintrag übernommen werden. '
+          'Bitte in der Zeiterfassung prüfen.';
+    }
   }
 
   // ── Persistenz (lokal / Cloud / Hybrid-Fallback) ────────────────────────────
@@ -782,6 +1083,12 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     // Im Local-Modus gibt es keinen org-weiten Stream — die „wer ist
     // eingestempelt"-Karte zeigt dann zumindest die eigene offene Buchung.
     _ongoingEntries = open == null ? <ClockEntry>[] : <ClockEntry>[open];
+    // Eigene Klärungsfälle aus dem lokalen Cache (Manager sehen im Local-Modus
+    // ohnehin nur den eigenen Bestand).
+    _klaerungEntries = _localEntries
+        .where((e) => e.status == ClockStatus.klaerung)
+        .toList()
+      ..sort((a, b) => b.kommen.compareTo(a.kommen));
   }
 
   Future<void> _loadLocal() async {

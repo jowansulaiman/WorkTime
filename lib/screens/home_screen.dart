@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:table_calendar/table_calendar.dart';
 
+import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
 import '../core/redesign_flags.dart';
 import '../routing/route_permissions.dart';
@@ -16,6 +17,7 @@ import '../models/site_definition.dart';
 import '../models/shift.dart';
 import '../models/work_entry.dart';
 import '../providers/auth_provider.dart';
+import '../providers/connectivity_status_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/storage_mode_provider.dart';
@@ -23,8 +25,10 @@ import '../providers/team_provider.dart';
 import '../providers/work_provider.dart';
 import '../providers/zeitwirtschaft_provider.dart';
 import '../theme/app_theme.dart';
+import 'search/global_search.dart';
 import '../ui/app_card.dart';
 import '../ui/app_hero_card.dart';
+import '../ui/app_offline_banner.dart';
 import '../ui/app_quick_action.dart';
 import '../ui/app_section_card.dart';
 import '../ui/app_stat_cards.dart';
@@ -167,8 +171,21 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   SafeArea(
                     bottom: false,
-                    child: _ShellStatusBanner(
-                      storageLocation: storageLocation,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _ShellStatusBanner(
+                          storageLocation: storageLocation,
+                        ),
+                        // Offline-Banner (Anf. 13): blendet sich nur bei
+                        // fehlender Verbindung ein, rebuildet nur bei Wechsel.
+                        AppOfflineBanner(
+                          offline: context
+                              .select<ConnectivityStatusProvider, bool>(
+                            (c) => c.isOffline,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   Expanded(child: body),
@@ -235,6 +252,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                                 onOpenMenu: () =>
                                     _scaffoldKey.currentState?.openEndDrawer(),
+                                onSearch: () => showGlobalSearch(context),
                                 user: currentUser,
                                 expandedLabels: expandedRailLabels,
                               )
@@ -960,6 +978,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onOpenOrderAnalytics: () => _openSection(AppRoutes.orderAnalytics),
             onOpenScanner: () => _openSection(AppRoutes.scanner),
             onOpenSettings: () => _openSection(AppRoutes.settings),
+            onOpenMeineAkte: () => _openSection(AppRoutes.meineAkte),
           );
         },
       ),
@@ -1229,6 +1248,12 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
         ),
       ),
       actions: [
+        // Globale Suche (Anf. 24/25): 1-Tap-Sprung zu Bereich/Datensatz.
+        IconButton(
+          tooltip: 'Suchen',
+          icon: const Icon(Icons.search_rounded),
+          onPressed: () => showGlobalSearch(context),
+        ),
         if (showCart)
           // Warenkorb oben rechts, mit Stück-Badge (Summe über alle Läden).
           // Eigenes Selector -> nur dieses Icon rebuildet bei Korb-Änderungen,
@@ -1388,9 +1413,13 @@ Widget buildHomeTab(BuildContext context, ShellTab tab) {
               onNavigateBack: onBack,
             );
     case ShellTab.plan:
-      return ShiftPlannerScreen(
-        canNavigateBack: canBack,
-        onNavigateBack: onBack,
+      // Dichtes Wochen-/Monats-Raster: lokal auf 1,5 klemmen (gestufte
+      // Dynamic-Type-Leiter E1), waehrend die App global bis 2,0 skaliert.
+      return DenseContentTextScale(
+        child: ShiftPlannerScreen(
+          canNavigateBack: canBack,
+          onNavigateBack: onBack,
+        ),
       );
     case ShellTab.time:
       return ZeitwirtschaftHubScreen(
@@ -2873,6 +2902,14 @@ class _ShopHubTab extends StatelessWidget {
                       subtitle:
                           'Wie oft welcher Artikel bestellt wird (Woche/Monat)',
                       onTap: () => context.push(AppRoutes.orderAnalytics),
+                    ),
+                  if (isAdmin)
+                    _QuickActionCard(
+                      icon: Icons.receipt_long_outlined,
+                      title: 'Kassenbericht',
+                      subtitle:
+                          'Umsatz, Käufe & Gewinn pro Woche/Monat/Jahr',
+                      onTap: () => context.push(AppRoutes.kassenbericht),
                     ),
                   if (isAdmin)
                     _QuickActionCard(

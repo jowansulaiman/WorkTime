@@ -92,12 +92,41 @@ AssortmentAnalysis computeAssortmentAnalysis({
   required List<Product> products,
   double aThresholdPercent = 80,
   double bThresholdPercent = 95,
+  // Org-Schalter §3.4 (M6-C): ob die gepflegten EK-Preise MwSt enthalten. Bei
+  // `true` wird über `Product.taxRatePercent` auf netto normalisiert (identisch
+  // zu kasse_report.dart dailyStatsFromReceipts) — Artikel ohne Steuersatz
+  // gelten dann als unbewertet (kein stilles Raten). Default netto (B2B).
+  bool purchasePricesIncludeVat = false,
 }) {
   final ekById = <String, int?>{
     for (final p in products)
-      if (p.id != null) p.id!: p.purchasePriceCents,
+      if (p.id != null) p.id!: _ekNetto(p, purchasePricesIncludeVat),
   };
 
+  return _compute(
+    ekById: ekById,
+    receipts: receipts,
+    aThresholdPercent: aThresholdPercent,
+    bThresholdPercent: bThresholdPercent,
+  );
+}
+
+/// Netto-EK eines Artikels gemäß §3.4-Schalter (M6-C). `null` = unbewertet.
+int? _ekNetto(Product p, bool priceIncludesVat) {
+  final ek = p.purchasePriceCents;
+  if (ek == null) return null;
+  if (!priceIncludesVat) return ek;
+  final rate = p.taxRatePercent;
+  if (rate == null || rate < 0) return null; // brutto ohne Satz -> unbewertet
+  return (ek / (1 + rate / 100)).round();
+}
+
+AssortmentAnalysis _compute({
+  required Map<String, int?> ekById,
+  required List<PosReceipt> receipts,
+  required double aThresholdPercent,
+  required double bThresholdPercent,
+}) {
   final acc = <String, _Acc>{};
   for (final r in receipts) {
     if (!r.isRevenue || r.training) continue;

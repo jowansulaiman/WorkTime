@@ -46,6 +46,15 @@
     <string>Diese App benötigt Zugriff auf den Kalender</string>
     <key>NSCameraUsageDescription</key>
     <string>WorkTime nutzt die Kamera zum Scannen von Artikel-Barcodes (EAN).</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>WorkTime nutzt Face ID, um die App biometrisch zu entsperren.</string>
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>tel</string>
+        <string>mailto</string>
+        <string>sms</string>
+        <string>https</string>
+    </array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

@@ -29,6 +29,8 @@ class _FakeBarcodeScanner implements BarcodeScanner {
   final StreamController<String> _controller =
       StreamController<String>.broadcast();
 
+  ScannerTarget _target = ScannerTarget.retail;
+
   @override
   bool get isAvailable => true;
 
@@ -39,6 +41,14 @@ class _FakeBarcodeScanner implements BarcodeScanner {
   Stream<String> get codes => _controller.stream;
 
   void emit(String code) => _controller.add(code);
+
+  @override
+  ScannerTarget get target => _target;
+
+  @override
+  Future<void> setTarget(ScannerTarget target) async {
+    _target = target;
+  }
 
   @override
   Future<void> start() async {}
@@ -367,6 +377,59 @@ void main() {
     // Sheet-Titel zusaetzlich -> jetzt zwei Vorkommen, plus Leerzustand.
     expect(find.text('Preisverlauf'), findsWidgets);
     expect(find.textContaining('Noch keine Preisaenderungen'), findsOneWidget);
+  });
+
+  testWidgets('QR-Umschalter aktiviert das QR-Ziel und meldet es', (tester) async {
+    final (scanner, _) = await pumpScanner(tester);
+
+    // Startzustand: Handels-Barcode-Modus (QR aus).
+    expect(scanner.target, ScannerTarget.retail);
+    expect(find.byIcon(Icons.qr_code_scanner_outlined), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.qr_code_scanner_outlined));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(scanner.target, ScannerTarget.qr);
+    expect(find.byIcon(Icons.qr_code_2), findsOneWidget);
+    expect(find.textContaining('QR-Modus an'), findsOneWidget);
+  });
+
+  testWidgets('Gleichcode wird ~1s entprellt, danach wieder verarbeitet',
+      (tester) async {
+    final (scanner, inventory) = await pumpScanner(
+      tester,
+      products: const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Feuerzeug Clipper',
+          barcode: validEan,
+          currentStock: 5,
+        ),
+      ],
+    );
+
+    // Erster Scan (Scan & Go): landet im Korb (Menge 1).
+    scanner.emit(validEan);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(inventory.orderCartForSite('site-1')?.items.single.quantity, 1);
+
+    // Sofortiger Zweit-Scan desselben Codes -> entprellt, Menge bleibt 1.
+    scanner.emit(validEan);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(inventory.orderCartForSite('site-1')?.items.single.quantity, 1);
+
+    // Nach echter Wartezeit ueber der 1s-Sperre (Debounce nutzt DateTime.now()).
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 1200)),
+    );
+    scanner.emit(validEan);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(inventory.orderCartForSite('site-1')?.items.single.quantity, 2);
   });
 
   testWidgets('ungueltige Pruefziffer wird abgewiesen (keine Karte)',

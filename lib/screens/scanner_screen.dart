@@ -105,6 +105,12 @@ class _ScannerScreenState extends State<ScannerScreen>
   static const String _soundSettingKey = 'scanner_sound_enabled';
   bool _soundEnabled = true;
 
+  // Dunkelheits-Hinweis: erscheint, wenn nach dem Start eine Weile lang gar
+  // nichts erkannt wurde (Heuristik fuer schlechtes Licht) — nur wo es eine
+  // Taschenlampe gibt (Handy). mobile_scanner liefert kein Umgebungslicht-Signal.
+  bool _showDarkHint = false;
+  Timer? _darkHintTimer;
+
   @override
   void initState() {
     super.initState();
@@ -148,6 +154,7 @@ class _ScannerScreenState extends State<ScannerScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _flashTimer?.cancel();
+    _darkHintTimer?.cancel();
     _codesSub?.cancel();
     _manualController.dispose();
     unawaited(_scanner.dispose());
@@ -184,6 +191,7 @@ class _ScannerScreenState extends State<ScannerScreen>
       if (mounted && _cameraError != null) {
         setState(() => _cameraError = null);
       }
+      _armDarkHint();
     }).catchError((Object error) {
       _scanning = false;
       if (mounted) {
@@ -199,17 +207,53 @@ class _ScannerScreenState extends State<ScannerScreen>
   void _stopScanner() {
     if (!_scanning) return;
     _scanning = false;
+    _cancelDarkHint();
     unawaited(_scanner.stop());
+  }
+
+  /// Startet die Dunkelheits-Heuristik: kommt in ~4s keine einzige Erkennung,
+  /// bieten wir das Einschalten der Taschenlampe an (nur wo verfuegbar).
+  void _armDarkHint() {
+    _darkHintTimer?.cancel();
+    if (!_scanner.supportsTorch) return;
+    _darkHintTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _scanning) setState(() => _showDarkHint = true);
+    });
+  }
+
+  void _cancelDarkHint() {
+    _darkHintTimer?.cancel();
+    _darkHintTimer = null;
+    if (_showDarkHint && mounted) setState(() => _showDarkHint = false);
+  }
+
+  /// Schaltet zwischen reinem Handels-Barcode-Scan (schnell) und zusaetzlichem
+  /// QR-Modus um.
+  Future<void> _toggleScanTarget() async {
+    final next = _scanner.target == ScannerTarget.qr
+        ? ScannerTarget.retail
+        : ScannerTarget.qr;
+    await _scanner.setTarget(next);
+    if (!mounted) return;
+    setState(() {});
+    _showSnack(
+      next == ScannerTarget.qr
+          ? 'QR-Modus an — QR-Codes werden jetzt mitgelesen.'
+          : 'QR-Modus aus — nur Handels-Barcodes (schneller).',
+    );
   }
 
   // --- Scan-Verarbeitung --------------------------------------------------
 
   void _onCodeDetected(String code) {
     final now = DateTime.now();
-    // Gleichen Code fuer ~2s ignorieren -> kein Dauer-Wiederbeepen / Doppelscan.
+    // Erkennung angekommen -> Kamera sieht etwas: Dunkel-Hinweis zuruecknehmen.
+    _cancelDarkHint();
+    // Gleichen Code ~1s ignorieren -> kein Dauer-Wiederbeepen / Doppelscan, aber
+    // kurz genug fuer fluessiges Mehrfach-Zaehlen desselben Artikels (Inventur).
     if (code == _lastCode &&
         _lastCodeAt != null &&
-        now.difference(_lastCodeAt!) < const Duration(seconds: 2)) {
+        now.difference(_lastCodeAt!) < const Duration(milliseconds: 1000)) {
       return;
     }
     _lastCode = code;
@@ -788,6 +832,17 @@ class _ScannerScreenState extends State<ScannerScreen>
         ],
         actions: [
           IconButton(
+            tooltip: _scanner.target == ScannerTarget.qr
+                ? 'QR-Modus aus'
+                : 'QR-Codes mitlesen',
+            icon: Icon(
+              _scanner.target == ScannerTarget.qr
+                  ? Icons.qr_code_2
+                  : Icons.qr_code_scanner_outlined,
+            ),
+            onPressed: _toggleScanTarget,
+          ),
+          IconButton(
             tooltip: _soundEnabled
                 ? 'Ton & Vibration aus'
                 : 'Ton & Vibration an',
@@ -930,6 +985,38 @@ class _ScannerScreenState extends State<ScannerScreen>
                   _cameraError!,
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            if (_showDarkHint && _cameraError == null)
+              Positioned(
+                left: 8,
+                right: 8,
+                bottom: 8,
+                child: Material(
+                  color: Colors.black.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(12),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () {
+                      unawaited(_scanner.toggleTorch());
+                      _cancelDarkHint();
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          Icon(Icons.flashlight_on_outlined, color: Colors.white),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Nichts erkannt — zu dunkel? Tippen für Licht.',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
             Positioned(

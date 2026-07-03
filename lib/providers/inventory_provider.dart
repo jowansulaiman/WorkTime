@@ -8,9 +8,12 @@ import '../core/app_logger.dart';
 import '../core/assortment_analysis.dart';
 import '../core/assortment_gap.dart';
 import '../core/basket_analysis.dart';
+import '../core/cash_state.dart';
 import '../core/cashier_anomaly.dart';
 import '../core/daily_closing.dart';
+import '../core/kasse_report.dart';
 import '../core/dead_stock.dart';
+import '../core/ean.dart';
 import '../core/expiry_warning.dart';
 import '../core/fridge_refill_shortfall.dart';
 import '../core/local_demo_data.dart';
@@ -22,6 +25,8 @@ import '../core/staffing_profile.dart';
 import '../core/store_health.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
+import '../models/cash_closing.dart';
+import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
@@ -265,11 +270,14 @@ class InventoryProvider extends ChangeNotifier {
     if (code.isEmpty) {
       return const <Product>[];
     }
+    // Toleriert die UPC-A(12) <-> EAN-13(0+12)-Leading-Zero-Variante (iOS liefert
+    // UPC-A teils als EAN-13 mit fuehrender Null) — sonst Fehl-Miss beim Lookup.
+    final variants = gtinLookupVariants(code);
     return _products
         .where(
           (product) =>
               (includeInactive || product.isActive) &&
-              (product.barcode?.trim() ?? '') == code &&
+              variants.contains(product.barcode?.trim() ?? '') &&
               (siteId == null || siteId.isEmpty || product.siteId == siteId),
         )
         .toList(growable: false);
@@ -1404,6 +1412,236 @@ class InventoryProvider extends ChangeNotifier {
     return computeDailyClosings(receipts);
   }
 
+  // --- Kassen-Modul: Zählung / Kassenzustand / Abschluss / Bericht ---------
+  // Der gesamte Bereich ist wie posReceipts cloud-only (Plan §2): Reads
+  // liefern lokal leer, Mutatoren werfen statt lokal fallzubacken (bewusste,
+  // dokumentierte Ausnahme vom hybrid-Fallback-Muster).
+
+  static const _kasseLocalError =
+      'Die Kasse braucht die Cloud-Anbindung — im lokalen Modus nicht verfügbar.';
+
+  String _dayString(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  String _euro(int cents) {
+    final sign = cents < 0 ? '-' : '';
+    final abs = cents.abs();
+    return '$sign${abs ~/ 100},${(abs % 100).toString().padLeft(2, '0')} €';
+  }
+
+  /// Zählprotokolle des Standorts im Fenster, jüngste zuerst (lokal leer).
+  Future<List<CashCount>> loadCashCounts({
+    required String siteId,
+    int windowDays = 62,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const [];
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    return _inventory.getCashCountsInRange(orgId, from, now, siteId: siteId);
+  }
+
+  /// **§4.2 — rechnerischer Kassenzustand** (Soll-Bargeld ab letzter Zählung).
+  /// Bewusst gefenstert (kein „ab Datenbeginn", Plan §4.2): liegt im Fenster
+  /// keine Zählung, ist das Ergebnis unverankert und die UI fordert zum
+  /// Zählen auf. Lokal: leerer, unverankerter Zustand.
+  Future<CashState> loadCashState({
+    required String siteId,
+    int windowDays = 62,
+    DateTime? asOf,
+    String? businessDay,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const CashState(
+        sollCents: null,
+        verankert: false,
+        letzteZaehlung: null,
+        tagesBareinnahmenCents: 0,
+        tagesCashBewegungCents: 0,
+      );
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final counts =
+        await _inventory.getCashCountsInRange(orgId, from, now, siteId: siteId);
+    return computeCashState(
+      receipts: receipts,
+      counts: counts,
+      siteId: siteId,
+      businessDay: businessDay,
+    );
+  }
+
+  /// Erfasst eine Kassenzählung (E2: offen für ALLE aktiven Nutzer, kein
+  /// `canManageInventory`-Gate — blind zählende Clients lassen
+  /// `expectedCents`/`differenceCents` null, die Rules erzwingen das).
+  /// **Cloud-only Mutator**: im lokalen Modus deutscher [StateError] statt
+  /// hybrid-Fallback (Plan §6).
+  Future<void> saveCashCount(CashCount count) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      throw StateError(_kasseLocalError);
+    }
+    final actorUid =
+        count.createdByUid.isEmpty ? _currentUser?.uid : count.createdByUid;
+    final prepared = count.copyWith(
+      orgId: orgId,
+      createdByUid: actorUid,
+      // App-Pfad: die zählende Person IST der angemeldete Nutzer (ZV-4.1).
+      // Kiosk-Zählungen laufen nicht hierüber, sondern über die Callable, die
+      // countedByUserId server-seitig aus der Session setzt.
+      countedByUserId: count.countedByUserId ?? actorUid,
+    );
+    await _inventory.addCashCount(prepared);
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Kassenzählung',
+      entityId: prepared.siteId,
+      summary: 'Kassenzählung ${prepared.siteId} ${prepared.businessDay} '
+          'erfasst (${_euro(prepared.countedCents)}'
+          '${prepared.countedByLabel == null ? '' : ', ${prepared.countedByLabel}'})',
+    );
+  }
+
+  /// Festgeschriebene Kassenabschlüsse im Fenster, jüngste zuerst (lokal leer).
+  Future<List<CashClosing>> loadCashClosings({
+    required String siteId,
+    int windowDays = 62,
+    DateTime? asOf,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const [];
+    }
+    final now = asOf ?? DateTime.now();
+    final from = now.subtract(Duration(days: windowDays));
+    return _inventory.getCashClosingsInRange(
+      orgId,
+      _dayString(from),
+      _dayString(now),
+      siteId: siteId,
+    );
+  }
+
+  /// **§3.2 — Tag festschreiben** (create-only; „bereits abgeschlossen" wirft
+  /// einen deutschen [StateError] aus dem Repository). Admin-Gate liegt in der
+  /// UI + den Rules. Cloud-only Mutator wie [saveCashCount].
+  Future<void> closeBusinessDay(CashClosing closing) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      throw StateError(_kasseLocalError);
+    }
+    final prepared = closing.copyWith(
+      orgId: orgId,
+      closedByUid:
+          closing.closedByUid.isEmpty ? _currentUser?.uid : closing.closedByUid,
+    );
+    await _inventory.createCashClosing(prepared);
+    final diff = prepared.cashDifferenceCents;
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Kassenabschluss',
+      entityId: CashClosing.docId(prepared.businessDay, prepared.siteId),
+      summary: 'Kassenabschluss ${prepared.siteId} ${prepared.businessDay} '
+          'festgeschrieben '
+          '(${diff == null ? 'ohne Zählung' : 'Differenz ${_euro(diff)}'})',
+    );
+  }
+
+  /// Markiert einen festgeschriebenen Abschluss als ins Finanzjournal gebucht
+  /// (nach erfolgreichem `FinanceProvider.postDailyClosing`) — die einzige
+  /// erlaubte Mutation (`bookedToFinance false→true`, §3.2).
+  Future<void> markClosingBooked({required String closingId}) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      throw StateError(_kasseLocalError);
+    }
+    await _inventory.markCashClosingBooked(orgId: orgId, closingId: closingId);
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Kassenabschluss',
+      entityId: closingId,
+      summary: 'Kassenabschluss $closingId ins Finanzjournal gebucht',
+    );
+  }
+
+  /// **§4.1 — Kassenbericht.** Bevorzugt die serverseitigen Tagesaggregate
+  /// (`posDailyStats`, M5) — damit sind Monats-/Jahres-Langzeit voll verfügbar.
+  /// **Fallback** (bis der Server-Sync deployt ist / noch keine Stats
+  /// geschrieben hat): clientseitige Aggregation aus einem Belege-Fenster von
+  /// max. 92 Tagen — dann ist nur die Wochen-Sicht voll, ältere Buckets bleiben
+  /// „keine Daten". [purchasePricesIncludeVat] = Org-Schalter §3.4 (E1).
+  Future<List<KassenPeriode>> loadKassenbericht({
+    required ReportGranularity granularity,
+    required bool purchasePricesIncludeVat,
+    String? siteId,
+    int? bucketCount,
+    DateTime? asOf,
+    int windowDays = 92,
+  }) async {
+    final orgId = _orgId;
+    if (!_usesFirestore || orgId == null) {
+      return const [];
+    }
+    final now = asOf ?? DateTime.now();
+
+    // (1) Server-Aggregate über einen großzügigen Zeitraum laden — weit genug
+    // zurück, um auch das Vorjahr des ältesten Buckets abzudecken (Δ Vorjahr).
+    final statsFrom = now.subtract(Duration(days: switch (granularity) {
+      ReportGranularity.week => 500,
+      ReportGranularity.month => 800,
+      ReportGranularity.year => 1600,
+    }));
+    final serverStats = await _inventory.getPosDailyStatsInRange(
+      orgId,
+      _dayString(statsFrom),
+      _dayString(now),
+      siteId: siteId,
+    );
+    if (serverStats.isNotEmpty) {
+      return computeKassenbericht(
+        stats: serverStats,
+        orders: _orders,
+        granularity: granularity,
+        now: now,
+        bucketCount: bucketCount,
+        siteId: siteId,
+        coverageFrom: statsFrom,
+        purchasePricesIncludeVat: purchasePricesIncludeVat,
+      );
+    }
+
+    // (2) Fallback: Belege-Fenster ≤ 92 Tage clientseitig aggregieren.
+    final cappedWindow = windowDays > 92 ? 92 : windowDays;
+    final from = now.subtract(Duration(days: cappedWindow));
+    final receipts =
+        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final stats = dailyStatsFromReceipts(
+      receipts,
+      _products,
+      purchasePricesIncludeVat: purchasePricesIncludeVat,
+    );
+    return computeKassenbericht(
+      stats: stats,
+      orders: _orders,
+      granularity: granularity,
+      now: now,
+      bucketCount: bucketCount,
+      siteId: siteId,
+      // Fensterbeginn durchreichen: Vergleichsperioden, die vor dem geladenen
+      // Fenster beginnen, bekommen null-Δ statt Randstummel-Vergleiche.
+      coverageFrom: from,
+      purchasePricesIncludeVat: purchasePricesIncludeVat,
+    );
+  }
+
   /// **P4.2 — Warenkorb-/Cross-Sell-Analyse** für [siteId] über [windowDays]
   /// Tage: welche Artikel häufig zusammen über denselben Beleg gehen. Liest die
   /// Kassenbelege (`posReceipts`, cloud-only); lokal leer.
@@ -1437,6 +1675,7 @@ class InventoryProvider extends ChangeNotifier {
     required String siteId,
     int windowDays = SalesVelocity.defaultReliableDays,
     DateTime? asOf,
+    bool purchasePricesIncludeVat = false,
   }) async {
     final orgId = _orgId;
     if (!_usesFirestore || orgId == null) {
@@ -1461,6 +1700,7 @@ class InventoryProvider extends ChangeNotifier {
     return computeAssortmentAnalysis(
       receipts: receipts,
       products: siteProducts,
+      purchasePricesIncludeVat: purchasePricesIncludeVat,
     );
   }
 
@@ -2743,6 +2983,8 @@ class InventoryProvider extends ChangeNotifier {
             unit: product?.unit ?? cartItem.unit,
             quantityOrdered: cartItem.quantity,
             unitPriceCents: product?.purchasePriceCents,
+            // USt-Satz aus dem Artikel (M6-B) → Käufe echt netto/brutto.
+            taxRatePercent: product?.taxRatePercent,
           );
         }).toList(growable: false);
         final order = PurchaseOrder(

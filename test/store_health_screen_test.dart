@@ -54,7 +54,9 @@ void main() {
           type: 'sales',
           isRevenue: true,
           businessDay: day(at),
-          transactionDate: at.add(Duration(minutes: i)),
+          // Rückwärts von [at]: nie in der Zukunft der transactionDate-Range-
+          // Query (to = now); der Geschäftstag bleibt über businessDay gepinnt.
+          transactionDate: at.subtract(Duration(minutes: i)),
         );
         await fs
             .collection('organizations')
@@ -82,12 +84,14 @@ void main() {
     await seedProduct('p1', 'site-1', 'Strichmännchen');
     await seedProduct('p2', 'site-2', 'Tabak Börse');
     // site-1: heute 6, gleiche Wochentage davor je 10 -> Schnitt 10 -> −40 %.
-    final today = DateTime(now.year, now.month, now.day, 10);
-    await seed('site-1', today.subtract(const Duration(minutes: 5)), 6);
-    await seed('site-1', today.subtract(const Duration(days: 7)), 10);
-    await seed('site-1', today.subtract(const Duration(days: 14)), 10);
+    // Wall-Clock-sicher zu JEDER Uhrzeit: Anker = exakt jetzt (keine feste
+    // Uhrzeit wie 10:00, kein Rückversatz über Mitternacht) — der ausgewertete
+    // Geschäftstag ist day(now), die Beleg-Zeitstempel laufen rückwärts.
+    await seed('site-1', now, 6);
+    await seed('site-1', now.subtract(const Duration(days: 7)), 10);
+    await seed('site-1', now.subtract(const Duration(days: 14)), 10);
     // site-2: nur heute 12 (keine Vergleichsbasis).
-    await seed('site-2', today.subtract(const Duration(minutes: 5)), 12);
+    await seed('site-2', now, 12);
 
     final service = FirestoreService(firestore: fs);
     final inventory = InventoryProvider(firestoreService: service);

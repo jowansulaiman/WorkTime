@@ -42,6 +42,8 @@ class MonatsabschlussService {
   /// - der Monat ist noch nicht vollständig vorbei (laufender/zukünftiger Monat,
   ///   bezogen auf [now]) — nur abgeschlossene Kalendermonate sind buchbar,
   /// - es gibt noch nicht entschiedene Zeiteinträge (Status `draft`/`submitted`),
+  /// - es gibt noch **offene Klärungsfälle** ([offeneKlaerungen] > 0) — sonst
+  ///   fehlten die betroffenen Stunden still in Zeitkonto/Lohn (ZV-5.2),
   /// - der **Vormonat** existiert als Snapshot, ist aber nicht gesperrt
   ///   (eine Lücke; fehlt der Vormonats-Snapshot ganz, ist das kein Blocker —
   ///   z. B. Beginn der Zeiterfassung, AllTec-konform).
@@ -51,12 +53,15 @@ class MonatsabschlussService {
   /// - sehr viele Krankheitstage (> 20).
   ///
   /// [now] wird injiziert (Pure-Function-Disziplin), damit der Service
-  /// deterministisch testbar bleibt.
+  /// deterministisch testbar bleibt. [offeneKlaerungen] = Anzahl der
+  /// `ClockStatus.klaerung`-Buchungen des Zielmonats (der Provider ermittelt sie,
+  /// der Service bleibt pur).
   MonatsabschlussValidation validate({
     required ZeitkontoSnapshot snapshot,
     required List<WorkEntry> entries,
     required ZeitkontoSnapshot? vormonat,
     required DateTime now,
+    int offeneKlaerungen = 0,
   }) {
     final errors = <String>[];
     final warnings = <String>[];
@@ -81,6 +86,12 @@ class MonatsabschlussService {
       errors.add(offen == 1
           ? 'Ein Zeiteintrag ist noch nicht genehmigt.'
           : '$offen Zeiteinträge sind noch nicht genehmigt.');
+    }
+
+    if (offeneKlaerungen > 0) {
+      errors.add(offeneKlaerungen == 1
+          ? 'Ein Stempel-Klärungsfall ist noch offen.'
+          : '$offeneKlaerungen Stempel-Klärungsfälle sind noch offen.');
     }
 
     if (vormonat != null && !vormonat.abgeschlossen) {

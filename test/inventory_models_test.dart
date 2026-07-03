@@ -281,6 +281,34 @@ void main() {
       expect(item.outstandingQuantity, 0);
       expect(item.isFullyReceived, isTrue);
     });
+
+    test('USt (M6-B): netto/brutto je Position, schalter-abhängig', () {
+      const item = PurchaseOrderItem(
+        name: 'Cola',
+        quantityOrdered: 10,
+        unitPriceCents: 100,
+        taxRatePercent: 19,
+      );
+      // Default (Preis = netto): brutto = netto × 1,19.
+      expect(item.lineNetCents(priceIncludesVat: false), 1000);
+      expect(item.lineGrossCents(priceIncludesVat: false), 1190);
+      // Brutto-Schalter (Preis enthält MwSt): netto herausgerechnet.
+      expect(item.lineGrossCents(priceIncludesVat: true), 1000);
+      expect(item.lineNetCents(priceIncludesVat: true), 840); // 1000/1,19
+
+      // Ohne Satz: netto == brutto in BEIDEN Modi (kein stiller USt-Aufschlag).
+      const noRate = PurchaseOrderItem(
+          name: 'x', quantityOrdered: 1, unitPriceCents: 500);
+      expect(noRate.lineGrossCents(priceIncludesVat: false), 500);
+      expect(noRate.lineNetCents(priceIncludesVat: true), 500);
+
+      // Round-Trip beide Serialisierungen.
+      expect(PurchaseOrderItem.fromMap(item.toMap()).taxRatePercent, 19);
+      expect(
+          PurchaseOrderItem.fromMap(item.toFirestoreMap()).taxRatePercent, 19);
+      // clearTaxRate-Flag.
+      expect(item.copyWith(clearTaxRate: true).taxRatePercent, isNull);
+    });
   });
 
   group('PurchaseOrder', () {

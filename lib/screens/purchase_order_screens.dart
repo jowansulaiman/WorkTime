@@ -318,6 +318,9 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
             unit: product.unit,
             quantityOrdered: _quantities[product.id]!,
             unitPriceCents: product.purchasePriceCents,
+            // USt-Satz aus dem Artikel übernehmen → Käufe echt netto/brutto
+            // (M6-B). Der EK gilt als netto (B2B).
+            taxRatePercent: product.taxRatePercent,
           ),
         )
         .toList();

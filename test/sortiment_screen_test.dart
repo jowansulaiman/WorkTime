@@ -8,6 +8,7 @@ import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/pos_receipt.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
+import 'package:worktime_app/providers/feature_flag_provider.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
 import 'package:worktime_app/screens/sortiment_screen.dart';
 import 'package:worktime_app/services/database_service.dart';
@@ -100,8 +101,10 @@ void main() {
 
     final service = FirestoreService(firestore: fs);
     final inventory = InventoryProvider(firestoreService: service);
+    final flags = FeatureFlagProvider(firestoreService: service);
     await tester.runAsync(() async {
       await inventory.updateSession(admin, localStorageOnly: false);
+      await flags.updateSession(admin, localStorageOnly: true);
       await Future<void>.delayed(const Duration(milliseconds: 50));
     });
 
@@ -111,6 +114,7 @@ void main() {
         providers: [
           ChangeNotifierProvider<AuthProvider>.value(value: auth),
           ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+          ChangeNotifierProvider<FeatureFlagProvider>.value(value: flags),
         ],
         child: const MaterialApp(home: SortimentScreen()),
       ),

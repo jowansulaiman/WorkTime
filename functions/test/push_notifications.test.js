@@ -210,3 +210,17 @@ test("buildShiftPublishedNotification + buildLowStockNotification: Inhalt/Route"
   assert.match(l.body, /nur noch 2/);
   assert.match(l.body, /Meldebestand 6/);
 });
+
+test("buildAutoKlaerungNotification: Route/Thread/Dedupe + Datum im Text", () => {
+  const n = push.buildAutoKlaerungNotification({
+    clockEntryId: "ce1", dayLabel: "01.07.",
+  });
+  assert.strictEqual(n.type, "clock_auto_klaerung");
+  assert.strictEqual(n.route, "/zeit/stempeln");
+  assert.strictEqual(n.thread, "personal");
+  assert.strictEqual(n.dedupeId, "klaerung:ce1");
+  assert.match(n.body, /01\.07\./);
+  // Fällt auf den Default-Channel (kein eigener personal-Channel, wie Dokument-Push).
+  assert.strictEqual(push.channelIdForType("clock_auto_klaerung"),
+    push.channelIdForType("personal_document"));
+});

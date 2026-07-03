@@ -23,6 +23,7 @@ import '../models/customer_wish.dart';
 import '../models/audit_log_entry.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
+import '../models/employee_document.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_qualification.dart';
 import '../models/org_payroll_settings.dart';
@@ -231,6 +232,30 @@ class FirestoreService {
                 snapshot.docs.first.id, snapshot.docs.first.data()));
   }
 
+  /// Wie [watchOpenClockEntry], aber inkl. Snapshot-Metadaten (`hasPendingWrites`
+  /// / `isFromCache`) für die „ausstehend"-/„zuletzt aktualisiert"-Transparenz
+  /// (ZV-1.2). Nutzt `includeMetadataChanges`, damit ein bestätigter Server-
+  /// Schreibvorgang das Badge auch ohne Datenänderung wieder entfernt.
+  Stream<({ClockEntry? entry, bool pending, bool fromCache})>
+      watchOpenClockEntryMeta({
+    required String orgId,
+    required String userId,
+  }) {
+    return _clockEntryCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .where('status', isEqualTo: 'ongoing')
+        .limit(1)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) {
+      final doc = snapshot.docs.isEmpty ? null : snapshot.docs.first;
+      return (
+        entry: doc == null ? null : ClockEntry.fromFirestore(doc.id, doc.data()),
+        pending: snapshot.metadata.hasPendingWrites,
+        fromCache: snapshot.metadata.isFromCache,
+      );
+    });
+  }
+
   /// Alle aktuell laufenden Buchungen der Org („wer ist eingestempelt").
   /// Ein Gleichheits-Filter → kein Composite-Index nötig. Admin-/Manager-Read.
   Stream<List<ClockEntry>> watchOngoingClockEntries({required String orgId}) {
@@ -240,6 +265,36 @@ class FirestoreService {
         .map((snapshot) => snapshot.docs
             .map((doc) => ClockEntry.fromFirestore(doc.id, doc.data()))
             .toList(growable: false));
+  }
+
+  /// Alle offenen Klärungsfälle der Org (`status == klaerung`) — Manager-Inbox
+  /// (ZV-3.1). Ein Gleichheits-Filter → kein Composite-Index; die Sortierung
+  /// (nach `kommen`) macht der Aufrufer client-seitig.
+  Stream<List<ClockEntry>> watchKlaerungClockEntries({required String orgId}) {
+    return _clockEntryCollection(orgId)
+        .where('status', isEqualTo: 'klaerung')
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => ClockEntry.fromFirestore(doc.id, doc.data()))
+            .toList(growable: false));
+  }
+
+  /// **Org-weite** Stempel-Buchungen eines Tages (ZV-2.2b „Dienst heute").
+  /// Nur ein Bereichsfilter auf `kommen` → kein Composite-Index nötig.
+  /// Manager-/Admin-Read (Rules: `canManageShifts`).
+  Future<List<ClockEntry>> getOrgClockEntriesForDay({
+    required String orgId,
+    required DateTime day,
+  }) async {
+    final start = DateTime(day.year, day.month, day.day);
+    final end = start.add(const Duration(days: 1));
+    final snapshot = await _clockEntryCollection(orgId)
+        .where('kommen', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('kommen', isLessThan: Timestamp.fromDate(end))
+        .get();
+    return snapshot.docs
+        .map((doc) => ClockEntry.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
   }
 
   /// Stempel-Buchungen eines Nutzers im Zeitraum (Composite-Index
@@ -385,6 +440,11 @@ class FirestoreService {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('employeeProfiles');
+
+  CollectionReference<Map<String, dynamic>> _employeeDocumentCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('employeeDocuments');
 
   CollectionReference<Map<String, dynamic>> _sollzeitProfileCollection(
     String orgId,
@@ -547,6 +607,29 @@ class FirestoreService {
 
   Stream<List<EmploymentContract>> watchEmploymentContracts(String orgId) {
     return _employmentContractCollection(orgId)
+        .orderBy('validFrom', descending: true)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => EmploymentContract.fromFirestore(
+                    doc.id,
+                    doc.data(),
+                  ))
+              .toList(growable: false),
+        );
+  }
+
+  /// Self-scoped Vertrags-Stream (PA-0.2): nur die eigenen Vertraege eines
+  /// Mitarbeiters. Weil `employmentContracts` seit PA-0.2 nicht mehr org-weit
+  /// lesbar ist (Verguetungs-Leck), abonnieren Nicht-Manager ausschliesslich
+  /// diese Variante. Nutzt den Composite-Index employmentContracts(userId,
+  /// validFrom DESC).
+  Stream<List<EmploymentContract>> watchEmploymentContractsForUser(
+    String orgId,
+    String userId,
+  ) {
+    return _employmentContractCollection(orgId)
+        .where('userId', isEqualTo: userId)
         .orderBy('validFrom', descending: true)
         .snapshots()
         .map(
@@ -1311,6 +1394,7 @@ class FirestoreService {
     required String direction,
     String? siteId,
     String? siteName,
+    String? shiftId,
     int? pauseMinuten,
   }) async {
     final raw = await _callCloudFunction('kioskClockPunch', {
@@ -1318,13 +1402,56 @@ class FirestoreService {
       'direction': direction,
       if (siteId != null) 'siteId': siteId,
       if (siteName != null) 'siteName': siteName,
+      if (shiftId != null) 'shiftId': shiftId,
       if (pauseMinuten != null) 'pauseMinuten': pauseMinuten,
     });
     return _callableResultData(raw)['clockedIn'] == true;
   }
 
+  /// **Kassen-Modul M6-E** — gehärtete Kiosk-Kassenzählung über die
+  /// server-geprüfte Session (`kioskSaveCashCount`). Blind: nur Betrag + Notiz;
+  /// Soll/Differenz setzt der Server bewusst NICHT. Liefert die CashCount-ID.
+  Future<String?> kioskSaveCashCount({
+    required String sid,
+    required int countedCents,
+    required String businessDay,
+    String? note,
+    String? siteId,
+    int? cashRegisterId,
+  }) async {
+    final raw = await _callCloudFunction('kioskSaveCashCount', {
+      'sid': sid,
+      'countedCents': countedCents,
+      'businessDay': businessDay,
+      if (note != null) 'note': note,
+      if (siteId != null) 'siteId': siteId,
+      if (cashRegisterId != null) 'cashRegisterId': cashRegisterId,
+    });
+    final id = _callableResultData(raw)['cashCountId'];
+    return id is String ? id : null;
+  }
+
   Stream<List<PayrollRecord>> watchPayrollRecords(String orgId) {
     return _payrollRecordCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => PayrollRecord.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// **Self-scoped** Lohnabrechnungen eines Mitarbeiters (PA-7.1): nur
+  /// freigegebene/bezahlte (Entwürfe bleiben unsichtbar). Der `status`-whereIn
+  /// muss exakt der Self-Read-Regel entsprechen (Rules sind kein Filter). Nutzt
+  /// den Composite-Index payrollRecords(userId, status).
+  Stream<List<PayrollRecord>> watchPayrollRecordsForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _payrollRecordCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .where('status', whereIn: ['freigegeben', 'bezahlt'])
+        .snapshots()
+        .map(
           (snapshot) => snapshot.docs
               .map((doc) => PayrollRecord.fromFirestore(doc.id, doc.data()))
               .toList(growable: false),
@@ -1384,6 +1511,26 @@ class FirestoreService {
         );
   }
 
+  /// **Self-scoped** Personal-Stammakte eines Mitarbeiters (PA-2.3-Self-Read).
+  /// Bewusst als Gleichheits-**Query** (`userId`) statt `.doc(userId)`: Ein
+  /// direkter Doc-Read einer noch nicht existierenden Akte würde die Self-Read-
+  /// Regel (`resource.data.userId == uid`) mit `resource == null` auswerten →
+  /// permission-denied statt „leer"; die Query liefert bei fehlendem Profil
+  /// sauber eine leere Liste. Doc-ID == userId → 0/1 Treffer, kein Index nötig.
+  Stream<List<EmployeeProfile>> watchEmployeeProfileForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _employeeProfileCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => EmployeeProfile.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
   /// Speichert die Personal-Stammakte unter der deterministischen Doc-ID
   /// (`userId`), damit sie je Mitarbeiter genau einmal existiert.
   Future<void> saveEmployeeProfile(EmployeeProfile profile) async {
@@ -1400,6 +1547,76 @@ class FirestoreService {
     required String userId,
   }) {
     return _employeeProfileCollection(orgId).doc(userId).delete();
+  }
+
+  // --- Personalakte-Dokumente (PA-3, Metadaten) ----------------------------
+
+  /// Frische Doc-ID für ein neues Dokument (= Storage-`docId`, damit Objektpfad
+  /// und Metadaten-Doc dieselbe ID tragen).
+  String newEmployeeDocumentId(String orgId) =>
+      _employeeDocumentCollection(orgId).doc().id;
+
+  /// Alle Dokumente (Admin-Sicht) – ohne `orderBy`, clientseitig sortiert
+  /// (kein Composite-Index, Personal-Modul-Konvention).
+  Stream<List<EmployeeDocument>> watchEmployeeDocuments(String orgId) {
+    return _employeeDocumentCollection(orgId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => EmployeeDocument.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// **Self-scoped**: nur die dem Mitarbeiter SICHTBAREN eigenen Dokumente. Die
+  /// zwei Gleichheitsfilter (`userId` + `visibleToEmployee`) müssen exakt der
+  /// Self-Read-Regel entsprechen — Rules sind kein Filter, ein Mit-Abfragen
+  /// interner Dokumente würde die ganze Query permission-denyen. Zwei
+  /// Gleichheitsfilter brauchen keinen Composite-Index; Sortierung clientseitig.
+  Stream<List<EmployeeDocument>> watchEmployeeDocumentsForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _employeeDocumentCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .where('visibleToEmployee', isEqualTo: true)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => EmployeeDocument.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// Legt/aktualisiert das Metadaten-Doc. Doc-ID = `document.id` (vom Aufrufer,
+  /// passend zum Storage-Pfad).
+  Future<void> saveEmployeeDocument(EmployeeDocument document) async {
+    final collection = _employeeDocumentCollection(document.orgId);
+    final docId = document.id ?? collection.doc().id;
+    await collection.doc(docId).set(
+          document.copyWith(id: docId).toFirestoreMap(),
+          SetOptions(merge: true),
+        );
+  }
+
+  Future<void> deleteEmployeeDocument({
+    required String orgId,
+    required String docId,
+  }) {
+    return _employeeDocumentCollection(orgId).doc(docId).delete();
+  }
+
+  /// Lesebestätigung durch den Mitarbeiter (feldgranular — nur `acknowledgedAt`
+  /// + `updatedAt`, passend zur Self-Update-Allowlist der Rules).
+  Future<void> acknowledgeEmployeeDocument({
+    required String orgId,
+    required String docId,
+  }) {
+    return _employeeDocumentCollection(orgId).doc(docId).set(
+      {
+        'acknowledgedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
   }
 
   /// Sollzeit-Profile (Arbeitszeitmodelle, gültig-ab-versioniert) – bewusst OHNE
@@ -1570,6 +1787,21 @@ class FirestoreService {
         );
   }
 
+  /// **Self-scoped** Urlaubskonto-Jahre eines Mitarbeiters (PA-7.2).
+  Stream<List<UrlaubskontoJahr>> watchUrlaubskontoJahreForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _urlaubskontoJahrCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map(
+          (s) => s.docs
+              .map((doc) => UrlaubskontoJahr.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
   /// Speichert unter der deterministischen Doc-ID `{userId}-{jahr}` (ein
   /// Datensatz je Mitarbeiter/Jahr, Upsert).
   Future<void> saveUrlaubskontoJahr(UrlaubskontoJahr konto) async {
@@ -1590,6 +1822,21 @@ class FirestoreService {
 
   Stream<List<Urlaubsanpassung>> watchUrlaubsanpassungen(String orgId) {
     return _urlaubsanpassungCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) => Urlaubsanpassung.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  /// **Self-scoped** Urlaubs-Anpassungen eines Mitarbeiters (PA-7.2).
+  Stream<List<Urlaubsanpassung>> watchUrlaubsanpassungenForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _urlaubsanpassungCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map(
           (s) => s.docs
               .map((doc) => Urlaubsanpassung.fromFirestore(doc.id, doc.data()))
               .toList(growable: false),

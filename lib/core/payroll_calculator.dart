@@ -132,6 +132,11 @@ class PayrollResult {
       unemploymentEmployerCents: unemploymentEmployerCents,
       netCents: netCents,
       employerTotalCents: employerTotalCents,
+      minijobEmployerFlatCents: minijobEmployerFlatCents,
+      employerU1Cents: employerU1Cents,
+      employerU2Cents: employerU2Cents,
+      employerInsolvencyCents: employerInsolvencyCents,
+      employerAccidentCents: employerAccidentCents,
       note: note,
       createdByUid: createdByUid,
     );

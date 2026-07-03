@@ -68,6 +68,24 @@ class ClockEntry {
   final String? ipKommen;
   final String? ipGehen;
 
+  /// Geplante Schicht, der dieser Stempel zugeordnet ist (ZV-2.1). Null = frei
+  /// gestempelt (gilt im Soll-Ist-Abgleich als „ungeplant anwesend").
+  final String? shiftId;
+
+  /// Ursprung des Stempels: `'app'` (Web/iOS/Android) oder `'kiosk'` (Tablet-
+  /// Arbeitsmodus). `kioskClockPunch` setzt `'kiosk'`; App-Pfad `'app'`.
+  final String? source;
+
+  /// Geräte-/Session-Forensik (nur Kiosk-Pfad gefüllt): stempelndes Gerät bzw.
+  /// die server-geprüfte PIN-Session (`kioskSessions/{sid}`).
+  final String? deviceId;
+  final String? sessionId;
+
+  /// Korrektur-Historie am Datensatz (zusätzlich zum zentralen Audit-Log, ZV-3):
+  /// wer die abgeschlossene/geklärte Buchung zuletzt korrigiert hat und warum.
+  final String? korrigiertVonUid;
+  final String? korrekturGrund;
+
   /// Verknüpfter erzeugter [WorkEntry] (beim Ausstempeln; Duplikat-Vermeidung).
   final String? workEntryId;
 
@@ -92,6 +110,12 @@ class ClockEntry {
     this.anmerkung,
     this.ipKommen,
     this.ipGehen,
+    this.shiftId,
+    this.source,
+    this.deviceId,
+    this.sessionId,
+    this.korrigiertVonUid,
+    this.korrekturGrund,
     this.workEntryId,
     this.createdByUid,
     this.createdAt,
@@ -141,6 +165,12 @@ class ClockEntry {
       'anmerkung': anmerkung,
       'ip_kommen': ipKommen,
       'ip_gehen': ipGehen,
+      'shift_id': shiftId,
+      'source': source,
+      'device_id': deviceId,
+      'session_id': sessionId,
+      'korrigiert_von_uid': korrigiertVonUid,
+      'korrektur_grund': korrekturGrund,
       'work_entry_id': workEntryId,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
@@ -166,6 +196,12 @@ class ClockEntry {
       anmerkung: map['anmerkung'] as String?,
       ipKommen: map['ip_kommen'] as String?,
       ipGehen: map['ip_gehen'] as String?,
+      shiftId: map['shift_id'] as String?,
+      source: map['source'] as String?,
+      deviceId: map['device_id'] as String?,
+      sessionId: map['session_id'] as String?,
+      korrigiertVonUid: map['korrigiert_von_uid'] as String?,
+      korrekturGrund: map['korrektur_grund'] as String?,
       workEntryId: map['work_entry_id'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: _parseNullableDate(map['created_at']),
@@ -192,6 +228,12 @@ class ClockEntry {
       anmerkung: map['anmerkung'] as String?,
       ipKommen: map['ipKommen'] as String?,
       ipGehen: map['ipGehen'] as String?,
+      shiftId: map['shiftId'] as String?,
+      source: map['source'] as String?,
+      deviceId: map['deviceId'] as String?,
+      sessionId: map['sessionId'] as String?,
+      korrigiertVonUid: map['korrigiertVonUid'] as String?,
+      korrekturGrund: map['korrekturGrund'] as String?,
       workEntryId: map['workEntryId'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: _parseNullableDate(map['createdAt']),
@@ -216,6 +258,12 @@ class ClockEntry {
       'anmerkung': anmerkung,
       'ipKommen': ipKommen,
       'ipGehen': ipGehen,
+      'shiftId': shiftId,
+      'source': source,
+      'deviceId': deviceId,
+      'sessionId': sessionId,
+      'korrigiertVonUid': korrigiertVonUid,
+      'korrekturGrund': korrekturGrund,
       'workEntryId': workEntryId,
       'createdByUid': createdByUid,
       // createdAt-Guard: NUR beim ersten Schreiben setzen (nicht an id koppeln).
@@ -241,6 +289,12 @@ class ClockEntry {
     String? anmerkung,
     String? ipKommen,
     String? ipGehen,
+    String? shiftId,
+    String? source,
+    String? deviceId,
+    String? sessionId,
+    String? korrigiertVonUid,
+    String? korrekturGrund,
     String? workEntryId,
     String? createdByUid,
     DateTime? createdAt,
@@ -250,6 +304,9 @@ class ClockEntry {
     bool clearSiteName = false,
     bool clearAnmerkung = false,
     bool clearIpGehen = false,
+    bool clearShiftId = false,
+    bool clearKorrigiertVonUid = false,
+    bool clearKorrekturGrund = false,
     bool clearWorkEntryId = false,
   }) {
     return ClockEntry(
@@ -269,6 +326,14 @@ class ClockEntry {
       anmerkung: clearAnmerkung ? null : (anmerkung ?? this.anmerkung),
       ipKommen: ipKommen ?? this.ipKommen,
       ipGehen: clearIpGehen ? null : (ipGehen ?? this.ipGehen),
+      shiftId: clearShiftId ? null : (shiftId ?? this.shiftId),
+      source: source ?? this.source,
+      deviceId: deviceId ?? this.deviceId,
+      sessionId: sessionId ?? this.sessionId,
+      korrigiertVonUid:
+          clearKorrigiertVonUid ? null : (korrigiertVonUid ?? this.korrigiertVonUid),
+      korrekturGrund:
+          clearKorrekturGrund ? null : (korrekturGrund ?? this.korrekturGrund),
       workEntryId: clearWorkEntryId ? null : (workEntryId ?? this.workEntryId),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,

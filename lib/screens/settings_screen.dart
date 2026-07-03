@@ -249,26 +249,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               padding: const EdgeInsets.all(16),
                               child: Column(
                                 children: [
+                                  // PA-0.3: Der Stundenlohn ist abrechnungs-
+                                  // relevant und gehoert dem Admin (Vertrag) —
+                                  // nicht der Selbstpflege. Nur noch Anzeige;
+                                  // die Rules pinnen settings.hourlyRate zusaetz-
+                                  // lich gegen Selbstschreiben.
                                   TextFormField(
                                     controller: _rateCtrl,
-                                    keyboardType:
-                                        const TextInputType.numberWithOptions(
-                                      decimal: true,
-                                    ),
+                                    enabled: false,
                                     decoration: const InputDecoration(
-                                      labelText: 'Stundenlohn (optional)',
+                                      labelText: 'Stundenlohn',
                                       prefixIcon: Icon(Icons.euro),
+                                      helperText:
+                                          'Wird vom Admin im Vertrag gepflegt.',
                                     ),
-                                    validator: (value) {
-                                      if ((value ?? '').isEmpty) {
-                                        return null;
-                                      }
-                                      final parsed = double.tryParse(value!);
-                                      if (parsed == null || parsed < 0) {
-                                        return 'Ungueltiger Betrag';
-                                      }
-                                      return null;
-                                    },
                                   ),
                                   const SizedBox(height: 16),
                                   DropdownButtonFormField<String>(
@@ -880,21 +874,19 @@ class _VacationQuotaCard extends StatelessWidget {
                   ),
             ),
             const SizedBox(height: 16),
+            // PA-0.3: Urlaubsanspruch ist planungs-/abrechnungsrelevant und
+            // gehoert dem Admin (Sollzeit-Profil, konsolidierung-M1) — nur noch
+            // Anzeige; die Rules pinnen settings.vacationDays gegen Selbst-
+            // schreiben. Der echte Urlaubskonto-Rest folgt in „Meine Akte" (PA-7).
             TextFormField(
               controller: vacationDaysCtrl,
-              keyboardType: TextInputType.number,
+              enabled: false,
               decoration: const InputDecoration(
                 labelText: 'Urlaubstage pro Jahr',
                 prefixIcon: Icon(Icons.event_available),
                 suffixText: 'Tage',
+                helperText: 'Wird vom Admin im Sollzeit-Profil gepflegt.',
               ),
-              validator: (value) {
-                final parsed = int.tryParse(value ?? '');
-                if (parsed == null || parsed < 0) {
-                  return 'Ungueltiger Wert';
-                }
-                return null;
-              },
             ),
             const SizedBox(height: 16),
             TextFormField(
@@ -1268,6 +1260,7 @@ class _OrgAutoPlanSettingsCard extends StatefulWidget {
 
 class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
   late bool _enforceHard;
+  late bool _purchasePricesIncludeVat;
   late TextEditingController _shiftMinutesCtrl;
   late TextEditingController _breakMinutesCtrl;
   late TextEditingController _requiredCountCtrl;
@@ -1282,6 +1275,7 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
     }
     final settings = context.read<FeatureFlagProvider>().orgSettings;
     _enforceHard = settings.enforceHourCapHard;
+    _purchasePricesIncludeVat = settings.purchasePricesIncludeVat;
     _shiftMinutesCtrl =
         TextEditingController(text: settings.defaultShiftMinutes.toString());
     _breakMinutesCtrl =
@@ -1358,6 +1352,20 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
                 prefixIcon: Icon(Icons.groups_outlined),
               ),
             ),
+            const Divider(height: 32),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _purchasePricesIncludeVat,
+              onChanged: (value) =>
+                  setState(() => _purchasePricesIncludeVat = value),
+              title: const Text('Einkaufspreise enthalten MwSt (brutto)'),
+              subtitle: const Text(
+                'Gilt für alle Artikel: Rohertrag und Wareneinsatz rechnen '
+                'die Einkaufspreise dann über den Steuersatz des Artikels '
+                'auf netto herunter. Aus = Einkaufspreise sind netto.',
+              ),
+              secondary: const Icon(Icons.receipt_long_outlined),
+            ),
             const SizedBox(height: 16),
             Align(
               alignment: Alignment.centerRight,
@@ -1388,6 +1396,7 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
       defaultShiftMinutes: int.tryParse(_shiftMinutesCtrl.text.trim()) ?? 480,
       defaultBreakMinutes: int.tryParse(_breakMinutesCtrl.text.trim()) ?? 30,
       defaultRequiredCount: int.tryParse(_requiredCountCtrl.text.trim()) ?? 1,
+      purchasePricesIncludeVat: _purchasePricesIncludeVat,
     );
     try {
       await featureFlags.saveOrgSettings(updated);
@@ -1396,7 +1405,8 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
         action: AuditAction.updated,
         entityType: 'Organisationseinstellungen',
         summary:
-            'Auto-Schichtverteilung angepasst (Stundengrenzen ${_enforceHard ? 'hart' : 'weich'})',
+            'Org-Einstellungen angepasst (Stundengrenzen ${_enforceHard ? 'hart' : 'weich'}, '
+            'Einkaufspreise ${_purchasePricesIncludeVat ? 'brutto' : 'netto'})',
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

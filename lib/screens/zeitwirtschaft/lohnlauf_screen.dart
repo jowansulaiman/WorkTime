@@ -97,6 +97,24 @@ class _LohnlaufScreenState extends State<LohnlaufScreen> {
                   records: records,
                   monthLabel: '${_monthNames[_month - 1]} $_year',
                 ),
+                if (records.isNotEmpty) ...[
+                  SizedBox(height: spacing.sm),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.table_view_outlined),
+                      label: const Text('Lohnjournal (CSV)'),
+                      onPressed: () => ExportService.exportLohnjournalCsv(
+                        records: records,
+                        employeeName: (uid) =>
+                            personal.memberById(uid)?.displayName ?? uid,
+                        monthLabel: '${_monthNames[_month - 1]} $_year',
+                        fileStamp:
+                            '$_year-${_month.toString().padLeft(2, '0')}',
+                      ),
+                    ),
+                  ),
+                ],
                 if (drafts > 0) ...[
                   SizedBox(height: spacing.md),
                   Align(

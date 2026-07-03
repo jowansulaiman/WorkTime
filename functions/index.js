@@ -9,6 +9,7 @@ const {onDocumentCreated, onDocumentWritten} =
 const {defineSecret} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const push = require("./push_notifications");
+const oktoposStats = require("./oktopos_stats");
 
 admin.initializeApp();
 
@@ -229,6 +230,41 @@ async function fanOutPush({orgId, recipientUids, notif, requestId}) {
   });
 }
 
+// Best-effort Server-Audit (PA-8.3): schreibt einen auditLog-Eintrag via Admin
+// SDK (umgeht die Rules). Wirft NIE — ein Audit-Fehler darf keine Callable
+// brechen. `action` muss in ['created','updated','deleted','corrected'] liegen
+// (der Dart-Reader kennt nur diese). Zusaetzliche Felder sessionId/deviceId/
+// source dienen der Server-Nachvollziehbarkeit; unbekannte Felder ignoriert der
+// Reader. Fuellt die Luecke, dass Kiosk-Stempel/PIN-Operationen bislang NICHT
+// im Aenderungsprotokoll auftauchten (Client hat dort keinen loggenden Pfad).
+async function writeAudit({
+  orgId, action, entityType, entityId, summary,
+  actorUid, actorName, sessionId, deviceId, requestId,
+}) {
+  if (!orgId || !action || !entityType) {
+    return;
+  }
+  try {
+    await db.collection("organizations").doc(orgId).collection("auditLog").add({
+      orgId,
+      action,
+      entityType,
+      entityId: entityId || null,
+      summary: summary || "",
+      actorUid: actorUid || null,
+      actorName: actorName || null,
+      sessionId: sessionId || null,
+      deviceId: deviceId || null,
+      source: "server",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    logger.warn("audit_write_failed", {
+      requestId, entityType, error: String(error),
+    });
+  }
+}
+
 // Neuer Kundenwunsch (oeffentlich/anonym via /wunsch) -> ALLE aktiven
 // Mitarbeiter der Org benachrichtigen ("bitte vorbereiten").
 exports.onCustomerWishCreated = documentCreatedTrigger(
@@ -422,6 +458,72 @@ exports.onAbsenceRequestWritten = documentWrittenTrigger(
         orgId, recipientUids: [requester], notif, requestId: ctx.requestId,
       });
     }
+  },
+);
+
+// Neues (fuer den Mitarbeiter sichtbares) Dokument in der Personalakte (PA-3.5)
+// -> Push an genau diesen Mitarbeiter. Interne Ablagen (visibleToEmployee=false)
+// loesen KEINE Benachrichtigung aus. Idempotent ueber dedupeId=docId.
+exports.onEmployeeDocumentCreated = documentCreatedTrigger(
+  "onEmployeeDocumentCreated",
+  {region: REGION, document: "organizations/{orgId}/employeeDocuments/{docId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const docId = event.params.docId;
+    const data = event.data?.data();
+    if (!data) {
+      return;
+    }
+    const visible = data.visibleToEmployee !== false &&
+      data.visible_to_employee !== false;
+    if (!visible) {
+      return;
+    }
+    const userId = stringFromEither(data, "userId", "user_id");
+    if (!userId) {
+      return;
+    }
+    const notif = push.buildDocumentNotification({
+      docId,
+      title: stringOrEmpty(data.title),
+    });
+    await fanOutPush({
+      orgId, recipientUids: [userId], notif, requestId: ctx.requestId,
+    });
+  },
+);
+
+// Lohnabrechnung freigegeben (Status-Übergang -> "freigegeben") -> Push an den
+// Mitarbeiter (PA-7.4). „bezahlt"/„storniert"/„entwurf" lösen keinen (zweiten)
+// Push aus. Idempotent über entityId=recordId (Inbox-.create()).
+exports.onPayrollRecordWritten = documentWrittenTrigger(
+  "onPayrollRecordWritten",
+  {region: REGION, document: "organizations/{orgId}/payrollRecords/{recordId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const recordId = event.params.recordId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) {
+      return;
+    }
+    const beforeStatus = before ? stringOrEmpty(before.status) : null;
+    const afterStatus = stringOrEmpty(after.status);
+    if (afterStatus !== "freigegeben" || beforeStatus === "freigegeben") {
+      return;
+    }
+    const userId = stringFromEither(after, "userId", "user_id");
+    if (!userId) {
+      return;
+    }
+    const year = Number(valueFromEither(after, "periodYear", "period_year"));
+    const month = Number(valueFromEither(after, "periodMonth", "period_month"));
+    const monthLabel = (year && month) ?
+      `${String(month).padStart(2, "0")}/${year}` : null;
+    const notif = push.buildPayrollReleasedNotification({recordId, monthLabel});
+    await fanOutPush({
+      orgId, recipientUids: [userId], notif, requestId: ctx.requestId,
+    });
   },
 );
 
@@ -702,6 +804,92 @@ exports.expiryWarningNightly = onSchedule(
   },
 );
 
+// Auto-Klärung (ZV-2.3b): schließt nachts alle noch offenen Buchungen, deren
+// `kommen` länger als AUTO_KLAERUNG_MIN_MINUTES zurückliegt (vergessenes
+// Ausstempeln), auf `status='klaerung'` — OHNE `gehen` zu setzen (die echten
+// Zeiten setzt erst der Manager-Resolve, ZV-3.1). Idempotent: der `ongoing`-
+// Filter greift beim nächsten Lauf nicht mehr. Benachrichtigt den betroffenen
+// Mitarbeiter (der Manager sieht es live in der Klärungs-Inbox). Region/Zeitzone
+// wie die anderen Nightly-Jobs.
+const AUTO_KLAERUNG_MIN_MINUTES = 12 * 60;
+
+exports.autoKlaerungNightly = onSchedule(
+  {region: REGION, schedule: "every day 03:00", timeZone: "Europe/Berlin"},
+  async () => {
+    const requestId = crypto.randomUUID();
+    const cutoffMs = Date.now() - AUTO_KLAERUNG_MIN_MINUTES * 60 * 1000;
+    const orgsSnap = await db.collection("organizations").limit(50).get();
+    let orgsProcessed = 0;
+    let flagged = 0;
+    for (const orgDoc of orgsSnap.docs) {
+      const orgId = orgDoc.id;
+      let openSnap;
+      try {
+        openSnap = await db.collection("organizations").doc(orgId)
+          .collection("clockEntries")
+          .where("status", "==", "ongoing")
+          .get();
+      } catch (error) {
+        logger.error("auto_klaerung_query_error", {
+          event: "auto_klaerung_query_error", fn: "autoKlaerungNightly",
+          requestId, orgId, message: truncateError(error),
+        });
+        continue;
+      }
+      if (openSnap.empty) continue;
+      orgsProcessed += 1;
+      for (const doc of openSnap.docs) {
+        const data = doc.data() || {};
+        const kommenMs = data.kommen?.toMillis?.();
+        // Nur Buchungen, die lange genug offen sind (frische offene Buchungen
+        // der laufenden Schicht bleiben unberührt).
+        if (typeof kommenMs !== "number" || kommenMs > cutoffMs) continue;
+        try {
+          await doc.ref.set({
+            status: "klaerung",
+            klaerung: true,
+            anmerkung: "Automatisch zur Klärung gelegt " +
+              "(Ausstempeln vergessen).",
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true});
+        } catch (error) {
+          logger.error("auto_klaerung_write_error", {
+            event: "auto_klaerung_write_error", fn: "autoKlaerungNightly",
+            requestId, orgId, clockEntryId: doc.id,
+            message: truncateError(error),
+          });
+          continue;
+        }
+        flagged += 1;
+        await writeAudit({
+          orgId, action: "updated", entityType: "Stempelung",
+          entityId: doc.id,
+          summary: "Automatisch zur Klärung gelegt (Ausstempeln vergessen)",
+          actorUid: stringOrNull(data.userId), requestId,
+        });
+        // Betroffenen Mitarbeiter benachrichtigen (Manager sieht es live).
+        const userId = stringOrNull(data.userId);
+        if (!userId) continue;
+        const kommenDate = data.kommen?.toDate?.();
+        const notif = push.buildAutoKlaerungNotification({
+          clockEntryId: doc.id,
+          dayLabel: kommenDate ?
+            `${String(kommenDate.getDate()).padStart(2, "0")}.` +
+              `${String(kommenDate.getMonth() + 1).padStart(2, "0")}.` :
+            "",
+        });
+        await fanOutPush({
+          orgId, recipientUids: [userId], notif, requestId,
+        });
+      }
+    }
+    logger.info("auto_klaerung_done", {
+      event: "auto_klaerung_done", fn: "autoKlaerungNightly",
+      requestId, orgsProcessed, flagged,
+    });
+  },
+);
+
 exports.upsertShiftBatch = callable("upsertShiftBatch", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
@@ -962,23 +1150,29 @@ exports.setKioskPin = callable("setKioskPin", {region: REGION}, async (request) 
 
 // resetKioskPin: ein Admin loescht die PIN eines Mitarbeiters (erzwingt Neu-
 // Setzen) und hebt eine Sperre auf.
-exports.resetKioskPin = callable("resetKioskPin", {region: REGION}, async (request) => {
-  assertSupportedVersion(request);
-  const caller = await loadCallerProfile(request);
-  if (!caller.isAdmin) {
-    throw new HttpsError(
-      "permission-denied",
-      "Nur Admins duerfen PINs zuruecksetzen.",
-    );
-  }
-  const employeeId = stringOrNull(request.data?.employeeId);
-  if (!employeeId) {
-    throw new HttpsError("invalid-argument", "employeeId fehlt.");
-  }
-  await organizationCollection(caller.orgId, "userSecrets")
-    .doc(employeeId).delete();
-  return {ok: true};
-});
+exports.resetKioskPin = callable("resetKioskPin", {region: REGION},
+  async (request, ctx) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    if (!caller.isAdmin) {
+      throw new HttpsError(
+        "permission-denied",
+        "Nur Admins duerfen PINs zuruecksetzen.",
+      );
+    }
+    const employeeId = stringOrNull(request.data?.employeeId);
+    if (!employeeId) {
+      throw new HttpsError("invalid-argument", "employeeId fehlt.");
+    }
+    await organizationCollection(caller.orgId, "userSecrets")
+      .doc(employeeId).delete();
+    await writeAudit({
+      orgId: caller.orgId, action: "updated", entityType: "Kiosk-PIN",
+      entityId: employeeId, summary: "Kiosk-PIN zurückgesetzt",
+      actorUid: caller.uid, requestId: ctx.requestId,
+    });
+    return {ok: true};
+  });
 
 // kioskBeginSession: das Kiosk-Geraet meldet einen Mitarbeiter per PIN an.
 // request.auth == Geraete-Konto. Prueft PIN serverseitig (scrypt) + Rate-Limit/
@@ -987,7 +1181,7 @@ exports.resetKioskPin = callable("resetKioskPin", {region: REGION}, async (reque
 exports.kioskBeginSession = callable(
   "kioskBeginSession",
   {region: REGION, enforceAppCheck: true},
-  async (request) => {
+  async (request, ctx) => {
     assertSupportedVersion(request);
     const caller = await loadCallerProfile(request); // Geraete-Konto
     const employeeId = stringOrNull(request.data?.employeeId);
@@ -1050,6 +1244,13 @@ exports.kioskBeginSession = callable(
       startedAt: FieldValue.serverTimestamp(),
       expiresAt: Timestamp.fromMillis(Date.now() + KIOSK_SESSION_TTL_MS),
       revokedAt: null,
+    });
+    await writeAudit({
+      orgId: empOrg, action: "created", entityType: "Kiosk-Anmeldung",
+      entityId: employeeId,
+      summary: "Am Laden-Tablet angemeldet",
+      actorUid: employeeId, sessionId: sid,
+      deviceId: deviceId || null, requestId: ctx.requestId,
     });
     return {sid, expiresInMs: KIOSK_SESSION_TTL_MS};
   },
@@ -1122,7 +1323,7 @@ async function findOpenClockEntry(orgId, employeeId) {
 exports.kioskClockPunch = callable(
   "kioskClockPunch",
   {region: REGION, enforceAppCheck: true},
-  async (request) => {
+  async (request, ctx) => {
     assertSupportedVersion(request);
     const caller = await loadCallerProfile(request); // Geraete-Konto
     const sid = stringOrNull(request.data?.sid);
@@ -1149,6 +1350,10 @@ exports.kioskClockPunch = callable(
         userId: employeeId,
         siteId: stringOrNull(request.data?.siteId),
         siteName: stringOrNull(request.data?.siteName),
+        // Geplante Schicht des Session-Mitarbeiters (ZV-2.1) — vom Client als
+        // Vorschlag mitgeliefert; die WorkEntry-Erzeugung erbt sie als
+        // sourceShiftId (Schicht-Completion-Hook).
+        shiftId: stringOrNull(request.data?.shiftId),
         kommen: FieldValue.serverTimestamp(),
         gehen: null,
         pauseMinuten: 0,
@@ -1160,6 +1365,12 @@ exports.kioskClockPunch = callable(
         createdByUid: caller.uid,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
+      });
+      await writeAudit({
+        orgId, action: "created", entityType: "Stempelung",
+        entityId: docRef.id, summary: "Eingestempelt (Kiosk-Tablet)",
+        actorUid: employeeId, sessionId: sid,
+        deviceId: session.deviceId || null, requestId: ctx.requestId,
       });
       return {clockedIn: true, clockEntryId: docRef.id};
     }
@@ -1200,6 +1411,7 @@ exports.kioskClockPunch = callable(
         breakMinutes: pause,
         siteId: data.siteId ?? null,
         siteName: data.siteName ?? null,
+        sourceShiftId: data.shiftId ?? null,
         category: "stempel",
         status: "submitted",
         sourceClockEntryId: doc.id,
@@ -1207,6 +1419,13 @@ exports.kioskClockPunch = callable(
         updatedAt: FieldValue.serverTimestamp(),
       });
 
+      await writeAudit({
+        orgId, action: "created", entityType: "Stempelung",
+        entityId: doc.id,
+        summary: `Ausgestempelt (Kiosk-Tablet, ${netto} min netto)`,
+        actorUid: employeeId, sessionId: sid,
+        deviceId: data.deviceId || null, requestId: ctx.requestId,
+      });
       return {clockedIn: false, clockEntryId: doc.id};
     }
 
@@ -1214,6 +1433,82 @@ exports.kioskClockPunch = callable(
       "invalid-argument",
       "direction muss 'in', 'out' oder 'status' sein.",
     );
+  },
+);
+
+// kioskSaveCashCount (Kassen-Modul M6-E): gehärtete Kassenzählung am Kiosk.
+// Schreibt eine BLINDE CashCount (kein Soll/keine Differenz) als Geräte-Konto,
+// aber autorisiert über die SERVER-geprüfte Session (statt Direkt-Write) — die
+// zählende Person kommt authoritativ aus der Session, nicht vom Client
+// (kein Spoofing von countedByLabel). Betrag/Notiz sind die einzigen
+// Client-Eingaben; expectedCents/differenceCents bleiben null (blind, §7.3).
+exports.kioskSaveCashCount = callable(
+  "kioskSaveCashCount",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request); // Geraete-Konto
+    const sid = stringOrNull(request.data?.sid);
+    const session = await requireKioskSession(caller, sid);
+    const orgId = session.orgId;
+    const employeeId = session.employeeId;
+
+    const countedCents = Number(request.data?.countedCents);
+    if (!Number.isFinite(countedCents) || countedCents < 0) {
+      throw new HttpsError(
+        "invalid-argument", "countedCents muss eine Zahl >= 0 sein.",
+      );
+    }
+    const businessDay = stringOrNull(request.data?.businessDay);
+    if (!businessDay || !/^\d{4}-\d{2}-\d{2}$/.test(businessDay)) {
+      throw new HttpsError(
+        "invalid-argument", "businessDay muss 'YYYY-MM-DD' sein.",
+      );
+    }
+    const note = stringOrNull(request.data?.note);
+    const rawCr = Number(request.data?.cashRegisterId);
+    const cashRegisterId = Number.isFinite(rawCr) && rawCr > 0
+      ? Math.trunc(rawCr) : null;
+    const siteId = stringOrNull(request.data?.siteId) ||
+      stringOrNull(session.siteId);
+
+    // Anzeigename der Person AUTHORITATIV aus dem Server-Profil (nicht Client).
+    // Fallback wie AppUserProfile.displayName: E-Mail-Präfix, wenn kein Name.
+    let countedByLabel = null;
+    try {
+      const empSnap = await db.collection("users").doc(employeeId).get();
+      const empData = empSnap.exists ? (empSnap.data() || {}) : {};
+      const name = stringOrNull(empData.settings?.name ?? empData.name);
+      const email = stringOrNull(empData.email);
+      countedByLabel = name || (email ? email.split("@")[0] : null);
+    } catch (error) {
+      countedByLabel = null;
+    }
+
+    const ref = organizationCollection(orgId, "cashCounts").doc();
+    await ref.set({
+      orgId,
+      siteId,
+      cashRegisterId,
+      businessDay,
+      countedAt: FieldValue.serverTimestamp(),
+      countedCents: Math.round(countedCents),
+      // Blind: die Leitung sieht Soll/Differenz erst im Tagesabschluss.
+      expectedCents: null,
+      differenceCents: null,
+      denominations: null,
+      note,
+      source: "kiosk",
+      countedByLabel,
+      // Harte Personen-Zuordnung (ZV-4.1): echte Mitarbeiter-uid aus der
+      // server-geprüften Session — NICHT das Geräte-Konto (createdByUid) und
+      // nicht vom Client setzbar.
+      countedByUserId: employeeId,
+      kioskSessionId: sid,
+      createdByUid: caller.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    return {cashCountId: ref.id};
   },
 );
 
@@ -1324,6 +1619,18 @@ function permissionDefaultsForRole(role) {
         canViewTimeTracking: true,
         canEditTimeEntries: true,
         canViewReports: true,
+      };
+    // Kiosk-Geraetekonto (Arbeitsmodus/Laden-Tablet, PA-0.1): ohne explizite
+    // Overrides bekommt es KEINE Rechte — sonst faellt es in den employee-
+    // default (canEditTimeEntries:true) und kaeme z. B. durch
+    // assertTimeEntryEditor. Spiegelt den Rules-seitigen isKiosk()-Deny.
+    case "kiosk":
+      return {
+        canViewSchedule: false,
+        canEditSchedule: false,
+        canViewTimeTracking: false,
+        canEditTimeEntries: false,
+        canViewReports: false,
       };
     default:
       return {
@@ -3080,6 +3387,69 @@ exports.oktoposNightlySync = onSchedule(
   },
 );
 
+// Backfill/Reparatur der posDailyStats (M5, §3.3). Re-aggregiert die
+// posDailyStats fuer einen Zeitraum aus den bestehenden posReceipts —
+// KEIN OktoPOS-Call (nur Firestore), daher ohne Secret. Admin-only, same-org.
+// `from`/`until` als 'YYYY-MM-DD' oder ISO; Default: letzte ~370 Tage,
+// hart auf 400 Tage gedeckelt (Read-Kosten-Schutz). `siteId` optional — ohne
+// ihn alle in config/oktoposSync konfigurierten Standorte.
+exports.rebuildPosDailyStats = callable(
+  "rebuildPosDailyStats",
+  // 512MiB: der Backfill kann bis zu 400 Tage posReceipts je Standort in einen
+  // In-Memory-Array lesen (OOM-Schutz bei umsatzstarken Laeden).
+  {region: REGION, timeoutSeconds: 300, memory: "512MiB"},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    assertAdmin(caller);
+    const orgId = requiredString(request.data?.orgId, "orgId");
+    assertSameOrg(caller, orgId);
+
+    const until = parseOktoposDate(stringOrNull(request.data?.until)) ||
+      new Date();
+    let from = parseOktoposDate(stringOrNull(request.data?.from)) ||
+      daysAgo(until, 370);
+    // Range hart deckeln (Schutz gegen versehentliche Riesen-Reads).
+    const maxFrom = daysAgo(until, 400);
+    if (from < maxFrom) from = maxFrom;
+    if (from > until) {
+      throw new HttpsError("invalid-argument", "from liegt nach until.");
+    }
+
+    const explicitSite = stringOrNull(request.data?.siteId);
+    let siteIds;
+    if (explicitSite) {
+      siteIds = [explicitSite];
+    } else {
+      const config = await loadOktoposConfig(orgId);
+      const sites = isPlainObject(config?.sites) ? config.sites : {};
+      siteIds = Object.keys(sites);
+      if (siteIds.length === 0) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Keine Standorte in config/oktoposSync — bitte siteId angeben.",
+        );
+      }
+    }
+
+    const includeVat = await loadPurchasePricesIncludeVat(orgId);
+    let daysWritten = 0;
+    for (const siteId of siteIds) {
+      const lookups = await loadProductLookups(orgId, siteId);
+      daysWritten += await rebuildPosDailyStatsForRange(
+        orgId, siteId, from, until, [...lookups.byId.values()], includeVat,
+      );
+    }
+    return {
+      orgId,
+      siteIds,
+      from: toOktoposDateTime(from),
+      until: toOktoposDateTime(until),
+      daysWritten,
+    };
+  },
+);
+
 async function loadOktoposConfig(orgId) {
   const snap = await organizationCollection(orgId, "config")
     .doc(OKTOPOS_SYNC_CONFIG_ID)
@@ -3193,6 +3563,7 @@ async function runOktoposSync({
     skippedNoReference: 0,
     unmatchedLineItems: 0,
     unmatchedSamples: [],
+    statsDaysWritten: 0,
     dryRun,
   };
 
@@ -3369,6 +3740,26 @@ async function runOktoposSync({
       }, {merge: true});
   }
 
+  // posDailyStats fortschreiben (M5, §3.3): GENAU EINMAL nach der Paging-Schleife
+  // (nicht je Seite), nur `!dryRun`. Re-aggregiert das Sync-Fenster [from..until]
+  // aus den JUST geschriebenen posReceipts (Ganztags-Neuaggregation ueber die
+  // transactionDate-Range) — best-effort: ein Stats-Fehler darf den Sync nicht
+  // scheitern lassen (die Belege/Bewegungen sind bereits sicher persistiert).
+  if (!dryRun && result.receiptsPersisted > 0) {
+    try {
+      const includeVat = await loadPurchasePricesIncludeVat(orgId);
+      result.statsDaysWritten = await rebuildPosDailyStatsForRange(
+        orgId, siteId, from, until, [...lookups.byId.values()], includeVat,
+      );
+    } catch (error) {
+      logger.error("oktopos_stats_error", {
+        event: "oktopos_stats_error",
+        fn, requestId, orgId, siteId,
+        message: truncateError(error),
+      });
+    }
+  }
+
   // Abschluss-Summary — gilt fuer den MANUELLEN Lauf (vorher log-los) UND den
   // naechtlichen. Nur Aggregate, keine unmatchedSamples (koennen Produktnamen
   // enthalten).
@@ -3385,6 +3776,7 @@ async function runOktoposSync({
     reversed: result.reversedMovements,
     receiptsPersisted: result.receiptsPersisted,
     unmatched: result.unmatchedLineItems,
+    statsDaysWritten: result.statsDaysWritten,
   });
   return result;
 }
@@ -3399,10 +3791,18 @@ async function loadProductLookups(orgId, siteId) {
   const byId = new Map();
   for (const doc of snap.docs) {
     const data = doc.data() || {};
+    // EK/USt fuer die posDailyStats-Wareneinsatz-Bewertung (M5, §3.3) mitfuehren.
+    // 0 ist ein gueltiger EK -> nur null/undefined als "nicht gesetzt" behandeln.
+    const ekRaw = data.purchasePriceCents;
+    const rateRaw = data.taxRatePercent;
     const entry = {
       id: doc.id,
       name: stringOrNull(data.name),
       inFridge: isTruthy(data.inFridge),
+      purchasePriceCents: ekRaw == null || !Number.isFinite(Number(ekRaw))
+        ? null : Math.round(Number(ekRaw)),
+      taxRatePercent: rateRaw == null || !Number.isFinite(Number(rateRaw))
+        ? null : Math.round(Number(rateRaw)),
     };
     byId.set(doc.id, entry);
     const barcode = stringOrNull(data.barcode);
@@ -3596,6 +3996,119 @@ async function applyOktoposReceiptsBatch(orgId, siteId, cashRegisterId, items) {
     persisted += slice.length;
   }
   return persisted;
+}
+
+// ---------------------------------------------------------------------------
+// Kassen-Modul M5 — posDailyStats-Fortschreibung (Tagesaggregate je Standort)
+// ---------------------------------------------------------------------------
+// Verdichtet die posReceipts zu EINEM Doc je (Standort, Geschaeftstag), damit
+// Monats-/Jahres-Sichten nicht zehntausende Beleg-Reads kosten (§3.3). Die
+// Rechenlogik liegt im puren Modul oktopos_stats.js (Spiegel von
+// dailyStatsFromReceipts, §11.11). Nur serverseitig geschrieben (Admin SDK);
+// die Client-Rules erlauben kein write auf posDailyStats.
+
+// Org-Schalter §3.4: ob die EK-Preise MwSt enthalten (brutto -> auf netto
+// normalisieren). Default false = netto. Fail-safe: bei Fehler netto annehmen.
+async function loadPurchasePricesIncludeVat(orgId) {
+  try {
+    const snap = await organizationCollection(orgId, "config")
+      .doc("orgSettings").get();
+    return snap.exists && (snap.data() || {}).purchasePricesIncludeVat === true;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Liest die posReceipts eines Standorts im transactionDate-Fenster und mappt sie
+// in die von computeDailyStats erwartete Form (§3.3: Range-Query statt
+// businessDay-Gleichheit, damit null-businessDay-Belege nicht herausfallen).
+async function readPosReceiptsForStats(orgId, siteId, fromDate, toDate) {
+  const snap = await organizationCollection(orgId, "posReceipts")
+    .where("siteId", "==", siteId)
+    .where("transactionDate", ">=", Timestamp.fromDate(fromDate))
+    .where("transactionDate", "<=", Timestamp.fromDate(toDate))
+    .get();
+  const out = [];
+  for (const doc of snap.docs) {
+    const d = doc.data() || {};
+    const td = d.transactionDate;
+    out.push({
+      siteId: stringOrNull(d.siteId),
+      businessDay: stringOrNull(d.businessDay),
+      transactionDate: td && typeof td.toDate === "function" ? td.toDate() : null,
+      type: stringOrNull(d.type),
+      training: d.training === true,
+      isRevenue: d.isRevenue === true,
+      grossCents: d.grossCents == null ? null : Number(d.grossCents),
+      taxes: asArray(d.taxes),
+      payments: asArray(d.payments),
+      lines: asArray(d.lines),
+    });
+  }
+  return out;
+}
+
+// Schreibt die Tagesaggregate (set, kein increment -> Re-Aggregation idempotent
+// fuer beleg-abgeleitete Felder). Doc-ID deterministisch `{businessDay}-{siteId}`.
+async function writePosDailyStats(orgId, stats) {
+  if (!Array.isArray(stats) || stats.length === 0) return 0;
+  const col = organizationCollection(orgId, "posDailyStats");
+  let written = 0;
+  const CHUNK = 400; // je Tag 1 Write -> sicher unter dem 500er-Batch-Limit.
+  for (let i = 0; i < stats.length; i += CHUNK) {
+    const slice = stats.slice(i, i + CHUNK);
+    const batch = db.batch();
+    for (const s of slice) {
+      batch.set(col.doc(`${s.businessDay}-${s.siteId}`), {
+        orgId,
+        siteId: s.siteId,
+        businessDay: s.businessDay,
+        salesCount: s.salesCount,
+        refundCount: s.refundCount,
+        positiveRefundCount: s.positiveRefundCount,
+        revenueGrossCents: s.revenueGrossCents,
+        revenueNetCents: s.revenueNetCents,
+        netUncoveredGrossCents: s.netUncoveredGrossCents,
+        taxes: s.taxes,
+        paymentsByMethod: s.paymentsByMethod,
+        cashMovementCents: s.cashMovementCents,
+        cogsCents: s.cogsCents,
+        cogsCoveredGrossCents: s.cogsCoveredGrossCents,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
+    written += slice.length;
+  }
+  return written;
+}
+
+// Re-aggregiert posDailyStats fuer [fromDate..untilDate] eines Standorts und
+// schreibt die betroffenen Tage. Liest ein um +/-1 Tag erweitertes Fenster
+// (Geschaeftstag-vs-Kalendertag-Rand), schreibt aber nur Tage IM Kernfenster
+// (Randtage koennten unvollstaendig aggregiert sein). `products` = Lookup-
+// Eintraege mit purchasePriceCents/taxRatePercent. Gibt die Anzahl geschriebener
+// Tage zurueck.
+async function rebuildPosDailyStatsForRange(
+  orgId, siteId, fromDate, untilDate, products, includeVat,
+) {
+  const fetchFrom = daysAgo(fromDate, 1);
+  const fetchTo = new Date(untilDate.getTime() + 24 * 60 * 60 * 1000);
+  const receipts = await readPosReceiptsForStats(
+    orgId, siteId, fetchFrom, fetchTo,
+  );
+  const ekNettoById = oktoposStats.ekNettoByProduct(products, {
+    purchasePricesIncludeVat: includeVat === true,
+  });
+  const all = oktoposStats.computeDailyStats(receipts, ekNettoById);
+  const fromDay = oktoposStats.dayOf(fromDate);
+  const toDay = oktoposStats.dayOf(untilDate);
+  // Nur Kernfenster-Tage schreiben (die Rand-Puffer-Tage dienen nur der
+  // vollstaendigen Aggregation der Kern-Tage).
+  const inWindow = all.filter(
+    (s) => s.businessDay >= fromDay && s.businessDay <= toDay,
+  );
+  return writePosDailyStats(orgId, inWindow);
 }
 
 // Zentraler HTTP-Helfer fuer ALLE ausgehenden Kassen-Calls: AbortController +

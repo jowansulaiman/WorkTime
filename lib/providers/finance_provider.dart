@@ -4,12 +4,14 @@ import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
+import '../core/cash_difference_posting.dart';
 import '../core/daily_closing.dart';
 import '../core/daily_closing_posting.dart';
 import '../core/datev_export.dart';
 import '../core/finance_analytics.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
+import '../models/cash_closing.dart';
 import '../models/customer_order.dart';
 import '../models/finance_models.dart';
 import '../models/payroll_record.dart';
@@ -483,6 +485,12 @@ class FinanceProvider extends ChangeNotifier {
     'erlos',
     'verkauf',
   ];
+  // Bewusst SPEZIFISCH: das breite 'differenz'/'manko' würde 'Inventur-/Preis-/
+  // Bestandsdifferenz' fälschlich treffen (Falschbuchung statt sauberem Skip).
+  static const List<String> _cashDiffNeedles = [
+    'kassendifferenz',
+    'kassenmanko',
+  ];
 
   /// Bucht den **Wareneinsatz** einer vollständig gelieferten Bestellung
   /// (H-A2). Kosten → positiver Betrag. Idempotent über `po-<id>`.
@@ -546,6 +554,39 @@ class FinanceProvider extends ChangeNotifier {
       await saveJournalEntry(entry);
     }
     return entries.length;
+  }
+
+  /// **Kassen-Modul M6 — Kassendifferenz buchen** (Plan §8a). Bucht die
+  /// festgeschriebene Differenz (gezählt − Soll) auf eine Kostenart
+  /// „Kassendifferenz" (Namens-Heuristik [_cashDiffNeedles]). Fehlbetrag →
+  /// Kosten, Überschuss → Gutschrift. Idempotent über `pos-diff-<day>-<site>`.
+  /// `true`, wenn gebucht; `false`, wenn keine Differenz oder kein Konto/
+  /// keine Kostenstelle zugeordnet (dann still übersprungen, keine Falschbuchung).
+  Future<bool> postCashDifference(CashClosing closing) async {
+    if (!isAdmin || _orgId == null) return false;
+    if (closing.cashDifferenceCents == null ||
+        closing.cashDifferenceCents == 0) {
+      return false;
+    }
+    final costCenter = _resolveSiteCostCenter(closing.siteId);
+    final costType = _resolveCostTypeByNeedles(_cashDiffNeedles);
+    if (costCenter?.id == null || costType?.id == null) {
+      AppLogger.warning(
+        'Kassendifferenz übersprungen: keine eindeutige Kostenstelle/-art '
+        '(„Kassendifferenz") für Standort ${closing.siteId}.',
+      );
+      return false;
+    }
+    final entry = buildCashDifferenceEntry(
+      closing,
+      orgId: _orgId!,
+      costCenterId: costCenter!.id!,
+      costTypeId: costType!.id!,
+      createdByUid: _currentUser?.uid,
+    );
+    if (entry == null) return false;
+    await saveJournalEntry(entry);
+    return true;
   }
 
   Future<String?> _postOrderJournal({

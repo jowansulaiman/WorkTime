@@ -257,6 +257,10 @@ class _InventoryScreenState extends State<InventoryScreen>
                   context.push(AppRoutes.sortiment);
                 case 'storeHealth':
                   context.push(AppRoutes.storeHealth);
+                case 'dailyClosing':
+                  context.push(AppRoutes.dailyClosing);
+                case 'kassenbericht':
+                  context.push(AppRoutes.kassenbericht);
               }
             },
             itemBuilder: (_) => [
@@ -288,11 +292,31 @@ class _InventoryScreenState extends State<InventoryScreen>
                 ),
               if (profile.isAdmin)
                 const PopupMenuItem(
+                  value: 'kassenbericht',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.receipt_long_outlined),
+                    title: Text('Kassenbericht'),
+                  ),
+                ),
+              if (profile.isAdmin)
+                const PopupMenuItem(
                   value: 'storeHealth',
                   child: ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: Icon(Icons.compare_arrows),
                     title: Text('Laden-Benchmark'),
+                  ),
+                ),
+              // Tagesabschluss/Kasse: einsehen + zählen auch für Teamleitung
+              // (Abschließen/Buchen bleibt im Screen admin-gated).
+              if (profile.isAdmin || profile.isTeamLead)
+                const PopupMenuItem(
+                  value: 'dailyClosing',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.point_of_sale_outlined),
+                    title: Text('Tagesabschluss (Kasse)'),
                   ),
                 ),
             ],

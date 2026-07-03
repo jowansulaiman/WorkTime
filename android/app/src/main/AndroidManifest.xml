@@ -14,6 +14,12 @@
     <!-- Push-Benachrichtigungen (FCM, Plan push-benachrichtigungen-plan.md).
          Ab Android 13 (API 33) Laufzeit-Berechtigung; darunter implizit. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Vibration/Haptik als Scan-Rueckmeldung (ScannerScreen / ScanFeedback). -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- Netzwerkstatus fuer die Offline-Erkennung (connectivity_plus). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Biometrie-App-Lock (local_auth: Face/Touch/Fingerprint). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
 
     <application
         android:label="timework"
@@ -69,6 +75,24 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- url_launcher: Telefon/E-Mail/Web/SMS aus Kontakten oeffnen
+             (Anf. 25 „wenige Schritte"). Least Privilege: nur diese Schemata. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="tel"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="mailto"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="sms"/>
         </intent>
     </queries>
 </manifest>

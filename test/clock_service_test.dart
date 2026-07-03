@@ -118,4 +118,25 @@ void main() {
       );
     });
   });
+
+  group('looksForgotten (ZV-2.3a)', () {
+    test('unter 12 h → nicht vergessen', () {
+      expect(
+        ClockService.looksForgotten(
+          kommen: DateTime(2026, 6, 10, 8),
+          now: DateTime(2026, 6, 10, 18), // 10 h
+        ),
+        isFalse,
+      );
+    });
+    test('über 12 h → wahrscheinlich vergessen', () {
+      expect(
+        ClockService.looksForgotten(
+          kommen: DateTime(2026, 6, 10, 8),
+          now: DateTime(2026, 6, 10, 21), // 13 h
+        ),
+        isTrue,
+      );
+    });
+  });
 }

@@ -42,6 +42,35 @@ void main() {
       expect(restored.netCents, 210000);
     });
 
+    test('PA-6.1: AG-Umlagen/Minijob-Pauschale round-trippen (beide Formate)',
+        () {
+      const withLevies = PayrollRecord(
+        orgId: 'org-1',
+        userId: 'u1',
+        periodYear: 2026,
+        periodMonth: 6,
+        minijobEmployerFlatCents: 18000,
+        employerU1Cents: 1200,
+        employerU2Cents: 800,
+        employerInsolvencyCents: 150,
+        employerAccidentCents: 900,
+      );
+      final local = PayrollRecord.fromMap(withLevies.toMap());
+      expect(local.minijobEmployerFlatCents, 18000);
+      expect(local.employerU1Cents, 1200);
+      expect(local.employerU2Cents, 800);
+      expect(local.employerInsolvencyCents, 150);
+      expect(local.employerAccidentCents, 900);
+
+      final cloud = PayrollRecord.fromFirestore(
+          'u1-2026-06', withLevies.toFirestoreMap());
+      expect(cloud.minijobEmployerFlatCents, 18000);
+      expect(cloud.employerU1Cents, 1200);
+      expect(cloud.employerU2Cents, 800);
+      expect(cloud.employerInsolvencyCents, 150);
+      expect(cloud.employerAccidentCents, 900);
+    });
+
     test('documentId is deterministic with zero-padded month', () {
       expect(record.documentId, 'u1-2026-06');
       const december = PayrollRecord(

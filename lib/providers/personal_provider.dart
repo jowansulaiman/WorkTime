@@ -18,6 +18,7 @@ import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
+import '../models/employee_document.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_qualification.dart';
 import '../models/employment_contract.dart';
@@ -32,6 +33,7 @@ import '../models/sollzeit_profile.dart';
 import '../models/work_entry.dart';
 import '../models/work_task.dart';
 import '../services/database_service.dart';
+import '../services/document_storage.dart';
 import '../services/firestore_service.dart';
 import 'audit_sink.dart';
 
@@ -104,6 +106,7 @@ class PersonalProvider extends ChangeNotifier {
   StreamSubscription<List<Urlaubsanpassung>>? _urlaubsanpassungSubscription;
   StreamSubscription<List<PayLineType>>? _payLineTypesSubscription;
   StreamSubscription<List<AbsenceRequest>>? _absencesSubscription;
+  StreamSubscription<List<EmployeeDocument>>? _documentsSubscription;
 
   AppUserProfile? _currentUser;
   List<WorkTask> _tasks = [];
@@ -119,6 +122,12 @@ class PersonalProvider extends ChangeNotifier {
   List<Urlaubsanpassung> _urlaubsanpassungen = [];
   List<PayLineType> _payLineTypes = [];
   List<AbsenceRequest> _absences = [];
+  List<EmployeeDocument> _documents = [];
+
+  // Binär-Seam für Personalakte-Dokumente (PA-3). Lazy in main.dart gesetzt
+  // (nur wenn Firebase konfiguriert) — im Demo-/Local-/Test-Modus null, dann
+  // sind Upload/Download deaktiviert (Dokumente sind cloud-only).
+  DocumentStorage? _documentStorage;
 
   // Stammdaten aus dem TeamProvider (org-weit, via updateReferenceData).
   List<AppUserProfile> _members = [];
@@ -145,6 +154,36 @@ class PersonalProvider extends ChangeNotifier {
   List<EmployeeAusbildung> get employeeAusbildungen => _ausbildungen;
   List<UrlaubskontoJahr> get urlaubskontoJahre => _urlaubskontoJahre;
   List<Urlaubsanpassung> get urlaubsanpassungen => _urlaubsanpassungen;
+
+  /// Personalakte-Dokumente (PA-3), neueste zuerst. Für Admins alle, für
+  /// reguläre Mitarbeiter nur die eigenen SICHTBAREN (self-scoped Stream).
+  List<EmployeeDocument> get documents {
+    final sorted = [..._documents];
+    sorted.sort((a, b) => (b.createdAt ?? DateTime(0))
+        .compareTo(a.createdAt ?? DateTime(0)));
+    return sorted;
+  }
+
+  /// Dokumente eines Mitarbeiters (neueste zuerst).
+  List<EmployeeDocument> documentsForUser(String userId) =>
+      documents.where((d) => d.userId == userId).toList(growable: false);
+
+  /// Dokumente mit abgelaufener Aufbewahrungsfrist (PA-8.1, DSGVO Art. 17):
+  /// Kandidaten für die admin-getriggerte Löschung. Nur Admin-Sicht (der
+  /// self-Stream trägt keine internen/abgelaufenen Fremd-Dokumente).
+  List<EmployeeDocument> documentsWithExpiredRetention({DateTime? now}) {
+    final at = now ?? DateTime.now();
+    return documents
+        .where((d) => d.retentionExpired(at))
+        .toList(growable: false);
+  }
+
+  /// Ob Datei-Upload/-Download verfügbar ist (Cloud + Storage-Seam gesetzt).
+  bool get documentsAvailable => _documentStorage != null && _usesFirestore;
+
+  void setDocumentStorage(DocumentStorage storage) {
+    _documentStorage = storage;
+  }
 
   /// Alle Lohnarten des Org-Katalogs (inkl. deaktivierter, für Alt-Abrechnungen).
   List<PayLineType> get payLineTypes => _payLineTypes;
@@ -812,10 +851,11 @@ class PersonalProvider extends ChangeNotifier {
     // erzeugt jeder regulaere Login zuverlaessig permission-denied-Fehler
     // (Fehler-Rauschen) und der Ladespinner bliebe haengen (probleme #18).
     if (!isAdmin) {
-      // M7-Self-Read: reguläre Mitarbeiter laden ihr EIGENES Sollzeit-Profil
-      // (self-scoped, firestore.rules erlauben `userId == uid`), damit
-      // Stundenkonto/Mein-Monatsabschluss das Soll berechnen statt zu degradieren.
-      // Lohn/Stammakte bleiben admin-only (kein Konsument in der Self-Sicht).
+      // Self-Read: reguläre Mitarbeiter laden ihr EIGENES Sollzeit-Profil (M7)
+      // und ihre EIGENE Personal-Stammakte (PA-2.3) self-scoped (firestore.rules
+      // erlauben `userId == uid`), damit Stundenkonto/„Meine Akte" sie anzeigen
+      // statt zu degradieren. Lohn-Stammdaten (payrollProfiles) bleiben admin-
+      // only (Steuerklasse etc. sieht der MA über seine Lohnabrechnung).
       final uid = _currentUser?.uid;
       if (uid != null) {
         _sollzeitProfilesSubscription = _firestore
@@ -823,6 +863,44 @@ class PersonalProvider extends ChangeNotifier {
             .listen((items) {
           _sollzeitProfiles = items;
           _loading = false;
+          _safeNotify();
+        }, onError: _setError);
+
+        _employeeProfilesSubscription = _firestore
+            .watchEmployeeProfileForUser(orgId: orgId, userId: uid)
+            .listen((items) {
+          _employeeProfiles = items;
+          _safeNotify();
+        }, onError: _setError);
+
+        // PA-3-Self-Read: eigene SICHTBARE Dokumente („Meine Akte").
+        _documentsSubscription = _firestore
+            .watchEmployeeDocumentsForUser(orgId: orgId, userId: uid)
+            .listen((items) {
+          _documents = items;
+          _safeNotify();
+        }, onError: _setError);
+
+        // PA-7.1-Self-Read: eigene freigegebene/bezahlte Lohnabrechnungen.
+        _payrollSubscription = _firestore
+            .watchPayrollRecordsForUser(orgId: orgId, userId: uid)
+            .listen((items) {
+          _payrollRecords = items;
+          _safeNotify();
+        }, onError: _setError);
+
+        // PA-7.2-Self-Read: eigenes Urlaubskonto (Vortrag/Anpassungen) für den
+        // korrekten Urlaubs-Report in „Meine Akte".
+        _urlaubskontoSubscription = _firestore
+            .watchUrlaubskontoJahreForUser(orgId: orgId, userId: uid)
+            .listen((items) {
+          _urlaubskontoJahre = items;
+          _safeNotify();
+        }, onError: _setError);
+        _urlaubsanpassungSubscription = _firestore
+            .watchUrlaubsanpassungenForUser(orgId: orgId, userId: uid)
+            .listen((items) {
+          _urlaubsanpassungen = items;
           _safeNotify();
         }, onError: _setError);
       }
@@ -894,6 +972,12 @@ class PersonalProvider extends ChangeNotifier {
       _payLineTypes = items;
       _safeNotify();
     }, onError: _setError);
+
+    _documentsSubscription =
+        _firestore.watchEmployeeDocuments(orgId).listen((items) {
+      _documents = items;
+      _safeNotify();
+    }, onError: _setError);
   }
 
   Future<void> _loadLocalData() async {
@@ -936,6 +1020,7 @@ class PersonalProvider extends ChangeNotifier {
     await _urlaubsanpassungSubscription?.cancel();
     await _payLineTypesSubscription?.cancel();
     await _absencesSubscription?.cancel();
+    await _documentsSubscription?.cancel();
     _tasksSubscription = null;
     _payrollSubscription = null;
     _profilesSubscription = null;
@@ -949,6 +1034,7 @@ class PersonalProvider extends ChangeNotifier {
     _urlaubsanpassungSubscription = null;
     _payLineTypesSubscription = null;
     _absencesSubscription = null;
+    _documentsSubscription = null;
   }
 
   void _resetData() {
@@ -965,6 +1051,7 @@ class PersonalProvider extends ChangeNotifier {
     _urlaubsanpassungen = [];
     _payLineTypes = [];
     _absences = [];
+    _documents = [];
     _loading = false;
   }
 
@@ -1330,6 +1417,7 @@ class PersonalProvider extends ChangeNotifier {
   Future<void> savePayrollProfile(PayrollProfile profile) async {
     _assertAdmin();
     final orgId = _requireOrg();
+    final isNew = profileForUser(profile.userId) == null;
     final withMeta = profile.copyWith(
       orgId: orgId,
       createdByUid: profile.createdByUid ?? _currentUser?.uid,
@@ -1337,17 +1425,31 @@ class PersonalProvider extends ChangeNotifier {
     final prepared = withMeta.id == null
         ? withMeta.copyWith(id: withMeta.documentId)
         : withMeta;
+    final summary =
+        'Lohn-Stammdaten ${_memberLabel(prepared.userId)} gespeichert';
     if (_usesFirestore &&
         await _tryFirestore(
           'savePayrollProfile',
           () => _firestore.savePayrollProfile(prepared),
         )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Lohn-Stammdaten',
+        entityId: prepared.userId,
+        summary: summary,
+      );
       return;
     }
     _upsertLocal(_payrollProfiles, prepared, (item) => item.id);
     _payrollProfiles = [..._payrollProfiles];
     await _persistProfiles();
     _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Lohn-Stammdaten',
+      entityId: prepared.userId,
+      summary: summary,
+    );
   }
 
   /// Merkt sich die Lohn-Stammdaten eines Mitarbeiters aus einer Abrechnung,
@@ -1387,11 +1489,18 @@ class PersonalProvider extends ChangeNotifier {
     _assertAdmin();
     final orgId = _orgId;
     if (orgId == null) return;
+    final summary = 'Lohn-Stammdaten ${_memberLabel(userId)} gelöscht';
     if (_usesFirestore &&
         await _tryFirestore(
           'deletePayrollProfile',
           () => _firestore.deletePayrollProfile(orgId: orgId, userId: userId),
         )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Lohn-Stammdaten',
+        entityId: userId,
+        summary: summary,
+      );
       return;
     }
     _payrollProfiles = _payrollProfiles
@@ -1399,6 +1508,12 @@ class PersonalProvider extends ChangeNotifier {
         .toList(growable: false);
     await _persistProfiles();
     _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Lohn-Stammdaten',
+      entityId: userId,
+      summary: summary,
+    );
   }
 
   Future<void> _persistProfiles() =>
@@ -1479,6 +1594,120 @@ class PersonalProvider extends ChangeNotifier {
   Future<void> _persistEmployeeProfiles() =>
       DatabaseService.saveLocalEmployeeProfiles(_employeeProfiles,
           scope: _localScope);
+
+  // --- Personalakte-Dokumente (PA-3) ---------------------------------------
+  // Bewusst CLOUD-ONLY: die Binärdatei liegt in Firebase Storage, ein lokaler
+  // Spiegel (SharedPreferences) wäre ohne Datei wertlos. Im Local-/Demo-Modus
+  // sind Upload/Download deaktiviert (documentsAvailable == false).
+
+  /// Lädt eine Datei hoch (Admin) und legt anschließend das Metadaten-Doc an.
+  /// Reihenfolge Storage → Firestore; scheitert der Metadaten-Write, wird das
+  /// Storage-Objekt best-effort wieder entfernt (kein verwaistes Binary).
+  Future<void> uploadDocument({
+    required String userId,
+    required DocumentCategory category,
+    required String title,
+    required String fileName,
+    required String contentType,
+    required Uint8List bytes,
+    bool visibleToEmployee = true,
+    String? note,
+    DateTime? retentionUntil,
+    void Function(double progress)? onProgress,
+  }) async {
+    _assertAdmin();
+    final orgId = _requireOrg();
+    final storage = _documentStorage;
+    if (storage == null || !_usesFirestore) {
+      throw StateError(
+          'Dokumenten-Upload benötigt den Cloud-Modus mit aktivem Speicher.');
+    }
+    final docId = _firestore.newEmployeeDocumentId(orgId);
+    final storagePath = 'employee-documents/$orgId/$userId/$docId';
+    final now = DateTime.now();
+    final retention = retentionUntil ??
+        DateTime(now.year + category.defaultRetentionYears, now.month, now.day);
+    final document = EmployeeDocument(
+      id: docId,
+      orgId: orgId,
+      userId: userId,
+      category: category,
+      title: title.trim(),
+      fileName: fileName,
+      contentType: contentType,
+      sizeBytes: bytes.length,
+      storagePath: storagePath,
+      note: note,
+      visibleToEmployee: visibleToEmployee,
+      retentionUntil: retention,
+      uploadedByUid: _currentUser?.uid,
+    );
+    await storage.upload(
+      path: storagePath,
+      bytes: bytes,
+      contentType: contentType,
+      onProgress: onProgress,
+    );
+    try {
+      await _firestore.saveEmployeeDocument(document);
+    } catch (error) {
+      try {
+        await storage.delete(storagePath);
+      } catch (_) {
+        // Aufräumen ist best-effort — der Metadaten-Fehler wird rethrown.
+      }
+      rethrow;
+    }
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Personaldokument',
+      entityId: docId,
+      summary: 'Dokument „${document.title}" für '
+          '${_memberLabel(userId)} hochgeladen',
+    );
+  }
+
+  /// Lädt die Binärdatei eines Dokuments herunter (`null`, wenn nicht vorhanden).
+  Future<Uint8List?> downloadDocument(EmployeeDocument document) {
+    final storage = _documentStorage;
+    if (storage == null) {
+      throw StateError('Download benötigt den Cloud-Modus.');
+    }
+    return storage.download(document.storagePath);
+  }
+
+  /// Löscht Metadaten + Storage-Objekt (Admin).
+  Future<void> deleteDocument(EmployeeDocument document) async {
+    _assertAdmin();
+    final orgId = _requireOrg();
+    if (!_usesFirestore || document.id == null) {
+      throw StateError('Löschen benötigt den Cloud-Modus.');
+    }
+    await _firestore.deleteEmployeeDocument(orgId: orgId, docId: document.id!);
+    final storage = _documentStorage;
+    if (storage != null) {
+      try {
+        await storage.delete(document.storagePath);
+      } catch (_) {
+        // Storage-Objekt evtl. schon weg — Metadaten sind entfernt.
+      }
+    }
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Personaldokument',
+      entityId: document.id,
+      summary: 'Dokument „${document.title}" gelöscht',
+    );
+  }
+
+  /// Lesebestätigung durch den Mitarbeiter selbst (feldgranular — setzt nur
+  /// `acknowledgedAt`; die Rules erlauben genau diese Feld-Allowlist self).
+  Future<void> acknowledgeDocument(EmployeeDocument document) async {
+    final orgId = _orgId;
+    if (orgId == null || !_usesFirestore || document.id == null) return;
+    await _firestore.acknowledgeEmployeeDocument(
+        orgId: orgId, docId: document.id!);
+  }
 
   // --- Sollzeit-Profile (Arbeitszeitmodelle, gültig-ab) --------------------
 

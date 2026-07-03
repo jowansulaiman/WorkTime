@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
 import '../core/app_config.dart';
 import '../core/quick_actions_service.dart';
@@ -22,7 +23,9 @@ import '../screens/finance_screen.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
+import '../screens/kassenbericht_screen.dart';
 import '../screens/kiosk/kiosk_screen.dart';
+import '../screens/meine_akte_screen.dart';
 import '../screens/month_report_screen.dart';
 import '../screens/order_analytics_screen.dart';
 import '../screens/personal_screen.dart';
@@ -118,7 +121,10 @@ GoRouter buildAppRouter({
       GoRoute(
         path: AppRoutes.kiosk,
         parentNavigatorKey: rootNavigatorKey,
-        builder: (context, state) => const KioskScreen(),
+        // Dichtes Tablet-Board: lokal auf 1,5 klemmen (gestufte Dynamic-Type-
+        // Leiter E1).
+        builder: (context, state) =>
+            const DenseContentTextScale(child: KioskScreen()),
       ),
 
       // ---- Shell: 7 statische Branches (lazy IndexedStack, State je Branch) ----
@@ -158,6 +164,8 @@ GoRouter buildAppRouter({
           (c, s) => const CustomerOrderScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.personal,
           (c, s) => const PersonalScreen(parentLabel: 'Laden')),
+      _sectionRoute(AppRoutes.meineAkte,
+          (c, s) => const MeineAkteScreen(parentLabel: 'Profil')),
       _sectionRoute(AppRoutes.finance,
           (c, s) => const FinanceScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.feedbackInbox,
@@ -184,8 +192,12 @@ GoRouter buildAppRouter({
           (c, s) => const SortimentScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.staffingProfile,
           (c, s) => const StaffingProfileScreen(parentLabel: 'Schichtplan')),
+      // Erreichbar aus Buchhaltung (Admin) UND dem Laden-Insights-Menü
+      // (Teamleitung) — neutraler Breadcrumb, da teamlead keine Buchhaltung hat.
       _sectionRoute(AppRoutes.dailyClosing,
-          (c, s) => const DailyClosingScreen(parentLabel: 'Buchhaltung')),
+          (c, s) => const DailyClosingScreen(parentLabel: 'Kasse')),
+      _sectionRoute(AppRoutes.kassenbericht,
+          (c, s) => const KassenberichtScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.storeHealth,
           (c, s) => const StoreHealthScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.cashierAnomaly,
@@ -209,6 +221,35 @@ GoRouter buildAppRouter({
   );
 }
 
+/// Tabellen-/Chart-/Raster-lastige Hauptbereiche, deren Text lokal auf 1,5
+/// geklemmt wird (gestufte Dynamic-Type-Leiter E1), während Lese-/Formular-
+/// Screens die volle Skalierung bis 2,0 behalten. Wird beim Bereichs-Rollout
+/// je Screen geprüft/reduziert, wenn er responsiv umgebaut ist.
+const Set<String> _denseSectionPaths = <String>{
+  AppRoutes.inventory,
+  AppRoutes.personal,
+  AppRoutes.finance,
+  AppRoutes.team,
+  AppRoutes.monthReport,
+  AppRoutes.statistics,
+  AppRoutes.orderAnalytics,
+  AppRoutes.bestandInsights,
+  AppRoutes.sortiment,
+  AppRoutes.staffingProfile,
+  AppRoutes.dailyClosing,
+  AppRoutes.kassenbericht,
+  AppRoutes.storeHealth,
+  AppRoutes.cashierAnomaly,
+  AppRoutes.auditLog,
+  AppRoutes.zeitErfassung,
+  AppRoutes.zeitStundenkonto,
+  AppRoutes.zeitMonatsabschluss,
+  AppRoutes.zeitMitarbeiterabschluss,
+  AppRoutes.zeitLohnlauf,
+  AppRoutes.zeitAbwesenheiten,
+  AppRoutes.zeitAbwesenheitenKalender,
+};
+
 GoRoute _sectionRoute(
   String path,
   Widget Function(BuildContext context, GoRouterState state) builder,
@@ -216,7 +257,10 @@ GoRoute _sectionRoute(
     GoRoute(
       path: path,
       parentNavigatorKey: rootNavigatorKey,
-      builder: builder,
+      builder: _denseSectionPaths.contains(path)
+          ? (context, state) =>
+              DenseContentTextScale(child: builder(context, state))
+          : builder,
     );
 
 /// Reproduziert die frühere `_AuthGate`-Entscheidung als go_router-Redirect.

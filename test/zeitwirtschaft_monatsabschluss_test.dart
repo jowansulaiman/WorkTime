@@ -85,6 +85,24 @@ void main() {
     expect(stored, isEmpty);
   });
 
+  test('closeMonth blockiert bei offenen Klärungsfällen (ZV-5.2)', () async {
+    final provider = await localProvider();
+    final validation = await provider.closeMonth(
+      liveSnapshot: live(),
+      monthEntries: [entry(WorkEntryStatus.approved)], // Einträge sauber
+      vormonat: null,
+      now: now,
+      offeneKlaerungen: 2,
+    );
+    expect(validation.canClose, isFalse);
+    expect(
+      validation.errors.any((e) => e.contains('Klärungsfälle')),
+      isTrue,
+    );
+    final stored = await provider.loadOrgSnapshotsForMonth(2026, 6);
+    expect(stored, isEmpty);
+  });
+
   test('closeMonth blockiert den laufenden/zukünftigen Monat', () async {
     final provider = await localProvider();
     final validation = await provider.closeMonth(

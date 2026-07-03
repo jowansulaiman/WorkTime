@@ -326,6 +326,11 @@ class PayrollRecord {
     this.unemploymentEmployerCents = 0,
     this.netCents = 0,
     this.employerTotalCents = 0,
+    this.minijobEmployerFlatCents = 0,
+    this.employerU1Cents = 0,
+    this.employerU2Cents = 0,
+    this.employerInsolvencyCents = 0,
+    this.employerAccidentCents = 0,
     this.status = PayrollStatus.entwurf,
     this.finalizedByUid,
     this.finalizedAt,
@@ -362,6 +367,15 @@ class PayrollRecord {
   final int unemploymentEmployerCents;
   final int netCents;
   final int employerTotalCents;
+
+  /// AG-Kosten-Einzelposten (PA-6.1): bei Minijob die AG-Pauschale, sonst die
+  /// vier Umlagen U1/U2/InsO/UV. In [employerTotalCents] bereits mit-aggregiert,
+  /// hier verlustfrei einzeln persistiert (für DATEV/PDF/Auswertung).
+  final int minijobEmployerFlatCents;
+  final int employerU1Cents;
+  final int employerU2Cents;
+  final int employerInsolvencyCents;
+  final int employerAccidentCents;
 
   /// Freigabe-Status (Default: Entwurf).
   final PayrollStatus status;
@@ -450,6 +464,13 @@ class PayrollRecord {
           parse.toInt(map['unemploymentEmployerCents']) ?? 0,
       netCents: parse.toInt(map['netCents']) ?? 0,
       employerTotalCents: parse.toInt(map['employerTotalCents']) ?? 0,
+      minijobEmployerFlatCents:
+          parse.toInt(map['minijobEmployerFlatCents']) ?? 0,
+      employerU1Cents: parse.toInt(map['employerU1Cents']) ?? 0,
+      employerU2Cents: parse.toInt(map['employerU2Cents']) ?? 0,
+      employerInsolvencyCents:
+          parse.toInt(map['employerInsolvencyCents']) ?? 0,
+      employerAccidentCents: parse.toInt(map['employerAccidentCents']) ?? 0,
       status: PayrollStatusX.fromValue(map['status']?.toString()),
       finalizedByUid: map['finalizedByUid'] as String?,
       finalizedAt: FirestoreDateParser.readDate(map['finalizedAt']),
@@ -489,6 +510,14 @@ class PayrollRecord {
           parse.toInt(map['unemployment_employer_cents']) ?? 0,
       netCents: parse.toInt(map['net_cents']) ?? 0,
       employerTotalCents: parse.toInt(map['employer_total_cents']) ?? 0,
+      minijobEmployerFlatCents:
+          parse.toInt(map['minijob_employer_flat_cents']) ?? 0,
+      employerU1Cents: parse.toInt(map['employer_u1_cents']) ?? 0,
+      employerU2Cents: parse.toInt(map['employer_u2_cents']) ?? 0,
+      employerInsolvencyCents:
+          parse.toInt(map['employer_insolvency_cents']) ?? 0,
+      employerAccidentCents:
+          parse.toInt(map['employer_accident_cents']) ?? 0,
       status: PayrollStatusX.fromValue(map['status']?.toString()),
       finalizedByUid: map['finalized_by_uid'] as String?,
       finalizedAt: FirestoreDateParser.readLocalDate(map['finalized_at']),
@@ -525,6 +554,11 @@ class PayrollRecord {
       'unemploymentEmployerCents': unemploymentEmployerCents,
       'netCents': netCents,
       'employerTotalCents': employerTotalCents,
+      'minijobEmployerFlatCents': minijobEmployerFlatCents,
+      'employerU1Cents': employerU1Cents,
+      'employerU2Cents': employerU2Cents,
+      'employerInsolvencyCents': employerInsolvencyCents,
+      'employerAccidentCents': employerAccidentCents,
       'status': status.value,
       'finalizedByUid': finalizedByUid,
       'finalizedAt':
@@ -563,6 +597,11 @@ class PayrollRecord {
       'unemployment_employer_cents': unemploymentEmployerCents,
       'net_cents': netCents,
       'employer_total_cents': employerTotalCents,
+      'minijob_employer_flat_cents': minijobEmployerFlatCents,
+      'employer_u1_cents': employerU1Cents,
+      'employer_u2_cents': employerU2Cents,
+      'employer_insolvency_cents': employerInsolvencyCents,
+      'employer_accident_cents': employerAccidentCents,
       'status': status.value,
       'finalized_by_uid': finalizedByUid,
       'finalized_at': finalizedAt?.toIso8601String(),
@@ -617,6 +656,11 @@ class PayrollRecord {
     int? unemploymentEmployerCents,
     int? netCents,
     int? employerTotalCents,
+    int? minijobEmployerFlatCents,
+    int? employerU1Cents,
+    int? employerU2Cents,
+    int? employerInsolvencyCents,
+    int? employerAccidentCents,
     PayrollStatus? status,
     String? finalizedByUid,
     bool clearFinalizedBy = false,
@@ -658,6 +702,14 @@ class PayrollRecord {
           unemploymentEmployerCents ?? this.unemploymentEmployerCents,
       netCents: netCents ?? this.netCents,
       employerTotalCents: employerTotalCents ?? this.employerTotalCents,
+      minijobEmployerFlatCents:
+          minijobEmployerFlatCents ?? this.minijobEmployerFlatCents,
+      employerU1Cents: employerU1Cents ?? this.employerU1Cents,
+      employerU2Cents: employerU2Cents ?? this.employerU2Cents,
+      employerInsolvencyCents:
+          employerInsolvencyCents ?? this.employerInsolvencyCents,
+      employerAccidentCents:
+          employerAccidentCents ?? this.employerAccidentCents,
       status: status ?? this.status,
       finalizedByUid:
           clearFinalizedBy ? null : (finalizedByUid ?? this.finalizedByUid),

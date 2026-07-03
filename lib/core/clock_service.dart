@@ -79,4 +79,21 @@ abstract final class ClockService {
     final nowDay = DateTime(now.year, now.month, now.day);
     return nowDay.isAfter(kommenDay);
   }
+
+  /// Schwelle (Minuten), ab der eine noch offene Buchung als „wahrscheinlich
+  /// vergessen auszustempeln" gilt (ZV-2.3): länger als 12 h ohne Ausstempeln.
+  /// Der nächtliche Auto-Klärungs-Job spiegelt diese Grenze serverseitig.
+  static const int forgotClockOutMinutes = 12 * 60;
+
+  /// Läuft die offene Buchung ungewöhnlich lange (> [maxMinutes]) und deutet auf
+  /// vergessenes Ausstempeln hin? Rein anzeigend (Client-Hinweis, ZV-2.3a) — die
+  /// eigentliche Umstellung auf `klaerung` macht der Nightly-Job bzw. das manuelle
+  /// Ausstempeln über [needsClarification].
+  static bool looksForgotten({
+    required DateTime kommen,
+    required DateTime now,
+    int maxMinutes = forgotClockOutMinutes,
+  }) {
+    return runningMinutes(kommen: kommen, now: now) > maxMinutes;
+  }
 }

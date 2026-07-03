@@ -2054,13 +2054,34 @@ class PdfService {
           line('Nettolohn', money(record.netCents),
               bold: true, color: const PdfColor.fromInt(0xFF27AE60)),
         ]),
+        if (record.lines.isNotEmpty) ...[
+          pw.SizedBox(height: 14),
+          section('Bezüge & Zuschläge', [
+            for (final l in record.lines)
+              line(
+                l.name.isEmpty ? 'Lohnzeile' : l.name,
+                money(l.amountCents),
+              ),
+          ]),
+        ],
         pw.SizedBox(height: 14),
         section('Arbeitgeber', [
+          if (record.minijobEmployerFlatCents > 0)
+            line('Minijob-Pauschale (AG)',
+                money(record.minijobEmployerFlatCents)),
           line('Krankenversicherung (AG)', money(record.healthEmployerCents)),
           line('Pflegeversicherung (AG)', money(record.careEmployerCents)),
           line('Rentenversicherung (AG)', money(record.pensionEmployerCents)),
           line('Arbeitslosenvers. (AG)',
               money(record.unemploymentEmployerCents)),
+          if (record.employerU1Cents > 0)
+            line('Umlage U1 (Lohnfortzahlung)', money(record.employerU1Cents)),
+          if (record.employerU2Cents > 0)
+            line('Umlage U2 (Mutterschutz)', money(record.employerU2Cents)),
+          if (record.employerInsolvencyCents > 0)
+            line('Insolvenzgeldumlage', money(record.employerInsolvencyCents)),
+          if (record.employerAccidentCents > 0)
+            line('Unfallversicherung (UV)', money(record.employerAccidentCents)),
           line('Arbeitgeber-Gesamtkosten', money(record.employerTotalCents),
               bold: true, color: primary),
         ]),

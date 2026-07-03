@@ -36,6 +36,7 @@ class AppNavMenu extends StatelessWidget {
     required this.onOpenOrderAnalytics,
     required this.onOpenScanner,
     required this.onOpenSettings,
+    this.onOpenMeineAkte,
     this.showScanner = false,
     this.showAreas = false,
     this.siteName,
@@ -63,6 +64,10 @@ class AppNavMenu extends StatelessWidget {
   final VoidCallback onOpenCustomerOrders;
   final VoidCallback onOpenOrderAnalytics;
   final VoidCallback onOpenScanner;
+
+  /// „Meine Personalakte" (PA-2.4) – Selbstsicht für jeden Nutzer. Optional
+  /// (backward-compatible); nur gezeigt, wenn gesetzt.
+  final VoidCallback? onOpenMeineAkte;
   final VoidCallback onOpenSettings;
 
   /// Ob der Scanner-Eintrag gezeigt wird. Die „nur Handy"-Entscheidung
@@ -216,6 +221,13 @@ class AppNavMenu extends StatelessWidget {
           _MenuGroup(
             title: 'App',
             children: [
+              if (onOpenMeineAkte != null)
+                AppQuickActionTile(
+                  icon: Icons.badge_outlined,
+                  title: 'Meine Akte',
+                  subtitle: 'Eigene Stammdaten, Urlaub & Dokumente',
+                  onTap: onOpenMeineAkte!,
+                ),
               AppQuickActionTile(
                 icon: Icons.settings_outlined,
                 title: 'Einstellungen',

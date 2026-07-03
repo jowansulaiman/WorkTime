@@ -2,6 +2,8 @@ import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
 
+import 'strichmaennchen_tokens.dart';
+
 @immutable
 class AppThemeColors extends ThemeExtension<AppThemeColors> {
   const AppThemeColors({
@@ -56,6 +58,58 @@ class AppThemeColors extends ThemeExtension<AppThemeColors> {
   /// lightV2/darkV2 spaeter zu light/dark).
   static const lightV2 = light;
   static const darkV2 = dark;
+
+  /// **Strichmännchen-Theme** (Marken-Rebrand) — Status-Triaden in der 1:1 aus
+  /// der Ladenseite übernommenen Palette ([StrichTokens]): success=openGreen
+  /// (dunkler Ink-Text, ~7.3:1), warning=`--yellow`, info=`--blue`. Die
+  /// Container-/On-Container-Rollen (M3-Pflicht) fehlen in der flachen
+  /// Store-Palette und werden nachvollziehbar komponiert — eine Store-Farbe per
+  /// `Color.alphaBlend` über der jeweiligen Fläche (Weiß hell / Navy dunkel);
+  /// daher `final` statt `const`. Alle Paare erfüllen das DS2-Kontrast-Gate
+  /// (siehe `test/contrast_audit_test.dart`). Nur der aufgehellte Info-Ton für
+  /// den Dunkelmodus (`#7FB0DF`) ist eine begründete Ergänzung, weil die
+  /// Referenzseite (`color-scheme: light`) keinen Dunkelmodus definiert.
+  static final AppThemeColors strichmaennchenLight =
+      _strichmaennchen(Brightness.light);
+  static final AppThemeColors strichmaennchenDark =
+      _strichmaennchen(Brightness.dark);
+
+  static AppThemeColors _strichmaennchen(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final surface = isDark ? StrichTokens.navy : StrichTokens.white;
+    // Getönter Chip = Statusfarbe mit niedriger Deckkraft über der Fläche.
+    Color chip(Color base, double alpha) =>
+        Color.alphaBlend(base.withValues(alpha: alpha), surface);
+    // Text auf hellem Chip = dunkle Variante der Statusfarbe (Ink eingemischt).
+    Color deepInk(Color base, double alpha) =>
+        Color.alphaBlend(StrichTokens.ink.withValues(alpha: alpha), base);
+    // Auf Dunkelflächen tragen die Chips warmweißen Text (paper).
+    final onDark = isDark ? StrichTokens.paper : null;
+    return AppThemeColors(
+      success: StrichTokens.openGreen,
+      onSuccess: StrichTokens.ink,
+      successContainer: isDark
+          ? chip(StrichTokens.green, 0.55)
+          : chip(StrichTokens.openGreen, 0.16),
+      onSuccessContainer: onDark ?? deepInk(StrichTokens.green, 0.55),
+      warning: StrichTokens.yellow,
+      onWarning: StrichTokens.ink,
+      warningContainer: isDark
+          ? chip(StrichTokens.gold, 0.45)
+          : chip(StrichTokens.yellow, 0.22),
+      onWarningContainer: onDark ?? deepInk(StrichTokens.gold, 0.68),
+      info: isDark ? const Color(0xFF7FB0DF) : StrichTokens.blue,
+      onInfo: isDark ? StrichTokens.navy : StrichTokens.white,
+      infoContainer: isDark
+          ? chip(StrichTokens.blue, 0.5)
+          : chip(StrichTokens.blue, 0.16),
+      onInfoContainer: onDark ??
+          Color.alphaBlend(
+            StrichTokens.navy.withValues(alpha: 0.55),
+            StrichTokens.blue,
+          ),
+    );
+  }
 
   final Color success;
   final Color onSuccess;
@@ -149,7 +203,9 @@ class AppSpacing extends ThemeExtension<AppSpacing> {
   const AppSpacing({
     this.xxs = 2,
     this.xs = 4,
+    this.s6 = 6,
     this.sm = 8,
+    this.s12 = 12,
     this.md = 16,
     this.lg = 24,
     this.xl = 32,
@@ -161,7 +217,14 @@ class AppSpacing extends ThemeExtension<AppSpacing> {
   /// V1-Werte (xs..xl) sind unveraendert.
   final double xxs;
   final double xs;
+
+  /// V2-Halbschritt-Tokens (Plan-Entscheidung DS1): die beiden haeufigsten
+  /// realen Rohwerte **6** und **12**, fuer die es bisher kein Token gab —
+  /// zuvor via `sm + xs` / `xs + xxs` komponiert. `s6`/`s12` machen die
+  /// Magic-Number-Migration eindeutig (ein Token statt Summe).
+  final double s6;
   final double sm;
+  final double s12;
   final double md;
   final double lg;
   final double xl;
@@ -171,7 +234,9 @@ class AppSpacing extends ThemeExtension<AppSpacing> {
   AppSpacing copyWith({
     double? xxs,
     double? xs,
+    double? s6,
     double? sm,
+    double? s12,
     double? md,
     double? lg,
     double? xl,
@@ -180,7 +245,9 @@ class AppSpacing extends ThemeExtension<AppSpacing> {
     return AppSpacing(
       xxs: xxs ?? this.xxs,
       xs: xs ?? this.xs,
+      s6: s6 ?? this.s6,
       sm: sm ?? this.sm,
+      s12: s12 ?? this.s12,
       md: md ?? this.md,
       lg: lg ?? this.lg,
       xl: xl ?? this.xl,
@@ -196,7 +263,9 @@ class AppSpacing extends ThemeExtension<AppSpacing> {
     return AppSpacing(
       xxs: lerpDouble(xxs, other.xxs, t) ?? xxs,
       xs: lerpDouble(xs, other.xs, t) ?? xs,
+      s6: lerpDouble(s6, other.s6, t) ?? s6,
       sm: lerpDouble(sm, other.sm, t) ?? sm,
+      s12: lerpDouble(s12, other.s12, t) ?? s12,
       md: lerpDouble(md, other.md, t) ?? md,
       lg: lerpDouble(lg, other.lg, t) ?? lg,
       xl: lerpDouble(xl, other.xl, t) ?? xl,
@@ -491,4 +560,17 @@ extension AppDesignTokensX on BuildContext {
   /// Icon-Groessen-Tokens des aktiven Themes (Fallback: Default-[AppIconSizes]).
   AppIconSizes get iconSizes =>
       Theme.of(this).extension<AppIconSizes>() ?? const AppIconSizes();
+}
+
+/// Tabellen-Ziffern (Plan-Entscheidung DS1): gleiche Ziffernbreite fuer
+/// Zahlen-Rollen (Uhr, Stunden, Plan/Ist, Betraege). Verhindert „springende"
+/// Zahlen bei Live-Updates/rechtsbuendigen Spalten. **Nur gezielt** auf Zahlen
+/// anwenden, nie global — sonst bricht der Fliesstext-Rhythmus.
+const List<FontFeature> kTabularFigures = <FontFeature>[
+  FontFeature.tabularFigures(),
+];
+
+extension TabularFiguresTextStyleX on TextStyle {
+  /// Kopie dieses Stils mit Tabellen-Ziffern ([kTabularFigures]).
+  TextStyle get tabular => copyWith(fontFeatures: kTabularFigures);
 }

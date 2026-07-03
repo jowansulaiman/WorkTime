@@ -130,6 +130,25 @@ void main() {
       expect(spacing.md, 16);
       expect(spacing.xxl, 48);
     });
+
+    test('AppSpacing s6/s12 Halbschritt-Tokens (DS1)', () {
+      const spacing = AppSpacing();
+      expect(spacing.s6, 6);
+      expect(spacing.s12, 12);
+      // Entsprechen den zuvor komponierten Summen.
+      expect(spacing.s6, spacing.xs + spacing.xxs);
+      expect(spacing.s12, spacing.sm + spacing.xs);
+      // copyWith trippt die neuen Felder round.
+      expect(spacing.copyWith(s6: 7).s6, 7);
+      expect(spacing.copyWith(s12: 13).s12, 13);
+    });
+
+    test('TabularFigures-Helper setzt tabularFigures (DS1)', () {
+      const style = TextStyle(fontSize: 14);
+      expect(style.fontFeatures, isNull);
+      expect(style.tabular.fontFeatures, kTabularFigures);
+      expect(kTabularFigures.single, const FontFeature.tabularFigures());
+    });
   });
 
   group('RedesignFlags-Wertlogik', () {

@@ -137,12 +137,6 @@ class _ZeitwirtschaftHubScreenState extends State<ZeitwirtschaftHubScreen> {
                     icon: Icons.trending_up,
                   ),
                   SizedBox(height: spacing.lg),
-                  Text(
-                    'Bereiche',
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w800),
-                  ),
-                  SizedBox(height: spacing.sm + spacing.xs),
                   _HubTileGrid(isAdmin: isAdmin),
                 ],
               );
@@ -199,6 +193,18 @@ class _MonthNavigation extends StatelessWidget {
   }
 }
 
+/// Gruppen des Hub-Kachel-Grids (ZV-6.2): rollengerechte Bündelung statt acht
+/// gleichrangiger Kacheln. Nicht berechtigte Gruppen werden ausgeblendet.
+enum _HubGroup { meinTag, meineKonten, teamAbschluss }
+
+extension _HubGroupLabel on _HubGroup {
+  String get label => switch (this) {
+        _HubGroup.meinTag => 'Mein Tag',
+        _HubGroup.meineKonten => 'Meine Konten',
+        _HubGroup.teamAbschluss => 'Team & Abschluss',
+      };
+}
+
 /// Eintrag im Kachel-Grid des Hubs.
 class _HubDestination {
   const _HubDestination({
@@ -206,6 +212,7 @@ class _HubDestination {
     required this.title,
     required this.subtitle,
     required this.route,
+    required this.group,
     this.adminOnly = false,
   });
 
@@ -213,6 +220,7 @@ class _HubDestination {
   final String title;
   final String subtitle;
   final String route;
+  final _HubGroup group;
   final bool adminOnly;
 }
 
@@ -222,42 +230,49 @@ const List<_HubDestination> _hubDestinations = [
     title: 'Kommen und Gehen',
     subtitle: 'Ein- und ausstempeln, laufende Buchung',
     route: AppRoutes.zeitStempeln,
+    group: _HubGroup.meinTag,
   ),
   _HubDestination(
     icon: Icons.edit_calendar,
     title: 'Zeiterfassung',
     subtitle: 'Arbeitszeiten, Urlaub und Krankmeldungen',
     route: AppRoutes.zeitErfassung,
-  ),
-  _HubDestination(
-    icon: Icons.account_balance_wallet,
-    title: 'Stundenkonto',
-    subtitle: 'Soll, Ist, Saldo und Überstunden',
-    route: AppRoutes.zeitStundenkonto,
+    group: _HubGroup.meinTag,
   ),
   _HubDestination(
     icon: Icons.beach_access,
     title: 'Abwesenheiten',
     subtitle: 'Urlaub, Krankheit und Anträge',
     route: AppRoutes.zeitAbwesenheiten,
+    group: _HubGroup.meinTag,
+  ),
+  _HubDestination(
+    icon: Icons.account_balance_wallet,
+    title: 'Stundenkonto',
+    subtitle: 'Soll, Ist, Saldo und Überstunden',
+    route: AppRoutes.zeitStundenkonto,
+    group: _HubGroup.meineKonten,
   ),
   _HubDestination(
     icon: Icons.calendar_month,
     title: 'Abwesenheitskalender',
     subtitle: 'Monatsübersicht aller Abwesenheiten',
     route: AppRoutes.zeitAbwesenheitenKalender,
+    group: _HubGroup.meineKonten,
   ),
   _HubDestination(
     icon: Icons.event_available,
     title: 'Mein Monatsabschluss',
     subtitle: 'Eigenes Stundenkonto abschließen',
     route: AppRoutes.zeitMonatsabschluss,
+    group: _HubGroup.meineKonten,
   ),
   _HubDestination(
     icon: Icons.fact_check,
     title: 'Mitarbeiterabschluss',
     subtitle: 'Monatsabschlüsse aller Mitarbeiter',
     route: AppRoutes.zeitMitarbeiterabschluss,
+    group: _HubGroup.teamAbschluss,
     adminOnly: true,
   ),
   _HubDestination(
@@ -265,6 +280,7 @@ const List<_HubDestination> _hubDestinations = [
     title: 'Lohnlauf',
     subtitle: 'Monatliche Lohnabrechnung im Batch',
     route: AppRoutes.zeitLohnlauf,
+    group: _HubGroup.teamAbschluss,
     adminOnly: true,
   ),
 ];
@@ -276,11 +292,46 @@ class _HubTileGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tiles = _hubDestinations
-        .where((d) => isAdmin || !d.adminOnly)
-        .toList(growable: false);
-    final spacing = context.spacing.md;
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    final sections = <Widget>[];
+    for (final group in _HubGroup.values) {
+      final tiles = _hubDestinations
+          .where((d) => d.group == group && (isAdmin || !d.adminOnly))
+          .toList(growable: false);
+      if (tiles.isEmpty) continue; // Leere (nicht berechtigte) Gruppe ausblenden.
+      if (sections.isNotEmpty) {
+        sections.add(SizedBox(height: spacing.lg));
+      }
+      sections.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: spacing.sm),
+          child: Text(
+            group.label,
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+      sections.add(_HubTileWrap(tiles: tiles));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: sections,
+    );
+  }
+}
 
+class _HubTileWrap extends StatelessWidget {
+  const _HubTileWrap({required this.tiles});
+
+  final List<_HubDestination> tiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing.md;
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -291,8 +342,7 @@ class _HubTileGrid extends StatelessWidget {
                 : width >= 480
                     ? 2
                     : 1;
-        final tileWidth =
-            (width - spacing * (columns - 1)) / columns;
+        final tileWidth = (width - spacing * (columns - 1)) / columns;
 
         return Wrap(
           spacing: spacing,

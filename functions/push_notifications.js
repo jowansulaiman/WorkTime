@@ -272,6 +272,63 @@ function buildExpiryNotification({batchId, productName, siteName, daysUntilExpir
   };
 }
 
+// Neues (sichtbares) Dokument in der Personalakte -> an genau den Mitarbeiter
+// (PA-3.5). Kanal vorerst `aufgaben` (channelIdForType default) — bewusst KEIN
+// eigener `personal`-Kanal, um die 6 Kopplungsstellen der Kanal-Taxonomie nicht
+// mitzuziehen; leicht nachrüstbar. Deep-Link auf „Meine Akte".
+function buildDocumentNotification({docId, title}) {
+  return {
+    type: "personal_document",
+    title: "Neues Dokument in deiner Personalakte",
+    body: truncate(
+      typeof title === "string" && title.trim() ?
+        title.trim() : "Ein Dokument wurde für dich hinterlegt.",
+      120,
+    ),
+    route: "/meine-akte",
+    entityType: "Personaldokument",
+    entityId: docId,
+    dedupeId: docId,
+    thread: "personal",
+  };
+}
+
+// Lohnabrechnung freigegeben -> an den Mitarbeiter (PA-7.4). Deep-Link „Meine
+// Akte". Kanal `aufgaben` (default) — bewusst kein eigener Lohn-Kanal.
+function buildPayrollReleasedNotification({recordId, monthLabel}) {
+  return {
+    type: "payroll_released",
+    title: "Lohnabrechnung verfügbar",
+    body: typeof monthLabel === "string" && monthLabel ?
+      `Deine Abrechnung für ${monthLabel} ist freigegeben.` :
+      "Eine neue Lohnabrechnung ist freigegeben.",
+    route: "/meine-akte",
+    entityType: "Lohnabrechnung",
+    entityId: recordId,
+    dedupeId: recordId,
+    thread: "payroll",
+  };
+}
+
+// Stempel automatisch zur Klärung gelegt (vergessenes Ausstempeln, ZV-2.3b/ZV-7)
+// -> an den betroffenen Mitarbeiter. Kanal `aufgaben` (default), thread
+// `personal`. Deep-Link auf den Stempel-Bereich.
+function buildAutoKlaerungNotification({clockEntryId, dayLabel}) {
+  return {
+    type: "clock_auto_klaerung",
+    title: "Stempelung braucht Klärung",
+    body: typeof dayLabel === "string" && dayLabel ?
+      `Deine Buchung vom ${dayLabel} wurde nicht ausgestempelt und zur ` +
+        "Klärung gelegt." :
+      "Eine Buchung wurde nicht ausgestempelt und zur Klärung gelegt.",
+    route: "/zeit/stempeln",
+    entityType: "Stempelzeit",
+    entityId: clockEntryId,
+    dedupeId: `klaerung:${clockEntryId}`,
+    thread: "personal",
+  };
+}
+
 // --- Präferenzen (M5) -----------------------------------------------------
 // Ordnet einen Ereignis-`type` dem Channel/der Kategorie zu (= App-Schalter +
 // Android-Channel; deckungsgleich mit Dart `channelIdForType`).
@@ -370,6 +427,9 @@ module.exports = {
   buildShiftOpenNotification,
   buildLowStockNotification,
   buildExpiryNotification,
+  buildDocumentNotification,
+  buildPayrollReleasedNotification,
+  buildAutoKlaerungNotification,
   isoWeek,
   channelIdForType,
   inQuietWindow,

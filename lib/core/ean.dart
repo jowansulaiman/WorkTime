@@ -34,4 +34,26 @@ bool looksLikeEan(String raw) {
   return n == 8 || n == 12 || n == 13;
 }
 
+/// Kandidaten-Codes fuer den Barcode-Lookup: der Code selbst plus die
+/// UPC-A(12) <-> EAN-13(0+12)-Leading-Zero-Variante.
+///
+/// Hintergrund: `mobile_scanner` liefert auf iOS UPC-A teils als 13-stellige
+/// EAN-13 mit fuehrender Null (z.B. `012345678905` -> `0012345678905`, GitHub
+/// #1653). Ein als 12-stelliger UPC-A gespeicherter Artikel wuerde beim exakten
+/// String-Vergleich sonst verfehlt. Diese Funktion macht NUR die Suche
+/// tolerant — gespeicherte Werte bleiben unveraendert. Nicht-numerische oder
+/// andere Laengen (Hauscodes) werden unveraendert als einziger Kandidat
+/// zurueckgegeben.
+Set<String> gtinLookupVariants(String raw) {
+  final code = raw.trim();
+  final variants = <String>{code};
+  if (code.isEmpty || !_digitsOnly.hasMatch(code)) return variants;
+  if (code.length == 13 && code.startsWith('0')) {
+    variants.add(code.substring(1)); // EAN-13 mit fuehrender Null -> UPC-A (12)
+  } else if (code.length == 12) {
+    variants.add('0$code'); // UPC-A (12) -> EAN-13 mit fuehrender Null
+  }
+  return variants;
+}
+
 final RegExp _digitsOnly = RegExp(r'^\d+$');

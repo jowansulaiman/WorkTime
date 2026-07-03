@@ -3,9 +3,12 @@ import 'package:uuid/uuid.dart';
 
 import '../core/error_reporter.dart';
 import '../core/retry.dart';
+import '../models/cash_closing.dart';
+import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
+import '../models/pos_daily_stat.dart';
 import '../models/pos_receipt.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
@@ -194,6 +197,125 @@ class FirestoreInventoryRepository implements InventoryRepository {
         .get();
     return snapshot.docs
         .map((doc) => PosReceipt.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  // --- Kassen-Modul: Zählungen / Abschlüsse / Tagesaggregate --------------
+
+  CollectionReference<Map<String, dynamic>> _cashCountCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('cashCounts');
+
+  CollectionReference<Map<String, dynamic>> _cashClosingCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('cashClosings');
+
+  CollectionReference<Map<String, dynamic>> _posDailyStatCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('posDailyStats');
+
+  @override
+  Future<List<CashCount>> getCashCountsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) async {
+    Query<Map<String, dynamic>> query = _cashCountCollection(orgId);
+    // siteId-Gleichheit + countedAt-Range bedient der (siteId, countedAt)-
+    // Composite-Index; ohne siteId genügt der Single-Field-Index.
+    if (siteId != null && siteId.isNotEmpty) {
+      query = query.where('siteId', isEqualTo: siteId);
+    }
+    final snapshot = await query
+        .where('countedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+        .where('countedAt', isLessThanOrEqualTo: Timestamp.fromDate(to))
+        .orderBy('countedAt', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => CashCount.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> addCashCount(CashCount count) async {
+    // create-only mit Auto-ID: Zählungen sind unveränderlich (Audit-Charakter).
+    await _cashCountCollection(count.orgId).doc().set(count.toFirestoreMap());
+  }
+
+  @override
+  Future<List<CashClosing>> getCashClosingsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  }) async {
+    Query<Map<String, dynamic>> query = _cashClosingCollection(orgId);
+    // siteId-Gleichheit + businessDay-Range bedient der (siteId, businessDay)-
+    // Composite-Index; ISO-Datumsstrings ordnen lexikographisch korrekt.
+    if (siteId != null && siteId.isNotEmpty) {
+      query = query.where('siteId', isEqualTo: siteId);
+    }
+    final snapshot = await query
+        .where('businessDay', isGreaterThanOrEqualTo: fromDay)
+        .where('businessDay', isLessThanOrEqualTo: toDay)
+        .orderBy('businessDay', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => CashClosing.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> createCashClosing(CashClosing closing) async {
+    final docRef = _cashClosingCollection(closing.orgId)
+        .doc(CashClosing.docId(closing.businessDay, closing.siteId));
+    // create-only über Transaktion (der Client-SDK-Weg für „nur wenn es das
+    // Doc noch nicht gibt") — Festschreibung darf nie still überschreiben.
+    await _firestore.runTransaction((transaction) async {
+      final existing = await transaction.get(docRef);
+      if (existing.exists) {
+        throw StateError('Dieser Tag ist bereits abgeschlossen.');
+      }
+      transaction.set(docRef, closing.toFirestoreMap());
+    });
+  }
+
+  @override
+  Future<void> markCashClosingBooked({
+    required String orgId,
+    required String closingId,
+  }) {
+    // Einzige erlaubte Mutation eines festgeschriebenen Abschlusses (§3.2);
+    // die Rules erzwingen den Feld-Diff auf genau `bookedToFinance`.
+    return _cashClosingCollection(orgId)
+        .doc(closingId)
+        .update({'bookedToFinance': true});
+  }
+
+  @override
+  Future<List<PosDailyStat>> getPosDailyStatsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  }) async {
+    Query<Map<String, dynamic>> query = _posDailyStatCollection(orgId);
+    // siteId-Gleichheit + businessDay-Range bedient der (siteId, businessDay)-
+    // Composite-Index; ohne siteId genügt der Single-Field-Index.
+    if (siteId != null && siteId.isNotEmpty) {
+      query = query.where('siteId', isEqualTo: siteId);
+    }
+    final snapshot = await query
+        .where('businessDay', isGreaterThanOrEqualTo: fromDay)
+        .where('businessDay', isLessThanOrEqualTo: toDay)
+        .orderBy('businessDay', descending: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => PosDailyStat.fromFirestore(doc.id, doc.data()))
         .toList(growable: false);
   }
 

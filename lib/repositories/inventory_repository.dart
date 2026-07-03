@@ -1,6 +1,9 @@
+import '../models/cash_closing.dart';
+import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
+import '../models/pos_daily_stat.dart';
 import '../models/pos_receipt.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
@@ -54,6 +57,53 @@ abstract interface class InventoryRepository {
     String orgId,
     DateTime from,
     DateTime to, {
+    String? siteId,
+  });
+
+  // --- Kassen-Modul: Zählungen / Abschlüsse / Tagesaggregate --------------
+  // Alle cloud-only (wie posReceipts): kein lokaler Fallback, keine Spiegelung.
+
+  /// Zählprotokolle (Kassenstürze) im Zeitraum [from]..[to] nach `countedAt`
+  /// (inklusive), optional standortgefiltert, jüngste zuerst.
+  Future<List<CashCount>> getCashCountsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  });
+
+  /// Legt ein Zählprotokoll an (create-only — Zählungen sind unveränderlich,
+  /// Korrektur = neue Zählung).
+  Future<void> addCashCount(CashCount count);
+
+  /// Festgeschriebene Kassenabschlüsse mit Geschäftstag in [fromDay]..[toDay]
+  /// (`YYYY-MM-DD`, inklusive), optional standortgefiltert, jüngste zuerst.
+  Future<List<CashClosing>> getCashClosingsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  });
+
+  /// Schreibt einen Kassenabschluss fest (create-only, deterministische
+  /// Doc-ID `{businessDay}-{siteId}`). Existiert der Tag bereits, wirft die
+  /// Implementierung einen deutschen [StateError].
+  Future<void> createCashClosing(CashClosing closing);
+
+  /// Markiert einen festgeschriebenen Abschluss als ins Finanzjournal gebucht
+  /// — die einzige erlaubte Mutation (`bookedToFinance false→true`, Plan §3.2).
+  Future<void> markCashClosingBooked({
+    required String orgId,
+    required String closingId,
+  });
+
+  /// Serverseitige Tagesaggregate (`posDailyStats`, Plan §3.3) mit
+  /// Geschäftstag in [fromDay]..[toDay] (`YYYY-MM-DD`, inklusive), optional
+  /// standortgefiltert, jüngste zuerst.
+  Future<List<PosDailyStat>> getPosDailyStatsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
     String? siteId,
   });
 

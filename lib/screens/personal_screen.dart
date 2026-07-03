@@ -32,6 +32,7 @@ import '../providers/personal_provider.dart';
 import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
+import '../widgets/employee_documents_card.dart';
 import 'abwesenheit_screen.dart';
 
 /// Personal-Bereich (nur Admin): Übersicht, Aufträge, Lohn (Richtwert),
@@ -542,6 +543,22 @@ class _UrlaubMigrationCardState extends State<_UrlaubMigrationCard> {
   }
 }
 
+/// PA-7.3: Status-Badge für die Mitarbeiterliste — `null` für `aktiv`
+/// (Normalfall, kein Badge) oder ohne Stammakte.
+AppStatusBadge? _statusBadge(EmployeeProfile? profile) {
+  final status = profile?.status;
+  if (status == null || status == EmployeeStatus.aktiv) return null;
+  final tone = switch (status) {
+    EmployeeStatus.probezeit => AppStatusTone.info,
+    EmployeeStatus.ruhend => AppStatusTone.warning,
+    EmployeeStatus.gekuendigt ||
+    EmployeeStatus.ausgeschieden =>
+      AppStatusTone.error,
+    EmployeeStatus.aktiv => AppStatusTone.neutral,
+  };
+  return AppStatusBadge(label: status.label, tone: tone);
+}
+
 class _EmployeeCard extends StatelessWidget {
   const _EmployeeCard({
     required this.member,
@@ -605,6 +622,15 @@ class _EmployeeCard extends StatelessWidget {
                   ],
                 ),
               ),
+              // PA-7.3: Beschäftigungsstatus sichtbar machen — nur wenn NICHT
+              // „aktiv" (gekündigt/ausgeschieden = error, ruhend = warning,
+              // Probezeit = info). So sieht der Admin auf einen Blick, wer nicht
+              // im regulären Beschäftigungsverhältnis steht.
+              if (_statusBadge(personal.employeeProfileForUser(member.uid))
+                  case final badge?) ...[
+                badge,
+                SizedBox(width: context.spacing.xs),
+              ],
               const Icon(Icons.chevron_right),
             ],
           ),
@@ -1875,6 +1901,9 @@ class _EmployeeDetailScreen extends StatelessWidget {
           _EmployeeHrCard(member: member),
           SizedBox(height: spacing.lg),
           _UrlaubskontoCard(member: member, jahr: month.year),
+          SizedBox(height: spacing.lg),
+          // PA-3: Dokumente der Personalakte (Admin: hochladen/löschen).
+          EmployeeDocumentsCard(userId: member.uid, canManage: true),
           SizedBox(height: spacing.lg),
           Row(
             children: [
@@ -3170,8 +3199,6 @@ class _EmployeeHrCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final personal = context.watch<PersonalProvider>();
     final spacing = context.spacing;
-    final theme = Theme.of(context);
-    final appColors = theme.appColors;
     final uid = member.uid;
     final kinder = personal.childrenForUser(uid);
     final quals = personal.qualificationsForUser(uid);
@@ -3250,10 +3277,19 @@ class _EmployeeHrCard extends StatelessWidget {
                           if (quali.gueltigBis != null)
                             'gültig bis ${_formatDate(quali.gueltigBis!)}',
                         ].join(' · ')),
-                        trailing: quali.istGueltig(now)
-                            ? null
-                            : Icon(Icons.error_outline,
-                                size: 18, color: appColors.warning),
+                        trailing: switch (quali.gueltigkeitStatus(now)) {
+                          QualiGueltigkeit.abgelaufen => const AppStatusBadge(
+                              label: 'Abgelaufen',
+                              tone: AppStatusTone.error,
+                              icon: Icons.error_outline,
+                            ),
+                          QualiGueltigkeit.laeuftAb => const AppStatusBadge(
+                              label: 'Läuft ab',
+                              tone: AppStatusTone.warning,
+                              icon: Icons.schedule_outlined,
+                            ),
+                          QualiGueltigkeit.gueltig => null,
+                        },
                         onTap: () => showAppBottomSheet(
                           context: context,
                           builder: (_) => _QualificationEditorSheet(

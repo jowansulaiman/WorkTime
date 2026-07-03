@@ -35,6 +35,7 @@ class AppNavRail extends StatelessWidget {
     required this.onSelected,
     required this.onOpenMenu,
     required this.user,
+    this.onSearch,
     this.expandedLabels = false,
   });
 
@@ -44,6 +45,9 @@ class AppNavRail extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onSelected;
   final VoidCallback onOpenMenu;
+
+  /// Globale Suche (Anf. 24). Null → kein Such-Button (Rückwärtskompatibel).
+  final VoidCallback? onSearch;
   final AppUserProfile? user;
 
   /// Mehr Breite + Weißraum ab dem Expanded-Window-Breakpoint (≥840).
@@ -82,7 +86,15 @@ class AppNavRail extends StatelessWidget {
         child: Column(
           children: [
             _Brand(expanded: expandedLabels),
-            SizedBox(height: spacing.lg),
+            SizedBox(height: spacing.md),
+            if (onSearch != null) ...[
+              IconButton(
+                tooltip: 'Suchen',
+                icon: const Icon(Icons.search_rounded),
+                onPressed: onSearch,
+              ),
+              SizedBox(height: spacing.sm),
+            ],
             for (var i = 0; i < items.length; i++) ...[
               if (i > 0) SizedBox(height: spacing.xs),
               _RailItem(

@@ -5,7 +5,9 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/providers/audit_provider.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
+import 'package:worktime_app/providers/connectivity_status_provider.dart';
 import 'package:worktime_app/providers/contact_provider.dart';
 import 'package:worktime_app/providers/feature_flag_provider.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
@@ -164,6 +166,14 @@ Future<AppHarness> pumpApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
+        // Konnektivitaet: injizierte Fakes (kein Platform-Channel), online.
+        ChangeNotifierProvider<ConnectivityStatusProvider>.value(
+          value: ConnectivityStatusProvider(
+            changes: const Stream<List<ConnectivityResult>>.empty(),
+            check: () async =>
+                const <ConnectivityResult>[ConnectivityResult.wifi],
+          ),
+        ),
         ChangeNotifierProvider<StorageModeProvider>.value(value: storage),
         ChangeNotifierProvider<ThemeProvider>.value(value: theme),
         ChangeNotifierProvider<FeatureFlagProvider>.value(value: flags),

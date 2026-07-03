@@ -2,9 +2,12 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/cash_closing.dart';
+import 'package:worktime_app/models/cash_count.dart';
 import 'package:worktime_app/models/customer_order.dart';
 import 'package:worktime_app/models/fridge_refill.dart';
 import 'package:worktime_app/models/order_cart.dart';
+import 'package:worktime_app/models/pos_daily_stat.dart';
 import 'package:worktime_app/models/pos_receipt.dart';
 import 'package:worktime_app/models/price_history_entry.dart';
 import 'package:worktime_app/models/product.dart';
@@ -77,6 +80,47 @@ class _OfflineInventoryRepository implements InventoryRepository {
     String? siteId,
   }) =>
       _delegate.getPosReceiptsInRange(orgId, from, to, siteId: siteId);
+
+  @override
+  Future<List<CashCount>> getCashCountsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) =>
+      _delegate.getCashCountsInRange(orgId, from, to, siteId: siteId);
+
+  @override
+  Future<void> addCashCount(CashCount count) => _delegate.addCashCount(count);
+
+  @override
+  Future<List<CashClosing>> getCashClosingsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  }) =>
+      _delegate.getCashClosingsInRange(orgId, fromDay, toDay, siteId: siteId);
+
+  @override
+  Future<void> createCashClosing(CashClosing closing) =>
+      _delegate.createCashClosing(closing);
+
+  @override
+  Future<void> markCashClosingBooked({
+    required String orgId,
+    required String closingId,
+  }) =>
+      _delegate.markCashClosingBooked(orgId: orgId, closingId: closingId);
+
+  @override
+  Future<List<PosDailyStat>> getPosDailyStatsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  }) =>
+      _delegate.getPosDailyStatsInRange(orgId, fromDay, toDay, siteId: siteId);
 
   @override
   Future<void> deleteSupplier({

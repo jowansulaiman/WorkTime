@@ -77,6 +77,20 @@ service cloud.firestore {
       return isActiveUser() && roleIsAdminValue(currentUser().data.role);
     }
 
+    // Kiosk-Geraetekonto (Arbeitsmodus/Laden-Tablet). Das geteilte Tablet meldet
+    // sich mit einem dedizierten users-Doc `role:'kiosk'` an und darf NIEMALS
+    // Lohn-/HR-/Personen-/Kontakt-/Bewegungsdaten lesen — auch dann nicht, wenn
+    // `permissionOrDefault` mangels expliziter Overrides auf `isActiveUser()`
+    // (= true) zurueckfaellt. Deshalb ist `!isKiosk()` ein harter Deny an jedem
+    // sensiblen Read-Pfad (Defense-in-Depth, unabhaengig von der Provisionierung
+    // der permissions:false-Overrides). Der Dart-`UserRole`-Enum kennt `kiosk`
+    // bewusst NICHT (Geraetekonto durchlaeuft nie die normale Shell) — die Rolle
+    // existiert nur serverseitig in Rules/Functions.
+    function isKiosk() {
+      return hasProfile()
+          && normalizedRoleValue(currentUser().data.role) == 'kiosk';
+    }
+
     function defaultCanViewSchedule() {
       return isActiveUser();
     }
@@ -195,6 +209,26 @@ service cloud.firestore {
           && dataCanViewTimeTracking(left) == dataCanViewTimeTracking(right)
           && dataCanEditTimeEntries(left) == dataCanEditTimeEntries(right)
           && dataCanViewReports(left) == dataCanViewReports(right);
+    }
+
+    // Lohnrelevante Selbstauskunft aus `users.settings` (PA-0.3): abrechnungs-
+    // /planungswirksame Werte gehoeren dem Admin (Vertrag/Sollzeit-Profil), nicht
+    // der Selbstpflege. `settings` liegt am users-Doc in **camelCase**
+    // (UserSettings.toFirestoreMap) — daher `hourlyRate`/`vacationDays`, NICHT
+    // snake_case. Tolerant gegen fehlende Keys (null == null), damit Alt-Docs/
+    // Teil-Maps nicht error-denyen (Muster wie permissionValueFromData).
+    function settingsValue(data, field) {
+      return 'settings' in data
+          && data.settings != null
+          && field in data.settings
+          ? data.settings[field]
+          : null;
+    }
+
+    function settingsPayrollFieldsUnchanged(left, right) {
+      return settingsValue(left, 'hourlyRate') == settingsValue(right, 'hourlyRate')
+          && settingsValue(left, 'vacationDays')
+              == settingsValue(right, 'vacationDays');
     }
 
     function workRuleValueFromData(data, field, fallback) {
@@ -390,6 +424,7 @@ service cloud.firestore {
       allow read: if (signedIn() && isSelf(uid))
           || (
             isActiveUser()
+            && !isKiosk()
             && canManageShifts()
             && dataOrgId(resource.data) == currentOrgId()
           );
@@ -426,6 +461,10 @@ service cloud.firestore {
                 resource.data,
               )
               && workRuleSettingsEquivalent(
+                request.resource.data,
+                resource.data,
+              )
+              && settingsPayrollFieldsUnchanged(
                 request.resource.data,
                 resource.data,
               )
@@ -529,6 +568,7 @@ service cloud.firestore {
 
       match /workEntries/{entryId} {
         allow read: if sameOrg(orgId)
+            && !isKiosk()
             && (
               canManageShifts()
               || (
@@ -574,6 +614,7 @@ service cloud.firestore {
       // Härtung + {userId}-open-Concurrency später in M7).
       match /clockEntries/{clockEntryId} {
         allow read: if sameOrg(orgId)
+            && !isKiosk()
             && (
               canManageShifts()
               || (
@@ -592,12 +633,18 @@ service cloud.firestore {
             )
             && request.resource.data.orgId == orgId;
 
+        // Ändern: Manager/Admin korrigieren jede Buchung (Klärung/Korrektur,
+        // ZV-3). Der Mitarbeiter selbst darf NUR seine noch OFFENE Buchung
+        // ändern (clockOut-Übergang ongoing→completed/klaerung) — eine bereits
+        // abgeschlossene/geklärte Buchung ist für ihn read-only (ZV-3.2;
+        // Korrekturwunsch läuft über den Manager bzw. WorkEntry-Workflow).
         allow update: if sameOrg(orgId)
             && (
               canManageShifts()
               || (
                 resource.data.userId == request.auth.uid
                 && canEditTimeEntries()
+                && resource.data.status == 'ongoing'
               )
             )
             && request.resource.data.orgId == orgId;
@@ -610,6 +657,7 @@ service cloud.firestore {
       // beim Monatsabschluss/Auszahlung, nie durch den Mitarbeiter selbst).
       match /zeitkontoSnapshots/{snapshotId} {
         allow read: if sameOrg(orgId)
+            && !isKiosk()
             && (
               canManageShifts()
               || (
@@ -815,8 +863,19 @@ service cloud.firestore {
         allow delete: if isAdmin() && sameOrg(orgId);
       }
 
+      // Vertraege enthalten Verguetung (hourlyRate/monthlyGrossCents) -> NICHT
+      // org-weit lesbar (PA-0.2). Manager (Planung/Compliance/Auto-Verteiler)
+      // lesen alle, der Mitarbeiter nur den eigenen (self-Query im Client), das
+      // Kiosk-Geraetekonto nie. Der Client-Stream muss fuer Nicht-Manager
+      // self-scoped abonnieren (Composite-Index employmentContracts(userId,
+      // validFrom) vorhanden) — Rules sind kein Filter.
       match /employmentContracts/{contractId} {
-        allow read: if sameOrg(orgId);
+        allow read: if sameOrg(orgId)
+            && !isKiosk()
+            && (
+              canManageShifts()
+              || resource.data.userId == request.auth.uid
+            );
         allow create, update: if isAdmin()
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
@@ -908,13 +967,17 @@ service cloud.firestore {
 
       // Lohndaten enthalten Verguetungsinformationen -> Lesen Admin-only.
       match /payrollRecords/{recordId} {
-        // M7-Self-Read (L2): eigene Lohnabrechnung lesbar (Doc trägt userId),
-        // Schreiben bleibt admin-only.
+        // M7-Self-Read (L2) + PA-7.1: eigene Lohnabrechnung lesbar (Doc trägt
+        // userId), aber NUR freigegebene/bezahlte — Entwürfe (Richtwert, noch
+        // nicht vom Admin freigegeben) bleiben unsichtbar. Schreiben admin-only.
+        // Der self-Client-Stream MUSS `status in [...]` mit-filtern (Rules sind
+        // kein Filter) → Composite-Index payrollRecords(userId, status).
         allow read: if sameOrg(orgId)
             && (
               isAdmin()
               || (resource.data.userId == request.auth.uid
-                  && canViewTimeTracking())
+                  && canViewTimeTracking()
+                  && resource.data.status in ['freigegeben', 'bezahlt'])
             );
         allow create, update: if isAdmin()
             && sameOrg(orgId)
@@ -932,13 +995,58 @@ service cloud.firestore {
       }
 
       // Personal-Stammakte je Mitarbeiter (HR-Stammdaten: Anschrift, SV-/Bank-
-      // /Steuerdaten, Eintritt/Austritt) -> Admin-only (personenbezogene Daten).
+      // /Steuerdaten, Eintritt/Austritt). Lesen: Admin ODER der Mitarbeiter
+      // selbst (PA-2.3-Self-Read, „Meine Akte" — es sind die eigenen Daten, die
+      // Akte enthält bewusst keine Art.-9-Kategorien). Schreiben bleibt admin-
+      // only. Client liest self-scoped per `where userId ==` (kein Doc-Read auf
+      // eine evtl. nicht existierende Akte).
       match /employeeProfiles/{userId} {
-        allow read: if isAdmin() && sameOrg(orgId);
+        allow read: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || resource.data.userId == request.auth.uid
+            );
         allow create, update: if isAdmin()
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
         allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
+      // Personalakte-Dokumente (PA-3): Metadaten je Dokument (Binärdatei liegt
+      // in Firebase Storage, s. storage.rules). Lesen: Admin ODER der
+      // Mitarbeiter selbst — aber NUR für ihn sichtbare Dokumente
+      // (`visibleToEmployee`); interne Ablagen (z. B. Abmahnungs-Entwurf)
+      // bleiben admin-only. Anlegen/Löschen admin-only. Update: Admin beliebig;
+      // der Mitarbeiter darf AUSSCHLIESSLICH `acknowledgedAt` (+ `updatedAt`)
+      // setzen (Lesebestätigung) — Feld-Allowlist wie notifications.readAt /
+      // products.fridgeStock. Kiosk-Gerätekonto nie.
+      match /employeeDocuments/{docId} {
+        allow read: if sameOrg(orgId)
+            && !isKiosk()
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && resource.data.visibleToEmployee == true
+              )
+            );
+        allow create, delete: if isAdmin()
+            && sameOrg(orgId)
+            && (request.resource == null
+                 || request.resource.data.orgId == orgId);
+        allow update: if sameOrg(orgId)
+            && (
+              (isAdmin() && request.resource.data.orgId == orgId)
+              || (
+                !isKiosk()
+                && resource.data.userId == request.auth.uid
+                && resource.data.visibleToEmployee == true
+                && request.resource.data
+                    .diff(resource.data)
+                    .affectedKeys()
+                    .hasOnly(['acknowledgedAt', 'updatedAt'])
+              )
+            );
       }
 
       // Sollzeit-Profile (Arbeitszeitmodelle je MA, gültig-ab-versioniert).
@@ -994,15 +1102,24 @@ service cloud.firestore {
 
       // Urlaubskonto: Jahres-Vortrag (Doc-ID {userId}-{jahr}) + Korrektur-Ledger
       // -> Admin-only (urlaubsrechtlich relevant).
+      // Urlaubskonto (Vortrag/Verfall je Jahr) + Anpassungen. PA-7.2-Self-Read:
+      // der Mitarbeiter liest sein EIGENES Konto (für „Mein Urlaub" in der Akte);
+      // Schreiben bleibt admin-only.
       match /urlaubskontoJahre/{kontoId} {
-        allow read: if isAdmin() && sameOrg(orgId);
+        allow read: if sameOrg(orgId)
+            && (isAdmin()
+                || (resource.data.userId == request.auth.uid
+                    && canViewTimeTracking()));
         allow create, update: if isAdmin()
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
         allow delete: if isAdmin() && sameOrg(orgId);
       }
       match /urlaubsanpassungen/{anpassungId} {
-        allow read: if isAdmin() && sameOrg(orgId);
+        allow read: if sameOrg(orgId)
+            && (isAdmin()
+                || (resource.data.userId == request.auth.uid
+                    && canViewTimeTracking()));
         allow create, update: if isAdmin()
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
@@ -1362,7 +1479,7 @@ service cloud.firestore {
       // Kontakte (Kunden/Lieferanten/Partner/Behoerden) – direkte Writes,
       // lesen alle aktiven Mitglieder, verwalten Admins + Schichtleiter.
       match /contacts/{contactId} {
-        allow read: if sameOrg(orgId);
+        allow read: if sameOrg(orgId) && !isKiosk();
         allow create, update: if sameOrg(orgId)
             && canManageContacts()
             && request.resource.data.orgId == orgId;
@@ -1373,7 +1490,7 @@ service cloud.firestore {
       // Feld-Allowlist + Typ-/Wertpruefung gegen Mass Assignment (BOPLA) und
       // Manipulation des Audit-Logs (counters-bopla-no-monotonic-check).
       match /stockMovements/{movementId} {
-        allow read: if sameOrg(orgId);
+        allow read: if sameOrg(orgId) && !isKiosk();
         allow create: if sameOrg(orgId)
             && canManageInventory()
             && request.resource.data.orgId == orgId
@@ -1412,6 +1529,122 @@ service cloud.firestore {
       // Schreiben ausschliesslich serverseitig (Cloud Function, Admin SDK,
       // umgeht diese Rules) -> keine gefaelschten Kassen-Belege vom Client.
       match /posReceipts/{posId} {
+        allow read: if sameOrg(orgId)
+            && (isAdmin() || roleIsTeamLeadValue(currentUser().data.role));
+        allow write: if false;
+      }
+
+      // Kassen-Modul: Zaehlprotokolle (Kassensturz). Anlegen duerfen ALLE
+      // aktiven Nutzer inkl. Kiosk-Geraetekonto (E2) — aber nur BLIND:
+      // expectedCents/differenceCents (Soll-Wissen = Umsatz-Wissen) darf nur
+      // die Leitung setzen. Unveraenderlich (Audit-Charakter wie
+      // stockMovements), Korrektur = neue Zaehlung. Lesen enthaelt via
+      // expectedCents Umsatz-Wissen -> eng an Admin/teamlead.
+      match /cashCounts/{countId} {
+        allow read: if sameOrg(orgId)
+            && (isAdmin() || roleIsTeamLeadValue(currentUser().data.role));
+        allow create: if sameOrg(orgId)
+            && isActiveUser()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'cashRegisterId', 'businessDay',
+                 'countedAt', 'countedCents', 'expectedCents',
+                 'differenceCents', 'denominations', 'note', 'source',
+                 'countedByLabel', 'countedByUserId', 'kioskSessionId',
+                 'createdByUid', 'createdAt'
+               ])
+            && request.resource.data.countedCents is number
+            && request.resource.data.businessDay is string
+            && request.resource.data.businessDay.matches('\\d{4}-\\d{2}-\\d{2}')
+            // Zeitstempel-Plausibilitaet: countedAt ist der Soll-Anker von
+            // computeCashState (max countedAt gewinnt) — ein zukunftsdatierter
+            // Fake wuerde das Soll-Bargeld dauerhaft kapern. Kleine Toleranz
+            // fuer Geraete-Uhrabweichung.
+            && request.resource.data.countedAt is timestamp
+            && request.resource.data.countedAt
+                 <= request.time + duration.value(10, 'm')
+            // Typ-Checks gegen Poison-Docs (jeder aktive Nutzer darf createn;
+            // ein untypisiertes Feld wuerde den Lesepfad der Leitung brechen).
+            && (!('cashRegisterId' in request.resource.data)
+                 || request.resource.data.cashRegisterId == null
+                 || request.resource.data.cashRegisterId is number)
+            && (!('expectedCents' in request.resource.data)
+                 || request.resource.data.expectedCents == null
+                 || request.resource.data.expectedCents is number)
+            && (!('differenceCents' in request.resource.data)
+                 || request.resource.data.differenceCents == null
+                 || request.resource.data.differenceCents is number)
+            && (!('denominations' in request.resource.data)
+                 || request.resource.data.denominations == null
+                 || request.resource.data.denominations is map)
+            && (!('note' in request.resource.data)
+                 || request.resource.data.note == null
+                 || request.resource.data.note is string)
+            && (!('countedByLabel' in request.resource.data)
+                 || request.resource.data.countedByLabel == null
+                 || request.resource.data.countedByLabel is string)
+            // Personen-Pin (ZV-4.1): ein DIREKTER Client-Write darf die zählende
+            // Person nur auf sich selbst setzen — fremde Zuordnung kommt allein
+            // über die server-geprüfte Kiosk-Callable (Admin SDK, umgeht Rules).
+            && (!('countedByUserId' in request.resource.data)
+                 || request.resource.data.countedByUserId == null
+                 || request.resource.data.countedByUserId == request.auth.uid)
+            && (!('kioskSessionId' in request.resource.data)
+                 || request.resource.data.kioskSessionId == null
+                 || request.resource.data.kioskSessionId is string)
+            // Akteur-Pin gegen Audit-Spoofing (Muster stockMovements).
+            && request.resource.data.createdByUid == request.auth.uid
+            // Herkunft: 'oktopos' bleibt dem Server vorbehalten (E3).
+            && request.resource.data.source in ['manual', 'kiosk']
+            // Blinde Zaehlung fuer alle ausser Admin/teamlead erzwingen.
+            && ((isAdmin() || roleIsTeamLeadValue(currentUser().data.role))
+                 || (request.resource.data.expectedCents == null
+                     && request.resource.data.differenceCents == null));
+        allow update, delete: if false;
+      }
+
+      // Kassen-Modul: festgeschriebene Kassenabschluesse (Snapshot je
+      // Tag+Standort, deterministische Doc-ID). Anlegen nur Admin;
+      // unveraenderlich bis auf GENAU EIN Feld: bookedToFinance darf per
+      // feldbeschraenktem Update false->true kippen (Journal-Buchung erfolgt
+      // als separater Schritt; das Flag ist zugleich die teamlead-lesbare
+      // Gebucht-Anzeige, da journalEntries admin-only sind).
+      match /cashClosings/{closingId} {
+        allow read: if sameOrg(orgId)
+            && (isAdmin() || roleIsTeamLeadValue(currentUser().data.role));
+        allow create: if sameOrg(orgId)
+            && isAdmin()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'businessDay', 'salesCount',
+                 'refundCount', 'revenueGrossCents', 'taxes',
+                 'paymentsByMethod', 'cashMovementCents',
+                 'cashExpectedCents', 'cashCountedCents', 'cashCountId',
+                 'cashDifferenceCents', 'bookedToFinance', 'closedByUid',
+                 'closedAt', 'note'
+               ])
+            && request.resource.data.businessDay is string
+            && request.resource.data.siteId is string
+            // Deterministische Doc-ID erzwingen: genau EIN Abschluss je
+            // Tag+Standort — die Einmaligkeit darf nicht allein an der
+            // Client-Transaktion haengen.
+            && closingId == request.resource.data.businessDay
+                 + '-' + request.resource.data.siteId
+            // Frisch festgeschrieben ist NIE schon gebucht (Gebucht-Badge
+            // fuer teamlead waere sonst faelschbar).
+            && request.resource.data.bookedToFinance == false
+            && request.resource.data.closedByUid == request.auth.uid;
+        allow update: if sameOrg(orgId)
+            && isAdmin()
+            && request.resource.data.diff(resource.data)
+                .affectedKeys().hasOnly(['bookedToFinance'])
+            && request.resource.data.bookedToFinance == true;
+        allow delete: if false;
+      }
+
+      // Kassen-Modul: serverseitige Tagesaggregate (posDailyStats, M5) —
+      // wie posReceipts nur vom Admin SDK geschrieben, Leserechte identisch.
+      match /posDailyStats/{statId} {
         allow read: if sameOrg(orgId)
             && (isAdmin() || roleIsTeamLeadValue(currentUser().data.role));
         allow write: if false;

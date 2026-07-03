@@ -67,10 +67,13 @@ cashierId?, cashierName?, customerId?, payments?: [{method, amountCents, subType
     allow write: if false;
   }
   ```
-- **Composite-Indizes** (`firestore.indexes.json`) je geplanter Query, mindestens:
-  `siteId ASC + businessDay DESC` (Tagesabschluss je Laden); `siteId + transactionDate` (Zeitreihe/
-  Benchmark); optional `siteId + cashierId` (Kassierer-Anomalie). Reiner `businessDay`-Range ohne
-  zweites Feld braucht keinen Composite-Index.
+- **Composite-Indizes** (`firestore.indexes.json`) je geplanter Query: `siteId + transactionDate`
+  (Zeitreihe/Benchmark — **einziger tatsächlich genutzter Index**: auch der Tagesabschluss lädt
+  über die `transactionDate`-Range und gruppiert clientseitig nach `businessDay`, weil Belege
+  ohne `businessDay` sonst herausfielen; siehe [kassen-modul.md](kassen-modul.md) §2a/V1).
+  ~~`siteId ASC + businessDay DESC`~~ erst ergänzen, wenn wirklich direkt per `businessDay`
+  gequert wird; optional `siteId + cashierId` (Kassierer-Anomalie). Reiner `businessDay`-Range
+  ohne zweites Feld braucht keinen Composite-Index.
 - **Hybrid:** `posReceipts` bewusst **KEIN** `DatabaseService`-Key (nicht in `_orgScopedCollectionKeys`)
   → read-only Cloud-Stream, **kein** local fallback, keine Spiegelung von PII.
 - **Betrieb:** läuft auf **Blaze** (die Anbindung braucht ohnehin Outbound + Secret Manager +

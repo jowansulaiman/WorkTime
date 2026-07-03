@@ -1,0 +1,60 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules (PA-3, digitale Personalakte).
+// Einziger Storage-Use-Case bislang: Mitarbeiter-Dokumente. Alles andere ist
+// standardmäßig gesperrt (kein `match /{allPaths=**}`-Fallback mit Zugriff).
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // employee-documents/{orgId}/{userId}/{docId}
+    //  - Admin der Org: lesen/schreiben/löschen.
+    //  - Mitarbeiter selbst: NUR lesen, und NUR wenn das zugehörige
+    //    Metadaten-Doc `visibleToEmployee == true` trägt (Cross-Service-Read
+    //    auf Firestore). Kiosk-Gerätekonto (role 'kiosk') NIE.
+    //  - Upload: nur Admin, < 15 MB, contentType in Whitelist (pdf/jpg/png).
+    match /employee-documents/{orgId}/{userId}/{docId} {
+      function signedIn() {
+        return request.auth != null;
+      }
+      function callerDoc() {
+        return firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        );
+      }
+      function callerOrg() {
+        return callerDoc().data.orgId;
+      }
+      function callerRole() {
+        return callerDoc().data.role;
+      }
+      function isAdmin() {
+        return signedIn()
+            && callerRole() == 'admin'
+            && callerOrg() == orgId;
+      }
+      function isSelfVisible() {
+        return signedIn()
+            && request.auth.uid == userId
+            && callerOrg() == orgId
+            && callerRole() != 'kiosk'
+            && firestore.get(
+                 /databases/(default)/documents/organizations/$(orgId)/employeeDocuments/$(docId)
+               ).data.visibleToEmployee == true;
+      }
+
+      allow read: if isAdmin() || isSelfVisible();
+
+      // `write` deckt create/update/delete. Beim Löschen ist request.resource
+      // null → dann keine Größen-/Typ-Prüfung (nur Admin-Gate).
+      allow write: if isAdmin()
+          && (
+            request.resource == null
+            || (
+              request.resource.size < 15 * 1024 * 1024
+              && request.resource.contentType
+                  .matches('application/pdf|image/jpeg|image/png')
+            )
+          );
+    }
+  }
+}

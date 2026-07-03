@@ -338,6 +338,9 @@ class _MitarbeiterabschlussScreenState
         vormonat: row.vormonat,
         draftPayroll: draft,
         actorUid: actor,
+        // ZV-5.2: offene Klärungsfälle des MA blockieren den Abschluss.
+        offeneKlaerungen: zeit.openKlaerungenCountForMonth(
+            row.member.uid, DateTime(_year, _month)),
       );
       if (!mounted) return;
       if (!validation.canClose) {
@@ -442,6 +445,9 @@ class _MitarbeiterabschlussScreenState
         vormonat: row.vormonat,
         draftPayroll: draft,
         actorUid: actor,
+        // ZV-5.2: offene Klärungsfälle blockieren auch den Sammelabschluss.
+        offeneKlaerungen: zeit.openKlaerungenCountForMonth(
+            row.member.uid, DateTime(_year, _month)),
       );
       if (!validation.canClose) {
         blocked.add('${row.member.displayName}: ${validation.errors.join(', ')}');

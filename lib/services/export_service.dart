@@ -6,6 +6,8 @@ import 'package:intl/intl.dart';
 import '../core/datev_export.dart';
 import '../core/finance_analytics.dart';
 import '../core/ical_export.dart';
+import '../core/kasse_report.dart';
+import '../core/order_frequency.dart' show isoWeekNumber;
 import '../core/personnel_cost.dart';
 import '../core/shift_plan_grid.dart';
 import '../models/audit_log_entry.dart';
@@ -299,6 +301,87 @@ class ExportService {
     );
   }
 
+  // --- Kassenbericht (Kassen-Modul M4) -------------------------------------
+
+  static Future<void> exportKassenberichtCsv({
+    required List<KassenPeriode> perioden,
+    required ReportGranularity granularity,
+    String? siteLabel,
+  }) async {
+    final csv = buildKassenberichtCsv(
+      perioden: perioden,
+      granularity: granularity,
+      siteLabel: siteLabel,
+    );
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _inventoryFileName('kassenbericht', 'csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  /// Kassenbericht als CSV (UTF-8-BOM + `;`-Delimiter, deutsches Excel).
+  /// Beträge in Euro mit Dezimalkomma; leere Buckets bleiben leer statt „0".
+  static String buildKassenberichtCsv({
+    required List<KassenPeriode> perioden,
+    required ReportGranularity granularity,
+    String? siteLabel,
+  }) {
+    String euro(int? cents) =>
+        cents == null ? '' : (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
+    String pct(double? value) =>
+        value == null ? '' : value.toStringAsFixed(1).replaceAll('.', ',');
+
+    final monthFmt = DateFormat('MMM yyyy', 'de_DE');
+    String periodLabel(KassenPeriode p) => switch (granularity) {
+          ReportGranularity.week => 'KW${isoWeekNumber(p.start)} ${p.start.year}',
+          ReportGranularity.month => monthFmt.format(p.start),
+          ReportGranularity.year => '${p.start.year}',
+        };
+
+    final buffer = StringBuffer('﻿');
+    buffer.writeln('Kassenbericht Export');
+    buffer.writeln('Granularität;${_escapeCsv(granularity.label)}');
+    if (siteLabel != null && siteLabel.trim().isNotEmpty) {
+      buffer.writeln('Laden;${_escapeCsv(siteLabel)}');
+    }
+    buffer.writeln('Hinweis;Richtwert — Kassendaten Swagger-unverifiziert');
+    buffer.writeln();
+    buffer.writeln([
+      'Zeitraum',
+      'Umsatz brutto',
+      'Umsatz netto',
+      'Käufe netto',
+      'Käufe brutto',
+      'Wareneinsatz',
+      'Rohertrag netto',
+      'Rohertrag brutto',
+      'Δ Vorperiode %',
+      'Δ Vorjahr %',
+      'Belege',
+      'Erstattungen',
+      'EK-Abdeckung %',
+    ].map(_escapeCsv).join(';'));
+    for (final p in perioden) {
+      buffer.writeln([
+        periodLabel(p),
+        p.hatDaten ? euro(p.umsatzBruttoCents) : '',
+        p.hatDaten ? euro(p.umsatzNettoCents) : '',
+        euro(p.kaeufeNettoCents),
+        euro(p.kaeufeBruttoCents),
+        euro(p.wareneinsatzCents),
+        euro(p.rohertragNettoCents),
+        euro(p.rohertragBruttoCents),
+        pct(p.deltaVorperiodePct),
+        pct(p.deltaVorjahrPct),
+        p.hatDaten ? '${p.belege}' : '',
+        p.hatDaten ? '${p.erstattungen}' : '',
+        pct(p.wareneinsatzAbdeckungPct),
+      ].map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
+  }
+
   static String buildStockListCsv({
     required List<Product> products,
     String? siteLabel,
@@ -484,6 +567,63 @@ class ExportService {
       bytes: bytes,
       fileName: _personnelCostFileName('pdf'),
       mimeType: 'application/pdf',
+    );
+  }
+
+  /// Monats-Lohnjournal aller Mitarbeiter als CSV (UTF-8-BOM + `;`, deutsches
+  /// Excel) — pur/testbar (PA-6.3). Ein Datensatz je [PayrollRecord];
+  /// [employeeName] löst die Anzeige je userId auf. Für Monatsabschluss/Weiter-
+  /// gabe ans Lohnbüro. Enthält den Richtwert-Vorbehalt in der Kopfzeile.
+  static String buildLohnjournalCsv({
+    required List<PayrollRecord> records,
+    required String Function(String userId) employeeName,
+    required String monthLabel,
+  }) {
+    final fmt = NumberFormat.currency(
+        locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    String money(int cents) => fmt.format(cents / 100);
+    final buffer = StringBuffer('﻿');
+    buffer.writeln('Lohnjournal (unverbindlicher Richtwert)');
+    buffer.writeln('Zeitraum;${_escapeCsv(monthLabel)}');
+    buffer.writeln();
+    buffer.writeln([
+      'Mitarbeiter', 'Steuerklasse', 'Beschäftigung', 'Status', 'Brutto',
+      'Lohnsteuer', 'Soli', 'Kirchensteuer', 'KV (AN)', 'PV (AN)', 'RV (AN)',
+      'ALV (AN)', 'Netto', 'AG-Gesamt', 'U1', 'U2', 'InsO', 'UV',
+    ].map(_escapeCsv).join(';'));
+    final sorted = [...records]
+      ..sort((a, b) =>
+          employeeName(a.userId).compareTo(employeeName(b.userId)));
+    for (final r in sorted) {
+      buffer.writeln([
+        employeeName(r.userId), r.taxClass.label, r.kind.label, r.status.label,
+        money(r.grossCents), money(r.incomeTaxCents), money(r.soliCents),
+        money(r.churchTaxCents), money(r.healthEmployeeCents),
+        money(r.careEmployeeCents), money(r.pensionEmployeeCents),
+        money(r.unemploymentEmployeeCents), money(r.netCents),
+        money(r.employerTotalCents), money(r.employerU1Cents),
+        money(r.employerU2Cents), money(r.employerInsolvencyCents),
+        money(r.employerAccidentCents),
+      ].map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
+  }
+
+  static Future<void> exportLohnjournalCsv({
+    required List<PayrollRecord> records,
+    required String Function(String userId) employeeName,
+    required String monthLabel,
+    required String fileStamp,
+  }) async {
+    final csv = buildLohnjournalCsv(
+      records: records,
+      employeeName: employeeName,
+      monthLabel: monthLabel,
+    );
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: 'lohnjournal-$fileStamp.csv',
+      mimeType: 'text/csv;charset=utf-8',
     );
   }
 

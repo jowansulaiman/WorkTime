@@ -15,6 +15,7 @@ class OrgSettings {
     this.defaultShiftMinutes = 480,
     this.defaultBreakMinutes = 30,
     this.defaultRequiredCount = 1,
+    this.purchasePricesIncludeVat = false,
   });
 
   /// Feste, deterministische Doc-ID (genau ein Dokument je Org).
@@ -39,6 +40,13 @@ class OrgSettings {
   /// `staffingDemands` hinterlegt hat. Default 1.
   final int defaultRequiredCount;
 
+  /// **Kassen-Modul E1/§3.4:** `true` = die gepflegten Einkaufspreise
+  /// (`Product.purchasePriceCents`) enthalten MwSt (brutto) und werden für
+  /// Rohertrag/Wareneinsatz über `Product.taxRatePercent` auf netto
+  /// normalisiert (Artikel ohne Steuersatz gelten dann als unbewertet).
+  /// Default `false` = EK-Preise sind netto (B2B-üblich). Gilt org-weit.
+  final bool purchasePricesIncludeVat;
+
   /// Org-Standardwerte (ohne hinterlegtes Remote-/Local-Dokument).
   factory OrgSettings.defaults(String orgId) => OrgSettings(orgId: orgId);
 
@@ -50,6 +58,8 @@ class OrgSettings {
       defaultShiftMinutes: parse.toInt(map['defaultShiftMinutes']) ?? 480,
       defaultBreakMinutes: parse.toInt(map['defaultBreakMinutes']) ?? 30,
       defaultRequiredCount: parse.toInt(map['defaultRequiredCount']) ?? 1,
+      purchasePricesIncludeVat:
+          parse.toBool(map['purchasePricesIncludeVat']) ?? false,
     );
   }
 
@@ -61,6 +71,8 @@ class OrgSettings {
       defaultShiftMinutes: parse.toInt(map['default_shift_minutes']) ?? 480,
       defaultBreakMinutes: parse.toInt(map['default_break_minutes']) ?? 30,
       defaultRequiredCount: parse.toInt(map['default_required_count']) ?? 1,
+      purchasePricesIncludeVat:
+          parse.toBool(map['purchase_prices_include_vat']) ?? false,
     );
   }
 
@@ -71,6 +83,7 @@ class OrgSettings {
       'defaultShiftMinutes': defaultShiftMinutes,
       'defaultBreakMinutes': defaultBreakMinutes,
       'defaultRequiredCount': defaultRequiredCount,
+      'purchasePricesIncludeVat': purchasePricesIncludeVat,
     };
   }
 
@@ -82,6 +95,7 @@ class OrgSettings {
       'default_shift_minutes': defaultShiftMinutes,
       'default_break_minutes': defaultBreakMinutes,
       'default_required_count': defaultRequiredCount,
+      'purchase_prices_include_vat': purchasePricesIncludeVat,
     };
   }
 
@@ -92,6 +106,7 @@ class OrgSettings {
     int? defaultShiftMinutes,
     int? defaultBreakMinutes,
     int? defaultRequiredCount,
+    bool? purchasePricesIncludeVat,
   }) {
     return OrgSettings(
       id: id ?? this.id,
@@ -100,6 +115,8 @@ class OrgSettings {
       defaultShiftMinutes: defaultShiftMinutes ?? this.defaultShiftMinutes,
       defaultBreakMinutes: defaultBreakMinutes ?? this.defaultBreakMinutes,
       defaultRequiredCount: defaultRequiredCount ?? this.defaultRequiredCount,
+      purchasePricesIncludeVat:
+          purchasePricesIncludeVat ?? this.purchasePricesIncludeVat,
     );
   }
 }

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/local_demo_data.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/employee_site_assignment.dart';
+import 'package:worktime_app/models/employment_contract.dart';
 import 'package:worktime_app/models/shift_preference.dart';
 import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/team_definition.dart';
@@ -581,6 +582,55 @@ void main() {
         containsAll(['lead-1', 'employee-1']),
       );
       expect(provider.teams.map((team) => team.name), contains('Service'));
+    });
+
+    test(
+        'PA-0.2: Nicht-Manager streamt NUR den eigenen Vertrag (self-scoped, '
+        'kein Vergütungs-Leck)', () async {
+      const employee = AppUserProfile(
+        uid: 'employee-1',
+        orgId: 'org-1',
+        email: 'employee@example.com',
+        role: UserRole.employee,
+        isActive: true,
+        settings: UserSettings(name: 'Employee'),
+      );
+      final contracts = firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('employmentContracts');
+      await contracts.doc('c-own').set(
+            EmploymentContract(
+              id: 'c-own',
+              orgId: 'org-1',
+              userId: 'employee-1',
+              validFrom: DateTime(2026, 1, 1),
+              hourlyRate: 15,
+            ).toFirestoreMap(),
+          );
+      await contracts.doc('c-colleague').set(
+            EmploymentContract(
+              id: 'c-colleague',
+              orgId: 'org-1',
+              userId: 'colleague-2',
+              validFrom: DateTime(2026, 1, 1),
+              hourlyRate: 99,
+            ).toFirestoreMap(),
+          );
+
+      final provider = TeamProvider(firestoreService: firestoreService);
+      await provider.updateSession(employee);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final userIds = provider.contracts.map((c) => c.userId).toSet();
+      expect(userIds, contains('employee-1'));
+      expect(
+        userIds,
+        isNot(contains('colleague-2')),
+        reason: 'fremde Verträge (mit Lohn) dürfen für Nicht-Manager NICHT '
+            'im Stream landen — der org-weite Read ist seit PA-0.2 zu',
+      );
     });
   });
 }

@@ -15,6 +15,7 @@ import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/core/urlaub_calculator.dart';
 import 'package:worktime_app/models/org_payroll_settings.dart';
 import 'package:worktime_app/models/pay_line_type.dart';
+import 'package:worktime_app/models/payroll_profile.dart';
 import 'package:worktime_app/models/payroll_record.dart';
 import 'package:worktime_app/models/payroll_settings.dart';
 import 'package:worktime_app/models/sollzeit_profile.dart';
@@ -182,6 +183,50 @@ void main() {
       addTearDown(reopened.dispose);
       await reopened.updateSession(_admin, localStorageOnly: true);
       expect(reopened.profileForUser('emp-1')!.taxClass, TaxClass.i);
+    });
+
+    test('PA-0.4 Audit: savePayrollProfile/deletePayrollProfile loggen '
+        'created/updated/deleted mit Lohn-Stammdaten + userId-entityId',
+        () async {
+      final logged = <({
+        AuditAction action,
+        String entityType,
+        String? entityId,
+        String summary
+      })>[];
+      final provider =
+          PersonalProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      provider.setAuditSink((
+          {required AuditAction action,
+          required String entityType,
+          String? entityId,
+          required String summary}) {
+        logged.add((
+          action: action,
+          entityType: entityType,
+          entityId: entityId,
+          summary: summary,
+        ));
+      });
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      const base = PayrollProfile(orgId: 'org-1', userId: 'emp-1');
+      await provider.savePayrollProfile(
+        base.copyWith(taxClass: TaxClass.iii), // created
+      );
+      await provider.savePayrollProfile(
+        base.copyWith(taxClass: TaxClass.i), // updated (gleicher userId)
+      );
+      await provider.deletePayrollProfile('emp-1'); // deleted
+
+      expect(logged.map((e) => e.action), [
+        AuditAction.created,
+        AuditAction.updated,
+        AuditAction.deleted,
+      ]);
+      expect(logged.every((e) => e.entityType == 'Lohn-Stammdaten'), isTrue);
+      expect(logged.every((e) => e.entityId == 'emp-1'), isTrue);
     });
 
     test('Nicht-Admin darf nicht schreiben', () async {
@@ -1407,6 +1452,70 @@ void main() {
       expect(eigene, hasLength(1));
       // Fremdes Profil ist NICHT geladen (self-scoped Query).
       expect(provider.sollzeitProfilesForUser('emp-2'), isEmpty);
+    });
+
+    test('PA-2.3: Nicht-Admin lädt NUR die eigene Personal-Stammakte '
+        '(self-scoped)', () async {
+      await service.saveEmployeeProfile(const EmployeeProfile(
+        orgId: 'org-1',
+        userId: 'emp-1',
+        city: 'Kiel',
+      ));
+      await service.saveEmployeeProfile(const EmployeeProfile(
+        orgId: 'org-1',
+        userId: 'emp-2',
+        city: 'Hamburg',
+      ));
+
+      final provider = PersonalProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_employee); // Cloud, Nicht-Admin (emp-1)
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      // Eigene Akte ist da, fremde NICHT (self-scoped Query).
+      expect(provider.employeeProfileForUser('emp-1')?.city, 'Kiel');
+      expect(provider.employeeProfileForUser('emp-2'), isNull);
+    });
+
+    test('PA-7.1: Nicht-Admin sieht NUR eigene freigegebene/bezahlte '
+        'Lohnabrechnungen (keine Entwürfe, keine fremden)', () async {
+      await service.savePayrollRecord(const PayrollRecord(
+        orgId: 'org-1',
+        userId: 'emp-1',
+        periodYear: 2026,
+        periodMonth: 5,
+        status: PayrollStatus.freigegeben,
+        netCents: 200000,
+      ));
+      await service.savePayrollRecord(const PayrollRecord(
+        orgId: 'org-1',
+        userId: 'emp-1',
+        periodYear: 2026,
+        periodMonth: 6,
+        status: PayrollStatus.entwurf, // Entwurf → NICHT sichtbar
+        netCents: 210000,
+      ));
+      await service.savePayrollRecord(const PayrollRecord(
+        orgId: 'org-1',
+        userId: 'emp-2',
+        periodYear: 2026,
+        periodMonth: 5,
+        status: PayrollStatus.bezahlt, // fremd → NICHT sichtbar
+        netCents: 999999,
+      ));
+
+      final provider = PersonalProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_employee); // Nicht-Admin emp-1
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final visible = provider.payrollRecords;
+      expect(visible, hasLength(1));
+      expect(visible.single.userId, 'emp-1');
+      expect(visible.single.periodMonth, 5);
+      expect(visible.single.status, PayrollStatus.freigegeben);
     });
   });
 

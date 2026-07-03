@@ -186,6 +186,9 @@ class _MonatsabschlussScreenState extends State<MonatsabschlussScreen> {
         vormonat: previous,
         draftPayroll: draft,
         actorUid: user.uid,
+        // ZV-5.2: offene Klärungsfälle des Monats blockieren den Abschluss.
+        offeneKlaerungen:
+            zeit.openKlaerungenCountForMonth(user.uid, DateTime(_year, monat)),
       );
       if (!mounted) return;
       if (!validation.canClose) {

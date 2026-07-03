@@ -22,6 +22,15 @@ const _employee = AppUserProfile(
   settings: UserSettings(name: 'Peter'),
 );
 
+const _teamlead = AppUserProfile(
+  uid: 'lead-1',
+  orgId: 'org-1',
+  email: 'lea@example.com',
+  role: UserRole.teamlead,
+  isActive: true,
+  settings: UserSettings(name: 'Lea'),
+);
+
 void main() {
   group('RoutePermissions', () {
     test('Shop-Tab-Sichtbarkeit == /laden-Routenrecht (keine Divergenz, H-H2)',
@@ -56,6 +65,28 @@ void main() {
           isFalse);
       expect(RoutePermissions.isLocationAllowed(AppRoutes.personal, _admin),
           isTrue);
+    });
+
+    test('Kassenbericht: nur Admin (EK/Marge/Gewinn, M4)', () {
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.kassenbericht, _admin),
+          isTrue);
+      expect(
+          RoutePermissions.isLocationAllowed(AppRoutes.kassenbericht, _teamlead),
+          isFalse);
+      expect(
+          RoutePermissions.isLocationAllowed(AppRoutes.kassenbericht, _employee),
+          isFalse);
+    });
+
+    test('Tagesabschluss: Admin + Teamleitung ja, Mitarbeiter nein (M3)', () {
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.dailyClosing, _admin),
+          isTrue);
+      expect(
+          RoutePermissions.isLocationAllowed(AppRoutes.dailyClosing, _teamlead),
+          isTrue);
+      expect(
+          RoutePermissions.isLocationAllowed(AppRoutes.dailyClosing, _employee),
+          isFalse);
     });
 
     test('Heute/Anfragen/Profil/Einstellungen sind immer erlaubt', () {

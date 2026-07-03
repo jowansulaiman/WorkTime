@@ -132,4 +132,73 @@ void main() {
       expect(reopened.isOngoing, isTrue);
     });
   });
+
+  group('ZV-2/ZV-3 Felder (Schichtkontext, Quelle, Korrektur)', () {
+    ClockEntry rich() => ClockEntry(
+          id: 'c3',
+          orgId: 'org-1',
+          userId: 'emp-1',
+          kommen: DateTime(2026, 6, 10, 9),
+          gehen: DateTime(2026, 6, 10, 17),
+          status: ClockStatus.completed,
+          shiftId: 'shift-42',
+          source: 'kiosk',
+          deviceId: 'device-7',
+          sessionId: 'sess-9',
+          korrigiertVonUid: 'admin-1',
+          korrekturGrund: 'Vergessen auszustempeln',
+        );
+
+    test('snake_case round-trippt neue Felder', () {
+      final restored = ClockEntry.fromMap(rich().toMap());
+      expect(restored.shiftId, 'shift-42');
+      expect(restored.source, 'kiosk');
+      expect(restored.deviceId, 'device-7');
+      expect(restored.sessionId, 'sess-9');
+      expect(restored.korrigiertVonUid, 'admin-1');
+      expect(restored.korrekturGrund, 'Vergessen auszustempeln');
+    });
+
+    test('toFirestoreMap schreibt neue Felder (camelCase)', () {
+      final map = rich().toFirestoreMap();
+      expect(map['shiftId'], 'shift-42');
+      expect(map['source'], 'kiosk');
+      expect(map['deviceId'], 'device-7');
+      expect(map['sessionId'], 'sess-9');
+      expect(map['korrigiertVonUid'], 'admin-1');
+      expect(map['korrekturGrund'], 'Vergessen auszustempeln');
+    });
+
+    test('fromFirestore parst neue Felder (camelCase)', () {
+      final restored = ClockEntry.fromFirestore('c3', {
+        'orgId': 'org-1',
+        'userId': 'emp-1',
+        'kommen': DateTime(2026, 6, 10, 9),
+        'status': 'completed',
+        'shiftId': 'shift-42',
+        'source': 'kiosk',
+        'deviceId': 'device-7',
+        'sessionId': 'sess-9',
+        'korrigiertVonUid': 'admin-1',
+        'korrekturGrund': 'Vergessen auszustempeln',
+      });
+      expect(restored.shiftId, 'shift-42');
+      expect(restored.source, 'kiosk');
+      expect(restored.korrigiertVonUid, 'admin-1');
+      expect(restored.korrekturGrund, 'Vergessen auszustempeln');
+    });
+
+    test('clearX-Flags leeren shiftId/Korrektur-Felder', () {
+      final cleared = rich().copyWith(
+        clearShiftId: true,
+        clearKorrigiertVonUid: true,
+        clearKorrekturGrund: true,
+      );
+      expect(cleared.shiftId, isNull);
+      expect(cleared.korrigiertVonUid, isNull);
+      expect(cleared.korrekturGrund, isNull);
+      // source/deviceId/sessionId bleiben erhalten (kein clear-Flag).
+      expect(cleared.source, 'kiosk');
+    });
+  });
 }

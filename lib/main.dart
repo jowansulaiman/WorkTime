@@ -20,6 +20,7 @@ import 'core/redesign_flags.dart';
 import 'firebase_options.dart';
 import 'providers/audit_provider.dart';
 import 'providers/auth_provider.dart';
+import 'providers/connectivity_status_provider.dart';
 import 'providers/contact_provider.dart';
 import 'providers/feature_flag_provider.dart';
 import 'providers/finance_provider.dart';
@@ -40,6 +41,7 @@ import 'screens/public/public_legal_app.dart';
 import 'screens/public/public_legal_screen.dart';
 import 'screens/public/public_wish_app.dart';
 import 'services/auth_service.dart';
+import 'services/document_storage.dart';
 import 'services/firestore_service.dart';
 import 'services/push_messaging_service.dart';
 import 'theme/app_theme.dart';
@@ -296,6 +298,18 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
   // (create:) entstehen und vorher nicht als Instanz vorliegen.
   GoRouter? _router;
 
+  // Storage-Seam für Personalakte-Dokumente (PA-3). Nur konstruieren, wenn
+  // Firebase initialisiert ist (sonst wirft FirebaseStorage.instance) — im
+  // Demo-/APP_DISABLE_AUTH-Modus bleibt er null und Upload/Download sind aus.
+  DocumentStorage? _documentStorage;
+
+  DocumentStorage? _resolveDocumentStorage() {
+    final firebaseReady = DefaultFirebaseOptions.isConfigured ||
+        (!kIsWeb && defaultTargetPlatform == TargetPlatform.android);
+    if (!firebaseReady) return null;
+    return _documentStorage ??= FirebaseDocumentStorage();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -335,6 +349,9 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
       providers: [
         ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
         ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
+        // Konnektivitaets-/Offline-Status (Anf. 13). Von Auth/Storage
+        // unabhaengig -> frueh registriert, damit Shell + Bereiche ihn lesen.
+        ChangeNotifierProvider(create: (_) => ConnectivityStatusProvider()),
         ChangeNotifierProvider(create: (_) => StorageModeProvider()..init()),
         ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
             FeatureFlagProvider>(
@@ -507,6 +524,10 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
           update: (_, auth, team, storage, audit, provider) {
             provider ??= PersonalProvider(firestoreService: firestoreService);
             provider.setAuditSink(audit.log);
+            final documentStorage = _resolveDocumentStorage();
+            if (documentStorage != null) {
+              provider.setDocumentStorage(documentStorage);
+            }
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,

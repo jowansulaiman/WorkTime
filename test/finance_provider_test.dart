@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/datev_export.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/cash_closing.dart';
 import 'package:worktime_app/models/finance_models.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/finance_provider.dart';
@@ -327,6 +328,70 @@ void main() {
       // Zweiter Sync → kein Duplikat (Upsert über deterministische Doc-ID).
       await local.syncLocalStateToCloud();
       expect(await cloudJournalCount(), 1);
+    });
+  });
+
+  group('postCashDifference (M6, §8a)', () {
+    Future<FinanceProvider> seeded({bool withCashDiffType = true}) async {
+      final provider =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      await provider.saveCostCenter(const CostCenter(
+          orgId: 'org-1', number: '1001', name: 'Laden', siteId: 'site-1'));
+      if (withCashDiffType) {
+        await provider.saveCostType(const CostType(
+            orgId: 'org-1', number: '6900', name: 'Kassendifferenz'));
+      }
+      return provider;
+    }
+
+    CashClosing closing(int? diff) => CashClosing(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          businessDay: '2026-06-30',
+          cashDifferenceCents: diff,
+          closedByUid: 'admin-1',
+        );
+
+    test('Fehlbetrag wird als Kosten gebucht, idempotent', () async {
+      final provider = await seeded();
+      final ok = await provider.postCashDifference(closing(-250));
+      expect(ok, isTrue);
+      final booked = provider.journalEntries
+          .where((e) => e.id == 'pos-diff-2026-06-30-site-1');
+      expect(booked, hasLength(1));
+      expect(booked.single.amountCents, 250);
+
+      // Zweite Buchung → kein Duplikat (deterministische ID).
+      await provider.postCashDifference(closing(-250));
+      expect(
+        provider.journalEntries
+            .where((e) => e.id == 'pos-diff-2026-06-30-site-1'),
+        hasLength(1),
+      );
+    });
+
+    test('ohne Kassendifferenz-Kostenart wird still übersprungen', () async {
+      final provider = await seeded(withCashDiffType: false);
+      final ok = await provider.postCashDifference(closing(-250));
+      expect(ok, isFalse);
+      expect(provider.journalEntries, isEmpty);
+    });
+
+    test('keine Differenz → keine Buchung', () async {
+      final provider = await seeded();
+      expect(await provider.postCashDifference(closing(null)), isFalse);
+      expect(await provider.postCashDifference(closing(0)), isFalse);
+      expect(provider.journalEntries, isEmpty);
+    });
+
+    test('Nicht-Admin darf nicht buchen', () async {
+      final provider =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_employee, localStorageOnly: true);
+      expect(await provider.postCashDifference(closing(-250)), isFalse);
     });
   });
 }

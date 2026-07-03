@@ -10,6 +10,7 @@ import '../../core/app_config.dart';
 import '../../core/expiry_warning.dart';
 import '../../core/fridge_refill_shortfall.dart';
 import '../../models/app_user.dart';
+import '../../models/cash_count.dart';
 import '../../models/customer_wish.dart';
 import '../../models/site_definition.dart';
 import '../../models/store_task.dart';
@@ -20,6 +21,7 @@ import '../../providers/store_task_provider.dart';
 import '../../providers/team_provider.dart';
 import '../../services/firestore_service.dart';
 import '../../theme/theme_extensions.dart';
+import '../../widgets/cash_count_sheet.dart';
 import 'kiosk_clock_service.dart';
 import 'kiosk_controller.dart';
 import 'kiosk_pin_service.dart';
@@ -439,6 +441,7 @@ class _KioskBoard extends StatelessWidget {
     final tiles = <Widget>[
       _ClockTile(siteId: siteId, siteName: siteName),
       _StoreTasksTile(siteId: siteId, siteName: siteName),
+      _CashCountTile(siteId: siteId, firestore: firestore),
       _FridgeTile(siteId: siteId),
       _ExpiryTile(siteId: siteId),
       _WishesTile(siteId: siteId, siteName: siteName, firestore: firestore),
@@ -660,6 +663,122 @@ class _ClockTileState extends State<_ClockTile> {
     return _KioskTile(
       icon: Icons.schedule,
       title: 'Zeiterfassung',
+      child: body,
+    );
+  }
+}
+
+// ---- Kasse zählen (blind) --------------------------------------------------
+
+/// **Kassen-Modul §7.3 — blinde Kassenzählung am Tablet.** Alle Mitarbeitenden
+/// dürfen zählen (E2). Bewusst OHNE Soll/Differenz: das Tablet-Gerätekonto hat
+/// kein Beleg-Leserecht und „Hinzählen" auf einen bekannten Wert soll gar nicht
+/// erst möglich sein. Soll/Differenz sieht die Leitung im Tagesabschluss.
+class _CashCountTile extends StatefulWidget {
+  const _CashCountTile({required this.siteId, required this.firestore});
+  final String? siteId;
+  final FirestoreService firestore;
+
+  @override
+  State<_CashCountTile> createState() => _CashCountTileState();
+}
+
+class _CashCountTileState extends State<_CashCountTile> {
+  bool _busy = false;
+
+  Future<void> _count(
+      KioskController controller, AppUserProfile employee) async {
+    if (_busy) return;
+    final siteId = widget.siteId;
+    if (siteId == null) return;
+    controller.touch();
+    final messenger = ScaffoldMessenger.of(context);
+    final inventory = context.read<InventoryProvider>();
+    // Blind: kein Soll übergeben.
+    final input = await showCashCountSheet(
+      context,
+      subtitle: 'Bitte das gesamte Bargeld in der Kasse zählen und eintragen.',
+    );
+    if (input == null) return;
+    controller.touch();
+    setState(() => _busy = true);
+    final now = DateTime.now();
+    final businessDay =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
+    final sid = controller.sessionId;
+    try {
+      if (AppConfig.disableAuthentication || sid == null) {
+        // Dev-Modus zeigt bewusst „braucht Internet" (Kasse ist cloud-only,
+        // saveCashCount wirft im Local-Modus). Der Direkt-Write ist zudem der
+        // defensive Fallback für den theoretischen real-cloud/sid==null-Fall,
+        // den die Rules ohnehin abfangen.
+        await inventory.saveCashCount(CashCount(
+          orgId: '',
+          siteId: siteId,
+          businessDay: businessDay,
+          countedAt: now,
+          countedCents: input.countedCents,
+          note: input.note,
+          source: CashCount.sourceKiosk,
+          countedByLabel: employee.displayName,
+          countedByUserId: employee.uid,
+          kioskSessionId: sid,
+          createdByUid: '',
+        ));
+      } else {
+        // Echtbetrieb (M6-E): gehärtetes Callable — die zählende Person kommt
+        // server-authoritativ aus der Session, nicht vom Client.
+        await widget.firestore.kioskSaveCashCount(
+          sid: sid,
+          countedCents: input.countedCents,
+          businessDay: businessDay,
+          note: input.note,
+          siteId: siteId,
+        );
+      }
+      if (mounted) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text('Zählung gespeichert — danke!')));
+      }
+    } catch (_) {
+      if (mounted) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text('Zählung braucht Internet — bitte später erneut.')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<KioskController>();
+    final employee = controller.employee;
+    Widget body;
+    if (employee == null) {
+      body = const _KioskEmpty('Zum Zählen oben „Anmelden" antippen.');
+    } else {
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Kasse zählen und den Bargeldbestand eintragen. '
+            'Die Leitung prüft die Differenz.',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _busy ? null : () => _count(controller, employee),
+            icon: const Icon(Icons.calculate_outlined),
+            label: const Text('Kasse zählen'),
+          ),
+        ],
+      );
+    }
+    return _KioskTile(
+      icon: Icons.point_of_sale_outlined,
+      title: 'Kasse zählen',
       child: body,
     );
   }
