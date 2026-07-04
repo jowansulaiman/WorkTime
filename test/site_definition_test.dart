@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/site_schedule.dart';
+import 'package:worktime_app/models/third_party_cash.dart';
 
 void main() {
   group('SiteDefinition weekdayHours + staffingDemands', () {
@@ -112,6 +113,50 @@ void main() {
       final site = SiteDefinition.fromMap(legacy);
       expect(site.weekdayHours, isEmpty);
       expect(site.staffingDemands, isEmpty);
+      expect(site.thirdPartyCashTypes, isEmpty);
+    });
+  });
+
+  group('SiteDefinition thirdPartyCashTypes (Fremdgeld-Arten)', () {
+    const site = SiteDefinition(
+      id: 'site-1',
+      orgId: 'org-1',
+      name: 'Tabak Börse',
+      thirdPartyCashTypes: [
+        ThirdPartyCashType(
+            id: 'lotto', name: 'Lotto', required: true, sortOrder: 1),
+        ThirdPartyCashType(
+            id: 'post', name: 'Deutsche Post', enabled: false, sortOrder: 0),
+        ThirdPartyCashType(id: 'kvg', name: 'KVG-Tickets', sortOrder: 2),
+      ],
+    );
+
+    test('Firestore-Roundtrip erhält die Fremdgeld-Arten', () {
+      final back =
+          SiteDefinition.fromFirestore('site-1', site.toFirestoreMap());
+      expect(back.thirdPartyCashTypes.length, 3);
+      expect(back.thirdPartyCashTypes.first.id, 'lotto');
+      expect(back.thirdPartyCashTypes.first.required, isTrue);
+    });
+
+    test('lokaler Roundtrip (snake_case) erhält die Fremdgeld-Arten', () {
+      final map = site.toMap();
+      expect(map['third_party_cash_types'], isA<List>());
+      final back = SiteDefinition.fromMap(map);
+      expect(back.thirdPartyCashTypes.length, 3);
+      expect(back.thirdPartyCashTypes[2].id, 'kvg');
+    });
+
+    test('activeThirdPartyCashTypes filtert deaktivierte + sortiert', () {
+      final active = site.activeThirdPartyCashTypes;
+      expect(active.map((t) => t.id), ['lotto', 'kvg']); // post deaktiviert
+      expect(active.first.sortOrder, 1);
+    });
+
+    test('copyWith ersetzt die Liste', () {
+      final updated = site.copyWith(thirdPartyCashTypes: const []);
+      expect(updated.thirdPartyCashTypes, isEmpty);
+      expect(updated.name, 'Tabak Börse');
     });
   });
 }

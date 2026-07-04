@@ -10,6 +10,7 @@ import '../core/kasse_report.dart';
 import '../core/order_frequency.dart' show isoWeekNumber;
 import '../core/personnel_cost.dart';
 import '../core/shift_plan_grid.dart';
+import '../core/third_party_report.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/finance_models.dart';
@@ -307,11 +308,13 @@ class ExportService {
     required List<KassenPeriode> perioden,
     required ReportGranularity granularity,
     String? siteLabel,
+    ThirdPartySummary thirdParty = ThirdPartySummary.empty,
   }) async {
     final csv = buildKassenberichtCsv(
       perioden: perioden,
       granularity: granularity,
       siteLabel: siteLabel,
+      thirdParty: thirdParty,
     );
     await downloadFileBytes(
       bytes: Uint8List.fromList(utf8.encode(csv)),
@@ -326,6 +329,7 @@ class ExportService {
     required List<KassenPeriode> perioden,
     required ReportGranularity granularity,
     String? siteLabel,
+    ThirdPartySummary thirdParty = ThirdPartySummary.empty,
   }) {
     String euro(int? cents) =>
         cents == null ? '' : (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
@@ -378,6 +382,24 @@ class ExportService {
         p.hatDaten ? '${p.erstattungen}' : '',
         pct(p.wareneinsatzAbdeckungPct),
       ].map(_escapeCsv).join(';'));
+    }
+    // Separater Fremdgeld-Block (§5) — hinten angehängt, damit bestehende
+    // Umsatz-Spalten/Import-Makros unverändert bleiben.
+    if (!thirdParty.isEmpty) {
+      buffer.writeln();
+      buffer.writeln('Dritte Hand / Fremdgelder (Treuhand, kein Umsatz)');
+      buffer.writeln(['Dienst', 'Betrag', 'Positionen'].map(_escapeCsv).join(';'));
+      for (final t in thirdParty.byType) {
+        buffer.writeln([
+          t.typeName,
+          euro(t.totalCents),
+          '${t.count}',
+        ].map(_escapeCsv).join(';'));
+      }
+      buffer.writeln(
+          ['Fremdgeld gesamt', euro(thirdParty.totalCents), '']
+              .map(_escapeCsv)
+              .join(';'));
     }
     return buffer.toString();
   }

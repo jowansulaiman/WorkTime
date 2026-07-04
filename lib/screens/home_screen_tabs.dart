@@ -1332,7 +1332,10 @@ class _TeamCalendarWidgetState extends State<_TeamCalendarWidget> {
             else
               LayoutBuilder(
                 builder: (context, constraints) {
-                  if (constraints.maxWidth < 700) {
+                  // B4/§6.1: 700 → 840 (expandedWindow), damit iPad-Portrait
+                  // (810/834 dp) die Kartenansicht statt der breiten Scroll-
+                  // Tabelle bekommt (kein Horizontal-Scroll).
+                  if (constraints.maxWidth < MobileBreakpoints.expandedWindow) {
                     return _buildMobileCalendar(
                       context,
                       members: members,

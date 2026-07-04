@@ -5,16 +5,17 @@ import 'package:worktime_app/theme/app_theme.dart';
 
 void main() {
   group('V2-Theme-Wahl (Signal-Teal-Redesign)', () {
-    test('resolveLight/Dark schaltet zwischen V1- und V2-Leitfarbe', () {
-      // V1: Navy #244A66, V2: Signal Teal #0E7C7B (hell) / #5FD4CE (dunkel).
+    test('resolveLight/Dark: V2-Zweig = Strichmännchen-Marke (Flip 03.07.)', () {
+      // V1 (useV2:false) unverändert Navy #244A66 / #9FC2DB.
+      // V2 (useV2:true) = Strichmännchen: hell primary=navy, dunkel primary=gold.
       expect(AppTheme.resolveLight(useV2: false).colorScheme.primary,
           const Color(0xFF244A66));
       expect(AppTheme.resolveLight(useV2: true).colorScheme.primary,
-          const Color(0xFF0E7C7B));
+          StrichTokens.navy);
       expect(AppTheme.resolveDark(useV2: false).colorScheme.primary,
           const Color(0xFF9FC2DB));
       expect(AppTheme.resolveDark(useV2: true).colorScheme.primary,
-          const Color(0xFF5FD4CE));
+          StrichTokens.gold);
     });
 
     test('V1-Themes bleiben byte-identisch (Leitplanke)', () {
@@ -161,6 +162,30 @@ void main() {
 
     test('flagKey ist redesign_v2', () {
       expect(RedesignFlags.flagKey, 'redesign_v2');
+    });
+  });
+
+  group('Signatur-Verdrahtung §4.11 G1 — gelber Pill-CTA', () {
+    Color? filledBg(ThemeData t) =>
+        t.filledButtonTheme.style?.backgroundColor?.resolve(<WidgetState>{});
+    Color? filledFg(ThemeData t) =>
+        t.filledButtonTheme.style?.foregroundColor?.resolve(<WidgetState>{});
+
+    test('Strichmännchen-Theme: Primär-CTA = yellow + ink (hell & dunkel)', () {
+      for (final t in <ThemeData>[
+        AppTheme.strichmaennchenLight,
+        AppTheme.strichmaennchenDark,
+      ]) {
+        expect(filledBg(t), StrichTokens.primaryAction); // #F0C738 gelb
+        expect(filledFg(t), StrichTokens.onPrimaryAction); // ink
+      }
+    });
+
+    test('V2-/Teal-Theme unveraendert: Primär-CTA = colorScheme.primary', () {
+      final t = AppTheme.lightV2;
+      expect(filledBg(t), t.colorScheme.primary);
+      expect(filledFg(t), t.colorScheme.onPrimary);
+      expect(filledBg(t), isNot(StrichTokens.primaryAction));
     });
   });
 }

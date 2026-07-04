@@ -53,7 +53,7 @@ Future<bool> _confirmDelete(BuildContext context, String itemName) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
-      title: Text('$itemName loeschen?'),
+      title: Text('$itemName löschen?'),
       content: Text('$itemName wird unwiderruflich geloescht.'),
       actions: [
         TextButton(
@@ -62,7 +62,7 @@ Future<bool> _confirmDelete(BuildContext context, String itemName) async {
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Loeschen'),
+          child: const Text('Löschen'),
         ),
       ],
     ),
@@ -1318,7 +1318,7 @@ class _ProductTile extends StatelessWidget {
                       value: 'adjust', child: Text('Bestand korrigieren')),
                   PopupMenuItem(value: 'stocktake', child: Text('Inventur')),
                   PopupMenuItem(value: 'transfer', child: Text('Umlagern')),
-                  PopupMenuItem(value: 'delete', child: Text('Loeschen')),
+                  PopupMenuItem(value: 'delete', child: Text('Löschen')),
                 ],
               )
             else if (product.needsReorder)
@@ -1565,7 +1565,7 @@ class _SuppliersTab extends StatelessWidget {
                     },
                     itemBuilder: (_) => const [
                       PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
-                      PopupMenuItem(value: 'delete', child: Text('Loeschen')),
+                      PopupMenuItem(value: 'delete', child: Text('Löschen')),
                     ],
                   )
                 : null,

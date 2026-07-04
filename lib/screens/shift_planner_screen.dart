@@ -4665,12 +4665,12 @@ class _PlannerMonthShiftTile extends StatelessWidget {
                   ),
                   const PopupMenuItem(
                     value: 'delete',
-                    child: Text('Einzeln loeschen'),
+                    child: Text('Einzeln löschen'),
                   ),
                   if (onDeleteSeries != null)
                     const PopupMenuItem(
                       value: 'delete_series',
-                      child: Text('Serie loeschen'),
+                      child: Text('Serie löschen'),
                     ),
                 ],
                 child: Icon(
@@ -4874,12 +4874,12 @@ class _ShiftCard extends StatelessWidget {
                     ),
                     const PopupMenuItem(
                       value: 'delete',
-                      child: Text('Einzeln loeschen'),
+                      child: Text('Einzeln löschen'),
                     ),
                     if (onDeleteSeries != null)
                       const PopupMenuItem(
                         value: 'delete_series',
-                        child: Text('Serie loeschen'),
+                        child: Text('Serie löschen'),
                       ),
                   ],
                 )
@@ -4992,9 +4992,9 @@ class _AbsenceCard extends StatelessWidget {
                           final confirmed = await showDialog<bool>(
                             context: context,
                             builder: (dialogContext) => AlertDialog(
-                              title: const Text('Urlaub loeschen'),
+                              title: const Text('Urlaub löschen'),
                               content: const Text(
-                                'Moechtest du diesen genehmigten Urlaub wirklich loeschen?',
+                                'Möchtest du diesen genehmigten Urlaub wirklich löschen?',
                               ),
                               actions: [
                                 TextButton(
@@ -5005,7 +5005,7 @@ class _AbsenceCard extends StatelessWidget {
                                 FilledButton(
                                   onPressed: () =>
                                       Navigator.of(dialogContext).pop(true),
-                                  child: const Text('Loeschen'),
+                                  child: const Text('Löschen'),
                                 ),
                               ],
                             ),
@@ -5035,7 +5035,7 @@ class _AbsenceCard extends StatelessWidget {
                           ),
                           PopupMenuItem(
                             value: 'delete',
-                            child: Text('Loeschen'),
+                            child: Text('Löschen'),
                           ),
                         ],
                         child: const Icon(Icons.more_horiz),

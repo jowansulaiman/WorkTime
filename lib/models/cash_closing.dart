@@ -5,6 +5,7 @@ import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
 import 'cash_count.dart';
 import 'pos_receipt.dart';
+import 'third_party_cash.dart';
 
 /// **Kassen-Modul §3.2 — festgeschriebener Kassenabschluss.** Persistierter
 /// Snapshot des berechneten Tagesabschlusses ([DailyClosing]) PLUS Zählung.
@@ -36,6 +37,7 @@ class CashClosing {
     this.cashCountedCents,
     this.cashCountId,
     this.cashDifferenceCents,
+    this.thirdParty = const [],
     this.bookedToFinance = false,
     required this.closedByUid,
     this.closedAt,
@@ -72,6 +74,19 @@ class CashClosing {
   /// `gezählt − Soll`; `null`, wenn eine Seite fehlt.
   final int? cashDifferenceCents;
 
+  /// **Dritte-Hand-/Fremdgeld-Beträge (§8.7).** Snapshot der beim Zählen
+  /// erfassten Treuhandgelder. **Additiv & getrennt:** beeinflusst
+  /// [cashDifferenceCents] und alle Umsatz-/Rohertrags-Aggregate NICHT.
+  final List<ThirdPartyAmount> thirdParty;
+
+  /// Summe aller Fremdgeld-Beträge in Cent.
+  int get thirdPartyTotalCents =>
+      thirdParty.fold(0, (acc, e) => acc + e.amountCents);
+
+  /// Gesamtes physisches Geld in der Lade = eigenes Kassen-Ist + Fremdgeld
+  /// (reiner Anzeigewert, wird nirgends gebucht).
+  int get grandTotalCashCents => (cashCountedCents ?? 0) + thirdPartyTotalCents;
+
   /// Einziges nachträglich änderbares Feld (`false→true`, admin-only):
   /// Journal-Buchung über den bestehenden `postDailyClosing`-Fluss erfolgt.
   final bool bookedToFinance;
@@ -89,6 +104,7 @@ class CashClosing {
     required String closedByUid,
     int? cashExpectedCents,
     CashCount? zaehlung,
+    List<ThirdPartyAmount> thirdParty = const [],
     String? note,
   }) {
     final counted = zaehlung?.countedCents;
@@ -116,6 +132,9 @@ class CashClosing {
       cashDifferenceCents: (counted != null && cashExpectedCents != null)
           ? counted - cashExpectedCents
           : null,
+      // Fremdgeld getrennt übernehmen — beeinflusst die Kassendifferenz NICHT.
+      thirdParty:
+          thirdParty.isNotEmpty ? thirdParty : (zaehlung?.thirdParty ?? const []),
       closedByUid: closedByUid,
       note: note,
     );
@@ -139,6 +158,7 @@ class CashClosing {
     int? cashCountedCents,
     String? cashCountId,
     int? cashDifferenceCents,
+    List<ThirdPartyAmount>? thirdParty,
     bool? bookedToFinance,
     String? closedByUid,
     DateTime? closedAt,
@@ -159,6 +179,7 @@ class CashClosing {
       cashCountedCents: cashCountedCents ?? this.cashCountedCents,
       cashCountId: cashCountId ?? this.cashCountId,
       cashDifferenceCents: cashDifferenceCents ?? this.cashDifferenceCents,
+      thirdParty: thirdParty ?? this.thirdParty,
       bookedToFinance: bookedToFinance ?? this.bookedToFinance,
       closedByUid: closedByUid ?? this.closedByUid,
       closedAt: closedAt ?? this.closedAt,
@@ -190,6 +211,7 @@ class CashClosing {
       cashCountedCents: parse.toInt(map['cashCountedCents']),
       cashCountId: map['cashCountId']?.toString(),
       cashDifferenceCents: parse.toInt(map['cashDifferenceCents']),
+      thirdParty: _readThirdParty(map['thirdParty']),
       bookedToFinance: parse.toBool(map['bookedToFinance']) ?? false,
       closedByUid: (map['closedByUid'] ?? '').toString(),
       closedAt: FirestoreDateParser.readDate(map['closedAt']),
@@ -211,6 +233,7 @@ class CashClosing {
         'cashCountedCents': cashCountedCents,
         'cashCountId': cashCountId,
         'cashDifferenceCents': cashDifferenceCents,
+        'thirdParty': thirdParty.map((e) => e.toFirestoreMap()).toList(),
         'bookedToFinance': bookedToFinance,
         'closedByUid': closedByUid,
         'closedAt': closedAt == null
@@ -224,6 +247,17 @@ class CashClosing {
     return raw
         .whereType<Map>()
         .map((e) => ReceiptTax.fromFirestore(Map<String, dynamic>.from(e)))
+        .toList(growable: false);
+  }
+
+  /// Tolerant: fehlend/Fremdtyp → leere Liste (Alt-Abschlüsse ohne Fremdgeld
+  /// bleiben gültig, kein Backfill nötig).
+  static List<ThirdPartyAmount> _readThirdParty(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) =>
+            ThirdPartyAmount.fromFirestore(Map<String, dynamic>.from(e)))
         .toList(growable: false);
   }
 }

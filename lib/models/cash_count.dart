@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
+import 'third_party_cash.dart';
 
 /// **Kassen-Modul §3.1 — Zählprotokoll (Kassensturz).** Eine physische
 /// Bargeld-Zählung je Standort. Unveränderlich (Rules: update/delete = false,
@@ -31,6 +32,7 @@ class CashCount {
     this.countedByLabel,
     this.countedByUserId,
     this.kioskSessionId,
+    this.thirdParty = const [],
     required this.createdByUid,
     this.createdAt,
   });
@@ -90,6 +92,15 @@ class CashCount {
 
   final String? kioskSessionId;
 
+  /// **Dritte-Hand-/Fremdgeld-Beträge (§8.7).** Getrennt von der eigenen Kasse
+  /// erfasste Treuhandgelder (Lotto/Post/KVG …). Leer = kein Fremdgeld. Fließt
+  /// NIE in [countedCents]/[expectedCents]/[differenceCents].
+  final List<ThirdPartyAmount> thirdParty;
+
+  /// Summe aller Fremdgeld-Beträge in Cent (0 wenn keine erfasst).
+  int get thirdPartyTotalCents =>
+      thirdParty.fold(0, (acc, e) => acc + e.amountCents);
+
   final String createdByUid;
   final DateTime? createdAt;
 
@@ -123,9 +134,21 @@ class CashCount {
       countedByLabel: map['countedByLabel']?.toString(),
       countedByUserId: map['countedByUserId']?.toString(),
       kioskSessionId: map['kioskSessionId']?.toString(),
+      thirdParty: _readThirdParty(map['thirdParty']),
       createdByUid: (map['createdByUid'] ?? '').toString(),
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
     );
+  }
+
+  /// Tolerant: fehlend/Fremdtyp → leere Liste (Alt-Zählungen ohne Fremdgeld
+  /// bleiben gültig, kein Backfill nötig).
+  static List<ThirdPartyAmount> _readThirdParty(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) =>
+            ThirdPartyAmount.fromFirestore(Map<String, dynamic>.from(e)))
+        .toList(growable: false);
   }
 
   /// Bewusst OHNE `clearX`-Flags (Abweichung von Kopplung #1): Zählungen sind
@@ -147,6 +170,7 @@ class CashCount {
     String? countedByLabel,
     String? countedByUserId,
     String? kioskSessionId,
+    List<ThirdPartyAmount>? thirdParty,
     String? createdByUid,
     DateTime? createdAt,
   }) {
@@ -166,6 +190,7 @@ class CashCount {
       countedByLabel: countedByLabel ?? this.countedByLabel,
       countedByUserId: countedByUserId ?? this.countedByUserId,
       kioskSessionId: kioskSessionId ?? this.kioskSessionId,
+      thirdParty: thirdParty ?? this.thirdParty,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
     );
@@ -186,6 +211,7 @@ class CashCount {
         'countedByLabel': countedByLabel,
         'countedByUserId': countedByUserId,
         'kioskSessionId': kioskSessionId,
+        'thirdParty': thirdParty.map((e) => e.toFirestoreMap()).toList(),
         'createdByUid': createdByUid,
         'createdAt': createdAt == null
             ? FieldValue.serverTimestamp()

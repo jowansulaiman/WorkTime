@@ -340,7 +340,7 @@ class AppUserProfile {
   /// Kontakte ansehen darf jedes aktive Mitglied.
   bool get canViewContacts => isActive;
 
-  /// Kontakte verwalten (anlegen/bearbeiten/loeschen) duerfen Admins und
+  /// Kontakte verwalten (anlegen/bearbeiten/löschen) duerfen Admins und
   /// Schichtleiter — analog zur Warenwirtschaft.
   bool get canManageContacts => isActive && (isAdmin || canManageShifts);
 
@@ -349,6 +349,12 @@ class AppUserProfile {
   /// Schichtleiter) — Beschwerden koennen sensibel sein. Spiegelt
   /// canManageFeedback() in firestore.rules.
   bool get canManageFeedback => isActive && (isAdmin || canManageShifts);
+
+  /// Zentrale (`shared`) Passwörter verwalten/zuweisen. UI-Gate = admin; die
+  /// echte Autorisierung (inkl. optionalem teamlead-Filialrecht per Server-Flag)
+  /// setzt der `upsertPasswordEntry`-Callable durch. Jeder aktive Nutzer darf
+  /// unabhängig davon eigene (`personal`) Passwörter anlegen.
+  bool get canManagePasswords => isActive && isAdmin;
 
   bool canReviewAbsenceRequestFor(AppUserProfile requester) {
     if (!canManageShifts || !isActive) {

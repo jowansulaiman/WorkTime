@@ -182,7 +182,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
         actions: [
           if (isEdit)
             IconButton(
-              tooltip: 'Loeschen',
+              tooltip: 'Löschen',
               onPressed: _deleteEntry,
               icon: const Icon(Icons.delete_outline),
             ),
@@ -914,7 +914,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Eintrag loeschen?'),
+        title: const Text('Eintrag löschen?'),
         content: const Text('Dieser Eintrag wird unwiderruflich geloescht.'),
         actions: [
           TextButton(
@@ -923,7 +923,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Loeschen'),
+            child: const Text('Löschen'),
           ),
         ],
       ),
@@ -945,7 +945,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Fehler beim Loeschen: $error'),
+          content: Text('Fehler beim Löschen: $error'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );

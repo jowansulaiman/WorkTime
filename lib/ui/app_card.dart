@@ -35,7 +35,7 @@ class AppCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pad = padding ?? EdgeInsets.all(context.spacing.md + context.spacing.xs);
+    final pad = padding ?? EdgeInsets.all(context.spacing.md);
     Widget content = Padding(padding: pad, child: child);
 
     if (onTap != null) {

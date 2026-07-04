@@ -219,6 +219,26 @@ void main() {
       expect(open.source, 'app');
     });
 
+    test('Schicht-Kette: clockIn(shiftId) → clockOut → WorkEntry.sourceShiftId',
+        () async {
+      WorkEntry? posted;
+      final provider = await mgrProvider();
+      provider.setWorkEntryPoster((e) async => posted = e);
+
+      await provider.clockIn(
+        siteId: 'site-1',
+        siteName: 'Strichmännchen',
+        shiftId: 'shift-42',
+        at: DateTime(2026, 6, 10, 8),
+      );
+      await provider.clockOut(at: DateTime(2026, 6, 10, 16));
+
+      expect(posted, isNotNull);
+      expect(posted!.sourceShiftId, 'shift-42');
+      expect(posted!.status, WorkEntryStatus.submitted);
+      expect(posted!.category, 'stempel');
+    });
+
     test('resolveKlaerung schließt ab + erzeugt genau einen WorkEntry', () async {
       WorkEntry? posted;
       final provider = await mgrProvider();

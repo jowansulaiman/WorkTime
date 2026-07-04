@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:worktime_app/core/kasse_report.dart';
+import 'package:worktime_app/core/third_party_report.dart';
 import 'package:worktime_app/services/export_service.dart';
 
 /// Test des Kassenbericht-CSV-Exports (Kassen-Modul M4): BOM, ;-Delimiter,
@@ -86,5 +87,38 @@ void main() {
     // folgende ; nach dem Zeitraum-Label).
     final maiLine = lines.firstWhere((l) => l.startsWith('Mai'));
     expect(maiLine.startsWith('Mai 2026;;;'), isTrue);
+  });
+
+  test('Fremdgeld-Block wird separat hinten angehängt (§5)', () {
+    final csv = ExportService.buildKassenberichtCsv(
+      granularity: ReportGranularity.week,
+      perioden: [periode(start: DateTime(2026, 7, 6), brutto: 20000)],
+      thirdParty: const ThirdPartySummary(
+        totalCents: 5700,
+        byType: [
+          ThirdPartyTypeSummary(
+              typeId: 'lotto', typeName: 'Lotto', totalCents: 4500, count: 2),
+          ThirdPartyTypeSummary(
+              typeId: 'post', typeName: 'Post', totalCents: 1200, count: 1),
+        ],
+      ),
+    );
+    // Bestehende Umsatz-Kopfzeile unverändert vorne.
+    expect(csv, contains('Zeitraum;Umsatz brutto'));
+    // Separater Block hinten.
+    expect(csv, contains('Dritte Hand / Fremdgelder (Treuhand, kein Umsatz)'));
+    expect(csv, contains('Dienst;Betrag;Positionen'));
+    expect(csv, contains('Lotto;45,00;2'));
+    expect(csv, contains('Fremdgeld gesamt;57,00;'));
+    // Reihenfolge: Fremdgeld-Block kommt NACH der Umsatztabelle.
+    expect(csv.indexOf('Umsatz brutto') < csv.indexOf('Fremdgelder'), isTrue);
+  });
+
+  test('ohne Fremdgeld: kein Block (Default empty)', () {
+    final csv = ExportService.buildKassenberichtCsv(
+      granularity: ReportGranularity.week,
+      perioden: [periode(start: DateTime(2026, 7, 6), brutto: 20000)],
+    );
+    expect(csv.contains('Fremdgelder'), isFalse);
   });
 }

@@ -72,7 +72,7 @@ class AppHeroCard extends StatelessWidget {
         ],
       ),
       child: Padding(
-        padding: padding ?? EdgeInsets.all(context.spacing.lg + context.spacing.xs),
+        padding: padding ?? EdgeInsets.all(context.spacing.xl),
         child: child,
       ),
     );

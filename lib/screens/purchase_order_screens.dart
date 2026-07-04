@@ -529,7 +529,7 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
                   ),
                 const PopupMenuItem(
                   value: 'delete',
-                  child: Text('Loeschen'),
+                  child: Text('Löschen'),
                 ),
               ],
             ),
@@ -678,7 +678,7 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
         final confirmed = await showDialog<bool>(
           context: context,
           builder: (_) => AlertDialog(
-            title: const Text('Bestellung loeschen?'),
+            title: const Text('Bestellung löschen?'),
             content: const Text('Die Bestellung wird unwiderruflich geloescht.'),
             actions: [
               TextButton(
@@ -687,7 +687,7 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
               ),
               FilledButton(
                 onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Loeschen'),
+                child: const Text('Löschen'),
               ),
             ],
           ),

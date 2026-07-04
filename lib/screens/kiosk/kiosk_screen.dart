@@ -13,6 +13,7 @@ import '../../models/app_user.dart';
 import '../../models/cash_count.dart';
 import '../../models/customer_wish.dart';
 import '../../models/site_definition.dart';
+import '../../models/third_party_cash.dart';
 import '../../models/store_task.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/product_batch.dart';
@@ -176,6 +177,7 @@ class _KioskScreenState extends State<KioskScreen> {
                   siteId: site.id,
                   siteName: site.name,
                   firestore: _firestore,
+                  thirdPartyCashTypes: site.activeThirdPartyCashTypes,
                 ),
               ),
             ],
@@ -429,11 +431,13 @@ class _KioskBoard extends StatelessWidget {
     required this.siteId,
     required this.siteName,
     required this.firestore,
+    this.thirdPartyCashTypes = const [],
   });
 
   final String? siteId;
   final String siteName;
   final FirestoreService firestore;
+  final List<ThirdPartyCashType> thirdPartyCashTypes;
 
   @override
   Widget build(BuildContext context) {
@@ -441,7 +445,10 @@ class _KioskBoard extends StatelessWidget {
     final tiles = <Widget>[
       _ClockTile(siteId: siteId, siteName: siteName),
       _StoreTasksTile(siteId: siteId, siteName: siteName),
-      _CashCountTile(siteId: siteId, firestore: firestore),
+      _CashCountTile(
+          siteId: siteId,
+          firestore: firestore,
+          thirdPartyCashTypes: thirdPartyCashTypes),
       _FridgeTile(siteId: siteId),
       _ExpiryTile(siteId: siteId),
       _WishesTile(siteId: siteId, siteName: siteName, firestore: firestore),
@@ -675,9 +682,14 @@ class _ClockTileState extends State<_ClockTile> {
 /// kein Beleg-Leserecht und „Hinzählen" auf einen bekannten Wert soll gar nicht
 /// erst möglich sein. Soll/Differenz sieht die Leitung im Tagesabschluss.
 class _CashCountTile extends StatefulWidget {
-  const _CashCountTile({required this.siteId, required this.firestore});
+  const _CashCountTile({
+    required this.siteId,
+    required this.firestore,
+    this.thirdPartyCashTypes = const [],
+  });
   final String? siteId;
   final FirestoreService firestore;
+  final List<ThirdPartyCashType> thirdPartyCashTypes;
 
   @override
   State<_CashCountTile> createState() => _CashCountTileState();
@@ -694,10 +706,12 @@ class _CashCountTileState extends State<_CashCountTile> {
     controller.touch();
     final messenger = ScaffoldMessenger.of(context);
     final inventory = context.read<InventoryProvider>();
-    // Blind: kein Soll übergeben.
+    // Blind: kein Soll übergeben. Fremdgeld-Arten der Filiale (falls aktiviert)
+    // erscheinen als getrennte Sektion im Sheet.
     final input = await showCashCountSheet(
       context,
       subtitle: 'Bitte das gesamte Bargeld in der Kasse zählen und eintragen.',
+      thirdPartyTypes: widget.thirdPartyCashTypes,
     );
     if (input == null) return;
     controller.touch();
@@ -724,6 +738,7 @@ class _CashCountTileState extends State<_CashCountTile> {
           countedByLabel: employee.displayName,
           countedByUserId: employee.uid,
           kioskSessionId: sid,
+          thirdParty: input.thirdParty,
           createdByUid: '',
         ));
       } else {
@@ -735,6 +750,7 @@ class _CashCountTileState extends State<_CashCountTile> {
           businessDay: businessDay,
           note: input.note,
           siteId: siteId,
+          thirdParty: input.thirdParty,
         );
       }
       if (mounted) {

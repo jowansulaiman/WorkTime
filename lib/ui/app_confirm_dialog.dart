@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 /// [show] liefert `true` nur bei aktiver Bestaetigung, sonst `false` (auch bei
 /// Wegtippen) — entspricht dem bisherigen `confirmed == true`-Muster, sodass die
 /// nachgelagerte Provider-Methode unveraendert gerufen wird. Aufrufer, deren
-/// Tests/Flows einen exakten Button-Text matchen (z. B. `Loeschen`), uebergeben
+/// Tests/Flows einen exakten Button-Text matchen (z. B. `Löschen`), uebergeben
 /// ihn explizit via [confirmLabel].
 abstract final class AppConfirmDialog {
   AppConfirmDialog._();

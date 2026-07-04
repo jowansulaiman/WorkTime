@@ -1168,7 +1168,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Schichtvorlage loeschen?'),
+        title: const Text('Schichtvorlage löschen?'),
         content: Text(
           'Die Vorlage "${template.name}" wird unwiderruflich geloescht.',
         ),
@@ -1179,7 +1179,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Loeschen'),
+            child: const Text('Löschen'),
           ),
         ],
       ),
@@ -1994,7 +1994,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                     child: ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(Icons.delete_outline),
-                      title: Text('Vorlage loeschen'),
+                      title: Text('Vorlage löschen'),
                     ),
                   ),
                 ],

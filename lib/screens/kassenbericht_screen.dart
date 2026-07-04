@@ -7,6 +7,7 @@ import '../core/kasse_report.dart';
 import '../core/lohnquote.dart';
 import '../core/money.dart';
 import '../core/order_frequency.dart' show isoWeekNumber;
+import '../core/third_party_report.dart';
 import '../providers/auth_provider.dart';
 import '../providers/feature_flag_provider.dart';
 import '../providers/inventory_provider.dart';
@@ -45,8 +46,16 @@ class _KassenberichtScreenState extends State<KassenberichtScreen> {
   bool _exporting = false;
   String? _error;
   List<KassenPeriode> _perioden = const [];
+  ThirdPartySummary _thirdParty = ThirdPartySummary.empty;
   bool _started = false;
   int _loadSeq = 0;
+
+  /// Tage-Fenster für die Fremdgeld-Aggregation, grob passend zur Granularität.
+  int _thirdPartyWindowDays(ReportGranularity g) => switch (g) {
+        ReportGranularity.week => 84,
+        ReportGranularity.month => 366,
+        ReportGranularity.year => 1098,
+      };
 
   int _bucketCount(ReportGranularity g) => switch (g) {
         ReportGranularity.week => 12,
@@ -78,16 +87,23 @@ class _KassenberichtScreenState extends State<KassenberichtScreen> {
     try {
       final includeVat =
           context.read<FeatureFlagProvider>().purchasePricesIncludeVat;
-      final perioden =
-          await context.read<InventoryProvider>().loadKassenbericht(
-                granularity: granularity,
-                purchasePricesIncludeVat: includeVat,
-                siteId: siteId,
-                bucketCount: _bucketCount(granularity),
-              );
+      final inventory = context.read<InventoryProvider>();
+      final perioden = await inventory.loadKassenbericht(
+        granularity: granularity,
+        purchasePricesIncludeVat: includeVat,
+        siteId: siteId,
+        bucketCount: _bucketCount(granularity),
+      );
+      // Fremdgeld getrennt aus den festgeschriebenen Abschlüssen (§5) —
+      // berührt keine Umsatz-Aggregate.
+      final closings = await inventory.loadCashClosings(
+        siteId: siteId,
+        windowDays: _thirdPartyWindowDays(granularity),
+      );
       if (!mounted || seq != _loadSeq) return;
       setState(() {
         _perioden = perioden;
+        _thirdParty = computeThirdPartySummary(closings);
         _loading = false;
       });
     } catch (_) {
@@ -108,6 +124,7 @@ class _KassenberichtScreenState extends State<KassenberichtScreen> {
         perioden: _perioden,
         granularity: _granularity,
         siteLabel: siteLabel,
+        thirdParty: _thirdParty,
       );
     } catch (_) {
       messenger.showSnackBar(
@@ -275,6 +292,15 @@ class _KassenberichtScreenState extends State<KassenberichtScreen> {
           }),
           _KpiGrid(periode: _currentPeriode()),
           const SizedBox(height: 16),
+          // Eigene Kasse vs. externe Dienste (§5) — getrennt, keine Vermischung
+          // mit dem Umsatz. Nur sichtbar, wenn Fremdgeld erfasst wurde.
+          if (!_thirdParty.isEmpty) ...[
+            _ThirdPartyReportCard(
+              summary: _thirdParty,
+              ownRevenueGrossCents: _currentPeriode()?.umsatzBruttoCents,
+            ),
+            const SizedBox(height: 16),
+          ],
           SectionCard(
             title: 'Umsatz pro ${_granularity.label}',
             child: _UmsatzBarChart(
@@ -440,6 +466,76 @@ class _KpiGrid extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// **Dritte Hand / Fremdgelder (§5).** Getrennte Darstellung „eigene Kasse vs.
+/// externe Dienste" — visuell und datentechnisch abgesetzt von den Umsatz-KPIs
+/// (kein gemischter „Gesamtumsatz inkl. Fremdgeld"-Wert).
+class _ThirdPartyReportCard extends StatelessWidget {
+  const _ThirdPartyReportCard({
+    required this.summary,
+    required this.ownRevenueGrossCents,
+  });
+
+  final ThirdPartySummary summary;
+  final int? ownRevenueGrossCents;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final own = ownRevenueGrossCents;
+    return SectionCard(
+      title: 'Dritte Hand / Fremdgelder',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Treuhandgelder externer Dienste — getrennt vom eigenen Umsatz.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          for (final t in summary.byType)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(child: Text(t.typeName)),
+                  Text(Money.formatCents(t.totalCents),
+                      style: theme.textTheme.bodyMedium),
+                ],
+              ),
+            ),
+          const Divider(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Fremdgeld gesamt', style: theme.textTheme.titleMedium),
+              Text(Money.formatCents(summary.totalCents),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                      color: theme.appColors.info,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ),
+          if (own != null && own > 0) ...[
+            const SizedBox(height: 6),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Eigener Umsatz (brutto, akt. Periode)',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                Text(Money.formatCents(own),
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

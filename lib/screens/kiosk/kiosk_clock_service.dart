@@ -17,12 +17,14 @@ abstract class KioskClockService {
   /// Ist der Mitarbeiter aktuell eingestempelt?
   Future<bool> isClockedIn(AppUserProfile employee, {String? sid});
 
-  /// Kommen. Liefert den neuen Zustand (`true` = eingestempelt).
+  /// Kommen. Liefert den neuen Zustand (`true` = eingestempelt). [shiftId]
+  /// verknüpft den Stempel mit der heutigen geplanten Schicht (ZV-2.1).
   Future<bool> clockIn(
     AppUserProfile employee, {
     String? sid,
     String? siteId,
     String? siteName,
+    String? shiftId,
   });
 
   /// Gehen. Liefert den neuen Zustand (`false` = ausgestempelt).
@@ -66,6 +68,7 @@ class DevKioskClockService implements KioskClockService {
     String? sid,
     String? siteId,
     String? siteName,
+    String? shiftId,
   }) async {
     final scope = _scope(employee);
     final list = await DatabaseService.loadLocalClockEntries(scope: scope);
@@ -77,6 +80,8 @@ class DevKioskClockService implements KioskClockService {
       userName: employee.settings.name,
       siteId: siteId,
       siteName: siteName,
+      shiftId: shiftId,
+      source: 'kiosk',
       kommen: DateTime.now(),
       status: ClockStatus.ongoing,
       createdByUid: employee.uid,
@@ -133,6 +138,7 @@ class DevKioskClockService implements KioskClockService {
         breakMinutes: pause.toDouble(),
         siteId: closed.siteId,
         siteName: closed.siteName,
+        sourceShiftId: closed.shiftId,
         category: 'stempel',
         status: WorkEntryStatus.submitted,
         sourceClockEntryId: closed.id,
@@ -162,13 +168,41 @@ class ServerKioskClockService implements KioskClockService {
     String? sid,
     String? siteId,
     String? siteName,
-  }) {
+    String? shiftId,
+  }) async {
+    // Fehlt eine explizite Schicht, die heutige bestätigte Schicht des
+    // Session-Mitarbeiters auflösen (ZV-2.1) — best-effort, ein Fehler darf das
+    // Stempeln NICHT verhindern.
+    final resolved = shiftId ?? await _resolveTodaysShiftId(employee);
     return _firestore.kioskClockPunch(
       sid: sid!,
       direction: 'in',
       siteId: siteId,
       siteName: siteName,
+      shiftId: resolved,
     );
+  }
+
+  /// Die heute laufende/anstehende Schicht des Mitarbeiters (id), sonst null.
+  Future<String?> _resolveTodaysShiftId(AppUserProfile employee) async {
+    try {
+      final now = DateTime.now();
+      final dayStart = DateTime(now.year, now.month, now.day);
+      final dayEnd = dayStart.add(const Duration(days: 1));
+      final shifts = await _firestore.getShiftsInRange(
+        orgId: employee.orgId,
+        start: dayStart,
+        end: dayEnd,
+        userId: employee.uid,
+      );
+      if (shifts.isEmpty) return null;
+      // Die Schicht wählen, deren Beginn dem Stempelzeitpunkt am nächsten liegt.
+      shifts.sort((a, b) => (a.startTime.difference(now).inMinutes.abs())
+          .compareTo(b.startTime.difference(now).inMinutes.abs()));
+      return shifts.first.id;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

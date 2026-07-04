@@ -329,6 +329,26 @@ function buildAutoKlaerungNotification({clockEntryId, dayLabel}) {
   };
 }
 
+// Klärungsfall vom Manager gelöst (ZV-7) -> an den betroffenen Mitarbeiter,
+// als Abschluss/Bestätigung zum vorherigen Auto-Klärungs-Push. Kanal `aufgaben`
+// (default), thread `personal`. Deep-Link auf den Stempel-Bereich.
+function buildKlaerungResolvedNotification({clockEntryId, dayLabel, hours}) {
+  const stunden = typeof hours === "number" && hours > 0 ?
+    ` (${hours.toFixed(1).replace(".", ",")} h)` : "";
+  return {
+    type: "clock_klaerung_resolved",
+    title: "Stempelung korrigiert",
+    body: typeof dayLabel === "string" && dayLabel ?
+      `Deine Buchung vom ${dayLabel} wurde geklärt und übernommen${stunden}.` :
+      `Deine offene Buchung wurde geklärt und übernommen${stunden}.`,
+    route: "/zeit/stempeln",
+    entityType: "Stempelzeit",
+    entityId: clockEntryId,
+    dedupeId: `klaerung-resolved:${clockEntryId}`,
+    thread: "personal",
+  };
+}
+
 // --- Präferenzen (M5) -----------------------------------------------------
 // Ordnet einen Ereignis-`type` dem Channel/der Kategorie zu (= App-Schalter +
 // Android-Channel; deckungsgleich mit Dart `channelIdForType`).
@@ -430,6 +450,7 @@ module.exports = {
   buildDocumentNotification,
   buildPayrollReleasedNotification,
   buildAutoKlaerungNotification,
+  buildKlaerungResolvedNotification,
   isoWeek,
   channelIdForType,
   inQuietWindow,

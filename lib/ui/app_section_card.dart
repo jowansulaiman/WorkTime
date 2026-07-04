@@ -28,7 +28,7 @@ class AppSectionCard extends StatelessWidget {
     final theme = Theme.of(context);
     final spacing = context.spacing;
     return AppCard(
-      padding: padding ?? EdgeInsets.all(spacing.md + spacing.xs),
+      padding: padding ?? EdgeInsets.all(spacing.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -49,7 +49,7 @@ class AppSectionCard extends StatelessWidget {
               if (trailing != null) trailing!,
             ],
           ),
-          SizedBox(height: spacing.md - spacing.xs),
+          SizedBox(height: spacing.s12),
           child,
         ],
       ),

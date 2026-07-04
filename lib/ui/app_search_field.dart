@@ -6,12 +6,12 @@ import '../theme/theme_extensions.dart';
 /// screen-lokale Suche (Anf. 24 „Such- und Filterfunktionen").
 ///
 /// Ersetzt die verstreuten roh-`TextField`-Suchen je Liste. Zeigt ein
-/// Such-Prefix und einen Loeschen-Suffix (nur bei Eingabe), meldet Aenderungen
+/// Such-Prefix und einen Löschen-Suffix (nur bei Eingabe), meldet Aenderungen
 /// via [onChanged] und Enter via [onSubmitted]. Nutzt nur Tokens + benannte
 /// Theme-Rollen (gefuellt auf `surfaceContainerHigh`, Radius `context.radii.md`).
 ///
 /// Der Controller ist optional: ohne uebergebenen [controller] verwaltet das
-/// Widget einen internen (und raeumt ihn auf). Der Loeschen-Button ist ein
+/// Widget einen internen (und raeumt ihn auf). Der Löschen-Button ist ein
 /// echtes 48-dp-Tap-Target mit Semantics-Label.
 class AppSearchField extends StatefulWidget {
   const AppSearchField({
@@ -32,7 +32,7 @@ class AppSearchField extends StatefulWidget {
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
 
-  /// Zusaetzlicher Rueckruf, wenn das Feld ueber den Loeschen-Button geleert
+  /// Zusaetzlicher Rueckruf, wenn das Feld ueber den Löschen-Button geleert
   /// wird (nach [onChanged] mit leerem String).
   final VoidCallback? onClear;
 
@@ -68,7 +68,7 @@ class _AppSearchFieldState extends State<AppSearchField> {
   }
 
   void _onControllerChanged() {
-    // Nur fuer die Sichtbarkeit des Loeschen-Buttons neu bauen.
+    // Nur fuer die Sichtbarkeit des Löschen-Buttons neu bauen.
     if (mounted) setState(() {});
   }
 

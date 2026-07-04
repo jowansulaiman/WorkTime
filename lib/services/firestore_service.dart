@@ -35,6 +35,7 @@ import '../models/urlaubskonto_jahr.dart';
 import '../models/zeitkonto_snapshot.dart';
 import '../models/finance_models.dart';
 import '../models/payroll_profile.dart';
+import '../models/password_entry.dart';
 import '../models/payroll_record.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
@@ -46,6 +47,7 @@ import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
 import '../models/team_definition.dart';
+import '../models/third_party_cash.dart';
 import '../models/travel_time_rule.dart';
 import '../models/user_invite.dart';
 import '../models/store_task.dart';
@@ -1418,6 +1420,7 @@ class FirestoreService {
     String? note,
     String? siteId,
     int? cashRegisterId,
+    List<ThirdPartyAmount> thirdParty = const [],
   }) async {
     final raw = await _callCloudFunction('kioskSaveCashCount', {
       'sid': sid,
@@ -1426,9 +1429,98 @@ class FirestoreService {
       if (note != null) 'note': note,
       if (siteId != null) 'siteId': siteId,
       if (cashRegisterId != null) 'cashRegisterId': cashRegisterId,
+      // Dritte-Hand-/Fremdgeld-Beträge (§8.7) — camelCase-Liste, der Server
+      // validiert + erzwingt Blind (expectedCents null).
+      if (thirdParty.isNotEmpty)
+        'thirdParty':
+            thirdParty.map((e) => e.toFirestoreMap()).toList(growable: false),
     });
     final id = _callableResultData(raw)['cashCountId'];
     return id is String ? id : null;
+  }
+
+  // === Passwortmanager (§9) — Callable-Bridge ==============================
+  // Alle Pfade laufen über Callables (kein Direkt-Read/-Write). snake_case
+  // Payloads; Metadaten kommen server-gefiltert über listPasswordEntries.
+
+  /// Server-gefilterte, sichtbare Metadaten (kein Secret).
+  Future<List<PasswordEntry>> listPasswordEntries(String orgId) async {
+    final raw = await _callCloudFunction('listPasswordEntries', {'orgId': orgId});
+    final list = _callableResultData(raw)['entries'];
+    if (list is! List) return const [];
+    return list.whereType<Map>().map((e) {
+      final m = Map<String, dynamic>.from(e);
+      return PasswordEntry.fromFirestore((m['id'] ?? '').toString(), m);
+    }).toList(growable: false);
+  }
+
+  /// Legt an/aktualisiert Metadaten (+ optional Klartext-Secret). Liefert die ID.
+  Future<String?> upsertPasswordEntry({
+    required PasswordEntry entry,
+    String? plainUsername,
+    String? plainPassword,
+    String? plainNotes,
+  }) async {
+    final raw = await _callCloudFunction('upsertPasswordEntry', {
+      if (entry.id != null) 'entry_id': entry.id,
+      'entry': entry.toMap(),
+      if (plainUsername != null) 'plain_username': plainUsername,
+      if (plainPassword != null) 'plain_password': plainPassword,
+      if (plainNotes != null) 'plain_notes': plainNotes,
+    });
+    final id = _callableResultData(raw)['entry_id'];
+    return id is String ? id : null;
+  }
+
+  Future<void> deletePasswordEntry({
+    required String orgId,
+    required String entryId,
+  }) async {
+    await _callCloudFunction('deletePasswordEntry', {
+      'org_id': orgId,
+      'entry_id': entryId,
+    });
+  }
+
+  /// Server-signierten Reauth-Nonce anfordern (Pflicht vor Reveal).
+  Future<String?> beginPasswordReauth(String orgId) async {
+    final raw =
+        await _callCloudFunction('beginPasswordReauth', {'org_id': orgId});
+    final t = _callableResultData(raw)['reauth_token'];
+    return t is String ? t : null;
+  }
+
+  /// Einziger Klartext-Pfad — autorisiert + auditiert.
+  Future<PasswordSecret> revealPasswordSecret({
+    required String orgId,
+    required String entryId,
+    String? reauthToken,
+    String? reason,
+  }) async {
+    final raw = await _callCloudFunction('revealPasswordSecret', {
+      'org_id': orgId,
+      'entry_id': entryId,
+      if (reauthToken != null) 'reauth_token': reauthToken,
+      if (reason != null) 'reason': reason,
+    });
+    final d = _callableResultData(raw);
+    return PasswordSecret(
+      username: (d['username'] ?? '').toString(),
+      password: (d['password'] ?? '').toString(),
+      notes: (d['notes'] ?? '').toString(),
+    );
+  }
+
+  Future<void> logPasswordCopy({
+    required String orgId,
+    required String entryId,
+    String? field,
+  }) async {
+    await _callCloudFunction('logPasswordCopy', {
+      'org_id': orgId,
+      'entry_id': entryId,
+      if (field != null) 'field': field,
+    });
   }
 
   Stream<List<PayrollRecord>> watchPayrollRecords(String orgId) {

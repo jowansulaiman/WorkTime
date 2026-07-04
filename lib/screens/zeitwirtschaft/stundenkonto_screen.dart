@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/sfn_lage.dart';
 import '../../core/zeitkonto_snapshot_builder.dart';
 import '../../models/absence_request.dart';
 import '../../models/sollzeit_profile.dart';
+import '../../models/work_entry.dart';
 import '../../models/zeitkonto_snapshot.dart';
 import '../../providers/personal_provider.dart';
 import '../../providers/schedule_provider.dart';
@@ -92,6 +94,21 @@ class _StundenkontoScreenState extends State<StundenkontoScreen> {
           );
     final hasSoll = profiles.isNotEmpty;
 
+    // §3b-Transparenz (ZV-5.3): aus den genehmigten Monats-Einträgen abgeleitete
+    // Nacht-/Sonn-/Feiertagsstunden — reine Anzeige „deine Zuschlagszeiten sind
+    // erfasst" (Verrechnung bleibt im Lohnlauf). Bundesland-Default SH (Kiel);
+    // Nacht/Sonntag sind ohnehin bundeslandunabhängig.
+    final sfnLage = user == null
+        ? SfnLage.zero
+        : computeSfnLage(
+            work.entries.where((e) =>
+                e.userId == user.uid &&
+                e.date.year == month.year &&
+                e.date.month == month.month &&
+                e.status == WorkEntryStatus.approved),
+            bundesland: 'SH',
+          );
+
     // ArbZG §3 (vereinfacht): wöchentlicher Schnitt des Monats > 48 h.
     final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
     final weeks = daysInMonth / 7.0;
@@ -143,6 +160,10 @@ class _StundenkontoScreenState extends State<StundenkontoScreen> {
                 ],
                 if (live != null)
                   _SummaryCard(snapshot: live, hasSoll: hasSoll),
+                if (!sfnLage.isZero) ...[
+                  SizedBox(height: spacing.md),
+                  _Sfn3bCard(lage: sfnLage),
+                ],
                 SizedBox(height: spacing.lg),
                 Text('Jahresübersicht ${month.year}',
                     style: Theme.of(context)
@@ -227,6 +248,53 @@ class _SummaryCard extends StatelessWidget {
               ],
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// §3b-Zuschlagsstunden-Transparenz (ZV-5.3): zeigt dem Mitarbeiter, dass seine
+/// Nacht-/Sonn-/Feiertagsstunden erfasst sind (die Verrechnung macht der Lohnlauf).
+class _Sfn3bCard extends StatelessWidget {
+  const _Sfn3bCard({required this.lage});
+
+  final SfnLage lage;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    final parts = <String>[
+      if (lage.nachtMinuten > 0) 'Nacht ${_h(lage.nachtStunden)}',
+      if (lage.sonntagMinuten > 0) 'Sonntag ${_h(lage.sonntagStunden)}',
+      if (lage.feiertagMinuten > 0) 'Feiertag ${_h(lage.feiertagStunden)}',
+    ];
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.nightlight_round,
+                  size: 18, color: theme.colorScheme.primary),
+              SizedBox(width: spacing.sm),
+              Text('Zuschlagszeiten (§3b)',
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700)),
+            ],
+          ),
+          SizedBox(height: spacing.xs),
+          Text(
+            'davon ${parts.join(' · ')}',
+            style: theme.textTheme.bodyMedium,
+          ),
+          SizedBox(height: spacing.xxs),
+          Text(
+            'Aus deinen genehmigten Zeiten abgeleitet – die Auszahlung erfolgt im Lohnlauf.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
         ],
       ),
     );

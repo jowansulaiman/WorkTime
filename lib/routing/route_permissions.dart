@@ -1,3 +1,4 @@
+import '../core/app_config.dart';
 import '../models/app_user.dart';
 import 'shell_tab.dart';
 
@@ -74,6 +75,11 @@ abstract final class RoutePermissions {
       // -> admin-only, gleiche Begründung wie bestandInsights/sortiment.
       case AppRoutes.kassenbericht:
         return p?.isAdmin ?? false;
+      // Passwortmanager (§11): jeder aktive Nutzer sieht eigene + freigegebene
+      // Einträge; die zentrale Verwaltung ist im Screen gegatet. Nur bei
+      // aktivem Feature (Blaze/KMS) erreichbar.
+      case AppRoutes.passwords:
+        return (p?.isActive ?? false) && AppConfig.passwordManagerEnabled;
       case AppRoutes.feedbackInbox:
         return p?.canManageFeedback ?? false;
       case AppRoutes.monthReport:

@@ -224,3 +224,20 @@ test("buildAutoKlaerungNotification: Route/Thread/Dedupe + Datum im Text", () =>
   assert.strictEqual(push.channelIdForType("clock_auto_klaerung"),
     push.channelIdForType("personal_document"));
 });
+
+test("buildKlaerungResolvedNotification: Route/Thread/Dedupe + Stunden im Text", () => {
+  const n = push.buildKlaerungResolvedNotification({
+    clockEntryId: "ce9", dayLabel: "01.07.2026", hours: 8,
+  });
+  assert.strictEqual(n.type, "clock_klaerung_resolved");
+  assert.strictEqual(n.route, "/zeit/stempeln");
+  assert.strictEqual(n.thread, "personal");
+  assert.strictEqual(n.dedupeId, "klaerung-resolved:ce9");
+  assert.match(n.body, /01\.07\.2026/);
+  assert.match(n.body, /8,0 h/);
+  // Ohne Stunden: kein Klammer-Zusatz.
+  const noHours = push.buildKlaerungResolvedNotification({
+    clockEntryId: "ce9", dayLabel: "01.07.2026",
+  });
+  assert.ok(!/\(/.test(noHours.body));
+});

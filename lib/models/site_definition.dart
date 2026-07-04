@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
 import 'site_schedule.dart';
+import 'third_party_cash.dart';
 
 class SiteDefinition {
   static const String germanyCountryCode = 'DE';
@@ -40,6 +41,7 @@ class SiteDefinition {
     this.description,
     this.weekdayHours = const [],
     this.staffingDemands = const [],
+    this.thirdPartyCashTypes = const [],
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
@@ -65,6 +67,18 @@ class SiteDefinition {
   /// Personalbedarf je Wochentag/Zeitfenster (leer = impliziter Bedarf 1 pro
   /// Öffnungsfenster). Siehe [StaffingDemand].
   final List<StaffingDemand> staffingDemands;
+
+  /// **Dritte-Hand-/Fremdgeld-Arten dieser Filiale (v1 Minimal-Variante,
+  /// §8.5).** Katalog UND Aktivierung in einem: leer = die Filiale bietet kein
+  /// Fremdgeld (Zähl-Schritt entfällt). Siehe [ThirdPartyCashType].
+  final List<ThirdPartyCashType> thirdPartyCashTypes;
+
+  /// Nur die aktiven Arten, nach [ThirdPartyCashType.sortOrder] sortiert
+  /// (Anzeigereihenfolge im Zähl-Sheet).
+  List<ThirdPartyCashType> get activeThirdPartyCashTypes =>
+      (thirdPartyCashTypes.where((t) => t.enabled).toList(growable: false)
+            ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder)));
+
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -137,6 +151,9 @@ class SiteDefinition {
       staffingDemands: ((map['staffingDemands'] as List?) ?? const [])
           .map((e) => StaffingDemand.fromFirestore(parse.toMap(e)))
           .toList(growable: false),
+      thirdPartyCashTypes: ((map['thirdPartyCashTypes'] as List?) ?? const [])
+          .map((e) => ThirdPartyCashType.fromFirestore(parse.toMap(e)))
+          .toList(growable: false),
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -166,6 +183,9 @@ class SiteDefinition {
       staffingDemands: ((map['staffing_demands'] as List?) ?? const [])
           .map((e) => StaffingDemand.fromMap(parse.toMap(e)))
           .toList(growable: false),
+      thirdPartyCashTypes: ((map['third_party_cash_types'] as List?) ?? const [])
+          .map((e) => ThirdPartyCashType.fromMap(parse.toMap(e)))
+          .toList(growable: false),
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -190,6 +210,8 @@ class SiteDefinition {
       'weekdayHours': weekdayHours.map((e) => e.toFirestoreMap()).toList(),
       'staffingDemands':
           staffingDemands.map((e) => e.toFirestoreMap()).toList(),
+      'thirdPartyCashTypes':
+          thirdPartyCashTypes.map((e) => e.toFirestoreMap()).toList(),
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -211,6 +233,8 @@ class SiteDefinition {
       'description': description,
       'weekday_hours': weekdayHours.map((e) => e.toMap()).toList(),
       'staffing_demands': staffingDemands.map((e) => e.toMap()).toList(),
+      'third_party_cash_types':
+          thirdPartyCashTypes.map((e) => e.toMap()).toList(),
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -232,6 +256,7 @@ class SiteDefinition {
     String? description,
     List<WeekdayHours>? weekdayHours,
     List<StaffingDemand>? staffingDemands,
+    List<ThirdPartyCashType>? thirdPartyCashTypes,
     bool clearCode = false,
     bool clearStreet = false,
     bool clearPostalCode = false,
@@ -260,6 +285,7 @@ class SiteDefinition {
       description: clearDescription ? null : (description ?? this.description),
       weekdayHours: weekdayHours ?? this.weekdayHours,
       staffingDemands: staffingDemands ?? this.staffingDemands,
+      thirdPartyCashTypes: thirdPartyCashTypes ?? this.thirdPartyCashTypes,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

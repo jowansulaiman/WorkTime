@@ -156,6 +156,21 @@ class AppConfig {
     defaultValue: false,
   );
 
+  /// Schaltet den **Passwortmanager** frei. Rein server-verschlüsselt (Cloud
+  /// KMS + Callables) → funktioniert NUR mit echtem Firebase/Blaze. Default aus,
+  /// bis KMS-Key + Callables deployt sind. Per
+  /// `--dart-define=APP_PASSWORD_MANAGER_ENABLED=true` an. Zusätzlich gegen
+  /// `disableAuthentication` gegated → im Offline-/Demo-Modus komplett
+  /// ausgeblendet (kein halb-degradiertes Feature).
+  static const bool _passwordManagerFlag = bool.fromEnvironment(
+    'APP_PASSWORD_MANAGER_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Effektiv nur an, wenn der Schalter gesetzt UND echtes Firebase aktiv ist.
+  static bool get passwordManagerEnabled =>
+      _passwordManagerFlag && !disableAuthentication;
+
   /// Schaltet den **Arbeitsmodus / Laden-Tablet (Kiosk)** frei. Ein dediziertes,
   /// fest im Laden installiertes Tablet läuft mit `--dart-define=APP_KIOSK_ENABLED=true`
   /// → der Gate-Redirect lenkt es auf das Vollbild-Board (`/arbeitsmodus`) und

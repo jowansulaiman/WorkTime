@@ -7,6 +7,7 @@ import '../core/daily_closing.dart';
 import '../core/money.dart';
 import '../models/cash_closing.dart';
 import '../models/cash_count.dart';
+import '../models/third_party_cash.dart';
 import '../models/finance_models.dart';
 import '../providers/auth_provider.dart';
 import '../providers/finance_provider.dart';
@@ -123,9 +124,18 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final inventory = context.read<InventoryProvider>();
     final expected = _cashState?.sollCents; // null ⇒ nicht verankert
+    // Fremdgeld-Arten dieser Filiale (falls aktiviert) → getrennte Sektion.
+    List<ThirdPartyCashType> thirdPartyTypes = const [];
+    for (final s in context.read<TeamProvider>().sites) {
+      if (s.id == siteId) {
+        thirdPartyTypes = s.activeThirdPartyCashTypes;
+        break;
+      }
+    }
     final input = await showCashCountSheet(
       context,
       expectedCents: expected,
+      thirdPartyTypes: thirdPartyTypes,
       subtitle: expected == null
           ? 'Noch keine Anker-Zählung — es wird nur der gezählte Betrag '
               'gespeichert.'
@@ -145,6 +155,7 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
         differenceCents:
             expected == null ? null : input.countedCents - expected,
         note: input.note,
+        thirdParty: input.thirdParty,
         createdByUid: '',
       ));
       if (!mounted) return;

@@ -39,14 +39,14 @@ class AppQuickActionCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: EdgeInsets.all(spacing.sm + spacing.xxs),
+            padding: EdgeInsets.all(spacing.s12),
             decoration: BoxDecoration(
               color: colorScheme.primaryContainer,
               borderRadius: BorderRadius.circular(context.radii.md),
             ),
             child: Icon(icon, color: colorScheme.onPrimaryContainer),
           ),
-          SizedBox(height: spacing.md + spacing.xxs),
+          SizedBox(height: spacing.md),
           Row(
             children: [
               Expanded(
@@ -64,7 +64,7 @@ class AppQuickActionCard extends StatelessWidget {
               ),
             ],
           ),
-          SizedBox(height: spacing.sm + spacing.xs),
+          SizedBox(height: spacing.s12),
           Text(
             subtitle,
             style: theme.textTheme.bodyMedium?.copyWith(
@@ -101,7 +101,7 @@ class AppQuickActionTile extends StatelessWidget {
       padding: EdgeInsets.zero,
       onTap: onTap,
       child: ListTile(
-        minVerticalPadding: context.spacing.md - context.spacing.xxs,
+        minVerticalPadding: context.spacing.s12,
         leading: CircleAvatar(
           backgroundColor:
               colorScheme.primaryContainer.withValues(alpha: 0.7),

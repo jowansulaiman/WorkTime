@@ -631,14 +631,14 @@ class _NotificationScreenState extends State<NotificationScreen> {
                           },
                         ),
                         _InboxAction(
-                          label: 'Loeschen',
+                          label: 'Löschen',
                           onPressed: (context) async {
                             final confirmed = await showDialog<bool>(
                               context: context,
                               builder: (dialogContext) => AlertDialog(
-                                title: const Text('Antrag loeschen'),
+                                title: const Text('Antrag löschen'),
                                 content: const Text(
-                                  'Moechtest du diesen offenen Antrag wirklich loeschen?',
+                                  'Möchtest du diesen offenen Antrag wirklich löschen?',
                                 ),
                                 actions: [
                                   TextButton(
@@ -649,7 +649,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
                                   FilledButton(
                                     onPressed: () =>
                                         Navigator.of(dialogContext).pop(true),
-                                    child: const Text('Loeschen'),
+                                    child: const Text('Löschen'),
                                   ),
                                 ],
                               ),
@@ -784,14 +784,14 @@ class _NotificationScreenState extends State<NotificationScreen> {
                       },
                     ),
                     _InboxAction(
-                      label: 'Loeschen',
+                      label: 'Löschen',
                       onPressed: (context) async {
                         final confirmed = await showDialog<bool>(
                           context: context,
                           builder: (dialogContext) => AlertDialog(
-                            title: const Text('Urlaub loeschen'),
+                            title: const Text('Urlaub löschen'),
                             content: const Text(
-                              'Moechtest du diesen genehmigten Urlaub wirklich loeschen?',
+                              'Möchtest du diesen genehmigten Urlaub wirklich löschen?',
                             ),
                             actions: [
                               TextButton(
@@ -802,7 +802,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
                               FilledButton(
                                 onPressed: () =>
                                     Navigator.of(dialogContext).pop(true),
-                                child: const Text('Loeschen'),
+                                child: const Text('Löschen'),
                               ),
                             ],
                           ),

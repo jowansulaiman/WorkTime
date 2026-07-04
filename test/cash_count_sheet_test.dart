@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:worktime_app/models/third_party_cash.dart';
 import 'package:worktime_app/widgets/cash_count_sheet.dart';
 
 /// Widget-Test des geteilten Zähl-Sheets (Kassen-Modul M3): blind vs. mit Soll.
@@ -94,5 +95,107 @@ void main() {
     expect(captured, isNotNull);
     expect(captured!.countedCents, 8800);
     expect(captured!.note, 'Wechselgeld');
+    expect(captured!.thirdParty, isEmpty);
+  });
+
+  group('Dritte Hand / Fremdgelder', () {
+    const types = [
+      ThirdPartyCashType(id: 'lotto', name: 'Lotto', sortOrder: 0),
+      ThirdPartyCashType(
+          id: 'post', name: 'Deutsche Post', required: true, sortOrder: 1),
+    ];
+
+    Future<CashCountInput?> openWithTypes(WidgetTester tester,
+        {int? expected}) async {
+      CashCountInput? captured;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  captured = await showCashCountSheet(context,
+                      expectedCents: expected, thirdPartyTypes: types);
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      return captured;
+    }
+
+    testWidgets('zeigt getrennte Fremdgeld-Sektion + Zusammenfassung',
+        (tester) async {
+      await openWithTypes(tester);
+      expect(find.text('Dritte Hand / Fremdgelder'), findsOneWidget);
+      expect(find.text('Zusammenfassung'), findsOneWidget);
+      expect(find.text('Lotto'), findsWidgets);
+      expect(find.text('Deutsche Post *'), findsOneWidget);
+    });
+
+    testWidgets('Pflicht-Art ohne Betrag blockiert Speichern bis Quittierung',
+        (tester) async {
+      await openWithTypes(tester);
+      await tester.enterText(find.byType(TextField).first, '100,00');
+      await tester.pump();
+
+      // Post ist Pflicht, Betrag 0, nicht quittiert -> Speichern gesperrt.
+      FilledButton submit() => tester.widget<FilledButton>(
+          find.widgetWithText(FilledButton, 'Zählung speichern'));
+      expect(submit().onPressed, isNull);
+
+      // 0,00 € quittieren -> Speichern frei.
+      await tester.tap(find.byKey(const Key('tp_confirm_post')));
+      await tester.pump();
+      expect(submit().onPressed, isNotNull);
+    });
+
+    testWidgets('gibt Fremdgeld-Beträge getrennt zurück + Gesamtsumme',
+        (tester) async {
+      final result = await (() async {
+        CashCountInput? captured;
+        await tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => Center(
+                child: ElevatedButton(
+                  onPressed: () async {
+                    captured = await showCashCountSheet(context,
+                        thirdPartyTypes: types);
+                  },
+                  child: const Text('open'),
+                ),
+              ),
+            ),
+          ),
+        ));
+        await tester.tap(find.text('open'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField).first, '120,00');
+        await tester.enterText(find.byKey(const Key('tp_amount_lotto')), '45,00');
+        await tester.enterText(find.byKey(const Key('tp_amount_post')), '12,00');
+        await tester.pump();
+        final submitFinder =
+            find.widgetWithText(FilledButton, 'Zählung speichern');
+        await tester.ensureVisible(submitFinder);
+        await tester.pumpAndSettle();
+        await tester.tap(submitFinder);
+        await tester.pumpAndSettle();
+        return captured;
+      })();
+
+      expect(result, isNotNull);
+      expect(result!.countedCents, 12000);
+      expect(result.thirdParty.length, 2);
+      final lotto = result.thirdParty.firstWhere((e) => e.typeId == 'lotto');
+      final post = result.thirdParty.firstWhere((e) => e.typeId == 'post');
+      expect(lotto.amountCents, 4500);
+      expect(lotto.typeName, 'Lotto');
+      expect(post.amountCents, 1200);
+    });
   });
 }

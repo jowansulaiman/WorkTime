@@ -80,13 +80,16 @@ class AppStatusBadge extends StatelessWidget {
     final tones = _resolveTone(context, tone);
     final background =
         filled ? tones.container : tones.color.withValues(alpha: 0.12);
-    final foreground = filled ? tones.onContainer : tones.color;
+    // §4.11 G5: Soft-Variante trug bisher `tones.color` als Text — bei hellen
+    // Tönen (Strich: warning=gelb ~1,4:1, success=openGreen ~2,8:1) ein WCAG-Fail.
+    // `onContainer` (kontrastgeprüft) ist auf Container UND auf color@0.12 lesbar.
+    final foreground = tones.onContainer;
     final spacing = context.spacing;
 
     return Container(
       padding: EdgeInsets.symmetric(
-        horizontal: spacing.sm + spacing.xs,
-        vertical: spacing.xs + spacing.xxs,
+        horizontal: spacing.s12,
+        vertical: spacing.s6,
       ),
       decoration: BoxDecoration(
         color: background,
@@ -97,7 +100,7 @@ class AppStatusBadge extends StatelessWidget {
         children: [
           if (icon != null) ...[
             Icon(icon, size: context.iconSizes.sm, color: foreground),
-            SizedBox(width: spacing.xs + spacing.xxs),
+            SizedBox(width: spacing.s6),
           ],
           Text(
             label,
@@ -140,8 +143,8 @@ class AppStatusBanner extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: EdgeInsets.symmetric(
-        horizontal: spacing.md - spacing.xxs,
-        vertical: spacing.sm + spacing.xs,
+        horizontal: spacing.s12,
+        vertical: spacing.s12,
       ),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
@@ -150,7 +153,7 @@ class AppStatusBanner extends StatelessWidget {
       child: Row(
         children: [
           Icon(icon, color: color, size: context.iconSizes.sm),
-          SizedBox(width: spacing.sm + spacing.xxs),
+          SizedBox(width: spacing.s12),
           Expanded(
             child: Text(
               message,

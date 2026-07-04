@@ -271,12 +271,12 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                         ),
                       const PopupMenuItem(
                         value: 'delete',
-                        child: Text('Einzeln loeschen'),
+                        child: Text('Einzeln löschen'),
                       ),
                       if (onDeleteSeries != null)
                         const PopupMenuItem(
                           value: 'delete_series',
-                          child: Text('Serie loeschen'),
+                          child: Text('Serie löschen'),
                         ),
                     ],
                     child: const Center(

@@ -46,6 +46,9 @@ void _audit(ThemeData theme, String name) {
       ac.warningContainer
     ],
     'onInfoContainer/infoContainer': [ac.onInfoContainer, ac.infoContainer],
+    // §4.11 G2b: onSuccessContainer wird in AppComparisonStatCard als Text/Icon
+    // auf der Kartenfläche genutzt (openGreen wäre als Text ~2,84:1 zu hell).
+    'onSuccessContainer/surface': [ac.onSuccessContainer, cs.surface],
   };
   bodyPairs.forEach((label, c) {
     final r = _contrast(c[0], c[1]);
@@ -91,6 +94,34 @@ void main() {
       for (final theme in [AppTheme.lightV2, AppTheme.darkV2]) {
         expect(theme.extension<AppThemeColors>(), isNotNull);
       }
+    });
+
+    // §4.11 G5: Soft-Status-Badge (AppStatusBadge, filled=false) rendert
+    // onContainer-Text auf `color@0.12` über der Fläche. Früher stand hier
+    // `tones.color` als Text (Strich: warning=gelb ~1,4:1, success=openGreen
+    // ~2,8:1 = Fail). Badge-Label = labelLarge bold ⇒ AA-large-Schwelle 3.0.
+    void auditSoftBadge(ThemeData theme, String name) {
+      final cs = theme.colorScheme;
+      final ac = theme.extension<AppThemeColors>()!;
+      final combos = <String, List<Color>>{
+        'warning': [ac.onWarningContainer, ac.warning],
+        'success': [ac.onSuccessContainer, ac.success],
+        'info': [ac.onInfoContainer, ac.info],
+        'error': [cs.onErrorContainer, cs.error],
+      };
+      combos.forEach((tone, c) {
+        final bg = Color.alphaBlend(c[1].withValues(alpha: 0.12), cs.surface);
+        final r = _contrast(c[0], bg);
+        expect(r, greaterThanOrEqualTo(3.0),
+            reason: '$name soft-badge $tone = ${r.toStringAsFixed(2)} (< 3.0)');
+      });
+    }
+
+    test('Soft-Status-Badge (G5) erfüllt AA-large in allen V2-Themes', () {
+      auditSoftBadge(AppTheme.strichmaennchenLight, 'strichLight');
+      auditSoftBadge(AppTheme.strichmaennchenDark, 'strichDark');
+      auditSoftBadge(AppTheme.lightV2, 'lightV2');
+      auditSoftBadge(AppTheme.darkV2, 'darkV2');
     });
   });
 }

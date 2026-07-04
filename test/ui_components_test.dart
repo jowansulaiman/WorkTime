@@ -165,7 +165,8 @@ void main() {
         const AppComparisonStatCard(
             plannedHours: 10, actualHours: 11, loading: false),
       );
-      expect(progressColor(), const Color(0xFF7A5BD6)); // ueber Soll -> tertiary
+      expect(progressColor(),
+          const Color(0xFF187A58)); // ueber Soll -> success (gruen, §4.11 G2)
 
       await _pump(
         tester,
@@ -388,9 +389,9 @@ void main() {
                 onPressed: () async {
                   result = await AppConfirmDialog.show(
                     context,
-                    title: 'Eintrag loeschen?',
+                    title: 'Eintrag löschen?',
                     message: 'Unwiderruflich.',
-                    confirmLabel: 'Loeschen',
+                    confirmLabel: 'Löschen',
                   );
                 },
                 child: const Text('Oeffnen'),
@@ -402,14 +403,14 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.text(tapLabel));
         await tester.pumpAndSettle();
-        if (tapLabel == 'Loeschen') {
+        if (tapLabel == 'Löschen') {
           expect(result, isTrue);
         } else {
           expect(result, isFalse);
         }
       }
 
-      await openAndConfirm('Loeschen');
+      await openAndConfirm('Löschen');
       await openAndConfirm('Abbrechen');
     });
 
@@ -522,7 +523,7 @@ void main() {
   });
 
   group('AppSearchField', () {
-    testWidgets('meldet Eingabe und zeigt Loeschen-Button erst bei Text',
+    testWidgets('meldet Eingabe und zeigt Löschen-Button erst bei Text',
         (tester) async {
       String? changed;
       final controller = TextEditingController();
@@ -542,7 +543,7 @@ void main() {
       expect(find.byIcon(Icons.close_rounded), findsOneWidget);
     });
 
-    testWidgets('Loeschen leert Feld und meldet leeren String + onClear',
+    testWidgets('Löschen leert Feld und meldet leeren String + onClear',
         (tester) async {
       String? changed;
       var cleared = false;

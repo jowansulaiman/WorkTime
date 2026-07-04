@@ -132,10 +132,10 @@ Zugriff **immer** über `context`-Getter (`AppDesignTokensX`), nie über Konstru
 | Bewegung | `context.motion` + `AppMotion.resolve(...)` | `short150 · medium300 · long450 · extraLong600` | Jede Animation über `resolve` (Reduce-Motion) |
 | Elevation | `context.elevation` | `flat0 · raised1 · floating3 · overlay6` | Sparsam; nie auf Grid-/Planner-Zellen |
 | Icons | `context.iconSizes` | `sm18 · md24 · lg28 · xl32 · hero40` | Ersetzt jedes `size:`-Literal |
-| Status | `Theme.of(context).appColors` | `success/warning/info` + `on*`/`*Container` (re-tuned auf `StrichTokens`: green/yellow/blue, §4.2) | Ampel/Coverage/Planner-Palette; nie `Colors.*` |
+| Status | `Theme.of(context).appColors` | `success/warning/info` + `on*`/`*Container` (re-tuned auf `StrichTokens`: green/yellow/blue) | Ampel/Coverage/Planner-Palette; „über Soll" = `success`/grün (§4.2); nie `Colors.*` |
 | Ziffern | `textStyle.tabular` / `kTabularFigures` | `FontFeature.tabularFigures()` | Uhr, Stunden, Plan/Ist, €, Countdown, Bestand |
 
-**Anti-Pattern-Check vor Auslieferung** (`grep` in geänderter Datei): `EdgeInsets.all(1[0-9])`, `SizedBox(height: [0-9]`, `size: [12][0-9]`, `Colors\.`, `#[0-9A-Fa-f]{6}`.
+**Anti-Pattern-Check vor Auslieferung** (`grep` in geänderter Datei): `EdgeInsets.all(1[0-9])`, `SizedBox(height: [0-9]`, `size: [12][0-9]`, `Colors\.`, `#[0-9A-Fa-f]{6}` — **und `spacing\.(md|lg|sm)\s*[+-]`** (kein arithmetisch komponiertes Spacing; jeder reale Wert bekommt EIN benanntes Token, notfalls `s6`/`s12`; §4.11 G7). Das gilt **auch für `lib/ui` selbst** — die kanonischen Bausteine dürfen den Anti-Pattern nicht vererben.
 
 ### 4.2 Farbe — Strichmännchen-Marken-Palette (app-weit)
 
@@ -158,12 +158,17 @@ Die Farbwelt wird **1:1 auf die Strichmännchen-Ladenseite** umgestellt (Quelle 
 |---|---|---|---|
 | Erledigt / genehmigt / eingestempelt | `success` | openGreen `#2FAD64` (Punkt/Icon) · **green `#2D6D55` für Text** | openGreen nur ~2,8:1 → nie Text |
 | Offen / fällig / **MHD bald** / Warnung | `warning` | yellow `#F0C738` + ink · Vorstufe gold | Fläche mit ink-Text; nie gelber Text auf Weiß |
-| Über Soll / Ziel übertroffen | `accent` | gold `#CAA65A` | **ersetzt** das entfallende Violett-Tertiär |
+| Über Soll / Ziel übertroffen | `success` (grün) | green `#2D6D55` / teal-V2 `#187A58` | **über/auf Soll = grün** via `appColors.success`; **nicht** `colorScheme.tertiary` (= gelb!, §4.11 G2) |
 | Hinweis / neutrale Meldung | `info` | blue `#246CA0` + white | — |
 | Fehler / abgelehnt / abgelaufen / „geschlossen" | `error` | rose `#B8435A` + white | — |
 | Neutral / Entwurf / archiviert | `neutral` | paperDeep `#E7DCC7` | — |
 
-Mapping `Domänen-Enum → Tone` bleibt im Screen, der Farbwert kommt **nur** aus dem Tone/Token; kein Screen definiert eigene Farbtabellen. `Colors.transparent` (`team_management_screen.dart:131`) → `surface`/`border`. **Das Violett-Tertiär entfällt** (nicht in der Marken-Palette) → „über Soll" wird gold. Der Signal-Verlauf (`signalGradient` gelb→rose→blau, aus der Ladenseite) ist **nur** für den einen Aufmerksamkeits-Moment reserviert (z. B. Ladefortschritt), nie Flächendeko.
+Mapping `Domänen-Enum → Tone` bleibt im Screen, der Farbwert kommt **nur** aus dem Tone/Token; kein Screen definiert eigene Farbtabellen. `Colors.transparent` (`team_management_screen.dart:131`) → `surface`/`border`. **Das Violett-Tertiär entfällt** (nicht in der Marken-Palette) → „über Soll" wird **grün** (`appColors.success`, §4.11 G2 — grün ist kontrast-sicher und semantisch „Ziel erreicht/übertroffen"; gold bliebe als Text ~1,9:1). Der Signal-Verlauf (`signalGradient` gelb→rose→blau) ist **nur** für den globalen indeterminate-Ladezustand (Splash/Skeleton-Header) reserviert (§4.11 G6), nie Flächendeko, nie der Soll/Ist-Balken.
+
+**Kollisions- & Kontrast-Regeln (verbindlich):**
+- **gold = EINE dominante Rolle** (Marken-Akzent/`secondary`). „Über Soll" ist **grün** (`success`), **nicht** gold; `warningSoft`=gold nur als Container-Ton der Warn-Triade — so bleibt gold der eindeutige Marken-Akzent.
+- **warning=yellow nie als Text auf Weiß** (~1,4:1): Warn-Badges `filled` oder Text auf `onWarningContainer`/ink (§4.11 G5); DS2-Gate um Soft-Badge×warning erweitern.
+- **success:** openGreen `#2FAD64` nur Punkt/Icon (~2,8:1); Ledger-/Statustext = green `#2D6D55` / `onSuccessContainer`.
 
 ### 4.3 Typografie
 
@@ -191,7 +196,7 @@ Outline = inaktiv, filled/rounded = aktiv (Nav-Rail/BottomNav, Favorit `star_bor
 
 ### 4.5 Buttons
 
-Genau **eine** Primäraktion je Screen als `FilledButton`. Form = **`StadiumBorder`-Pill** (56 dp, §4.10 S4); die Primär-Pill ist **gelb** (`primaryAction` + `ink`-Text), nicht teal/rechteckig.
+Genau **eine** Primäraktion je Screen als `FilledButton`. Form = **`StadiumBorder`-Pill** (56 dp, §4.10 S4); die Primär-Pill ist **gelb** (`primaryAction` + `ink`-Text), nicht teal/rechteckig. **Verdrahtung nötig:** heute nutzt `filledButtonTheme` `colorScheme.primary` (=navy), `primaryAction` ist toter Token → eigener `FilledButtonThemeData`-Zweig oder `AppPrimaryButton`, **nicht** global `primary=yellow` (§4.11 G1).
 
 | Ebene | Widget | Semantik |
 |---|---|---|
@@ -209,7 +214,7 @@ Kanonisches Feld = `AppFormField` (mit `helperText`/`errorText`/`validator`). Ro
 
 ### 4.7 Tabellen → adaptive Karten
 
-< **840 dp** (`expandedWindow`, alleinige Tabelle→Karte-Autorität): jede `DataTable` wird zur **Kartenliste** (Vorbild `_MonthEntryTile` in `stempel_screen.dart`), ≥ 840 dp: `DataTable` in `ConstrainedBox(maxWidth:)` + tabulare Zahlen. (600 dp hat **nur** eine Rolle: Inline-Chips vs. Sheet der `AppFilterBar`, §6.2 — nie als Tabellen-Breakpoint.) Heatmaps (Staffing/Planner) bekommen kompakte Tages-/Top-N-Ansicht statt Zwang zum Querscrollen.
+< **840 dp** (`expandedWindow`, alleinige Tabelle→Karte-Autorität): jede `DataTable` wird zur **Kartenliste** (Vorbild `_MonthEntryTile` in `stempel_screen.dart`), ≥ 840 dp: `DataTable` in `ConstrainedBox(maxWidth:)` + tabulare Zahlen. (600 dp hat **nur** eine Rolle: Inline-Chips vs. Sheet der `AppFilterBar`, §6.2 — nie als Tabellen-Breakpoint.) Heatmaps (Staffing/Planner) bekommen kompakte Tages-/Top-N-Ansicht statt Zwang zum Querscrollen. **`AppAdaptiveTable` = reiner Breakpoint-Dispatcher** (840 → Karte vs. `ConstrainedBox`+`DataTable`); der Kartenzweig nutzt `AppKontoTile`/`AppCard` via injiziertem `builder`, **kein** drittes „DataList-Item"-Widget.
 
 ### 4.8 Statusanzeigen
 
@@ -225,19 +230,19 @@ Kanonisch = `AppStatusBadge` (Label + `tone` + `icon?`) bzw. `AppStatusBanner`. 
 | `_SectionCard` (`order_analytics:275`, `statistics:230`) + Legacy `SectionCard` | `AppSectionCard` |
 | `_StatusChip`/`_StatusBadge` (Feedback, Wishes, Inventory, daily_closing, zeiterfassung, abwesenheiten, mitarbeiterabschluss, monatsabschluss, purchase_order) | `AppStatusBadge` |
 | `_InfoChip` (Feedback, Wishes, Scanner) | geteiltes `info_chip.dart` |
-| `_ErrorBanner` (`inventory:994`, `auth:762`, `customer_order:500`) | `AppErrorState` / `AppStatusBanner(tone: error)` |
+| `_ErrorBanner` (`inventory:994`, `auth:762`, `customer_order:500`) | inline-Hinweis → `AppStatusBanner(tone: error)`; Vollflächen-Ladefehler+Retry → `AppErrorState` |
 | `_MonthPicker`/`_MonthNavigation`/`_MonthHeader` (lohnlauf, mitarbeiterabschluss, stempel, stundenkonto, abwesenheitskalender, zeitwirtschaft_hub) | **neu `AppMonthPicker`** |
 | `_HeaderSection` (`statistics:198`) | `SectionHeader` |
 
-**Neu zu bauen (gerechtfertigte Lücken):** `AppMonthPicker` (Monats-/Jahres-Navigation, tabular), `AppAdaptiveTable`/`AppDataList` (kapselt 4.7), `AppShiftColorMapper` (pure, testbar, ersetzt kollidierenden `title.hashCode % 5`-Fallback in `_resolveShiftColor`). Migration ist reine Optik/IA/UX — kein Provider/Model/Serialisierungs-Eingriff; jeder Schritt hält `flutter analyze` + `flutter test` grün.
+**Echte Neubau-Lücken (nur diese zwei):** `AppMonthPicker` (Monats-/Jahres-Navigation, tabular) und `AppShiftColorMapper` (pure, testbar, ersetzt `title.hashCode % 5` in `planner_cells.dart:493`). **Kompositionen aus Bestand — kein Neubau:** `AppAdaptiveTable` = Breakpoint-Dispatcher (§4.7); `AppFilterBar` = Wrapper über `AppFilterChip`+`AppSegmented`+`AppSearchField`; `KioskStatusPanel` = `AppStatusBadge`+`AppHeroCard`+`AppMetricCard`. **`AppMetricValue` streichen** → `AppMetricCard` erweitern (§4.10 S2). Die Code-Verdrahtungs-Fixes (gelber CTA, `tertiary`→`success`/grün, `w800`, Spacing) stehen in **§4.11**. Migration ist reine Optik/IA/UX — kein Provider/Model/Serialisierungs-Eingriff; jeder Schritt hält `flutter analyze` + `flutter test` grün.
 
 ### 4.10 Design-Signatur — gegen Standard-UI
 
 > **Diagnose.** §4.1/4.3–4.9 machen den Umbau *korrekt und einheitlich* — Korrektheit allein ergäbe aber eine austauschbare Material-3-App. Die Unverwechselbarkeit kommt aus **zwei** Quellen: (a) der **Strichmännchen-Marken-Palette** (§4.2, warm-editorial: paper, navy, gold, gelber CTA — nicht kühles Teal-/Grau-M3) und (b) einer Handvoll **struktureller Signatur-Züge**, die palette-unabhängig gelten und schon halb im V2-Theme stecken. Referenzklasse: Linear / Things 3 / Stripe (ruhig, präzise, unverwechselbar — nie verspielt). Jeder Zug ist in Dark **und** Light definiert und hält das (nach Rebrand neu gefahrene) Kontrast-Gate.
 
-**S1 — Warm-editoriale Flächensprache (Marke + flach).** Fläche = paper/white, Trennung über **Hairline** (`StrichTokens.border` = ink@14 %) + 0,8-Divider, `surfaceTint: transparent`, `elevation 0` als Default; genau **ein** erlaubter weicher Schatten (`AppCard`). *Verbot:* `Colors.grey`, kühle M3-Neutralen, Tonal-Elevation, `overlay`-Schatten auf Flächen. *Überall.* *Abgrenzung:* Stock-M3 ist neutralgrau + tonal gestapelt; WorkTime ist warm + flach.
+**S1 — Warm-editoriale Flächensprache (Marke + flach).** Fläche = paper/white, Trennung über **Hairline** (`StrichTokens.border` = ink@14 %) + 0,8-Divider, `surfaceTint: transparent`, `elevation 0` als Default; genau **ein** erlaubter weicher Schatten (`AppCard`). *Verbot:* `Colors.grey`, kühle M3-Neutralen, Tonal-Elevation, `overlay`-Schatten auf Flächen, **Icon-Chip @0.12-Alpha in Kennzahlkarten** (Admin-Template-Look, §4.11 G4). *Erlaubte Ausnahme:* der eine farbige Schatten von `AppHeroCard` (S3) ist **kein** S1-Verstoß. *Überall.* *Abgrenzung:* Stock-M3 ist neutralgrau + tonal gestapelt; WorkTime ist warm + flach.
 
-**S2 — Zahlen sind der Held.** Neue Display-Zahl-Rolle: große tabulare Ziffer (`.tabular`, `w800`, negatives Tracking) in **ink** auf paper/white, Akzent **gold/navy**. **Neu** `AppMetricValue` (Vorschlag) / Ausbau `AppStatCard`. Einsatz: Stempel-Ticker, Wochen-/Monatssaldo, Kassendifferenz, Bestand EK/VK/Spanne, Kiosk-Countdown. *Abgrenzung:* Things/Stripe sind über Zahlen-Typografie wiedererkennbar; Default-M3 nicht.
+**S2 — Zahlen sind der Held.** Große tabulare Ziffer (`.tabular`, `w800`, negatives Tracking) in **ink** auf paper/white, Akzent **gold/navy**. Umsetzung: **`AppMetricCard` erweitern** (Display-Variante `displaySmall`/w800 + optional `valueColor` gold/navy, optional chromeless) — **kein** neues `AppMetricValue` (`AppMetricCard` leistet das bereits; Prinzip 4 „ein Muster je Konzept"). Einsatz: Stempel-Ticker, Wochen-/Monatssaldo, Kassendifferenz, Bestand EK/VK/Spanne, Kiosk-Countdown. *Abgrenzung:* Things/Stripe sind über Zahlen-Typografie wiedererkennbar; Default-M3 nicht.
 
 **S3 — Der Hero-Moment (einzige Sonderfläche).** `AppHeroCard` ist die einzige Stelle mit Verlauf + farbigem Schatten — **umgefärbt auf navy→gold** (paper→gold-Tint im Light, navy-Fläche im Dark), `xxl36`-Radius. Verbindliche Schale je Haupt-Tab für den wichtigsten Statusmoment (Employee Stempel-Hero, Teamlead Team-Status, Admin Betriebs-Hero). *Regel:* kein zweiter Verlauf sonst. *Abgrenzung:* verhindert „gewöhnliche Card mit Badge".
 
@@ -247,16 +252,32 @@ Kanonisch = `AppStatusBadge` (Label + `tone` + `icon?`) bzw. `AppStatusBanner`. 
 
 **S6 — Auswahl = gold-getönte Fläche.** „Ausgewählt" hat ein Signal: gefüllte Fläche (gold-/paperDeep-Tint) — Nav-Indicator, **TabBar-Indikator als Fläche statt M3-Unterstrich**, Chips, `IconButton`-selected. Neue `AppFilterBar`/`AppSegmented` erben es. *Abgrenzung:* kein M3-Unterstrich, kein Farbwechsel-only.
 
-**S7 — Motion-Signatur (Katalog, nicht pro Screen erfunden).** Fixe Zuordnung über die vorhandenen Kurven (`standard = easeInOutCubicEmphasized`, `spring = easeOutBack`), immer via `AppMotion.resolve`: (a) Erscheinen/Statuswechsel = `medium` emphasized; (b) **Erfolgs-/Quittierungsmoment** (Einstempeln, Kiosk-Bestätigung, „Nachgefüllt") = `spring` + dezentes Scale/Fade; (c) Zahlwechsel = kurzer Cross-Fade (tabular verhindert Springen). *Abgrenzung:* nicht die Default-Transition mit korrekter Dauer, sondern ein benanntes Muster.
+**S7 — Motion-Signatur (Katalog, nicht pro Screen erfunden).** Fixe Zuordnung über die vorhandenen Kurven (`standard = easeInOutCubicEmphasized`, `spring = easeOutBack`), immer via `AppMotion.resolve`. **Drei verbindliche Golden-Momente** (mit Ownership, sonst bleibt Motion eine To-do-Liste): (a) **Einstempel-Erfolg** im Status-Hero = `spring` + Scale 0,96→1,0 + success-Fade; (b) **Kiosk-Quittierung** = `spring`-Puls am `AppStatusBadge`; (c) **Zahl-Cross-Fade** im Stempel-Live-Ticker + Kassendifferenz (`medium`, tabular verhindert Springen). *Abgrenzung:* nicht die Default-Transition mit korrekter Dauer, sondern ein benanntes, wiederkehrendes Muster.
 
 **S8 — Kiosk als Anzeigetafel (Distanz-UI, eigene Skala).** Das 1–2-m-Tablet ist keine vergrößerte Handy-Card: großflächiger Status aus Fläche + Display-Zahl (S2) + Marken-Farbe (green „im Dienst" / rose „aus" / gelb „Achtung"), Countdown als Display-Zahl, Board mit klarer Zeilenrhythmik, eigene kompakt-präzise Dichte (Werkzeug-Charakter). **Neu** `KioskStatusPanel` (Vorschlag). *Abgrenzung:* der Kiosk wird **nicht** auf Settings-Karten normalisiert.
 
-**S9 — Warme Neutralen & Marken-Grün/Gold als Vokabular.** paper/white statt Grau; success = **green `#2D6D55`** (Text) / openGreen (Punkt); Akzent gold; „über Soll" gold statt Violett. *Regel:* keine neue Grau-/Fremd-Palette; Flächen und Akzente kommen aus `StrichTokens`.
+**S9 — Warme Neutralen & Marken-Grün/Gold als Vokabular.** paper/white statt Grau; success = **green `#2D6D55`** (Text) / openGreen (Punkt); Akzent gold; „über Soll" **grün** (`success`) statt Violett/Gold. *Regel:* keine neue Grau-/Fremd-Palette; Flächen und Akzente kommen aus `StrichTokens`.
 
 **Governance — Signatur-Gate (Definition of Done, nicht nur grep):**
 - Jeder neu gebaute/umgebaute Screen nutzt **mindestens zwei** Signatur-Züge — S1 (warm-flach) ist Pflicht, dazu mind. einer aus S2–S8 passend zum Screen.
 - **Keine Regression:** kein `w700` wo das Theme `w800` liefert, keine `md16`-Buttons statt gelber Pill, keine flache Card statt `AppHeroCard` am Hero-Moment, keine generischen Rows statt Ledger, **kein Teal-Rest, kein Grau**.
-- **Referenz-Screens** (so sieht WorkTime aus): `home_dashboards_v2` (Hero), `abwesenheit_screen`/MA-Detail (Ledger), `auth_screen_v2` (Pill/Form) — nach Rebrand als Erste umgestellt und als „Golden" fixiert. Neue Komponenten (`AppMetricValue`, `AppMonthPicker`, `AppAdaptiveTable`, `AppFilterBar`, `KioskStatusPanel`) werden **visuell** an diesen Referenzen spezifiziert, nicht nur funktional.
+- **Referenz-Screens** (so sieht WorkTime aus): `home_dashboards_v2` (Hero), `abwesenheit_screen`/MA-Detail (Ledger), `auth_screen_v2` (Pill/Form) — nach Rebrand als Erste umgestellt und als „Golden" fixiert (**erst nach §4.11**, sonst werden nicht-signaturkonforme Widgets zementiert). Neue Komponenten (`AppMonthPicker`, `AppShiftColorMapper`) werden **visuell** an diesen Referenzen spezifiziert, nicht nur funktional; `AppAdaptiveTable`/`AppFilterBar`/`KioskStatusPanel` sind **Kompositionen** aus Bestand (§4.7/§4.9), keine Monolithe.
+
+### 4.11 Code-Verdrahtungs-Lücken (Signatur ↔ Realität) — verifiziert 03.07.
+
+> §4.10 beschreibt die Signatur; eine Code-Prüfung zeigt, dass die **kanonischen `lib/ui`-Bausteine sie noch nicht durchgängig einlösen** — teils widersprechen sie ihr. Diese sieben Lücken sind der **erste** Arbeitsblock (Phase 0); sonst werden nicht-signaturkonforme Widgets als „Golden" fixiert. Alle Fundstellen am echten Code belegt.
+
+| # | Lücke | Ist (Datei:Zeile) | Soll | Prio |
+|---|---|---|---|---|
+| G1 | **Gelber CTA unverdrahtet** | `filledButtonTheme` → `colorScheme.primary` (`app_theme.dart:666`) = navy; `primaryAction`=yellow ist toter Token | Eigener `FilledButtonThemeData`-Zweig im Strich-Theme (`backgroundColor: StrichTokens.primaryAction/onPrimaryAction`) **oder** `AppPrimaryButton`-Wrapper. **Nicht** global `primary=yellow` (bricht Header/Links/AppBar). | ✅ **umgesetzt** (03.07., `_buildThemeV2`-Override + Test) |
+| G2 | **„Über Soll" = Warngelb** | `AppComparisonStatCard:166` las `colorScheme.tertiary`; `tertiary = StrichTokens.yellow` (`app_theme.dart:1047`) | **`isOver → appColors.success` (grün)**, `tertiary`-Bindung entfernt. Entscheidung 03.07.: grün (kontrast-sicher, „Ziel erreicht/übertroffen") statt Gold-Accent (gold ~1,9:1 als Text = Fail); **kein** neuer `accent`-Tone. | ✅ **umgesetzt** (03.07., getestet) |
+| G3 | **w800-Regression im Kanon** | `FontWeight.bold` (=w700) in `AppStatCard:113`, `AppComparisonStatCard:201` (Werte) + `:193`/`AppStatusBadge:106` (Titel/Label) | **Werte → `w800`** (S2); Titel/Label bleiben `w700` (= §4.3-Rolle). | ✅ **umgesetzt** (Werte 113/201) |
+| G4 | **Icon-Chip @0.12 = Admin-Template-Look** | `app_stat_cards.dart:93,183`, `app_status.dart:82`, Hero-Border `app_hero_card.dart:64` | **Chip entfernt** in `AppStatCard`/`AppComparisonStatCard` (nur farbiges Icon, `iconSizes.lg`). Soft-Badge behält Tint (ist ein Badge, kein Kennzahl-Chip); Hero-Border = S3-Ausnahme. | ✅ **umgesetzt** (04.07., getestet) |
+| G5 | **Soft-Badge × warning = WCAG-Fail** | `AppStatusBadge` soft: Text = `tones.color` auf @0.12 (`app_status.dart:82-83`); `warning`=yellow ~1,4:1 auf Weiß | **Soft-Text = `tones.onContainer`** (statt `tones.color`) — kontrast-sicher für alle Töne; DS2-Gate um Soft-Badge-Combo erweitert. | ✅ **umgesetzt** (getestet, alle 4 V2-Themes AA-large) |
+| G6 | **Signal-Gradient ungenutzt** | `signalGradient` nirgends; Soll/Ist-Balken = Default-`LinearProgressIndicator` (`app_stat_cards.dart:219`) | `signalGradient` (gelb→rose→blau) **nur** für den globalen indeterminate-Ladezustand (Splash/Skeleton-Header). | ⏸ **Leitlinie** (kein Ziel-Widget vorhanden — wird beim Bau eines globalen Skeleton-/Ladebalkens angewandt, kein Neubau nur dafür) |
+| G7 | **Arithmetisches Spacing im Kanon** | `AppCard:38` md+xs=20, `AppHeroCard:75` lg+xs=28, `AppMetricCard:49` md−xxs=14, Icon-Chip sm+xxs=10, Gaps sm+xs/md−xs=12 | AppCard-Pad→`md16`, Hero-Pad→`xl32`, Chip-/Gap→`s12`, 6er→`s6`. grep Token-Token-Arithmetik in `lib/ui` = **0** (nur legitime `lg + viewInsets` bleibt). | ✅ **umgesetzt** (7 Komponenten, 1472 Tests grün) |
+
+> **Umsetzungsstand (03./04.07.):** **G1–G5 + G7 ✅ + app-weiter Flip ✅** — gelber Pill-CTA, über Soll → grün, Werte `w800`, Icon-Chip entfernt (G4), Soft-Badge `onContainer` (G5, DS2-Gate erweitert), Spacing → Tokens (G7, grep=0), `resolveLight/Dark` → Strichmännchen. `flutter analyze` clean, **alle 1480 Tests grün**. Die App rendert die Marken-Palette. **G2b ✅** (AppComparisonStatCard: Icon+Diff-Text = `appColors.onSuccessContainer` text-sicher, Balken behält vollen `success`-Ton; DS2-Gate um `onSuccessContainer/surface` erweitert). **Einziger Rest: G6** = Leitlinie (kein Ziel-Widget — beim ersten globalen Skeleton-/Ladebalken anwenden). **Phase 0 damit vollständig.**
 
 ---
 
@@ -375,7 +396,7 @@ Handy (< 840): **Agenda** (chronologische Liste), nie zeit-proportionales Raster
 
 ### 6.7 Personalbereich
 
-Lohnabrechnung: „Letzte Abrechnung duplizieren" + Batch-Freigabe prominent (B23); Lohnarten-Katalog aus Payroll-Editor erreichbar. Error-SnackBars mit `tone: error` (B22). Urlaubskonto visuell (Resturlaub grün/rot, `AppStatCard` statt `row()`). `_ZeitkontoCard` `EdgeInsets.all(12)` → `context.spacing.md`.
+Lohnabrechnung: „Letzte Abrechnung duplizieren" + Batch-Freigabe prominent (B23); Lohnarten-Katalog aus Payroll-Editor erreichbar. Error-SnackBars mit `tone: error` (B22). Urlaubskonto als **`AppKontoTile`** (Ledger-Kanon S5: +/−/=-Aufstellung, Resturlaub als Kennzahl), nicht `AppStatCard`/`row()`; alle Soll/Ist → `AppComparisonStatCard`. `_ZeitkontoCard` `EdgeInsets.all(12)` → `context.spacing.s12`.
 
 ### 6.8 Kassenbereich
 
@@ -423,29 +444,34 @@ Primäraktionen ins untere Drittel (FAB/Bottom-Bar); Skeleton statt Spinner ab ~
 
 > **Status:** alle Maßnahmen **offen** (Stand 2026-07-03, reine Planung). Bei Umsetzung je Zeile fortschreiben (umgesetzt/offen/verworfen), analog zur Statustabelle des Vorgänger-Plans.
 
-### Phase 0 — Marken-Rebrand (Fundament, MUSS vor den Modul-Rollouts)
+### Phase 0 — Marken-Rebrand & Signatur-Verdrahtung (Fundament, MUSS vor den Modul-Rollouts)
+
+> **Faktenstand (03.07.):** Strich-Theme + `AppThemeColors.strichmaennchen*` + DS2-Kontrast-Gate sind **bereits gebaut** (opt-in via `StrichmaennchenTheme`, V2 byte-identisch, AA-grün). Es fehlt der **app-weite Flip** und die **Signatur-Verdrahtung** (§4.11) — nicht mehr das Bauen des Themes.
 
 | Maßnahme | Aufwand | Risiko | Abhängigkeit | Akzeptanz |
 |---|---|---|---|---|
-| `StrichTokens` in `_buildColorSchemeV2` + `AppThemeColors` verdrahten (Teal → navy/gold/paper) | M | mittel | `StrichTokens` (vorhanden) | App rendert Marken-Palette; 0 Teal-Reste (`0E7C7B`/`5FD4CE` grep = 0) |
-| Kontrast-Gate (DS2) mit neuer Palette neu fahren | S | **hoch** | Theme verdrahtet | WCAG-AA grün: gelber CTA nur ink-Text, green statt openGreen für Text, gold/rose geprüft |
-| `AppHeroCard`-Verlauf navy→gold; Pill-CTA = yellow+ink (§4.10 S3/S4) | S | niedrig | Theme | Hero + CTA in Markenfarbe; Dark (navy-Grund) geprüft |
-| Hardkodierte Farben (`Colors.*`/Hex) → Tokens, damit der Rebrand durchschlägt | M | mittel | — | grep-Anti-Pattern (4.1) = 0 in umgebauten Screens |
-| Öffentliche Seiten (`/wunsch`,`/feedback`) + Kiosk auf `StrichTokens` | S | niedrig | Theme | Markenkontakt außen = Ladenseite |
+| **App-weiter Flip:** `resolveLight`/`resolveDark` → `strichmaennchenLight`/`Dark` | **S** | niedrig | vorhanden | ✅ **umgesetzt** (03.07.) — App rendert Marken-Palette |
+| **Signatur-Verdrahtung §4.11:** G1 gelber CTA ✅, G2 über Soll→grün ✅, G3 Werte→`w800` ✅ (03.07., getestet); **offen:** G4/G5/G6/G7 | S | mittel | — | CTA gelb ✅, „über Soll" grün ✅, Kanon-Werte w800 ✅ |
+| **DS2-Gate erweitern:** Soft-Badge×warning (G5) + neue `accent`-Rolle | S | mittel | Verdrahtung | AA auch für soft-warning-Badge + accent |
+| Spacing-Bereinigung `lib/ui` (G7) ✅; Icon-Chip entfernt (G4) ✅; `AppHeroCard`-Verlauf navy→gold ✅ (erbt via Flip) | S | niedrig | — | grep Token-Token-Arithmetik `lib/ui` = 0 ✅ |
+| Hardkodierte Farben (`Colors.*`/Hex) → Tokens, damit der Rebrand durchschlägt | M | mittel | Flip | grep-Anti-Pattern (§4.1) = 0 in umgebauten Screens |
+| Öffentliche Seiten (`/wunsch`,`/feedback`) + Kiosk auf Strich-Theme | S | niedrig | Flip | Markenkontakt außen = Ladenseite |
 
-> **Warum vor allem anderen:** Der Rebrand ist eine **zentrale** Theme-Änderung — dank Token-Disziplin recolored er die ganze App auf einen Schlag; die eigentliche Arbeit steckt im Kontrast-Neu-Gate und im Aufräumen hartkodierter Farben (ohnehin Plan-Ziel). Die Modul-Rollouts (Phase 1–3) erben die Marke danach automatisch. Referenz-Screens (§4.10) zuerst umstellen und als „Golden" fixieren.
+> **Warum vor allem anderen:** Der Flip ist der größte Effekt-pro-Minute (2 Zeilen → ganze App rebrandet, dank Token-Disziplin). Aber ohne die Signatur-Verdrahtung (§4.11) bliebe der Primär-CTA navy und „über Soll" **warngelb** — die Handschrift fiele in sich zusammen. Referenz-Screens (§4.10) erst **nach** G1–G7 als „Golden" fixieren.
 
 ### Phase 1 — Quick Wins (Optik/Reihenfolge, risikoarm)
+
+> **Stand 04.07.:** Umlaut-Fix (B24) ✅. Die übrigen Zeilen restrukturieren Screens/Verhalten (Heute-Umsortierung, Reorder-Banner, `take(n)`, entry-form-Defaults) — God-Files, brauchen Charakterisierungs-Tests + Seheindruck.
 
 | Maßnahme | Aufwand | Risiko | Abhängigkeit | Akzeptanz |
 |---|---|---|---|---|
 | Heute: `DashboardActionItemsCard` hinter Stempeluhr, Einstempeln above fold | S | niedrig | — | Stempeln ohne Scroll auf 360 dp sichtbar |
-| `loeschen`→`löschen`, Umlaut-Fixes | S | niedrig | — | 0 Treffer `loeschen` in `lib/` |
+| `loeschen`→`löschen`, Umlaut-Fixes | S | niedrig | — | ✅ **umgesetzt** (04.07.): 0 `[Ll]oeschen`/`Moechtest` in `lib/`, 1486 Tests grün |
 | Reorder-Banner interaktiv (V1) | S | niedrig | — | Nachbestellen 7→2 Klicks |
 | `endDate = startDate`, Standort-Merken, Zeiteintrag aus Schicht | S | niedrig | — | Abwesenheit ≤ 3 Schritte |
 | `take(3/6/8)` → „+N weitere" (Heute/Inbox/Kiosk) | S | niedrig | — | keine stille Kürzung |
 | Error-SnackBars → `tone`/`_cleanErrorText` | S | niedrig | — | keine rohen Exception-Strings |
-| Team-Kalender-Breakpoint 700→840 (`expandedWindow`) | S | niedrig | — | kein Horizontal-Scroll auf iPad |
+| Team-Kalender-Breakpoint 700→840 (`expandedWindow`) | S | niedrig | — | ✅ **umgesetzt** (04.07., `home_screen_tabs.dart:1335`, 1488 grün) |
 
 ### Phase 2 — Mittelfristige UI-Verbesserungen (Komponenten)
 
@@ -467,6 +493,7 @@ Primäraktionen ins untere Drittel (FAB/Bottom-Bar); Skeleton statt Spinner ab ~
 | `shop`-Hub statt 5 Tabs, `profile`-Verwaltungs-Sektion | L | mittel | IA | Einstiege kuratiert, Employees ohne Admin-Menü |
 | Gott-Screen-Schnitt entlang Hubs (Planner→Personal→Team→Home) | XL | hoch | Characterization-Tests zuerst | Verhalten unverändert, Dateien < 1500 Z |
 | Kalender-Agenda-Muster (Planner/Zeit) | L | mittel | Komponenten | Agenda < 840, große Touch-Ziele |
+| **V1-Theme abbauen** (`light`/`dark` deprecaten + entfernen; `resolveLight/Dark` zeigt nur noch auf V2/Strich) | M | mittel | alle Rollouts | keine parallele abgeschwächte Typo (w700/w600) mehr ziehbar |
 
 ---
 
@@ -479,6 +506,7 @@ Primäraktionen ins untere Drittel (FAB/Bottom-Bar); Skeleton statt Spinner ab ~
 - [ ] Keine nackten dp/Hex/`Colors.*` — nur `context.spacing/radii/motion/iconSizes` + `appColors` (grep-Check bestanden).
 - [ ] **Marke:** Farben nur aus `StrichTokens`/`appColors`; 0 Teal-Reste (`0E7C7B`/`5FD4CE`); gelber CTA nur mit `ink`-Text; Kontrast-Gate (DS2) mit neuer Palette grün.
 - [ ] **Design-Signatur (§4.10):** ≥ 2 Signatur-Züge je Screen (S1 Pflicht); keine Regression hinter V2-Theme (w800, gelbe Pill-CTA, Hero-Verlauf, Ledger).
+- [x] **Signatur-Verdrahtung (§4.11):** gelber CTA ✅, „über Soll" = `success`/grün ✅, Kanon-Werte `w800` ✅, Soft-Badge-Kontrast ✅ (G5), kein arithmetisches Spacing in `lib/ui` ✅ (G7), Icon-Chip @0.12 entfernt ✅ (G4), text-sicherer Success-Ton ✅ (G2b). **Rest:** nur G6 (Leitlinie).
 - [ ] Alle Texte Deutsch, `DateFormat` mit explizitem `'de_DE'`.
 - [ ] Status = Farbe **+** Icon **+** Text (`AppStatusBadge`), nie Farbe allein.
 - [ ] Genau eine Primäraktion (`FilledButton`/FAB) je Screen/Sheet, in der Daumenzone.
@@ -515,6 +543,7 @@ Primäraktionen ins untere Drittel (FAB/Bottom-Bar); Skeleton statt Spinner ab ~
 | Teal-Reste nach Rebrand | Teal live (`0E7C7B`/`5FD4CE`) | 0 | grep-Check |
 | Kontrast-Gate neue Palette | — | WCAG-AA grün (gelb+ink, green-Text, gold/rose) | DS2 automatisiert |
 | Design-Signatur je Screen | — | ≥ 2 Züge (§4.10), 0 Regressionen | Signatur-Review-Gate (nicht nur grep) |
+| §4.11-Verdrahtung (G1–G7) | CTA navy, „über Soll" gelb, w700, Spacing-Summen | CTA gelb, accent gold, w800, 0 Summen in lib/ui | grep + Widget-Test + DS2-Gate |
 
 ---
 

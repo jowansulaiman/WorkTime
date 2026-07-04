@@ -46,7 +46,7 @@ class AppMetricCard extends StatelessWidget {
                 Icon(icon, color: colorScheme.primary, size: context.iconSizes.sm),
             ],
           ),
-          SizedBox(height: context.spacing.md - context.spacing.xxs),
+          SizedBox(height: context.spacing.s12),
           Text(
             value,
             style: theme.textTheme.headlineSmall?.copyWith(
@@ -87,15 +87,10 @@ class AppStatCard extends StatelessWidget {
     return AppCard(
       child: Row(
         children: [
-          Container(
-            padding: EdgeInsets.all(spacing.sm + spacing.xxs),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(context.radii.md),
-            ),
-            child: Icon(icon, color: color),
-          ),
-          SizedBox(width: spacing.sm + spacing.xs),
+          // §4.11 G4: kein Akzent-@0.12-Chip (Admin-Template-Look) — nur das
+          // farbige Icon (flach, warm-editorial); der Wert trägt die Aussage.
+          Icon(icon, color: color, size: context.iconSizes.lg),
+          SizedBox(width: spacing.s12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -110,7 +105,7 @@ class AppStatCard extends StatelessWidget {
                 Text(
                   value,
                   style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
+                    fontWeight: FontWeight.w800,
                     fontFeatures: _tabularFigures,
                   ),
                 ),
@@ -133,10 +128,10 @@ class AppStatCard extends StatelessWidget {
 /// Soll/Ist-Vergleichskarte mit Fortschrittsbalken. Restyle von
 /// `_PlannedActualStatCard{plannedHours, actualHours, loading}`.
 ///
-/// **Die Mathematik ist 1:1 erhalten** (Schwellen, Akzentfarb-Logik,
-/// Fortschritts-Clamp, Signed-Hours-Format, exakte deutsche Texte), damit der
-/// spaetere Screen-Swap verhaltensidentisch ist. Akzent: laedt → primary,
-/// ueber Soll → tertiary, unter Soll → error, sonst → `appColors.success`.
+/// **Schwellen, Clamp & Format bleiben 1:1** (Signed-Hours, Fortschritts-Clamp,
+/// exakte deutsche Texte). Akzent (§4.11 G2): laedt → primary, unter Soll →
+/// error, auf/über Soll → `appColors.success` (grün; früher „über Soll" =
+/// tertiary = im Strichmännchen-Theme Warngelb).
 class AppComparisonStatCard extends StatelessWidget {
   const AppComparisonStatCard({
     super.key,
@@ -158,15 +153,23 @@ class AppComparisonStatCard extends StatelessWidget {
 
     final safePlannedHours = plannedHours ?? 0;
     final diff = actualHours - safePlannedHours;
-    final isOver = diff > 0.1;
     final isUnder = diff < -0.1;
+    // §4.11 G2: „über Soll" bezog die Farbe aus colorScheme.tertiary — im
+    // Strichmännchen-Theme = Warngelb (semantische Kollision). Ziel erreicht
+    // ODER übertroffen = grün (appColors.success); nur „unter Soll" bleibt rot.
     final accentColor = loading
         ? colorScheme.primary
-        : isOver
-            ? colorScheme.tertiary
-            : isUnder
-                ? colorScheme.error
-                : appColors.success;
+        : isUnder
+            ? colorScheme.error
+            : appColors.success;
+    // §4.11 G2b: Der Balken trägt den vollen (hellen) success-Ton; als Text/Icon
+    // ist openGreen (~2,84:1) im Strich-Theme zu hell → `onSuccessContainer`
+    // (text-sicher in hell UND dunkel). under/loading sind bereits text-sicher.
+    final accentInk = loading
+        ? colorScheme.primary
+        : isUnder
+            ? colorScheme.error
+            : appColors.onSuccessContainer;
     final progress = safePlannedHours > 0
         ? (actualHours / safePlannedHours).clamp(0.0, 1.0)
         : 0.0;
@@ -177,15 +180,10 @@ class AppComparisonStatCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Container(
-                padding: EdgeInsets.all(spacing.sm + spacing.xxs),
-                decoration: BoxDecoration(
-                  color: accentColor.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(context.radii.md),
-                ),
-                child: Icon(Icons.compare_arrows, color: accentColor),
-              ),
-              SizedBox(width: spacing.sm + spacing.xs),
+              // §4.11 G4: Icon ohne Chip (flach, warm-editorial).
+              Icon(Icons.compare_arrows,
+                  color: accentInk, size: context.iconSizes.lg),
+              SizedBox(width: spacing.s12),
               Expanded(
                 child: Text(
                   'Soll / Ist',
@@ -197,14 +195,14 @@ class AppComparisonStatCard extends StatelessWidget {
               Text(
                 loading ? 'Laedt...' : _formatSignedHours(diff),
                 style: theme.textTheme.labelLarge?.copyWith(
-                  color: accentColor,
-                  fontWeight: FontWeight.bold,
+                  color: accentInk,
+                  fontWeight: FontWeight.w800,
                   fontFeatures: _tabularFigures,
                 ),
               ),
             ],
           ),
-          SizedBox(height: spacing.md - spacing.xs),
+          SizedBox(height: spacing.s12),
           Text(
             loading
                 ? 'Geplante Schichten werden geladen'
@@ -213,7 +211,7 @@ class AppComparisonStatCard extends StatelessWidget {
               color: colorScheme.onSurfaceVariant,
             ),
           ),
-          SizedBox(height: spacing.sm + spacing.xxs),
+          SizedBox(height: spacing.s12),
           ClipRRect(
             borderRadius: BorderRadius.circular(context.radii.pill),
             child: LinearProgressIndicator(

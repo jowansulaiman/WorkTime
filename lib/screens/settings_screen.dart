@@ -540,7 +540,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Vorlage loeschen?'),
+        title: const Text('Vorlage löschen?'),
         content: Text(
           'Die Vorlage "${template.name}" wird unwiderruflich geloescht.',
         ),
@@ -551,7 +551,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Loeschen'),
+            child: const Text('Löschen'),
           ),
         ],
       ),
@@ -999,7 +999,7 @@ class _TemplateListCard extends StatelessWidget {
                     icon: const Icon(Icons.edit_outlined),
                   ),
                   IconButton(
-                    tooltip: 'Loeschen',
+                    tooltip: 'Löschen',
                     onPressed: () => onDelete(templates[i]),
                     icon: const Icon(Icons.delete_outline),
                   ),

@@ -24,6 +24,7 @@ import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
 import '../screens/kassenbericht_screen.dart';
+import '../screens/passwords_screen.dart';
 import '../screens/kiosk/kiosk_screen.dart';
 import '../screens/meine_akte_screen.dart';
 import '../screens/month_report_screen.dart';
@@ -198,6 +199,8 @@ GoRouter buildAppRouter({
           (c, s) => const DailyClosingScreen(parentLabel: 'Kasse')),
       _sectionRoute(AppRoutes.kassenbericht,
           (c, s) => const KassenberichtScreen(parentLabel: 'Warenwirtschaft')),
+      _sectionRoute(AppRoutes.passwords,
+          (c, s) => const PasswordsScreen(parentLabel: 'Profil')),
       _sectionRoute(AppRoutes.storeHealth,
           (c, s) => const StoreHealthScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.cashierAnomaly,

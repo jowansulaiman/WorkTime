@@ -21,10 +21,17 @@ abstract final class AppTheme {
   /// Flag-gegateter Selektor fuer die Theme-Wahl in `main.dart`
   /// (Consumer2<ThemeProvider, FeatureFlagProvider>). [useV2] kommt aus dem
   /// `redesign_v2`-Flag (RedesignFlags); false -> unveraenderte V1-Optik.
+  ///
+  /// **Marken-Flip (03.07.):** `useV2 == true` liefert das **Strichmännchen**-
+  /// Theme (Marken-Palette navy/gold/paper/gelber CTA) statt des früheren
+  /// Signal-Teal-`lightV2`/`darkV2`. Teal bleibt als Getter erhalten (Tests),
+  /// ist aber nicht mehr der App-Default. Zurückdrehen = hier auf `lightV2`/
+  /// `darkV2` zeigen.
   static ThemeData resolveLight({required bool useV2}) =>
-      useV2 ? lightV2 : light;
+      useV2 ? strichmaennchenLight : light;
 
-  static ThemeData resolveDark({required bool useV2}) => useV2 ? darkV2 : dark;
+  static ThemeData resolveDark({required bool useV2}) =>
+      useV2 ? strichmaennchenDark : dark;
 
   /// **Strichmännchen-Theme** (Marken-Rebrand, Memory `strichmaennchen-farbpalette`):
   /// nutzt die M3-Expressive-Maschinerie von V2 (Radien/Typografie/Komponenten),
@@ -37,12 +44,16 @@ abstract final class AppTheme {
         Brightness.light,
         colorSchemeOverride: _buildStrichColorScheme(Brightness.light),
         appColorsOverride: AppThemeColors.strichmaennchenLight,
+        primaryButtonBackground: StrichTokens.primaryAction,
+        primaryButtonForeground: StrichTokens.onPrimaryAction,
       );
 
   static ThemeData get strichmaennchenDark => _buildThemeV2(
         Brightness.dark,
         colorSchemeOverride: _buildStrichColorScheme(Brightness.dark),
         appColorsOverride: AppThemeColors.strichmaennchenDark,
+        primaryButtonBackground: StrichTokens.primaryAction,
+        primaryButtonForeground: StrichTokens.onPrimaryAction,
       );
 
   /// Strichmännchen-Theme für die gegebene [brightness].
@@ -504,6 +515,11 @@ abstract final class AppTheme {
     Brightness brightness, {
     ColorScheme? colorSchemeOverride,
     AppThemeColors? appColorsOverride,
+    // Signatur-Verdrahtung §4.11 G1: eigene Primär-CTA-Füllung (Strichmännchen:
+    // gelber Pill mit ink-Text). Default (null) = `colorScheme.primary` — das
+    // V2-/Teal-Theme bleibt dadurch byte-identisch.
+    Color? primaryButtonBackground,
+    Color? primaryButtonForeground,
   }) {
     final isDark = brightness == Brightness.dark;
     final colorScheme = colorSchemeOverride ?? _buildColorSchemeV2(brightness);
@@ -663,8 +679,8 @@ abstract final class AppTheme {
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           elevation: 0,
-          backgroundColor: colorScheme.primary,
-          foregroundColor: colorScheme.onPrimary,
+          backgroundColor: primaryButtonBackground ?? colorScheme.primary,
+          foregroundColor: primaryButtonForeground ?? colorScheme.onPrimary,
           disabledBackgroundColor: colorScheme.surfaceContainerHighest,
           disabledForegroundColor: colorScheme.onSurfaceVariant,
           minimumSize: const Size(64, 56),

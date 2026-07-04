@@ -10,6 +10,9 @@ const {defineSecret} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const push = require("./push_notifications");
 const oktoposStats = require("./oktopos_stats");
+const {parseThirdPartyAmounts} = require("./third_party_cash");
+const passwordCrypto = require("./password_crypto");
+const passwordAccess = require("./password_access");
 
 admin.initializeApp();
 
@@ -890,6 +893,40 @@ exports.autoKlaerungNightly = onSchedule(
   },
 );
 
+// Klärung gelöst -> Mitarbeiter benachrichtigen (ZV-7). Nur der Übergang
+// klaerung -> completed (Manager-Korrektur) löst einen Push aus; alle anderen
+// clockEntries-Writes (Ein-/Ausstempeln, deaktiviert) werden früh verworfen —
+// KEIN Push pro normalem Stempel (die Live-Sicht deckt das ab).
+exports.onClockEntryWritten = documentWrittenTrigger(
+  "onClockEntryWritten",
+  {region: REGION, document: "organizations/{orgId}/clockEntries/{clockEntryId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const clockEntryId = event.params.clockEntryId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!before || !after) return; // create/delete → kein Klärungs-Übergang
+
+    const beforeStatus = stringOrEmpty(before.status);
+    const afterStatus = stringOrEmpty(after.status);
+    if (beforeStatus !== "klaerung" || afterStatus !== "completed") return;
+
+    const userId = stringFromEither(after, "userId", "user_id");
+    if (!userId) return;
+
+    const kommenDate = readTriggerDate(after, "kommen", "kommen");
+    const nettoMin = Number(after.nettoMinutes ?? after.netto_minutes) || 0;
+    const notif = push.buildKlaerungResolvedNotification({
+      clockEntryId,
+      dayLabel: kommenDate ? push.formatDe(kommenDate) : "",
+      hours: nettoMin > 0 ? nettoMin / 60 : undefined,
+    });
+    await fanOutPush({
+      orgId, recipientUids: [userId], notif, requestId: ctx.requestId,
+    });
+  },
+);
+
 exports.upsertShiftBatch = callable("upsertShiftBatch", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
@@ -1472,6 +1509,20 @@ exports.kioskSaveCashCount = callable(
     const siteId = stringOrNull(request.data?.siteId) ||
       stringOrNull(session.siteId);
 
+    // Dritte-Hand-/Fremdgeld-Beträge (§8.7): streng OPTIONAL (alte Clients
+    // senden den Key nicht), server-validiert, am Kiosk BLIND (expectedCents
+    // hart null). Getrennt von der eigenen Kasse gespeichert.
+    let thirdParty;
+    try {
+      thirdParty = parseThirdPartyAmounts(request.data?.thirdParty,
+        {blind: true});
+    } catch (error) {
+      if (error && error.invalidArgument) {
+        throw new HttpsError("invalid-argument", error.message);
+      }
+      throw error;
+    }
+
     // Anzeigename der Person AUTHORITATIV aus dem Server-Profil (nicht Client).
     // Fallback wie AppUserProfile.displayName: E-Mail-Präfix, wenn kein Name.
     let countedByLabel = null;
@@ -1505,10 +1556,503 @@ exports.kioskSaveCashCount = callable(
       // nicht vom Client setzbar.
       countedByUserId: employeeId,
       kioskSessionId: sid,
+      thirdParty,
       createdByUid: caller.uid,
       createdAt: FieldValue.serverTimestamp(),
     });
     return {cashCountId: ref.id};
+  },
+);
+
+// === Passwortmanager (§9) ===================================================
+// Serverseitige Envelope-Verschlüsselung (Cloud KMS wrappt den pro-Eintrag-DEK).
+// Der Klartext verlässt den Prozess NUR über den autorisierten + auditierten
+// revealPasswordSecret-Callable. Alle Callables setzen enforceAppCheck EXPLIZIT
+// (App Check ≠ Autorisierung). Config über Env: PASSWORD_KMS_KEY (KMS-Key-
+// Ressourcenname), PASSWORD_MANAGER_TEAMLEAD ('true' schaltet Filialleiter frei).
+const PASSWORD_REVEAL_MAX = 5; // pro Minuten-Fenster je Nutzer
+const PASSWORD_REVEAL_WINDOW_MS = 60 * 1000;
+const PASSWORD_REAUTH_TTL_MS = 60 * 1000;
+
+function passwordTeamleadEnabled() {
+  return process.env.PASSWORD_MANAGER_TEAMLEAD === "true";
+}
+
+function passwordKeyWrapper() {
+  const keyName = process.env.PASSWORD_KMS_KEY;
+  if (!keyName) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Passwortmanager ist nicht konfiguriert (PASSWORD_KMS_KEY fehlt).",
+    );
+  }
+  return new passwordCrypto.KmsKeyWrapper(keyName);
+}
+
+function tsToIso(value) {
+  if (value && typeof value.toDate === "function") {
+    return value.toDate().toISOString();
+  }
+  return null;
+}
+
+async function loadCallerSiteIds(orgId, uid) {
+  try {
+    const snap = await organizationCollection(orgId, "employeeSiteAssignments")
+      .where("userId", "==", uid).get();
+    const ids = [];
+    snap.forEach((doc) => {
+      const s = doc.data()?.siteId;
+      if (s) ids.push(String(s));
+    });
+    return ids;
+  } catch (error) {
+    return [];
+  }
+}
+
+async function loadUserLabel(uid) {
+  try {
+    const snap = await db.collection("users").doc(uid).get();
+    const data = snap.exists ? (snap.data() || {}) : {};
+    const name = stringOrNull(data.settings?.name ?? data.name);
+    const email = stringOrNull(data.email);
+    return name || (email ? email.split("@")[0] : "");
+  } catch (error) {
+    return "";
+  }
+}
+
+// Materialisiert audienceSiteIds -> uids (Query-Optimierung für die Liste; die
+// Reveal-Autorität rechnet dennoch LIVE, §11). Firestore 'in' <= 10 Werte.
+async function materializeAudienceUids(orgId, siteIds) {
+  const uids = new Set();
+  const chunks = [];
+  for (let i = 0; i < siteIds.length; i += 10) {
+    chunks.push(siteIds.slice(i, i + 10));
+  }
+  for (const chunk of chunks) {
+    if (chunk.length === 0) continue;
+    const snap = await organizationCollection(orgId, "employeeSiteAssignments")
+      .where("siteId", "in", chunk).get();
+    snap.forEach((doc) => {
+      const u = doc.data()?.userId;
+      if (u) uids.add(String(u));
+    });
+  }
+  return [...uids];
+}
+
+// Metadaten-Projektion für den Client (NIE Secret/keyVersion/strengthMeta).
+function projectEntry(id, d) {
+  return {
+    id,
+    orgId: d.orgId ?? null,
+    title: d.title ?? "",
+    category: d.category ?? "other",
+    siteId: d.siteId ?? null,
+    siteName: d.siteName ?? null,
+    ownerUid: d.ownerUid ?? "",
+    ownerLabel: d.ownerLabel ?? "",
+    scope: d.scope ?? "personal",
+    audienceUids: d.audienceUids ?? [],
+    audienceRoles: d.audienceRoles ?? [],
+    audienceSiteIds: d.audienceSiteIds ?? [],
+    url: d.url ?? null,
+    hasSecret: d.hasSecret === true,
+    createdByUid: d.createdByUid ?? "",
+    updatedByUid: d.updatedByUid ?? "",
+    createdAt: tsToIso(d.createdAt),
+    updatedAt: tsToIso(d.updatedAt),
+    lastRotatedAt: tsToIso(d.lastRotatedAt),
+  };
+}
+
+// Fail-closed Audit-Anker für Reveal/Copy (KEIN best-effort Sink) — wirft, wenn
+// der Schreibvorgang scheitert ("no reveal without record").
+async function writePasswordAccessLog(orgId, data) {
+  await organizationCollection(orgId, "passwordAccessLog").add({
+    orgId,
+    ...data,
+    at: FieldValue.serverTimestamp(),
+  });
+}
+
+// listPasswordEntries: server-gefilterte Metadaten-Liste (Ersatz für einen
+// Client-Stream, B1). Liefert nur sichtbare Einträge, nie Sensitiva.
+exports.listPasswordEntries = callable(
+  "listPasswordEntries",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    const orgId = stringOrNull(request.data?.orgId) || caller.orgId;
+    assertSameOrg(caller, orgId);
+    const callerSiteIds = caller.isAdmin
+      ? [] : await loadCallerSiteIds(orgId, caller.uid);
+    const snap = await organizationCollection(orgId, "passwordEntries").get();
+    const entries = [];
+    snap.forEach((doc) => {
+      const d = doc.data() || {};
+      if (passwordAccess.canViewEntry(d, caller, callerSiteIds)) {
+        entries.push(projectEntry(doc.id, d));
+      }
+    });
+    return {entries};
+  },
+);
+
+// upsertPasswordEntry: Metadaten + optional Klartext-Secret. Kein Direkt-Write
+// (Rules verbieten ihn) — dies ist der einzige Schreibpfad.
+exports.upsertPasswordEntry = callable(
+  "upsertPasswordEntry",
+  {region: REGION, enforceAppCheck: true},
+  async (request, {requestId}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    let entry;
+    try {
+      entry = passwordAccess.parseEntryPayload(request.data?.entry);
+    } catch (error) {
+      if (error && error.invalidArgument) {
+        throw new HttpsError("invalid-argument", error.message);
+      }
+      throw error;
+    }
+    const orgId = entry.orgId || caller.orgId;
+    assertSameOrg(caller, orgId);
+
+    const entryId = stringOrNull(request.data?.entry_id);
+    const col = organizationCollection(orgId, "passwordEntries");
+    const callerSiteIds = caller.isAdmin
+      ? [] : await loadCallerSiteIds(orgId, caller.uid);
+    const opts = {teamleadEnabled: passwordTeamleadEnabled()};
+
+    let existing = null;
+    let ownerUid = caller.uid;
+    let isNew = true;
+    if (entryId) {
+      const snap = await col.doc(entryId).get();
+      if (!snap.exists) {
+        throw new HttpsError("not-found", "Eintrag nicht gefunden.");
+      }
+      existing = snap.data() || {};
+      if (existing.orgId && existing.orgId !== orgId) {
+        throw new HttpsError("permission-denied", "Falsche Organisation.");
+      }
+      ownerUid = existing.ownerUid || caller.uid;
+      isNew = false;
+      // Autorisierung gegen den BESTEHENDEN Zustand.
+      if (!passwordAccess.canManageEntry(existing, caller, callerSiteIds, opts)) {
+        throw new HttpsError(
+          "permission-denied", "Keine Berechtigung für diesen Eintrag.");
+      }
+    }
+    // Autorisierung gegen den NEUEN Zustand (Owner fixiert auf sich/Bestand).
+    if (!passwordAccess.canManageEntry(
+      {...entry, ownerUid}, caller, callerSiteIds, opts)) {
+      throw new HttpsError(
+        "permission-denied", "Keine Berechtigung für diesen Eintrag.");
+    }
+
+    const docRef = entryId ? col.doc(entryId) : col.doc();
+    const finalId = docRef.id;
+
+    // audienceSiteIds -> audienceUids materialisieren (nur Query-Optimierung).
+    let audienceUids = entry.audienceUids;
+    if (entry.scope === "shared" && entry.audienceSiteIds.length > 0) {
+      const materialized =
+        await materializeAudienceUids(orgId, entry.audienceSiteIds);
+      audienceUids = [...new Set([...audienceUids, ...materialized])];
+    }
+
+    // Secret verschlüsseln (nur wenn Klartext geliefert wurde).
+    const secret = passwordAccess.parseSecretPayload(request.data || {});
+    const hasNewSecret = secret.p.length > 0;
+    let hasSecret = existing?.hasSecret === true;
+    if (hasNewSecret) {
+      const record = await passwordCrypto.encryptSecret(secret, {
+        orgId, entryId: finalId, keyWrapper: passwordKeyWrapper(),
+      });
+      await organizationCollection(orgId, "passwordSecrets").doc(finalId).set({
+        orgId,
+        entryId: finalId,
+        ...record,
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedByUid: caller.uid,
+      });
+      hasSecret = true;
+    }
+
+    const ownerLabel = isNew
+      ? await loadUserLabel(ownerUid)
+      : (existing.ownerLabel || await loadUserLabel(ownerUid));
+
+    const data = {
+      orgId,
+      title: entry.title,
+      category: entry.category,
+      siteId: entry.siteId,
+      siteName: entry.siteName,
+      ownerUid,
+      ownerLabel,
+      scope: entry.scope,
+      audienceUids,
+      audienceRoles: entry.audienceRoles,
+      audienceSiteIds: entry.audienceSiteIds,
+      url: entry.url,
+      hasSecret,
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedByUid: caller.uid,
+    };
+    if (isNew) {
+      data.createdAt = FieldValue.serverTimestamp();
+      data.createdByUid = caller.uid;
+    } else {
+      data.createdAt = existing.createdAt || FieldValue.serverTimestamp();
+      data.createdByUid = existing.createdByUid || caller.uid;
+    }
+    if (hasNewSecret) {
+      data.lastRotatedAt = FieldValue.serverTimestamp();
+    } else if (existing?.lastRotatedAt) {
+      data.lastRotatedAt = existing.lastRotatedAt;
+    }
+
+    await docRef.set(data, {merge: false});
+
+    await writeAudit({
+      orgId,
+      action: isNew ? "created" : "updated",
+      entityType: "password",
+      entityId: finalId,
+      summary: `Passwort „${entry.title}" ${isNew ? "angelegt" : "geändert"}`,
+      actorUid: caller.uid,
+      requestId,
+    });
+    return {entry_id: finalId};
+  },
+);
+
+// deletePasswordEntry: löscht Metadaten + Secret atomar.
+exports.deletePasswordEntry = callable(
+  "deletePasswordEntry",
+  {region: REGION, enforceAppCheck: true},
+  async (request, {requestId}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    const orgId = stringOrNull(request.data?.org_id) || caller.orgId;
+    assertSameOrg(caller, orgId);
+    const entryId = stringOrNull(request.data?.entry_id);
+    if (!entryId) {
+      throw new HttpsError("invalid-argument", "entry_id fehlt.");
+    }
+    const col = organizationCollection(orgId, "passwordEntries");
+    const snap = await col.doc(entryId).get();
+    if (!snap.exists) return {ok: true};
+    const existing = snap.data() || {};
+    const callerSiteIds = caller.isAdmin
+      ? [] : await loadCallerSiteIds(orgId, caller.uid);
+    if (!passwordAccess.canManageEntry(existing, caller, callerSiteIds,
+      {teamleadEnabled: passwordTeamleadEnabled()})) {
+      throw new HttpsError(
+        "permission-denied", "Keine Berechtigung für diesen Eintrag.");
+    }
+    const batch = db.batch();
+    batch.delete(col.doc(entryId));
+    batch.delete(organizationCollection(orgId, "passwordSecrets").doc(entryId));
+    await batch.commit();
+    await writeAudit({
+      orgId,
+      action: "deleted",
+      entityType: "password",
+      entityId: entryId,
+      summary: `Passwort „${existing.title || entryId}" gelöscht`,
+      actorUid: caller.uid,
+      requestId,
+    });
+    return {ok: true};
+  },
+);
+
+// beginPasswordReauth: server-signierten Einmal-Nonce ausstellen (TTL 60s),
+// Pflicht-Vorstufe für revealPasswordSecret (harte Reauth, Default).
+exports.beginPasswordReauth = callable(
+  "beginPasswordReauth",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    const orgId = stringOrNull(request.data?.org_id) || caller.orgId;
+    assertSameOrg(caller, orgId);
+    const token = crypto.randomBytes(24).toString("base64url");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    await organizationCollection(orgId, "passwordReauth").doc(caller.uid).set({
+      tokenHash,
+      createdAt: FieldValue.serverTimestamp(),
+      expiresAtMs: Date.now() + PASSWORD_REAUTH_TTL_MS,
+    });
+    return {reauth_token: token};
+  },
+);
+
+async function verifyReauth(orgId, uid, token) {
+  if (!token) return false;
+  const ref = organizationCollection(orgId, "passwordReauth").doc(uid);
+  const snap = await ref.get();
+  if (!snap.exists) return false;
+  const d = snap.data() || {};
+  const expected = String(d.tokenHash || "");
+  const given = crypto.createHash("sha256").update(token).digest("hex");
+  const ok = expected.length === given.length &&
+    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given)) &&
+    Number(d.expiresAtMs || 0) > Date.now();
+  // Einmal-Verwendung: Nonce immer verbrauchen.
+  await ref.delete().catch(() => {});
+  return ok;
+}
+
+async function enforceRevealRateLimit(orgId, uid) {
+  const ref = organizationCollection(orgId, "passwordRevealLimits").doc(uid);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const now = Date.now();
+    const d = snap.exists ? (snap.data() || {}) : {};
+    let count = Number(d.count || 0);
+    let windowStart = Number(d.windowStartMs || 0);
+    if (now - windowStart > PASSWORD_REVEAL_WINDOW_MS) {
+      windowStart = now;
+      count = 0;
+    }
+    if (count >= PASSWORD_REVEAL_MAX) {
+      throw new HttpsError(
+        "resource-exhausted", "Zu viele Zugriffe – bitte kurz warten.");
+    }
+    tx.set(ref, {count: count + 1, windowStartMs: windowStart});
+  });
+}
+
+// revealPasswordSecret: EINZIGER Klartext-Ausgabepfad. Harte Reauth + Live-
+// Sichtbarkeit + Rate-Limit + fail-closed Audit VOR der Entschlüsselung (B4).
+exports.revealPasswordSecret = callable(
+  "revealPasswordSecret",
+  {region: REGION, enforceAppCheck: true},
+  async (request, {requestId}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    const orgId = stringOrNull(request.data?.org_id) || caller.orgId;
+    assertSameOrg(caller, orgId);
+    const entryId = stringOrNull(request.data?.entry_id);
+    if (!entryId) {
+      throw new HttpsError("invalid-argument", "entry_id fehlt.");
+    }
+    // Harte Reauth (server-verifizierter Einmal-Nonce).
+    const reauthOk = await verifyReauth(
+      orgId, caller.uid, stringOrNull(request.data?.reauth_token));
+    if (!reauthOk) {
+      throw new HttpsError(
+        "unauthenticated", "Sicherheitsbestätigung erforderlich.");
+    }
+    const snap =
+      await organizationCollection(orgId, "passwordEntries").doc(entryId).get();
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "Eintrag nicht gefunden.");
+    }
+    const d = snap.data() || {};
+    const callerSiteIds = caller.isAdmin
+      ? [] : await loadCallerSiteIds(orgId, caller.uid);
+    if (!passwordAccess.canViewEntry(d, caller, callerSiteIds)) {
+      throw new HttpsError(
+        "permission-denied", "Keine Berechtigung für dieses Passwort.");
+    }
+    await enforceRevealRateLimit(orgId, caller.uid);
+
+    // Fail-closed: Audit VOR der Entschlüsselung (propagiert bei Fehler).
+    const reason = stringOrNull(request.data?.reason);
+    const actorLabel = await loadUserLabel(caller.uid);
+    await writePasswordAccessLog(orgId, {
+      action: "reveal_requested",
+      entryId,
+      entryTitle: d.title || "",
+      category: d.category || null,
+      siteId: d.siteId || null,
+      siteName: d.siteName || null,
+      actorUid: caller.uid,
+      actorLabel,
+      reason,
+      requestId,
+    });
+
+    const secretSnap =
+      await organizationCollection(orgId, "passwordSecrets").doc(entryId).get();
+    if (!secretSnap.exists) {
+      throw new HttpsError("not-found", "Kein Passwort hinterlegt.");
+    }
+    let plain;
+    try {
+      plain = await passwordCrypto.decryptSecret(secretSnap.data() || {}, {
+        orgId, entryId, keyWrapper: passwordKeyWrapper(),
+      });
+    } catch (error) {
+      logger.error("password_decrypt_failed", {requestId, entryId});
+      throw new HttpsError(
+        "internal", "Passwort konnte nicht entschlüsselt werden.");
+    }
+    await writePasswordAccessLog(orgId, {
+      action: "revealed",
+      entryId,
+      entryTitle: d.title || "",
+      category: d.category || null,
+      siteId: d.siteId || null,
+      siteName: d.siteName || null,
+      actorUid: caller.uid,
+      actorLabel,
+      reason,
+      requestId,
+    });
+    return {
+      username: plain.u || "",
+      password: plain.p || "",
+      notes: plain.n || "",
+    };
+  },
+);
+
+// logPasswordCopy: Kopieren protokollieren (best-effort clientseitig, Server-
+// Log fälschungssicher). Ehrliche Grenze: Reveal ist der Audit-Anker.
+exports.logPasswordCopy = callable(
+  "logPasswordCopy",
+  {region: REGION, enforceAppCheck: true},
+  async (request, {requestId}) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    const orgId = stringOrNull(request.data?.org_id) || caller.orgId;
+    assertSameOrg(caller, orgId);
+    const entryId = stringOrNull(request.data?.entry_id);
+    if (!entryId) {
+      throw new HttpsError("invalid-argument", "entry_id fehlt.");
+    }
+    const snap =
+      await organizationCollection(orgId, "passwordEntries").doc(entryId).get();
+    if (!snap.exists) return {ok: true};
+    const d = snap.data() || {};
+    const callerSiteIds = caller.isAdmin
+      ? [] : await loadCallerSiteIds(orgId, caller.uid);
+    if (!passwordAccess.canViewEntry(d, caller, callerSiteIds)) {
+      throw new HttpsError("permission-denied", "Keine Berechtigung.");
+    }
+    const field = stringOrNull(request.data?.field);
+    await writePasswordAccessLog(orgId, {
+      action: "copied",
+      entryId,
+      entryTitle: d.title || "",
+      category: d.category || null,
+      siteId: d.siteId || null,
+      field: (field === "username" || field === "password") ? field : null,
+      actorUid: caller.uid,
+      actorLabel: await loadUserLabel(caller.uid),
+      requestId,
+    });
+    return {ok: true};
   },
 );
 

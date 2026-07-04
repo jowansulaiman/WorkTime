@@ -21,7 +21,7 @@ const String _kGeneralSite = '__general__';
 /// Bereich „Kontakte": Kunden, Lieferanten, Geschaeftspartner, Behoerden, …
 ///
 /// Wird als Haupt-Tab in der Shell eingehaengt. Lesen darf jedes aktive
-/// Mitglied; Anlegen/Bearbeiten/Loeschen sind Admins und Schichtleitern
+/// Mitglied; Anlegen/Bearbeiten/Löschen sind Admins und Schichtleitern
 /// vorbehalten ([AppUserProfile.canManageContacts]).
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({

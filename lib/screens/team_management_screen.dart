@@ -11,6 +11,7 @@ import '../models/employment_contract.dart';
 import '../models/shift_preference.dart';
 import '../models/qualification_definition.dart';
 import '../models/site_definition.dart';
+import '../models/third_party_cash.dart';
 import '../models/site_schedule.dart';
 import '../models/team_definition.dart';
 import '../models/travel_time_rule.dart';
@@ -25,7 +26,7 @@ Future<bool> _confirmDelete(BuildContext context, String itemName) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
-      title: Text('$itemName loeschen?'),
+      title: Text('$itemName löschen?'),
       content: Text('$itemName wird unwiderruflich geloescht.'),
       actions: [
         TextButton(
@@ -34,7 +35,7 @@ Future<bool> _confirmDelete(BuildContext context, String itemName) async {
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Loeschen'),
+          child: const Text('Löschen'),
         ),
       ],
     ),
@@ -1950,7 +1951,7 @@ class _InviteCard extends StatelessWidget {
         ),
       ],
       trailing: IconButton(
-        tooltip: 'Einladung loeschen',
+        tooltip: 'Einladung löschen',
         onPressed: onDelete,
         icon: const Icon(Icons.delete_outline),
       ),
@@ -2011,7 +2012,7 @@ class _TeamCard extends StatelessWidget {
           ),
           PopupMenuItem(
             value: 'delete',
-            child: Text('Loeschen'),
+            child: Text('Löschen'),
           ),
         ],
       ),
@@ -2093,7 +2094,7 @@ class _SiteCard extends StatelessWidget {
         },
         itemBuilder: (_) => const [
           PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
-          PopupMenuItem(value: 'delete', child: Text('Loeschen')),
+          PopupMenuItem(value: 'delete', child: Text('Löschen')),
         ],
       ),
     );
@@ -2140,7 +2141,7 @@ class _QualificationCard extends StatelessWidget {
         },
         itemBuilder: (_) => const [
           PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
-          PopupMenuItem(value: 'delete', child: Text('Loeschen')),
+          PopupMenuItem(value: 'delete', child: Text('Löschen')),
         ],
       ),
     );
@@ -2203,7 +2204,7 @@ class _TravelTimeRuleCard extends StatelessWidget {
           ),
           PopupMenuItem(
             value: 'delete',
-            child: Text('Loeschen'),
+            child: Text('Löschen'),
           ),
         ],
       ),
@@ -3169,6 +3170,9 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     for (var d = 1; d <= 7; d++) d: <_DemandRow>[],
   };
 
+  // Dritte-Hand-/Fremdgeld-Arten dieser Filiale (§8.5, v1 Minimal-Variante).
+  final List<_ThirdPartyTypeRow> _thirdPartyRows = [];
+
   @override
   void initState() {
     super.initState();
@@ -3184,6 +3188,10 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     _descriptionCtrl =
         TextEditingController(text: widget.site?.description ?? '');
     _hydrateSchedule();
+    for (final t in widget.site?.thirdPartyCashTypes ??
+        const <ThirdPartyCashType>[]) {
+      _thirdPartyRows.add(_ThirdPartyTypeRow.fromType(t));
+    }
   }
 
   /// Baut die Editor-Zeilen aus den vorhandenen Öffnungszeiten + Bedarfen.
@@ -3216,6 +3224,9 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     _postalCodeCtrl.dispose();
     _cityCtrl.dispose();
     _descriptionCtrl.dispose();
+    for (final row in _thirdPartyRows) {
+      row.dispose();
+    }
     super.dispose();
   }
 
@@ -3369,6 +3380,10 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
             const SizedBox(height: 8),
             for (var weekday = 1; weekday <= 7; weekday++)
               _buildWeekdaySection(weekday),
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 12),
+            _buildThirdPartySection(),
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: _save,
@@ -3590,6 +3605,82 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     return '$h:$m';
   }
 
+  /// Abschnitt zur Pflege der Dritte-Hand-/Fremdgeld-Arten (Lotto, Post, KVG …)
+  /// dieser Filiale (§4.2 Minimal-Variante — Katalog + Aktivierung an der Site).
+  Widget _buildThirdPartySection() {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Dritte Hand / Fremdgelder',
+          style: theme.textTheme.titleMedium
+              ?.copyWith(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Treuhandgelder externer Dienste (z. B. Lotto, Post, KVG), die beim '
+          'Kassenzählen getrennt erfasst werden. Leer = diese Filiale bietet '
+          'kein Fremdgeld.',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 8),
+        for (var i = 0; i < _thirdPartyRows.length; i++)
+          Padding(
+            key: ValueKey(_thirdPartyRows[i]),
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    children: [
+                      TextFormField(
+                        controller: _thirdPartyRows[i].nameCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Bezeichnung',
+                          hintText: 'z. B. Lotto',
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: _thirdPartyRows[i].required,
+                            onChanged: (v) => setState(
+                                () => _thirdPartyRows[i].required = v ?? false),
+                          ),
+                          const Text('Pflichtbetrag'),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Entfernen',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () => setState(() {
+                    _thirdPartyRows.removeAt(i).dispose();
+                  }),
+                ),
+              ],
+            ),
+          ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () =>
+                setState(() => _thirdPartyRows.add(_ThirdPartyTypeRow.empty())),
+            icon: const Icon(Icons.add),
+            label: const Text('Fremdgeld-Art hinzufügen'),
+          ),
+        ),
+      ],
+    );
+  }
+
   void _save() {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -3642,10 +3733,84 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
             : _descriptionCtrl.text.trim(),
         weekdayHours: weekdayHours,
         staffingDemands: staffingDemands,
+        thirdPartyCashTypes: _buildThirdPartyTypes(),
         createdByUid: widget.currentUser.uid,
       ),
     );
   }
+
+  /// Baut die Fremdgeld-Arten aus den Editor-Zeilen. Leere Bezeichnungen werden
+  /// verworfen; die stabile [ThirdPartyCashType.id] wird beibehalten (Edit) bzw.
+  /// aus der Bezeichnung als slug erzeugt (neu), Kollisionen werden entschärft.
+  List<ThirdPartyCashType> _buildThirdPartyTypes() {
+    final result = <ThirdPartyCashType>[];
+    final usedIds = <String>{};
+    var order = 0;
+    for (final row in _thirdPartyRows) {
+      final name = row.nameCtrl.text.trim();
+      if (name.isEmpty) continue;
+      var id = row.id ?? _slugify(name);
+      if (id.isEmpty) id = 'art_${order + 1}';
+      var unique = id;
+      var suffix = 2;
+      while (usedIds.contains(unique)) {
+        unique = '${id}_$suffix';
+        suffix++;
+      }
+      usedIds.add(unique);
+      result.add(ThirdPartyCashType(
+        id: unique,
+        name: name,
+        enabled: true,
+        required: row.required,
+        sortOrder: order++,
+      ));
+    }
+    return result;
+  }
+
+  static String _slugify(String value) {
+    final lower = value.trim().toLowerCase();
+    final buffer = StringBuffer();
+    for (final rune in lower.runes) {
+      final ch = String.fromCharCode(rune);
+      if (RegExp(r'[a-z0-9]').hasMatch(ch)) {
+        buffer.write(ch);
+      } else if (ch == 'ä') {
+        buffer.write('ae');
+      } else if (ch == 'ö') {
+        buffer.write('oe');
+      } else if (ch == 'ü') {
+        buffer.write('ue');
+      } else if (ch == 'ß') {
+        buffer.write('ss');
+      } else {
+        buffer.write('_');
+      }
+    }
+    return buffer
+        .toString()
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+  }
+}
+
+/// Editor-Zeile einer Fremdgeld-Art im Filial-Editor (§8.5).
+class _ThirdPartyTypeRow {
+  _ThirdPartyTypeRow({this.id, String name = '', this.required = false})
+      : nameCtrl = TextEditingController(text: name);
+
+  factory _ThirdPartyTypeRow.empty() => _ThirdPartyTypeRow();
+
+  factory _ThirdPartyTypeRow.fromType(ThirdPartyCashType t) =>
+      _ThirdPartyTypeRow(id: t.id, name: t.name, required: t.required);
+
+  /// Stabile ID der bestehenden Art (null = neu → slug beim Speichern).
+  final String? id;
+  final TextEditingController nameCtrl;
+  bool required;
+
+  void dispose() => nameCtrl.dispose();
 }
 
 class _QualificationEditorSheet extends StatefulWidget {

@@ -638,7 +638,7 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    // Namen vor dem Loeschen nachschlagen (cloud-Liste, sonst lokale Liste).
+    // Namen vor dem Löschen nachschlagen (cloud-Liste, sonst lokale Liste).
     final namedTeam = [..._teams, ..._localTeams].where(
       (team) => team.id == teamId,
     );
@@ -1041,7 +1041,7 @@ class TeamProvider extends ChangeNotifier {
       return;
     }
 
-    // Namen vor dem Loeschen nachschlagen (cloud-Liste, sonst lokale Liste).
+    // Namen vor dem Löschen nachschlagen (cloud-Liste, sonst lokale Liste).
     final namedSite = [..._sites, ..._localSites].where(
       (site) => site.id == siteId,
     );

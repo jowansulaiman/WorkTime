@@ -956,6 +956,29 @@ service cloud.firestore {
       match /kioskSessions/{sid} {
         allow read, write: if false;
       }
+
+      // === Passwortmanager (§11) =============================================
+      // Zugriffsschicht bewusst hart: die zugriffsgestufte Metadaten-Liste
+      // laeuft AUSSCHLIESSLICH ueber den `listPasswordEntries`-Callable (ein
+      // per-Doc-Read-Praedikat wuerde Listen-Queries nicht filtern, sondern
+      // org-weit oeffnen). Direkter Client-Read nur Admin (Diagnose); jeder
+      // Schreibpfad laeuft ueber Callables (Admin SDK) — kein Direkt-Write, um
+      // Mass-Assignment von scope/ownerUid/audience zu verhindern.
+      match /passwordEntries/{entryId} {
+        allow read: if sameOrg(orgId) && isAdmin() && !isKiosk();
+        allow write: if false;
+      }
+      // Ciphertext: fuer Clients KOMPLETT unlesbar/unschreibbar (wie
+      // userSecrets). Nur die Cloud Functions (upsert/reveal) beruehren es.
+      match /passwordSecrets/{entryId} {
+        allow read, write: if false;
+      }
+      // Zugriffsprotokoll (reveal/copy): admin-only lesbar, nur serverseitig
+      // beschreibbar — faelschungssicherer Audit-Anker (kein best-effort Sink).
+      match /passwordAccessLog/{logId} {
+        allow read: if sameOrg(orgId) && isAdmin() && !isKiosk();
+        allow write: if false;
+      }
       // Minimale Namensliste fuers Kiosk-Board (Name/Foto/Standort — KEINE
       // Lohn-/Stammdaten). Lesbar fuer die eigene Org (auch das Geraete-Konto);
       // gepflegt serverseitig bzw. durch einen Admin. So muss das geteilte
@@ -1551,7 +1574,7 @@ service cloud.firestore {
                  'countedAt', 'countedCents', 'expectedCents',
                  'differenceCents', 'denominations', 'note', 'source',
                  'countedByLabel', 'countedByUserId', 'kioskSessionId',
-                 'createdByUid', 'createdAt'
+                 'thirdParty', 'createdByUid', 'createdAt'
                ])
             && request.resource.data.countedCents is number
             && request.resource.data.businessDay is string
@@ -1592,6 +1615,12 @@ service cloud.firestore {
             && (!('kioskSessionId' in request.resource.data)
                  || request.resource.data.kioskSessionId == null
                  || request.resource.data.kioskSessionId is string)
+            // Dritte-Hand-/Fremdgeld-Beträge (§8.7): additive Sub-Liste,
+            // OPTIONAL (Filialen ohne Fremdgeld schreiben das Feld nicht) —
+            // nur Typ prüfen, kein Pflicht-Check. Berührt den Blind-Zwang
+            // nicht (keine top-level expected/difference-Felder).
+            && (!('thirdParty' in request.resource.data)
+                 || request.resource.data.thirdParty is list)
             // Akteur-Pin gegen Audit-Spoofing (Muster stockMovements).
             && request.resource.data.createdByUid == request.auth.uid
             // Herkunft: 'oktopos' bleibt dem Server vorbehalten (E3).
@@ -1620,11 +1649,14 @@ service cloud.firestore {
                  'refundCount', 'revenueGrossCents', 'taxes',
                  'paymentsByMethod', 'cashMovementCents',
                  'cashExpectedCents', 'cashCountedCents', 'cashCountId',
-                 'cashDifferenceCents', 'bookedToFinance', 'closedByUid',
-                 'closedAt', 'note'
+                 'cashDifferenceCents', 'thirdParty', 'bookedToFinance',
+                 'closedByUid', 'closedAt', 'note'
                ])
             && request.resource.data.businessDay is string
             && request.resource.data.siteId is string
+            // Dritte-Hand-/Fremdgeld-Snapshot (§8.7): optionale additive Liste.
+            && (!('thirdParty' in request.resource.data)
+                 || request.resource.data.thirdParty is list)
             // Deterministische Doc-ID erzwingen: genau EIN Abschluss je
             // Tag+Standort — die Einmaligkeit darf nicht allein an der
             // Client-Transaktion haengen.

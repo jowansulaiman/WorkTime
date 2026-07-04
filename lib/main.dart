@@ -26,6 +26,7 @@ import 'providers/feature_flag_provider.dart';
 import 'providers/finance_provider.dart';
 import 'providers/inventory_provider.dart';
 import 'providers/notification_provider.dart';
+import 'providers/password_provider.dart';
 import 'providers/personal_provider.dart';
 import 'providers/sales_insights_provider.dart';
 import 'providers/schedule_provider.dart';
@@ -202,6 +203,12 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   Settings _buildFirestoreSettings() {
     if (kIsWeb) {
+      // ZV-1.3 (Web-Persistenz-Entscheid): bewusst **Single-Tab**-Persistenz.
+      // Der cloud_firestore-Flutter-Plugin exponiert KEINEN Multi-Tab-Manager
+      // (das ist JS-SDK-spezifisch). Ein zweiter Tab desselben Origins kann die
+      // Persistenz nicht erwerben — der Plugin fängt das ab und läuft dort
+      // online weiter (graceful degradation, kein Absturz). Für die zwei Läden
+      // ausreichend; Multi-Tab-Offline wäre nur mit JS-Interop nachrüstbar.
       return const Settings(
         persistenceEnabled: true,
         cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
@@ -351,6 +358,12 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
         ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
         // Konnektivitaets-/Offline-Status (Anf. 13). Von Auth/Storage
         // unabhaengig -> frueh registriert, damit Shell + Bereiche ihn lesen.
+        // ZV-1.1: dreiwertiges Enum (online/offline/backendUnreachable) +
+        // Debounce + Resume-Recheck sind eingebaut; eine Reachability-Probe kann
+        // hier via `reachabilityProbe:` injiziert werden (Default null =
+        // Interface-Status, keine Regression). Eine Produktiv-Probe braucht
+        // einen HTTP-Client gegen den eigenen Endpunkt — bewusst nicht per
+        // Default verdrahtet (keine neue Dependency, kein Falsch-Offline-Risiko).
         ChangeNotifierProvider(create: (_) => ConnectivityStatusProvider()),
         ChangeNotifierProvider(create: (_) => StorageModeProvider()..init()),
         ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
@@ -489,6 +502,29 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'ContactProvider.updateSession',
+              onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        // Passwortmanager (§5.1): rein server-verschlüsselt (Cloud KMS +
+        // Callables), im Offline-/Demo-/Local-Modus deaktiviert. Auth/Storage/
+        // Audit wie ContactProvider.
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, PasswordProvider>(
+          create: (_) => PasswordProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, audit, provider) {
+            provider ??= PasswordProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'PasswordProvider.updateSession',
               onError: provider.surfaceSessionError,
             );
             return provider;

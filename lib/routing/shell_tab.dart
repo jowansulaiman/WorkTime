@@ -66,6 +66,7 @@ abstract final class AppRoutes {
   static const String staffingProfile = '/besetzungs-profil';
   static const String dailyClosing = '/tagesabschluss';
   static const String kassenbericht = '/kassenbericht';
+  static const String passwords = '/passwoerter';
   static const String storeHealth = '/laden-benchmark';
   static const String cashierAnomaly = '/kassierer-pruefung';
 

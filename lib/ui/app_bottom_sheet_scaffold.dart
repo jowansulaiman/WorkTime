@@ -104,7 +104,7 @@ class AppBottomSheetScaffold extends StatelessWidget {
                 ),
               ),
               if (subtitle != null) ...[
-                SizedBox(height: context.spacing.xs + context.spacing.xxs),
+                SizedBox(height: context.spacing.s6),
                 Text(
                   subtitle!,
                   style: theme.textTheme.bodyMedium?.copyWith(

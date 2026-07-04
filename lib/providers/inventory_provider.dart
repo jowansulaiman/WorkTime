@@ -1511,8 +1511,10 @@ class InventoryProvider extends ChangeNotifier {
   }
 
   /// Festgeschriebene Kassenabschlüsse im Fenster, jüngste zuerst (lokal leer).
+  /// [siteId] `null` = org-weit (alle Filialen) — u. a. für die Fremdgeld-
+  /// Auswertung im Kassenbericht ohne Filialfilter.
   Future<List<CashClosing>> loadCashClosings({
-    required String siteId,
+    String? siteId,
     int windowDays = 62,
     DateTime? asOf,
   }) async {

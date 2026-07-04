@@ -7,6 +7,7 @@ import 'package:table_calendar/table_calendar.dart';
 
 import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
+import '../core/app_config.dart';
 import '../core/redesign_flags.dart';
 import '../routing/route_permissions.dart';
 import '../routing/shell_tab.dart';
@@ -3122,6 +3123,14 @@ class _ProfileHubTab extends StatelessWidget {
                     subtitle: 'Profil, Theme und Standardwerte aendern',
                     onTap: () => context.push(AppRoutes.settings),
                   ),
+                  if (AppConfig.passwordManagerEnabled &&
+                      (currentUser?.isActive ?? false))
+                    _QuickActionCard(
+                      icon: Icons.vpn_key_outlined,
+                      title: 'Passwörter',
+                      subtitle: 'Zugangsdaten sicher speichern und wiederfinden',
+                      onTap: () => context.push(AppRoutes.passwords),
+                    ),
                   if (currentUser?.canViewReports ?? false)
                     _QuickActionCard(
                       icon: Icons.description_outlined,
@@ -3658,7 +3667,7 @@ class _EntryCard extends StatelessWidget {
                 },
                 itemBuilder: (_) => const [
                   PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
-                  PopupMenuItem(value: 'delete', child: Text('Loeschen')),
+                  PopupMenuItem(value: 'delete', child: Text('Löschen')),
                 ],
               ),
       ),
@@ -3673,7 +3682,7 @@ class _EntryCard extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Eintrag loeschen?'),
+        title: const Text('Eintrag löschen?'),
         content: const Text('Dieser Eintrag wird unwiderruflich geloescht.'),
         actions: [
           TextButton(
@@ -3682,7 +3691,7 @@ class _EntryCard extends StatelessWidget {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Loeschen'),
+            child: const Text('Löschen'),
           ),
         ],
       ),
@@ -3697,7 +3706,7 @@ class _EntryCard extends StatelessWidget {
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Fehler beim Loeschen: $error'),
+            content: Text('Fehler beim Löschen: $error'),
             backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );

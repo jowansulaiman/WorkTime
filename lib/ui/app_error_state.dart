@@ -64,7 +64,7 @@ class AppErrorState extends StatelessWidget {
           size: compact ? context.iconSizes.lg : context.iconSizes.hero,
           color: scheme.error,
         ),
-        SizedBox(height: spacing.sm + spacing.xs),
+        SizedBox(height: spacing.s12),
         MergeSemantics(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -77,7 +77,7 @@ class AppErrorState extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                 ),
               ),
-              SizedBox(height: spacing.xs + spacing.xxs),
+              SizedBox(height: spacing.s6),
               Text(
                 message,
                 textAlign: textAlign,
