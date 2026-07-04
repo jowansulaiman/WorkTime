@@ -1,6 +1,6 @@
 # Personalbereich — UI/Tabs genau 1:1 wie AllTec
 
-**Stand:** 2026-07-04 · **Status:** Umsetzung — **M1–M10 fertig+verifiziert; alle 9 Tabs gefüllt** (nur M11/M12 offen) · **Priorität:** hoch
+**Stand:** 2026-07-04 · **Status:** **M1–M11 fertig+verifiziert; alle 9 Tabs gefüllt; committet + auf `main` + gepusht** (nur M12-Deploy offen) · **Priorität:** hoch
 **Auftrag (Betreiber):** „Das Design bzw. die UI des Personalbereichs soll genau 1:1 wie in AllTec sein — die Tabs."
 
 **Umsetzungsstand (2026-07-04):**
@@ -19,7 +19,9 @@
 - **M9** (Verwalten): Tab mit Aktiv-Umschalter (`TeamProvider.updateMember(isActive:)`) + Beschäftigungsstatus-Dropdown (`saveEmployeeProfile(status)`) + Gefahrenzone („Löschen" = **Deaktivieren-Alias**, sicher/reversibel) + Meta-IDs.
 - **M8** (Notizen, neue Collection — Kopplung #5): neues `EmployeeNote`-Model + org-skopierte Collection `employeeNotes` end-to-end verdrahtet — `FirestoreService` (watch/save/delete, kein orderBy → kein Index), `DatabaseService` (`_employeeNotesKey` + `_orgScopedCollectionKeys` + load/save), `PersonalProvider` (Stream + `addNote`/`deleteNote`/`notesForUser`, admin-only + Audit + hybrid-Fallback + lokale Persistenz), `firestore.rules` (admin-only, add/delete-only). Tab **Notizen** (Anlegen/Löschen, kein Bearbeiten) + „Letzte Notizen"-Karte im Übersicht-Tab.
 
-**Tab-Stand: 9/9 gefüllt** ✅ Übersicht · ✅ Stammdaten · ✅ Gehalt · ✅ Qualifikationen · ✅ Ausbildungen · ✅ Kinder · ✅ Dokumente · ✅ Notizen · ✅ Verwalten. Top-Level-Liste (M10) ✅. **Volle Suite: 1524 Tests grün, `flutter analyze` sauber** (nur 3 vorbestehende Fremd-Hinweise).
+- **M11** (Anlegen — WorkTime-konform statt AllTec-1:1): „Neuer Mitarbeiter"-Aktion (`person_add_alt_1`) in der Personalverwaltung öffnet einen **Einladungs-Dialog** (Name/E-Mail/Rolle) → `TeamProvider.saveInvite` (Mitarbeiter = Auth-gebundenes Login via `userInvites`; HR-Stammdaten danach in den Detail-Tabs). Bearbeiten läuft über die Detail-Tabs; Rollen bestehender MA bleiben in der Teamverwaltung. `_NewEmployeeDialog` in `personal_screen.dart` + Test.
+
+**Tab-Stand: 9/9 gefüllt** ✅ Übersicht · ✅ Stammdaten · ✅ Gehalt · ✅ Qualifikationen · ✅ Ausbildungen · ✅ Kinder · ✅ Dokumente · ✅ Notizen · ✅ Verwalten. Top-Level-Liste (M10) ✅ + „Neuer Mitarbeiter" (M11) ✅. **`flutter analyze` ohne Fehler** (nur 2 vorbestehende Fremd-Warnungen). **Committet als `ef56423` (+ M11-Folgecommit), auf `main` + `origin/main` gepusht.** Offen nur M12-Deploy (`firebase deploy --only firestore:rules` für `employeeNotes`).
 
 `flutter analyze` sauber (nur 3 vorbestehende, fremde Baseline-Hinweise). Tests grün: route_permissions 8, employee_detail_screen 2, employee_kinder_tab 2, employee_hr_models (EmployeeChild-Round-Trip inkl. `anmerkungen`), personal_provider/-screen/-documents. Uncommitted auf `feat/mhd-ablauf-warnung`.
 

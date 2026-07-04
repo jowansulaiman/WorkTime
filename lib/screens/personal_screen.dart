@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +15,8 @@ import '../core/personnel_cost.dart';
 import '../core/sfn_zuschlag.dart';
 import '../core/zeitkonto_calculator.dart';
 import '../models/app_user.dart';
+import '../models/user_invite.dart';
+import '../models/user_settings.dart';
 import '../models/customer_order.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_ausbildung.dart';
@@ -29,6 +33,7 @@ import '../models/work_entry.dart';
 import '../models/work_task.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/personal_provider.dart';
+import '../providers/team_provider.dart';
 import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
@@ -100,6 +105,18 @@ class _PersonalScreenState extends State<PersonalScreen> {
         ],
         actions: [
           if (isAdmin) ...[
+            IconButton(
+              tooltip: 'Neuer Mitarbeiter (einladen)',
+              icon: const Icon(Icons.person_add_alt_1),
+              onPressed: () async {
+                final team = context.read<TeamProvider>();
+                final invite = await showDialog<UserInvite>(
+                  context: context,
+                  builder: (_) => const _NewEmployeeDialog(),
+                );
+                if (invite != null) await team.saveInvite(invite);
+              },
+            ),
             IconButton(
               tooltip: 'Auswertungen (Aufträge · Lohn · Finanzen · Statistik)',
               icon: const Icon(Icons.insights_outlined),
@@ -233,6 +250,112 @@ class _PersonalAuswertungenScreenState
           ],
         ),
       ),
+    );
+  }
+}
+
+/// „Neuer Mitarbeiter" (AllTec-1:1-Aktion der Personalverwaltung) — in WorkTime
+/// bewusst als **Einladung** umgesetzt: Ein Mitarbeiter ist ein Auth-gebundenes
+/// Login (users-Doc), das beim ersten Anmelden aus dem `userInvites`-Doc
+/// entsteht. Der Dialog sammelt Name/E-Mail/Rolle und erzeugt via
+/// [TeamProvider.saveInvite] die Einladung; die HR-Stammdaten pflegt man danach
+/// in den Detail-Tabs. (Rollen/Rechte bestehender Mitarbeiter bleiben in der
+/// Teamverwaltung.)
+class _NewEmployeeDialog extends StatefulWidget {
+  const _NewEmployeeDialog();
+
+  @override
+  State<_NewEmployeeDialog> createState() => _NewEmployeeDialogState();
+}
+
+class _NewEmployeeDialogState extends State<_NewEmployeeDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _email = TextEditingController();
+  UserRole _role = UserRole.employee;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _email.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) return;
+    final invite = UserInvite(
+      orgId: '', // von saveInvite gesetzt
+      email: _email.text.trim(),
+      role: _role,
+      settings: UserSettings(name: _name.text.trim()),
+      createdByUid: '', // von saveInvite gesetzt
+      permissions: UserPermissions.defaultsForRole(_role),
+    );
+    Navigator.of(context).pop(invite);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Neuer Mitarbeiter'),
+      content: SizedBox(
+        width: math.min(440, MediaQuery.sizeOf(context).width - 64),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _name,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(labelText: 'Name *'),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'Pflichtfeld' : null,
+              ),
+              TextFormField(
+                controller: _email,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(labelText: 'E-Mail *'),
+                validator: (v) {
+                  final t = v?.trim() ?? '';
+                  if (t.isEmpty) return 'Pflichtfeld';
+                  if (!t.contains('@') || !t.contains('.')) {
+                    return 'Bitte gültige E-Mail eingeben';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<UserRole>(
+                initialValue: _role,
+                decoration: const InputDecoration(labelText: 'Rolle'),
+                items: [
+                  for (final r in UserRole.values)
+                    DropdownMenuItem(value: r, child: Text(r.label)),
+                ],
+                onChanged: (v) => setState(() => _role = v ?? _role),
+              ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Der Mitarbeiter erhält beim ersten Login Zugang. '
+                  'Stammdaten pflegst du danach in der Akte.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Abbrechen'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('Einladen')),
+      ],
     );
   }
 }
