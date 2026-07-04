@@ -67,6 +67,20 @@ void main() {
           isTrue);
     });
 
+    test('Mitarbeiter-Detail-Deep-Link /personal/{uid} ist admin-only', () {
+      // Konkreter Pfad mit gefülltem :id — matcht KEINEN exakten switch-case und
+      // fiele ohne den `/personal/`-Prefix-Guard auf default:true (Leck).
+      final path = AppRoutes.personalDetailPath('emp-1');
+      expect(RoutePermissions.isLocationAllowed(path, _admin), isTrue);
+      expect(RoutePermissions.isLocationAllowed(path, _teamlead), isFalse);
+      expect(RoutePermissions.isLocationAllowed(path, _employee), isFalse);
+      expect(RoutePermissions.isLocationAllowed(path, null), isFalse);
+      // Der Prefix-Guard darf die eigenständige „Meine Akte"-Route (/meine-akte)
+      // NICHT fälschlich als /personal-Unterpfad greifen.
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.meineAkte, _employee),
+          isTrue);
+    });
+
     test('Kassenbericht: nur Admin (EK/Marge/Gewinn, M4)', () {
       expect(RoutePermissions.isLocationAllowed(AppRoutes.kassenbericht, _admin),
           isTrue);

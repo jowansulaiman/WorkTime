@@ -50,6 +50,9 @@ abstract final class AppRoutes {
   static const String inventory = '/warenwirtschaft';
   static const String customerOrders = '/bestellungen';
   static const String personal = '/personal';
+  // Mitarbeiter-Detail (AllTec-1:1): deep-linkbare Top-Level-Route mit
+  // Path-Parameter `:id` (uid). Bau siehe plan/personal-alltec-1zu1.md.
+  static const String personalDetail = '/personal/:id';
   static const String meineAkte = '/meine-akte'; // Mitarbeiter-Selbstsicht (PA-2.4)
   static const String finance = '/buchhaltung';
   static const String feedbackInbox = '/feedback-eingang';
@@ -70,6 +73,11 @@ abstract final class AppRoutes {
   static const String storeHealth = '/laden-benchmark';
   static const String cashierAnomaly = '/kassierer-pruefung';
 
+  /// Wissens-/Hilfe-Bereich (In-App-Doku, Bereich „Wissen"). Fach-Doku fuer alle
+  /// angemeldeten Nutzer; die Entwickler-/Technik-Doku gated der Screen intern
+  /// auf Admins.
+  static const String knowledge = '/wissen';
+
   // Zeitwirtschaft-Bereich (Sub-Routen unter dem `/zeit`-Tab-Hub). Der Hub
   // selbst ist der Tab-Inhalt von `ShellTab.time` (`/zeit`); diese Routen werden
   // via `context.push(...)` über die Shell gepusht (Back → Hub).
@@ -81,4 +89,8 @@ abstract final class AppRoutes {
   static const String zeitMonatsabschluss = '/zeit/monatsabschluss';
   static const String zeitMitarbeiterabschluss = '/zeit/mitarbeiterabschluss';
   static const String zeitLohnlauf = '/zeit/lohnlauf';
+
+  /// Konkreter Deep-Link auf die Mitarbeiter-Detailseite `/personal/{uid}`
+  /// (füllt den `:id`-Parameter von [personalDetail]).
+  static String personalDetailPath(String uid) => '/personal/$uid';
 }

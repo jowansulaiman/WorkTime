@@ -84,74 +84,154 @@ class _PersonalScreenState extends State<PersonalScreen> {
     // Sicherheit auch hier prüfen.
     final isAdmin = personal.isAdmin;
 
+    // AllTec-1:1 (M10): Der Personalbereich öffnet direkt in die
+    // Personalverwaltungs-Liste (Kennzahlen + Mitarbeiter → Detail mit 9 Tabs),
+    // statt der früheren 5 Aggregat-Tabs. Die org-/monatsweiten Auswertungen
+    // (Aufträge/Lohn/Finanzen/Statistik) bleiben erhalten und sind über die
+    // „Auswertungen"-Aktion erreichbar (verlagert, nicht gelöscht).
+    return Scaffold(
+      appBar: BreadcrumbAppBar(
+        breadcrumbs: [
+          BreadcrumbItem(
+            label: widget.parentLabel,
+            onTap: () => Navigator.of(context).maybePop(),
+          ),
+          const BreadcrumbItem(label: 'Personalverwaltung'),
+        ],
+        actions: [
+          if (isAdmin) ...[
+            IconButton(
+              tooltip: 'Auswertungen (Aufträge · Lohn · Finanzen · Statistik)',
+              icon: const Icon(Icons.insights_outlined),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const _PersonalAuswertungenScreen(),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Kassierer-Prüfung (Verdachtshinweis)',
+              icon: const Icon(Icons.fact_check_outlined),
+              onPressed: () => context.push(AppRoutes.cashierAnomaly),
+            ),
+          ],
+        ],
+      ),
+      body: !isAdmin
+          ? const EmptyState(
+              icon: Icons.lock_outline,
+              title: 'Kein Zugriff',
+              message: 'Der Personal-Bereich ist Administratoren vorbehalten.',
+            )
+          : Column(
+              children: [
+                _MonthBar(
+                  month: _month,
+                  onPrev: () => _shiftMonth(-1),
+                  onNext: () => _shiftMonth(1),
+                ),
+                Expanded(
+                  child: _OverviewTab(
+                    month: _month,
+                    monthEntries: _monthEntries,
+                    entriesLoading: _entriesLoading,
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+/// Verlagerte org-/monatsweite Auswertungen des Personalbereichs (M10): die
+/// früheren Aggregat-Tabs Aufträge/Lohn/Finanzen/Statistik, erreichbar über die
+/// „Auswertungen"-Aktion der Personalverwaltung. Eigenes Monats-State.
+class _PersonalAuswertungenScreen extends StatefulWidget {
+  const _PersonalAuswertungenScreen();
+
+  @override
+  State<_PersonalAuswertungenScreen> createState() =>
+      _PersonalAuswertungenScreenState();
+}
+
+class _PersonalAuswertungenScreenState
+    extends State<_PersonalAuswertungenScreen> {
+  DateTime _month = DateTime(DateTime.now().year, DateTime.now().month);
+  List<WorkEntry> _monthEntries = const [];
+  bool _entriesLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadEntries());
+  }
+
+  Future<void> _loadEntries() async {
+    setState(() => _entriesLoading = true);
+    final entries =
+        await context.read<PersonalProvider>().loadOrgWorkEntriesForMonth(_month);
+    if (!mounted) return;
+    setState(() {
+      _monthEntries = entries;
+      _entriesLoading = false;
+    });
+  }
+
+  void _shiftMonth(int delta) {
+    setState(() => _month = DateTime(_month.year, _month.month + delta));
+    _loadEntries();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: 4,
       child: Scaffold(
         appBar: BreadcrumbAppBar(
           breadcrumbs: [
             BreadcrumbItem(
-              label: widget.parentLabel,
+              label: 'Personalverwaltung',
               onTap: () => Navigator.of(context).maybePop(),
             ),
-            const BreadcrumbItem(label: 'Personal'),
-          ],
-          actions: [
-            if (isAdmin)
-              IconButton(
-                tooltip: 'Kassierer-Prüfung (Verdachtshinweis)',
-                icon: const Icon(Icons.fact_check_outlined),
-                onPressed: () => context.push(AppRoutes.cashierAnomaly),
-              ),
+            const BreadcrumbItem(label: 'Auswertungen'),
           ],
         ),
-        body: !isAdmin
-            ? const EmptyState(
-                icon: Icons.lock_outline,
-                title: 'Kein Zugriff',
-                message: 'Der Personal-Bereich ist Administratoren vorbehalten.',
-              )
-            : Column(
-                children: [
-                  const Material(
-                    elevation: 0,
-                    child: TabBar(
-                      isScrollable: true,
-                      tabAlignment: TabAlignment.start,
-                      tabs: [
-                        Tab(text: 'Übersicht'),
-                        Tab(text: 'Aufträge'),
-                        Tab(text: 'Lohn'),
-                        Tab(text: 'Finanzen'),
-                        Tab(text: 'Statistik'),
-                      ],
-                    ),
-                  ),
-                  _MonthBar(
-                    month: _month,
-                    onPrev: () => _shiftMonth(-1),
-                    onNext: () => _shiftMonth(1),
-                  ),
-                  Expanded(
-                    child: TabBarView(
-                      children: [
-                        _OverviewTab(
-                          month: _month,
-                          monthEntries: _monthEntries,
-                          entriesLoading: _entriesLoading,
-                        ),
-                        const _OrdersTab(),
-                        _PayrollTab(month: _month, monthEntries: _monthEntries),
-                        _FinanceTab(
-                          month: _month,
-                          monthEntries: _monthEntries,
-                          entriesLoading: _entriesLoading,
-                        ),
-                        _StatsTab(year: _month.year),
-                      ],
-                    ),
-                  ),
+        body: Column(
+          children: [
+            const Material(
+              elevation: 0,
+              child: TabBar(
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                tabs: [
+                  Tab(text: 'Aufträge'),
+                  Tab(text: 'Lohn'),
+                  Tab(text: 'Finanzen'),
+                  Tab(text: 'Statistik'),
                 ],
               ),
+            ),
+            _MonthBar(
+              month: _month,
+              onPrev: () => _shiftMonth(-1),
+              onNext: () => _shiftMonth(1),
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  const _OrdersTab(),
+                  _PayrollTab(month: _month, monthEntries: _monthEntries),
+                  _FinanceTab(
+                    month: _month,
+                    monthEntries: _monthEntries,
+                    entriesLoading: _entriesLoading,
+                  ),
+                  _StatsTab(year: _month.year),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -582,15 +662,9 @@ class _EmployeeCard extends StatelessWidget {
     final stats = personal.absenceStatsForUser(member.uid, year: month.year);
 
     return AppCard(
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => _EmployeeDetailScreen(
-            member: member,
-            month: month,
-            monthEntries: monthEntries,
-          ),
-        ),
-      ),
+      // AllTec-1:1: Öffnet die neue deep-linkbare Mitarbeiter-Detailseite mit
+      // 9 Tabs (statt des früheren file-privaten Monats-Detail-Screens).
+      onTap: () => context.push(AppRoutes.personalDetailPath(member.uid)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1823,6 +1897,13 @@ class _StatsBarChart extends StatelessWidget {
 
 // ───────────────────────────── Mitarbeiter-Detail ─────────────────────────
 
+// MIGRATION (plan/personal-alltec-1zu1.md): Diese frühere Monats-Detailseite
+// wird durch die neue AllTec-1:1-`EmployeeDetailScreen` (9 Tabs) abgelöst. Die
+// Mitarbeiter-Karte navigiert bereits dorthin. Der Screen bleibt vorerst
+// erhalten, weil seine Karten (_EmployeeHrCard/_UrlaubskontoCard/
+// _EmployeeStammdatenCard/EmployeeDocumentsCard) in M4/M6/M7 in die neuen Tabs
+// übernommen werden; danach wird er samt Karten entfernt.
+// ignore: unused_element
 class _EmployeeDetailScreen extends StatelessWidget {
   const _EmployeeDetailScreen({
     required this.member,

@@ -1,57 +1,51 @@
 # WorkTime — Code-Review: Bugs & Probleme
 
-> **Re-Verifikation 2026-06-29.** Alle 76 Befunde des Reviews vom 21.06. wurden gegen den
-> **aktuellen** Code neu geprüft (Multi-Agent, jeder Befund am echten Code, Zeilennummern
-> der Ursprungsbefunde sind veraltet). Ergebnis unten. Baseline weiterhin grün:
-> `flutter analyze` sauber (2 triviale Alt-Hinweise), **1067 Tests grün**.
+> **Re-Verifikation 2026-07-04.** Alle Befunde wurden erneut gegen den **aktuellen** Code
+> geprüft (Multi-Agent, jeder Befund am echten Code; Zeilennummern der Ursprungsbefunde
+> vom 21.06. sind veraltet). Detaildateien mit **vollständig behobenen** Befundgruppen sind
+> nach [archiv/](archiv/) gewandert. Baseline weiterhin grün.
 
-## Kernergebnis der Re-Verifikation
+## Kernergebnis
 
-- **Alle kritischen & hohen Befunde sind behoben.** Server-Compliance-Spiegel (validateSingleWorkEntry),
-  Minuten-Aggregations-Drift, Duplikat-Docs (stabile Client-UUID), `parseEuroToCents` (→ `Money.parseCents`),
-  Übernacht-Schichten — alle in den letzten 8 Tagen gefixt (am Code belegt).
-- **Verbleibend: 41 offene/teilweise Befunde, ausschließlich niedrig/mittel** (Test-Lücken,
-  kleine Provider-Edge-Cases, Doku-Drift, toter Code, Härtungs-Restpunkte).
-- **CSV-Formel-Injection, CSV-CR-Quoting, PDF/`DateFormat`-`de_DE`** ebenfalls bereits behoben.
+- **Alle kritischen & hohen Befunde bleiben behoben** (Server-Compliance-Spiegel inkl. `travelTimeRules`,
+  minutengenaue Aggregation, stabile Client-UUIDs, `Money.parseCents`, Übernacht-Schichten,
+  orderCarts-Feld-Allowlist + `updatedByUid`-Bindung, App-Check im öffentlichen Wunschpfad — alle am Code belegt).
+- **5 Detaildateien vollständig abgearbeitet** → archiviert (siehe unten).
+- **Verbleibend: ausschließlich niedrig/mittel** über 7 Bereiche — Test-Lücken, kleine
+  Provider-/Service-Edge-Cases, bewusst akzeptierte Restrisiken, Doku-Nuancen.
 
-| Schweregrad | 21.06. | offen/teilw. (29.06.) |
-|---|---|---|
-| 🔴 Kritisch | 1 | **0** |
-| 🟠 Hoch | 4 | **0** |
-| 🟡 Mittel | 17 | 4 |
-| ⚪ Niedrig | 54 | 37 |
-
-> Hinweis: Ein Teil dieser offenen Befunde wird im **Konsolidierungs-Lauf vom 29.06.**
-> miterledigt (z.B. core-lohn toter Steuersatz-Code → L4; Lohn-Prefill falscher Monat
-> #53 → L2). Stand der Umsetzung: siehe [plan/konsolidierung-duplikate-kopplung.md](../plan/konsolidierung-duplikate-kopplung.md).
+| Schweregrad | 21.06. | offen (29.06.) | offen (04.07.) |
+|---|---|---|---|
+| 🔴 Kritisch | 1 | 0 | **0** |
+| 🟠 Hoch | 4 | 0 | **0** |
+| 🟡 Mittel | 17 | 4 | **2** |
+| ⚪ Niedrig | 54 | 37 | **~22** |
 
 ## Offene / teilweise Befunde (mittel zuerst)
 
 | Schwere | Status | Bereich | Befund |
 |---|---|---|---|
-| mittel | offen | provider-state | #22 Hybrid-LWW vergleicht client-lokales `updatedAt` (`DateTime.now`) mit `serverTimestamp` |
-| mittel | teilw. | services-firestore | Callable-Idempotenz ohne `clientMutationId` (Daten-Integrität via stabile UUID gelöst, Trace-ID instabil) |
-| mittel | teilw. | sicherheit | `customerWishes`: jeder Auth-Nutzer (auch fremde Org) kann unbegrenzt in main-org schreiben (App-Check/Rate-Limit) |
-| mittel | offen | test-lücken | #19 Hybrid-Offline-Fallback der Bestellkorb-Mutationen ungetestet |
-| niedrig | offen | compliance | Pausen-Rundungs-Drift (JS Gesamt vs. Dart break-vorab); Jugend-/Mutterschutz-Nachtfenster hartkodiert 06/20 |
-| niedrig | teilw. | core-lohn | toter Steuersatz-Code (`soliRate`/`incomeTaxRateByClass`/`taxTariff`-Jahr) — **wird via L4 angegangen** |
-| niedrig | offen | core-lohn | `_midijobBase` unter Minijob-Grenze ohne Übergangsminderung (Doku/Klassifikation) |
-| niedrig | offen | provider-state | #63 TeamProvider `loading` bleibt true (Nicht-Manager, cloud-only); #64 Local-Dedup verwirft Rollenwechsel; #65 setMemberActive ohne Org-Check |
-| niedrig | offen | provider-state | #74 fire-and-forget `_restartSubscriptions`; #75 `_notifyShiftWorked` ohne `_errorArea`; #76 Hybrid-Dedup spiegelt Settings nicht |
-| niedrig | offen | provider-state | #42/#43 Audit-Mirror (cloud-only Lesen vs. lokal; Hybrid-Doppel-Eintrag); #44 FeatureFlag kein Offline-Cache (teilw.) |
-| niedrig | offen | navigation | #56 Force-Update fail-open; #57 Strg+1..9 immer Rail; #58 PopScope erster Zurück; #59 CLAUDE.md-Breakpoint-Doku (1120 vs. 600) |
-| niedrig | offen | services-firestore | Abwesenheits-Reads ohne untere Datumsgrenze; Batch-Direktschreiber ohne orgId-Konsistenzcheck; Bestelllisten-Streams `onError` global |
-| niedrig | teilw. | sicherheit | `publicWishOrg()` hart 'main-org' vs. `APP_DEFAULT_ORG_ID` (Drift-Risiko) |
-| niedrig | offen | screens-ui | #54 Abwesenheiten je Board-Zelle neu sortiert (Perf); #51 Wunsch-`storeName`-Länge ungeprüft; #53 Lohn-Prefill falscher Monat (**→ via L2 behoben**) |
-| niedrig | offen | services-persistenz | Schema-Versionierung No-op; Legacy-Migration kopiert leere orgId breit; Scanner-Ton global; iOS-Share ohne `sharePositionOrigin` |
-| niedrig | offen | test-lücken | #66–#73 Widget-/Cloud-Tests für Wunsch/Bestellkorb/Standort-Isolation fehlen; `publicStoreNameList`-Parsing ungetestet |
+| mittel | offen | provider-state | #22 Hybrid-LWW vergleicht client-lokales `updatedAt` (`DateTime.now`) mit `serverTimestamp` (`work_provider.dart:2105/2181`) → Clock-Skew kann lokale Edits verlieren |
+| mittel | offen | test-lücken | #19 Hybrid-Offline-Fallback der Bestellkorb-Mutationen ungetestet (`saveOrderList` wirft im Fake nie) |
+| niedrig | offen | compliance | #24 Pausen-Rundungs-Drift (JS rundet Gesamtdifferenz, Dart pre-rundet Pause; ≤1 Min bei fraktionalen `breakMinutes`); #26 Jugend-/Mutterschutz-Nachtfenster hart 06:00/20:00 (RuleSet-`nightWindowStart/End` ignoriert; beide Spiegel konsistent) |
+| niedrig | teilw. | provider-state | #44 App-Config/`minimumBuildNumber`-Pfad uncached — bewusste Fail-open-Designentscheidung (dokumentiert). `orgSettings` jetzt hybrid-gecacht |
+| niedrig | offen | screens-ui | #51 Wunsch-`storeName`-Länge ungeprüft (vs. Rules-Cap 120); #53 Lohn-Prefill falscher Monat im Detail-Screen (nur Vorschlagswert); #54 Abwesenheiten je Board-Zelle neu sortiert (Perf, kein Bucketing) |
+| niedrig | offen | services-firestore | #39 Abwesenheits-Reads ohne untere Datumsgrenze (bewusster Tradeoff, wächst mit Datenalter); #48 Bestelllisten-Streams teilen globalen `_setError` (Resilienz/UX) |
+| niedrig | offen | services-persistenz | #33 Legacy-Migration mit leerem `orgId` trifft jeden Org-Scope (low-conf Edge-Case, für Ein-Org-Betrieb irrelevant); #34 Test-Lücke Org-Isolation `order_carts`/`weekly_order_lists`; #37 iOS/macOS-Share ohne `sharePositionOrigin` |
+| niedrig | offen | navigation | #56 Force-Update fail-open (dokumentiert/akzeptiert); #57 Strg+1..9 in Bottom-Nav aus `railDestinations` (Profil per Shortcut unerreichbar); #58 PopScope verschluckt ersten Zurück-Druck im Randfall |
+| niedrig | offen/teilw. | test-lücken | #66–#73 Widget-/Cloud-Tests für Wunsch/Bestellkorb/Zwei-Läden-Isolation fehlen; #69 nur teilw. (camelCase-Round-Trip prüft nur `contactId`) |
 
-## Detail-Dateien (Volltext der Ursprungsbefunde, 21.06.)
+## Detail-Dateien
 
-[01-kritisch-hoch.md](01-kritisch-hoch.md) (✅ alle behoben) ·
-[compliance.md](compliance.md) · [services-firestore.md](services-firestore.md) ·
-[services-persistenz.md](services-persistenz.md) · [provider-state.md](provider-state.md) ·
-[bestellkorb-kundenwuensche.md](bestellkorb-kundenwuensche.md) · [sicherheit.md](sicherheit.md) ·
-[modelle-serialisierung.md](modelle-serialisierung.md) (✅ behoben) · [core-lohn.md](core-lohn.md) ·
-[navigation-bootstrap.md](navigation-bootstrap.md) · [screens-ui.md](screens-ui.md) ·
+**Offene Bereiche** (Volltext der Ursprungsbefunde, 21.06.; Restpunkte niedrig/mittel):
+[compliance.md](compliance.md) · [provider-state.md](provider-state.md) ·
+[screens-ui.md](screens-ui.md) · [services-firestore.md](services-firestore.md) ·
+[services-persistenz.md](services-persistenz.md) · [navigation-bootstrap.md](navigation-bootstrap.md) ·
 [test-luecken.md](test-luecken.md)
+
+**Archiviert (Befundgruppe vollständig behoben/akzeptiert)** — [archiv/](archiv/):
+[01-kritisch-hoch.md](archiv/01-kritisch-hoch.md) (✅ alle kritisch/hoch behoben) ·
+[core-lohn.md](archiv/core-lohn.md) (✅ #27–#32) ·
+[modelle-serialisierung.md](archiv/modelle-serialisierung.md) (✅ #45 `clearSku`) ·
+[sicherheit.md](archiv/sicherheit.md) (✅ #60/#61 orderCarts-BOPLA, #17 App-Check) ·
+[bestellkorb-kundenwuensche.md](archiv/bestellkorb-kundenwuensche.md) (✅ #46 als „last writer wins" bewusst akzeptiert)

@@ -14,6 +14,7 @@ void main() {
           geschlecht: 'w',
           steuerIdKind: '12345678901',
           geburtstag: DateTime(2015, 4, 7),
+          anmerkungen: 'Wohnt bei der Mutter',
           zaehltFuerFreibetrag: false,
         );
 
@@ -26,6 +27,7 @@ void main() {
       expect(r.anzeigeName, 'Mia Muster');
       expect(r.geschlecht, 'w');
       expect(r.steuerIdKind, '12345678901');
+      expect(r.anmerkungen, 'Wohnt bei der Mutter');
       // Tages-Datum auf lokale Mittagszeit normalisiert (12:00, Konvention).
       expect(r.geburtstag, DateTime(2015, 4, 7, 12));
       expect(r.zaehltFuerFreibetrag, isFalse);
@@ -40,6 +42,7 @@ void main() {
       expect(r.id, ref.id);
       expect(r.vorname, 'Mia');
       expect(r.geburtstag, DateTime(2015, 4, 7, 12));
+      expect(r.anmerkungen, 'Wohnt bei der Mutter');
       expect(r.zaehltFuerFreibetrag, isFalse);
       expect(r.updatedAt, isNotNull);
     });
@@ -52,10 +55,12 @@ void main() {
         clearGeschlecht: true,
         clearSteuerIdKind: true,
         clearGeburtstag: true,
+        clearAnmerkungen: true,
       );
       expect(cleared.geschlecht, isNull);
       expect(cleared.steuerIdKind, isNull);
       expect(cleared.geburtstag, isNull);
+      expect(cleared.anmerkungen, isNull);
       expect(cleared.vorname, 'Mia');
     });
   });
@@ -70,6 +75,10 @@ void main() {
           erworbenAm: DateTime(2024, 3, 1),
           gueltigBis: DateTime(2026, 3, 1),
           bemerkung: 'jährlich auffrischen',
+          qualifikationsart: 'Sachkunde',
+          beschreibung: 'Kassieren + Warenkunde',
+          zertifikatNr: 'ZK-42',
+          ausstellendeStelle: 'IHK Kiel',
         );
 
     test('lokaler Round-Trip + Enum', () {
@@ -80,6 +89,10 @@ void main() {
       expect(r.erworbenAm, DateTime(2024, 3, 1, 12));
       expect(r.gueltigBis, DateTime(2026, 3, 1, 12));
       expect(r.bemerkung, 'jährlich auffrischen');
+      expect(r.qualifikationsart, 'Sachkunde');
+      expect(r.beschreibung, 'Kassieren + Warenkunde');
+      expect(r.zertifikatNr, 'ZK-42');
+      expect(r.ausstellendeStelle, 'IHK Kiel');
     });
 
     test('Firestore Round-Trip', () async {
@@ -91,6 +104,23 @@ void main() {
       expect(r.qualificationName, 'Kasse');
       expect(r.erwerb, QualiErwerb.intern);
       expect(r.gueltigBis, DateTime(2026, 3, 1, 12));
+      expect(r.qualifikationsart, 'Sachkunde');
+      expect(r.zertifikatNr, 'ZK-42');
+      expect(r.ausstellendeStelle, 'IHK Kiel');
+    });
+
+    test('copyWith clear-Flags für AllTec-Parität-Felder', () {
+      final cleared = sample().copyWith(
+        clearQualifikationsart: true,
+        clearBeschreibung: true,
+        clearZertifikatNr: true,
+        clearAusstellendeStelle: true,
+      );
+      expect(cleared.qualifikationsart, isNull);
+      expect(cleared.beschreibung, isNull);
+      expect(cleared.zertifikatNr, isNull);
+      expect(cleared.ausstellendeStelle, isNull);
+      expect(cleared.qualificationName, 'Kasse');
     });
 
     test('istGueltig: unbefristet immer, sonst bis Stichtag', () {
@@ -118,6 +148,11 @@ void main() {
           noteZwischen: '2,0',
           noteAbschluss: '1,7',
           bemerkung: 'verkürzt',
+          ausbildungsart: 'Duale Ausbildung',
+          ausbildungsstaette: 'Berufsschule Kiel',
+          fachrichtung: 'Einzelhandel',
+          abschluss: 'IHK-Abschluss',
+          status: AusbildungStatus.abgeschlossen,
         );
 
     test('lokaler Round-Trip', () {
@@ -129,6 +164,11 @@ void main() {
       expect(r.noteZwischen, '2,0');
       expect(r.noteAbschluss, '1,7');
       expect(r.bemerkung, 'verkürzt');
+      expect(r.ausbildungsart, 'Duale Ausbildung');
+      expect(r.ausbildungsstaette, 'Berufsschule Kiel');
+      expect(r.fachrichtung, 'Einzelhandel');
+      expect(r.abschluss, 'IHK-Abschluss');
+      expect(r.status, AusbildungStatus.abgeschlossen);
     });
 
     test('Firestore Round-Trip', () async {
@@ -140,6 +180,15 @@ void main() {
       expect(r.bezeichnung, 'Kaufmann im Einzelhandel');
       expect(r.beginn, DateTime(2023, 8, 1, 12));
       expect(r.ausbilderUserId, 'emp-2');
+      expect(r.fachrichtung, 'Einzelhandel');
+      expect(r.status, AusbildungStatus.abgeschlossen);
+    });
+
+    test('Status fromValue-Default (Enum-Kopplung)', () {
+      expect(AusbildungStatusX.fromValue('quatsch'), AusbildungStatus.laufend);
+      expect(AusbildungStatusX.fromValue(null), AusbildungStatus.laufend);
+      expect(AusbildungStatusX.fromValue('abgebrochen'),
+          AusbildungStatus.abgebrochen);
     });
 
     test('copyWith clear-Flags', () {

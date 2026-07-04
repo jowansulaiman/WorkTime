@@ -18,6 +18,13 @@ abstract final class RoutePermissions {
   /// Darf der Nutzer [p] die URL [loc] aufrufen? Unbekannte/öffentliche Pfade
   /// sind erlaubt (der Fallback `/` kann so keine Redirect-Schleife auslösen).
   static bool isLocationAllowed(String loc, AppUserProfile? p) {
+    // Mitarbeiter-Detail-Deep-Link `/personal/{uid}` matcht keinen exakten
+    // `case` unten und fiele sonst auf `default:true` (KEIN Gate). Admin-only,
+    // spiegelt den `AppRoutes.personal`-Case (kritische Kopplung #4/#7). Muss
+    // in `firestore.rules` (Personal-Collections admin/self) gespiegelt bleiben.
+    if (loc.startsWith('/personal/')) {
+      return p?.isAdmin ?? false;
+    }
     switch (loc) {
       case '/': // Heute
       case '/anfragen': // Anfragen
@@ -27,6 +34,10 @@ abstract final class RoutePermissions {
       // „Meine Personalakte" (PA-2.4): jeder angemeldete (aktive) Nutzer sieht
       // seine EIGENEN Daten (self-scoped Streams + Rules).
       case AppRoutes.meineAkte:
+        return p != null;
+      // Wissen/Hilfe: jeder angemeldete Nutzer sieht die Fach-Doku; die
+      // Technik-Doku blendet der Screen fuer Nicht-Admins aus.
+      case AppRoutes.knowledge:
         return p != null;
       case '/plan':
         return p?.canViewSchedule ?? false;

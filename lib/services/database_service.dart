@@ -20,6 +20,7 @@ import '../models/zeitkonto_snapshot.dart';
 import '../core/datev_export.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
+import '../models/employee_note.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_qualification.dart';
 import '../models/org_payroll_settings.dart';
@@ -122,6 +123,7 @@ class DatabaseService {
   static const _sollzeitProfilesKey = 'sollzeit_profiles';
   static const _payrollConfigKey = 'payroll_config';
   static const _employeeChildrenKey = 'employee_children';
+  static const _employeeNotesKey = 'employee_notes';
   static const _employeeQualificationsKey = 'employee_qualifications';
   static const _employeeAusbildungenKey = 'employee_ausbildungen';
   static const _urlaubskontoJahreKey = 'urlaubskonto_jahre';
@@ -197,6 +199,7 @@ class DatabaseService {
     _sollzeitProfilesKey,
     _payrollConfigKey,
     _employeeChildrenKey,
+    _employeeNotesKey,
     _employeeQualificationsKey,
     _employeeAusbildungenKey,
     _urlaubskontoJahreKey,
@@ -829,6 +832,28 @@ class DatabaseService {
       key: _employeeChildrenKey,
       scope: scope,
       items: children,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<EmployeeNote>> loadLocalEmployeeNotes({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _employeeNotesKey,
+      scope: scope,
+      fromMap: EmployeeNote.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalEmployeeNotes(
+    List<EmployeeNote> notes, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _employeeNotesKey,
+      scope: scope,
+      items: notes,
       toMap: (item) => item.toMap(),
     );
   }

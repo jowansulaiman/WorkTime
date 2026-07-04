@@ -83,3 +83,6 @@ ios/Pods/
 ios/.symlinks/
 ios/DerivedData/
 **/xcuserdata/
+
+# Generierte statische Doku-Site (aus docs/ via scripts/build-docs-site.mjs)
+docs-site/

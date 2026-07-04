@@ -77,20 +77,24 @@ void main() {
     DatabaseService.resetCachedPrefs();
   });
 
-  testWidgets('Admin sieht alle Tabs', (tester) async {
+  testWidgets('Admin öffnet direkt die Personalverwaltungs-Liste (AllTec-1:1)',
+      (tester) async {
     await _pump(tester, _admin);
 
-    expect(find.text('Übersicht'), findsOneWidget);
-    expect(find.text('Aufträge'), findsOneWidget);
-    expect(find.text('Lohn'), findsOneWidget);
-    expect(find.text('Finanzen'), findsOneWidget);
-    expect(find.text('Statistik'), findsOneWidget);
     expect(find.text('Kein Zugriff'), findsNothing);
+    // Neuer Einstieg = Liste; die „Auswertungen"-Aktion ersetzt die 5 Tabs.
+    expect(find.byIcon(Icons.insights_outlined), findsOneWidget);
+    // Die früheren Aggregat-Tabs liegen jetzt HINTER „Auswertungen", nicht oben.
+    expect(find.text('Aufträge'), findsNothing);
+    expect(find.text('Statistik'), findsNothing);
   });
 
-  testWidgets('Lohn-Tab zeigt Richtwert-Hinweis', (tester) async {
+  testWidgets('Lohn-Richtwert über die „Auswertungen"-Aktion erreichbar',
+      (tester) async {
     await _pump(tester, _admin);
 
+    await tester.tap(find.byIcon(Icons.insights_outlined));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Lohn'));
     await tester.pumpAndSettle();
 

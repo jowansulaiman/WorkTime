@@ -1108,6 +1108,16 @@ service cloud.firestore {
             && request.resource.data.orgId == orgId;
         allow delete: if isAdmin() && sameOrg(orgId);
       }
+      // Interne HR-Notizen zum Mitarbeiter (admin-only, kein Self-Read; nur
+      // Anlegen + Löschen, kein Bearbeiten). Spiegel: RoutePermissions
+      // `/personal/`-Admin-Gate + PersonalProvider.addNote/deleteNote.
+      match /employeeNotes/{noteId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
       match /employeeQualifications/{qualificationId} {
         allow read: if isAdmin() && sameOrg(orgId);
         allow create, update: if isAdmin()

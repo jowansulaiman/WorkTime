@@ -2,6 +2,30 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 
+/// Status einer Aus-/Weiterbildung (AllTec-Parität; steuert das Status-Badge).
+enum AusbildungStatus { laufend, abgeschlossen, abgebrochen }
+
+extension AusbildungStatusX on AusbildungStatus {
+  String get value => switch (this) {
+        AusbildungStatus.laufend => 'laufend',
+        AusbildungStatus.abgeschlossen => 'abgeschlossen',
+        AusbildungStatus.abgebrochen => 'abgebrochen',
+      };
+
+  String get label => switch (this) {
+        AusbildungStatus.laufend => 'Laufend',
+        AusbildungStatus.abgeschlossen => 'Abgeschlossen',
+        AusbildungStatus.abgebrochen => 'Abgebrochen',
+      };
+
+  /// Default-Branch wirft nie (Enum-Kopplungsregel).
+  static AusbildungStatus fromValue(String? value) => switch (value) {
+        'abgeschlossen' => AusbildungStatus.abgeschlossen,
+        'abgebrochen' => AusbildungStatus.abgebrochen,
+        _ => AusbildungStatus.laufend,
+      };
+}
+
 /// Ausbildung eines Mitarbeiters (HR-Sub-Entität, M-H).
 class EmployeeAusbildung {
   const EmployeeAusbildung({
@@ -12,6 +36,11 @@ class EmployeeAusbildung {
     this.beginn,
     this.ende,
     this.ausbilderUserId,
+    this.ausbildungsart,
+    this.ausbildungsstaette,
+    this.fachrichtung,
+    this.abschluss,
+    this.status = AusbildungStatus.laufend,
     this.noteZwischen,
     this.noteAbschluss,
     this.bemerkung,
@@ -29,6 +58,14 @@ class EmployeeAusbildung {
 
   /// Verantwortliche:r Ausbilder:in (FK auf einen anderen Mitarbeiter), optional.
   final String? ausbilderUserId;
+
+  // AllTec-Feld-Parität.
+  final String? ausbildungsart;
+  final String? ausbildungsstaette;
+  final String? fachrichtung;
+  final String? abschluss;
+  final AusbildungStatus status;
+
   final String? noteZwischen;
   final String? noteAbschluss;
   final String? bemerkung;
@@ -51,6 +88,11 @@ class EmployeeAusbildung {
       beginn: FirestoreDateParser.readDate(map['beginn']),
       ende: FirestoreDateParser.readDate(map['ende']),
       ausbilderUserId: map['ausbilderUserId'] as String?,
+      ausbildungsart: map['ausbildungsart'] as String?,
+      ausbildungsstaette: map['ausbildungsstaette'] as String?,
+      fachrichtung: map['fachrichtung'] as String?,
+      abschluss: map['abschluss'] as String?,
+      status: AusbildungStatusX.fromValue(map['status']?.toString()),
       noteZwischen: map['noteZwischen'] as String?,
       noteAbschluss: map['noteAbschluss'] as String?,
       bemerkung: map['bemerkung'] as String?,
@@ -69,6 +111,11 @@ class EmployeeAusbildung {
       beginn: FirestoreDateParser.readLocalDate(map['beginn']),
       ende: FirestoreDateParser.readLocalDate(map['ende']),
       ausbilderUserId: map['ausbilder_user_id'] as String?,
+      ausbildungsart: map['ausbildungsart'] as String?,
+      ausbildungsstaette: map['ausbildungsstaette'] as String?,
+      fachrichtung: map['fachrichtung'] as String?,
+      abschluss: map['abschluss'] as String?,
+      status: AusbildungStatusX.fromValue(map['status']?.toString()),
       noteZwischen: map['note_zwischen'] as String?,
       noteAbschluss: map['note_abschluss'] as String?,
       bemerkung: map['bemerkung'] as String?,
@@ -89,6 +136,11 @@ class EmployeeAusbildung {
       'ende':
           _dateOnly(ende) == null ? null : Timestamp.fromDate(_dateOnly(ende)!),
       'ausbilderUserId': ausbilderUserId,
+      'ausbildungsart': ausbildungsart,
+      'ausbildungsstaette': ausbildungsstaette,
+      'fachrichtung': fachrichtung,
+      'abschluss': abschluss,
+      'status': status.value,
       'noteZwischen': noteZwischen,
       'noteAbschluss': noteAbschluss,
       'bemerkung': bemerkung,
@@ -108,6 +160,11 @@ class EmployeeAusbildung {
       'beginn': _dateOnly(beginn)?.toIso8601String(),
       'ende': _dateOnly(ende)?.toIso8601String(),
       'ausbilder_user_id': ausbilderUserId,
+      'ausbildungsart': ausbildungsart,
+      'ausbildungsstaette': ausbildungsstaette,
+      'fachrichtung': fachrichtung,
+      'abschluss': abschluss,
+      'status': status.value,
       'note_zwischen': noteZwischen,
       'note_abschluss': noteAbschluss,
       'bemerkung': bemerkung,
@@ -128,6 +185,15 @@ class EmployeeAusbildung {
     bool clearEnde = false,
     String? ausbilderUserId,
     bool clearAusbilderUserId = false,
+    String? ausbildungsart,
+    bool clearAusbildungsart = false,
+    String? ausbildungsstaette,
+    bool clearAusbildungsstaette = false,
+    String? fachrichtung,
+    bool clearFachrichtung = false,
+    String? abschluss,
+    bool clearAbschluss = false,
+    AusbildungStatus? status,
     String? noteZwischen,
     bool clearNoteZwischen = false,
     String? noteAbschluss,
@@ -148,6 +214,15 @@ class EmployeeAusbildung {
       ausbilderUserId: clearAusbilderUserId
           ? null
           : (ausbilderUserId ?? this.ausbilderUserId),
+      ausbildungsart:
+          clearAusbildungsart ? null : (ausbildungsart ?? this.ausbildungsart),
+      ausbildungsstaette: clearAusbildungsstaette
+          ? null
+          : (ausbildungsstaette ?? this.ausbildungsstaette),
+      fachrichtung:
+          clearFachrichtung ? null : (fachrichtung ?? this.fachrichtung),
+      abschluss: clearAbschluss ? null : (abschluss ?? this.abschluss),
+      status: status ?? this.status,
       noteZwischen:
           clearNoteZwischen ? null : (noteZwischen ?? this.noteZwischen),
       noteAbschluss:

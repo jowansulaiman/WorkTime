@@ -36,8 +36,9 @@ void main() {
 
   Future<PasswordProvider> pump(
     WidgetTester tester,
-    Future<dynamic> Function(String, Map<String, dynamic>) invoker,
-  ) async {
+    Future<dynamic> Function(String, Map<String, dynamic>) invoker, {
+    Future<bool> Function()? bio,
+  }) async {
     tester.view.physicalSize = const Size(1000, 2000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -60,7 +61,9 @@ void main() {
         ChangeNotifierProvider<TeamProvider>.value(value: team),
         ChangeNotifierProvider<PasswordProvider>.value(value: provider),
       ],
-      child: const MaterialApp(home: PasswordsScreen()),
+      child: MaterialApp(
+        home: PasswordsScreen(biometricAuthOverride: bio ?? () async => false),
+      ),
     ));
     await tester.pumpAndSettle();
     return provider;
@@ -115,5 +118,26 @@ void main() {
     expect(find.text('geheim'), findsOneWidget);
     expect(find.text('kvg-user'), findsOneWidget);
     expect(find.textContaining('automatisch ausgeblendet'), findsOneWidget);
+  });
+
+  testWidgets('Biometrie-Erfolg → direkt Secret-Sheet ohne Dialog',
+      (tester) async {
+    await pump(tester, (name, payload) async {
+      switch (name) {
+        case 'listPasswordEntries':
+          return {'entries': [entryMap()]};
+        case 'beginPasswordReauth':
+          return {'reauth_token': 'nonce'};
+        case 'revealPasswordSecret':
+          return {'username': 'kvg-user', 'password': 'geheim', 'notes': ''};
+      }
+      return <String, dynamic>{};
+    }, bio: () async => true);
+
+    await tester.tap(find.byIcon(Icons.visibility_outlined));
+    await tester.pumpAndSettle();
+    // Kein Bestätigungsdialog (Biometrie hat direkt bestätigt).
+    expect(find.text('Passwort anzeigen'), findsNothing);
+    expect(find.text('geheim'), findsOneWidget);
   });
 }

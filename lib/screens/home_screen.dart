@@ -980,6 +980,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onOpenScanner: () => _openSection(AppRoutes.scanner),
             onOpenSettings: () => _openSection(AppRoutes.settings),
             onOpenMeineAkte: () => _openSection(AppRoutes.meineAkte),
+            onOpenKnowledge: () => _openSection(AppRoutes.knowledge),
           );
         },
       ),
@@ -3117,6 +3118,12 @@ class _ProfileHubTab extends StatelessWidget {
                           'Sonderbestellungen von Kunden verwalten',
                       onTap: () => context.push(AppRoutes.customerOrders),
                     ),
+                  _QuickActionCard(
+                    icon: Icons.menu_book_outlined,
+                    title: 'Wissen & Hilfe',
+                    subtitle: 'Anleitungen zu jedem Bereich der App',
+                    onTap: () => context.push(AppRoutes.knowledge),
+                  ),
                   _QuickActionCard(
                     icon: Icons.settings_outlined,
                     title: 'Einstellungen',

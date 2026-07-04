@@ -1,9 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 
+import '../core/screen_security.dart';
 import '../models/app_user.dart';
 import '../models/password_entry.dart';
 import '../models/site_definition.dart';
@@ -17,9 +20,17 @@ import '../widgets/breadcrumb_app_bar.dart';
 /// protokolliert. Nie Klartext in der Liste. Verwaltung zentraler Einträge nur
 /// für Admins; jeder aktive Nutzer verwaltet eigene Einträge.
 class PasswordsScreen extends StatefulWidget {
-  const PasswordsScreen({super.key, this.parentLabel = 'Profil'});
+  const PasswordsScreen({
+    super.key,
+    this.parentLabel = 'Profil',
+    @visibleForTesting this.biometricAuthOverride,
+  });
 
   final String parentLabel;
+
+  /// **Nur für Tests.** Ersetzt den `local_auth`-Aufruf (dessen Pigeon-Kanäle
+  /// im Widget-Test blockieren). `null` = echte Biometrie/Geräte-PIN.
+  final Future<bool> Function()? biometricAuthOverride;
 
   @override
   State<PasswordsScreen> createState() => _PasswordsScreenState();
@@ -201,11 +212,32 @@ class _PasswordsScreenState extends State<PasswordsScreen> {
     }
   }
 
-  Future<void> _reveal(BuildContext context, PasswordEntry entry) async {
-    final provider = context.read<PasswordProvider>();
-    final messenger = ScaffoldMessenger.of(context);
-    // Sicherheitsbestätigung (client-seitige Hürde; der Server erzwingt
-    // zusätzlich einen frischen Reauth-Nonce + Rate-Limit).
+  /// Sicherheitsbestätigung vor dem Anzeigen: wo verfügbar per Biometrie/
+  /// Geräte-PIN (`local_auth`), sonst per Bestätigungsdialog (Web/Desktop/
+  /// Testumgebung). Der Server erzwingt zusätzlich einen frischen Reauth-Nonce
+  /// + Rate-Limit — dies ist die zusätzliche Gerätehürde, kein Ersatz.
+  Future<bool> _confirmReveal(BuildContext context, PasswordEntry entry) async {
+    final override = widget.biometricAuthOverride;
+    if (override != null) {
+      try {
+        if (await override()) return true;
+      } catch (_) {/* → Dialog */}
+    } else if (!kIsWeb) {
+      try {
+        final auth = LocalAuthentication();
+        if (await auth.isDeviceSupported()) {
+          return await auth.authenticate(
+            localizedReason: '„${entry.title}" anzeigen bestätigen',
+            biometricOnly: false,
+            persistAcrossBackgrounding: true,
+          );
+        }
+      } catch (_) {
+        // Keine Geräteauth verfügbar / kein Enrollment / Testumgebung →
+        // Fallback auf den Bestätigungsdialog.
+      }
+    }
+    if (!context.mounted) return false;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -221,7 +253,14 @@ class _PasswordsScreenState extends State<PasswordsScreen> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    return confirmed == true;
+  }
+
+  Future<void> _reveal(BuildContext context, PasswordEntry entry) async {
+    final provider = context.read<PasswordProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    if (!await _confirmReveal(context, entry)) return;
+    if (!context.mounted) return;
     try {
       final token = await provider.beginReauth();
       final secret = await provider.reveal(entry.id!, reauthToken: token);
@@ -368,13 +407,17 @@ class _RevealSheet extends StatefulWidget {
 
 class _RevealSheetState extends State<_RevealSheet> {
   static const int _ttlSeconds = 30;
+  static const int _clipboardClearSeconds = 20;
   int _remaining = _ttlSeconds;
   Timer? _timer;
+  Timer? _clipboardTimer;
   bool _hidden = false;
 
   @override
   void initState() {
     super.initState();
+    // Screenshot-/Recents-Schutz, solange das Secret sichtbar ist (Android).
+    ScreenSecurity.enable();
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) return;
       setState(() {
@@ -390,15 +433,34 @@ class _RevealSheetState extends State<_RevealSheet> {
   @override
   void dispose() {
     _timer?.cancel();
+    _clipboardTimer?.cancel();
+    ScreenSecurity.disable();
     super.dispose();
   }
 
   Future<void> _copy(String value, String field, String label) async {
     await Clipboard.setData(ClipboardData(text: value));
     widget.onCopy(field);
+    _scheduleClipboardClear(value);
     if (!mounted) return;
+    // Auto-Clear ist auf Web nicht zuverlässig → dort nichts versprechen.
+    const hint = kIsWeb ? '' : ' – wird in $_clipboardClearSeconds s geleert';
     ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$label kopiert.')));
+        .showSnackBar(SnackBar(content: Text('$label kopiert$hint.')));
+  }
+
+  /// Leert die Zwischenablage nach kurzer Zeit — aber nur, wenn dort noch das
+  /// kopierte Secret liegt (best-effort; auf Web deaktiviert).
+  void _scheduleClipboardClear(String value) {
+    _clipboardTimer?.cancel();
+    if (kIsWeb) return;
+    _clipboardTimer =
+        Timer(const Duration(seconds: _clipboardClearSeconds), () async {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      if (data?.text == value) {
+        await Clipboard.setData(const ClipboardData(text: ''));
+      }
+    });
   }
 
   @override

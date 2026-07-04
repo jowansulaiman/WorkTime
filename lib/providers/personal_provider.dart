@@ -19,6 +19,7 @@ import '../models/audit_log_entry.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
 import '../models/employee_document.dart';
+import '../models/employee_note.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_qualification.dart';
 import '../models/employment_contract.dart';
@@ -100,6 +101,7 @@ class PersonalProvider extends ChangeNotifier {
   StreamSubscription<List<SollzeitProfile>>? _sollzeitProfilesSubscription;
   StreamSubscription<List<OrgPayrollSettings>>? _payrollConfigSubscription;
   StreamSubscription<List<EmployeeChild>>? _childrenSubscription;
+  StreamSubscription<List<EmployeeNote>>? _notesSubscription;
   StreamSubscription<List<EmployeeQualification>>? _qualificationsSubscription;
   StreamSubscription<List<EmployeeAusbildung>>? _ausbildungenSubscription;
   StreamSubscription<List<UrlaubskontoJahr>>? _urlaubskontoSubscription;
@@ -116,6 +118,7 @@ class PersonalProvider extends ChangeNotifier {
   List<SollzeitProfile> _sollzeitProfiles = [];
   List<OrgPayrollSettings> _orgPayrollSettings = [];
   List<EmployeeChild> _children = [];
+  List<EmployeeNote> _notes = [];
   List<EmployeeQualification> _qualifications = [];
   List<EmployeeAusbildung> _ausbildungen = [];
   List<UrlaubskontoJahr> _urlaubskontoJahre = [];
@@ -943,6 +946,12 @@ class PersonalProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: _setError);
 
+    _notesSubscription =
+        _firestore.watchEmployeeNotes(orgId).listen((items) {
+      _notes = items;
+      _safeNotify();
+    }, onError: _setError);
+
     _qualificationsSubscription =
         _firestore.watchEmployeeQualifications(orgId).listen((items) {
       _qualifications = items;
@@ -994,6 +1003,7 @@ class PersonalProvider extends ChangeNotifier {
     _orgPayrollSettings =
         await DatabaseService.loadLocalOrgPayrollSettings(scope: scope);
     _children = await DatabaseService.loadLocalEmployeeChildren(scope: scope);
+    _notes = await DatabaseService.loadLocalEmployeeNotes(scope: scope);
     _qualifications =
         await DatabaseService.loadLocalEmployeeQualifications(scope: scope);
     _ausbildungen =
@@ -1014,6 +1024,7 @@ class PersonalProvider extends ChangeNotifier {
     await _sollzeitProfilesSubscription?.cancel();
     await _payrollConfigSubscription?.cancel();
     await _childrenSubscription?.cancel();
+    await _notesSubscription?.cancel();
     await _qualificationsSubscription?.cancel();
     await _ausbildungenSubscription?.cancel();
     await _urlaubskontoSubscription?.cancel();
@@ -1028,6 +1039,7 @@ class PersonalProvider extends ChangeNotifier {
     _sollzeitProfilesSubscription = null;
     _payrollConfigSubscription = null;
     _childrenSubscription = null;
+    _notesSubscription = null;
     _qualificationsSubscription = null;
     _ausbildungenSubscription = null;
     _urlaubskontoSubscription = null;
@@ -1045,6 +1057,7 @@ class PersonalProvider extends ChangeNotifier {
     _sollzeitProfiles = [];
     _orgPayrollSettings = [];
     _children = [];
+    _notes = [];
     _qualifications = [];
     _ausbildungen = [];
     _urlaubskontoJahre = [];
@@ -1894,6 +1907,84 @@ class PersonalProvider extends ChangeNotifier {
 
   Future<void> _persistChildren() =>
       DatabaseService.saveLocalEmployeeChildren(_children, scope: _localScope);
+
+  /// Notizen eines Mitarbeiters, neueste zuerst.
+  List<EmployeeNote> notesForUser(String userId) {
+    final list = _notes.where((n) => n.userId == userId).toList();
+    list.sort((a, b) =>
+        (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));
+    return list;
+  }
+
+  Future<void> addNote(String userId, String text) async {
+    _assertAdmin();
+    final orgId = _requireOrg();
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    final note = EmployeeNote(
+      orgId: orgId,
+      userId: userId,
+      text: trimmed,
+      createdByUid: _currentUser?.uid,
+    );
+    final summary = 'Notiz zu ${_memberLabel(userId)} angelegt';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'addEmployeeNote',
+          () => _firestore.saveEmployeeNote(note),
+        )) {
+      _audit?.call(
+        action: AuditAction.created,
+        entityType: 'Mitarbeiter-Notiz',
+        entityId: note.id,
+        summary: summary,
+      );
+      return;
+    }
+    final withId =
+        note.copyWith(id: _nextLocalId('note'), createdAt: DateTime.now());
+    _upsertLocal(_notes, withId, (item) => item.id);
+    _notes = [..._notes];
+    await _persistNotes();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Mitarbeiter-Notiz',
+      entityId: withId.id,
+      summary: summary,
+    );
+  }
+
+  Future<void> deleteNote(String noteId) async {
+    _assertAdmin();
+    final orgId = _orgId;
+    if (orgId == null) return;
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteEmployeeNote',
+          () => _firestore.deleteEmployeeNote(orgId: orgId, noteId: noteId),
+        )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Mitarbeiter-Notiz',
+        entityId: noteId,
+        summary: 'Notiz gelöscht',
+      );
+      return;
+    }
+    _notes = _notes.where((n) => n.id != noteId).toList(growable: false);
+    await _persistNotes();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Mitarbeiter-Notiz',
+      entityId: noteId,
+      summary: 'Notiz gelöscht',
+    );
+  }
+
+  Future<void> _persistNotes() =>
+      DatabaseService.saveLocalEmployeeNotes(_notes, scope: _localScope);
 
   Future<void> saveEmployeeQualification(EmployeeQualification quali) async {
     _assertAdmin();

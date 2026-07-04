@@ -44,10 +44,11 @@ post_install do |installer|
     end
   end
 
-  # firebase_auth and firebase_app_check import non-modular headers (Firebase.h),
-  # which Xcode 17 / iOS 26 SDK rejects inside a 'framework module'.
-  # Downgrading to a plain 'module' removes that restriction.
-  ['firebase_auth', 'firebase_app_check', 'firebase_messaging'].each do |pod_name|
+  # firebase_auth, firebase_app_check, firebase_messaging and firebase_storage
+  # import non-modular headers (Firebase.h), which Xcode 17 / iOS 26 SDK rejects
+  # inside a 'framework module'. Downgrading to a plain 'module' removes that
+  # restriction.
+  ['firebase_auth', 'firebase_app_check', 'firebase_messaging', 'firebase_storage'].each do |pod_name|
     modulemap_path = "#{installer.sandbox.root}/Target Support Files/#{pod_name}/#{pod_name}.modulemap"
     if File.exist?(modulemap_path)
       content = File.read(modulemap_path)

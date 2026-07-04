@@ -23,6 +23,7 @@ import '../models/customer_wish.dart';
 import '../models/audit_log_entry.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
+import '../models/employee_note.dart';
 import '../models/employee_document.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_qualification.dart';
@@ -462,6 +463,11 @@ class FirestoreService {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('employeeChildren');
+
+  CollectionReference<Map<String, dynamic>> _employeeNoteCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('employeeNotes');
 
   CollectionReference<Map<String, dynamic>> _employeeQualificationCollection(
     String orgId,
@@ -1813,6 +1819,30 @@ class FirestoreService {
     required String childId,
   }) {
     return _employeeChildCollection(orgId).doc(childId).delete();
+  }
+
+  Stream<List<EmployeeNote>> watchEmployeeNotes(String orgId) {
+    return _employeeNoteCollection(orgId).snapshots().map(
+          (s) => s.docs
+              .map((doc) => EmployeeNote.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> saveEmployeeNote(EmployeeNote note) async {
+    final collection = _employeeNoteCollection(note.orgId);
+    final docRef = note.id == null ? collection.doc() : collection.doc(note.id);
+    await docRef.set(
+      note.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> deleteEmployeeNote({
+    required String orgId,
+    required String noteId,
+  }) {
+    return _employeeNoteCollection(orgId).doc(noteId).delete();
   }
 
   Stream<List<EmployeeQualification>> watchEmployeeQualifications(String orgId) {

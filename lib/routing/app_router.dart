@@ -24,12 +24,14 @@ import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
 import '../screens/kassenbericht_screen.dart';
+import '../screens/knowledge/knowledge_screen.dart';
 import '../screens/passwords_screen.dart';
 import '../screens/kiosk/kiosk_screen.dart';
 import '../screens/meine_akte_screen.dart';
 import '../screens/month_report_screen.dart';
 import '../screens/order_analytics_screen.dart';
 import '../screens/personal_screen.dart';
+import '../screens/personal/employee_detail_screen.dart';
 import '../screens/scanner_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/sortiment_screen.dart';
@@ -165,6 +167,16 @@ GoRouter buildAppRouter({
           (c, s) => const CustomerOrderScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.personal,
           (c, s) => const PersonalScreen(parentLabel: 'Laden')),
+      // Mitarbeiter-Detail (AllTec-1:1): deep-linkbare Route mit Path-Parameter
+      // `:id` (uid). `_sectionRoute` reicht keine Parameter durch → explizite
+      // GoRoute über dem Root-Navigator. Admin-Gate in RoutePermissions
+      // (`/personal/`-Prefix) + _gateRedirect.
+      GoRoute(
+        path: AppRoutes.personalDetail,
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) =>
+            EmployeeDetailScreen(userId: state.pathParameters['id'] ?? ''),
+      ),
       _sectionRoute(AppRoutes.meineAkte,
           (c, s) => const MeineAkteScreen(parentLabel: 'Profil')),
       _sectionRoute(AppRoutes.finance,
@@ -205,6 +217,8 @@ GoRouter buildAppRouter({
           (c, s) => const StoreHealthScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.cashierAnomaly,
           (c, s) => const CashierAnomalyScreen(parentLabel: 'Personal')),
+      _sectionRoute(AppRoutes.knowledge,
+          (c, s) => KnowledgeScreen(parentLabel: 'Profil')),
 
       // ---- Zeitwirtschaft-Bereich (Sub-Routen unter dem `/zeit`-Tab-Hub) ----
       _sectionRoute(AppRoutes.zeitErfassung, (c, s) => const ZeiterfassungScreen()),

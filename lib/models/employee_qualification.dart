@@ -45,6 +45,10 @@ class EmployeeQualification {
     this.erworbenAm,
     this.gueltigBis,
     this.bemerkung,
+    this.qualifikationsart,
+    this.beschreibung,
+    this.zertifikatNr,
+    this.ausstellendeStelle,
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
@@ -61,6 +65,12 @@ class EmployeeQualification {
   final DateTime? erworbenAm;
   final DateTime? gueltigBis;
   final String? bemerkung;
+
+  // AllTec-Feld-Parität (freitextliche Zusatzangaben zur Qualifikation).
+  final String? qualifikationsart;
+  final String? beschreibung;
+  final String? zertifikatNr;
+  final String? ausstellendeStelle;
 
   final String? createdByUid;
   final DateTime? createdAt;
@@ -104,6 +114,10 @@ class EmployeeQualification {
       erworbenAm: FirestoreDateParser.readDate(map['erworbenAm']),
       gueltigBis: FirestoreDateParser.readDate(map['gueltigBis']),
       bemerkung: map['bemerkung'] as String?,
+      qualifikationsart: map['qualifikationsart'] as String?,
+      beschreibung: map['beschreibung'] as String?,
+      zertifikatNr: map['zertifikatNr'] as String?,
+      ausstellendeStelle: map['ausstellendeStelle'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -121,6 +135,10 @@ class EmployeeQualification {
       erworbenAm: FirestoreDateParser.readLocalDate(map['erworben_am']),
       gueltigBis: FirestoreDateParser.readLocalDate(map['gueltig_bis']),
       bemerkung: map['bemerkung'] as String?,
+      qualifikationsart: map['qualifikationsart'] as String?,
+      beschreibung: map['beschreibung'] as String?,
+      zertifikatNr: map['zertifikat_nr'] as String?,
+      ausstellendeStelle: map['ausstellende_stelle'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -141,6 +159,10 @@ class EmployeeQualification {
           ? null
           : Timestamp.fromDate(_dateOnly(gueltigBis)!),
       'bemerkung': bemerkung,
+      'qualifikationsart': qualifikationsart,
+      'beschreibung': beschreibung,
+      'zertifikatNr': zertifikatNr,
+      'ausstellendeStelle': ausstellendeStelle,
       'createdByUid': createdByUid,
       // Doc-ID wird vor dem Schreiben gesetzt → an createdAt festmachen.
       if (createdAt == null) 'createdAt': FieldValue.serverTimestamp(),
@@ -159,6 +181,10 @@ class EmployeeQualification {
       'erworben_am': _dateOnly(erworbenAm)?.toIso8601String(),
       'gueltig_bis': _dateOnly(gueltigBis)?.toIso8601String(),
       'bemerkung': bemerkung,
+      'qualifikationsart': qualifikationsart,
+      'beschreibung': beschreibung,
+      'zertifikat_nr': zertifikatNr,
+      'ausstellende_stelle': ausstellendeStelle,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -179,6 +205,14 @@ class EmployeeQualification {
     bool clearGueltigBis = false,
     String? bemerkung,
     bool clearBemerkung = false,
+    String? qualifikationsart,
+    bool clearQualifikationsart = false,
+    String? beschreibung,
+    bool clearBeschreibung = false,
+    String? zertifikatNr,
+    bool clearZertifikatNr = false,
+    String? ausstellendeStelle,
+    bool clearAusstellendeStelle = false,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -194,6 +228,16 @@ class EmployeeQualification {
       erworbenAm: clearErworbenAm ? null : (erworbenAm ?? this.erworbenAm),
       gueltigBis: clearGueltigBis ? null : (gueltigBis ?? this.gueltigBis),
       bemerkung: clearBemerkung ? null : (bemerkung ?? this.bemerkung),
+      qualifikationsart: clearQualifikationsart
+          ? null
+          : (qualifikationsart ?? this.qualifikationsart),
+      beschreibung:
+          clearBeschreibung ? null : (beschreibung ?? this.beschreibung),
+      zertifikatNr:
+          clearZertifikatNr ? null : (zertifikatNr ?? this.zertifikatNr),
+      ausstellendeStelle: clearAusstellendeStelle
+          ? null
+          : (ausstellendeStelle ?? this.ausstellendeStelle),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

@@ -20,6 +20,7 @@ class EmployeeChild {
     this.geschlecht,
     this.steuerIdKind,
     this.geburtstag,
+    this.anmerkungen,
     this.zaehltFuerFreibetrag = true,
     this.createdByUid,
     this.createdAt,
@@ -36,6 +37,9 @@ class EmployeeChild {
   /// Steuer-Identifikationsnummer des Kindes (11-stellig), optional.
   final String? steuerIdKind;
   final DateTime? geburtstag;
+
+  /// Freitext-Anmerkung zum Kind (optional; AllTec-Feld-Parität).
+  final String? anmerkungen;
 
   /// Ob das Kind für den lohnsteuerlichen Kinderfreibetrag zählt (Default true).
   final bool zaehltFuerFreibetrag;
@@ -65,6 +69,7 @@ class EmployeeChild {
       geschlecht: map['geschlecht'] as String?,
       steuerIdKind: map['steuerIdKind'] as String?,
       geburtstag: FirestoreDateParser.readDate(map['geburtstag']),
+      anmerkungen: map['anmerkungen'] as String?,
       zaehltFuerFreibetrag:
           parse.toBool(map['zaehltFuerFreibetrag']) ?? true,
       createdByUid: map['createdByUid'] as String?,
@@ -83,6 +88,7 @@ class EmployeeChild {
       geschlecht: map['geschlecht'] as String?,
       steuerIdKind: map['steuer_id_kind'] as String?,
       geburtstag: FirestoreDateParser.readLocalDate(map['geburtstag']),
+      anmerkungen: map['anmerkungen'] as String?,
       zaehltFuerFreibetrag:
           parse.toBool(map['zaehlt_fuer_freibetrag']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
@@ -102,6 +108,7 @@ class EmployeeChild {
       'geburtstag': _dateOnly(geburtstag) == null
           ? null
           : Timestamp.fromDate(_dateOnly(geburtstag)!),
+      'anmerkungen': anmerkungen,
       'zaehltFuerFreibetrag': zaehltFuerFreibetrag,
       'createdByUid': createdByUid,
       // Doc-ID wird vor dem Schreiben gesetzt → an createdAt festmachen, nicht
@@ -121,6 +128,7 @@ class EmployeeChild {
       'geschlecht': geschlecht,
       'steuer_id_kind': steuerIdKind,
       'geburtstag': _dateOnly(geburtstag)?.toIso8601String(),
+      'anmerkungen': anmerkungen,
       'zaehlt_fuer_freibetrag': zaehltFuerFreibetrag,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
@@ -140,6 +148,8 @@ class EmployeeChild {
     bool clearSteuerIdKind = false,
     DateTime? geburtstag,
     bool clearGeburtstag = false,
+    String? anmerkungen,
+    bool clearAnmerkungen = false,
     bool? zaehltFuerFreibetrag,
     String? createdByUid,
     DateTime? createdAt,
@@ -155,6 +165,8 @@ class EmployeeChild {
       steuerIdKind:
           clearSteuerIdKind ? null : (steuerIdKind ?? this.steuerIdKind),
       geburtstag: clearGeburtstag ? null : (geburtstag ?? this.geburtstag),
+      anmerkungen:
+          clearAnmerkungen ? null : (anmerkungen ?? this.anmerkungen),
       zaehltFuerFreibetrag:
           zaehltFuerFreibetrag ?? this.zaehltFuerFreibetrag,
       createdByUid: createdByUid ?? this.createdByUid,

@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "title": "WorkTime – Wissen & Handbuch",
+  "sections": [
+    {
+      "id": "erste-schritte",
+      "title": "Erste Schritte",
+      "audience": "mitarbeiter",
+      "icon": "rocket_launch",
+      "order": 1,
+      "articles": [
+        { "slug": "willkommen", "title": "Willkommen bei WorkTime", "file": "mitarbeiter/willkommen.md", "roleGate": "all", "summary": "Was WorkTime ist, für wen, die sieben Tabs und die wichtigsten Grundbegriffe.", "keywords": ["überblick", "einführung", "tabs", "organisation", "standort", "rolle", "start"] },
+        { "slug": "anmeldung-und-rollen", "title": "Anmeldung, Rollen & Rechte", "file": "mitarbeiter/anmeldung-und-rollen.md", "roleGate": "all", "summary": "Anmelden per E-Mail oder Google, die drei Rollen und was jede darf.", "keywords": ["login", "anmelden", "passwort", "google", "rolle", "admin", "teamleiter", "mitarbeiter", "gesperrt", "rechte"] },
+        { "slug": "navigation-und-bedienung", "title": "Navigation & Bedienung", "file": "mitarbeiter/navigation-und-bedienung.md", "roleGate": "all", "summary": "Tab-Leiste, Seitenleiste, Suche, Dunkelmodus und Schriftgröße bedienen.", "keywords": ["navigation", "bedienung", "tabs", "suche", "dunkelmodus", "schrift", "tablet", "handy"] },
+        { "slug": "offline-arbeiten", "title": "Offline arbeiten & Synchronisierung", "file": "mitarbeiter/offline-arbeiten.md", "roleGate": "all", "summary": "Was ohne Internet funktioniert, das Offline-Banner und wie synchronisiert wird.", "keywords": ["offline", "internet", "synchronisierung", "banner", "verbindung"] }
+      ]
+    },
+    {
+      "id": "heute",
+      "title": "Heute / Dashboard",
+      "audience": "mitarbeiter",
+      "icon": "today",
+      "order": 2,
+      "articles": [
+        { "slug": "heute-dashboard", "title": "Der Heute-Tab (Dashboard)", "file": "mitarbeiter/heute-dashboard.md", "roleGate": "all", "summary": "Der Start-Tab mit Aktionskarten, offenen Aufgaben und Schnellzugriffen.", "keywords": ["heute", "dashboard", "start", "aktionen", "aufgaben", "übersicht"] }
+      ]
+    },
+    {
+      "id": "zeiterfassung",
+      "title": "Zeiterfassung",
+      "audience": "mitarbeiter",
+      "icon": "schedule",
+      "order": 3,
+      "articles": [
+        { "slug": "stempeln", "title": "Kommen & Gehen (Stempeln)", "file": "mitarbeiter/stempeln.md", "roleGate": "all", "summary": "Digitale Stempeluhr: Kommen, Gehen, Pause und Korrekturen.", "keywords": ["stempeln", "stempeluhr", "kommen", "gehen", "pause", "arbeitszeit"] },
+        { "slug": "zeiterfassung-eintraege", "title": "Arbeitszeiten erfassen & bearbeiten", "file": "mitarbeiter/zeiterfassung-eintraege.md", "roleGate": "all", "summary": "Zeiteinträge anlegen, bearbeiten, Vorlagen nutzen und Warnungen verstehen.", "keywords": ["zeiteintrag", "arbeitszeit", "erfassen", "vorlage", "pause", "compliance"] },
+        { "slug": "stundenkonto", "title": "Stundenkonto & Überstunden", "file": "mitarbeiter/stundenkonto.md", "roleGate": "all", "summary": "Soll- und Ist-Zeit, Über- und Minusstunden, Monatsübersicht.", "keywords": ["stundenkonto", "überstunden", "sollzeit", "istzeit", "saldo", "minusstunden"] },
+        { "slug": "abwesenheiten-urlaub", "title": "Urlaub & Abwesenheiten", "file": "mitarbeiter/abwesenheiten-urlaub.md", "roleGate": "all", "summary": "Urlaub und Krankheit beantragen, Kalender und Urlaubskonto.", "keywords": ["urlaub", "abwesenheit", "krank", "antrag", "kalender", "urlaubskonto"] },
+        { "slug": "monatsbericht", "title": "Monatsbericht & Abschluss", "file": "mitarbeiter/monatsbericht.md", "roleGate": "all", "summary": "Monatsbericht ansehen, als PDF exportieren und bestätigen.", "keywords": ["monatsbericht", "pdf", "abschluss", "bestätigen", "export"] }
+      ]
+    },
+    {
+      "id": "schichtplan",
+      "title": "Schichtplan",
+      "audience": "mitarbeiter",
+      "icon": "calendar_month",
+      "order": 4,
+      "articles": [
+        { "slug": "schichtplan-ansehen", "title": "Schichtplan ansehen", "file": "mitarbeiter/schichtplan-ansehen.md", "roleGate": "all", "summary": "Wochenansicht, eigene Schichten, Status und Standort-Farben.", "keywords": ["schichtplan", "schicht", "woche", "status", "ansehen"] },
+        { "slug": "schicht-wuensche-und-tausch", "title": "Schichtwünsche, Tausch & Gutschriften", "file": "mitarbeiter/schicht-wuensche-und-tausch.md", "roleGate": "all", "summary": "Vorlieben angeben, Schichten tauschen und Gutschriften nutzen.", "keywords": ["schichtwunsch", "vorliebe", "tausch", "tauschen", "gutschrift", "guthaben"] },
+        { "slug": "krankmeldung", "title": "Krankmeldung & freie Schichten", "file": "mitarbeiter/krankmeldung.md", "roleGate": "all", "summary": "Krankmeldung gibt die betroffene Schicht automatisch frei.", "keywords": ["krankmeldung", "krank", "kind krank", "schicht frei", "abmelden"] },
+        { "slug": "schichtplanung-fuehrung", "title": "Schichten planen (Führung)", "file": "mitarbeiter/schichtplanung-fuehrung.md", "roleGate": "manager", "summary": "Für Führungskräfte: Schichten anlegen, automatisch verteilen, veröffentlichen.", "keywords": ["schichtplanung", "planen", "automatisch", "verteilen", "veröffentlichen", "besetzung", "führung"] }
+      ]
+    },
+    {
+      "id": "anfragen",
+      "title": "Anfragen & Benachrichtigungen",
+      "audience": "mitarbeiter",
+      "icon": "notifications",
+      "order": 5,
+      "articles": [
+        { "slug": "anfragen-inbox", "title": "Anfragen & Postfach", "file": "mitarbeiter/anfragen-inbox.md", "roleGate": "all", "summary": "Das zentrale Postfach für Genehmigungen, eigene Anfragen und Mitteilungen.", "keywords": ["anfragen", "postfach", "inbox", "genehmigung", "mitteilung"] },
+        { "slug": "benachrichtigungen", "title": "Benachrichtigungen einrichten", "file": "mitarbeiter/benachrichtigungen.md", "roleGate": "all", "summary": "Push-Benachrichtigungen aktivieren und Kanäle einzeln steuern.", "keywords": ["benachrichtigung", "push", "kanal", "einrichten", "aktivieren"] }
+      ]
+    },
+    {
+      "id": "kontakte",
+      "title": "Kontakte",
+      "audience": "mitarbeiter",
+      "icon": "contacts",
+      "order": 6,
+      "articles": [
+        { "slug": "kontakte", "title": "Kontakte & Adressbuch", "file": "mitarbeiter/kontakte.md", "roleGate": "all", "summary": "Kunden, Lieferanten und Partner verwalten, Aktivitäten und CSV-Import.", "keywords": ["kontakte", "adressbuch", "kunde", "lieferant", "partner", "import", "csv"] }
+      ]
+    },
+    {
+      "id": "laden",
+      "title": "Laden & Warenwirtschaft",
+      "audience": "mitarbeiter",
+      "icon": "storefront",
+      "order": 7,
+      "articles": [
+        { "slug": "warenwirtschaft-bestand", "title": "Bestand & Artikel", "file": "mitarbeiter/warenwirtschaft-bestand.md", "roleGate": "all", "summary": "Artikelstamm, Bestand, Bestandsbewegungen und Meldebestand.", "keywords": ["bestand", "artikel", "lager", "warenwirtschaft", "bewegung", "meldebestand"] },
+        { "slug": "bestellungen-einkauf", "title": "Bestellungen & Wareneingang", "file": "mitarbeiter/bestellungen-einkauf.md", "roleGate": "all", "summary": "Nachbestellungen anlegen, Lieferant wählen und Wareneingang buchen.", "keywords": ["bestellung", "einkauf", "wareneingang", "lieferant", "nachbestellen"] },
+        { "slug": "kundenbestellungen", "title": "Kundenbestellungen", "file": "mitarbeiter/kundenbestellungen.md", "roleGate": "all", "summary": "Sonderbestellungen von Kunden erfassen und abwickeln.", "keywords": ["kundenbestellung", "sonderbestellung", "warenkorb", "abholung", "kunde"] },
+        { "slug": "kuehlschrank-nachfuellliste", "title": "Kühlschrank-Nachfüllliste", "file": "mitarbeiter/kuehlschrank-nachfuellliste.md", "roleGate": "all", "summary": "Geteilte Checkliste zum Nachfüllen aus dem Lager in den Kühlschrank.", "keywords": ["kühlschrank", "nachfüllen", "checkliste", "kühlung", "lager"] },
+        { "slug": "mhd-ablauf-warnung", "title": "MHD- & Ablauf-Warnung", "file": "mitarbeiter/mhd-ablauf-warnung.md", "roleGate": "all", "summary": "Mindesthaltbarkeit erfassen und rechtzeitig vor Ablauf gewarnt werden.", "keywords": ["mhd", "haltbarkeit", "ablauf", "warnung", "charge", "datum"] },
+        { "slug": "scanner", "title": "Barcode-Scanner", "file": "mitarbeiter/scanner.md", "roleGate": "all", "summary": "Artikel per Barcode finden, Preise pflegen und Bestand erfassen.", "keywords": ["scanner", "barcode", "ean", "scannen", "preis", "kamera"] },
+        { "slug": "auswertungen-laden", "title": "Auswertungen: Bestand & Sortiment", "file": "mitarbeiter/auswertungen-laden.md", "roleGate": "admin", "summary": "Verkaufstempo, Ladenhüter, Sortiment und Marge – nur für Admins.", "keywords": ["auswertung", "sortiment", "marge", "ladenhüter", "verkaufstempo", "insights"] }
+      ]
+    },
+    {
+      "id": "kasse",
+      "title": "Kasse",
+      "audience": "mitarbeiter",
+      "icon": "point_of_sale",
+      "order": 8,
+      "articles": [
+        { "slug": "tagesabschluss", "title": "Kasse: Tagesabschluss & Zählen", "file": "mitarbeiter/tagesabschluss.md", "roleGate": "manager", "summary": "Kasse zählen, Tag abschließen und buchen; wer was darf.", "keywords": ["kasse", "tagesabschluss", "zählen", "abschluss", "differenz", "buchen"] },
+        { "slug": "kassenbericht", "title": "Kassenbericht", "file": "mitarbeiter/kassenbericht.md", "roleGate": "admin", "summary": "Umsatz, Käufe und Rohertrag als Woche, Monat oder Jahr – nur für Admins.", "keywords": ["kassenbericht", "umsatz", "rohertrag", "kpi", "export", "auswertung"] },
+        { "slug": "dritte-hand-kasse", "title": "Dritte-Hand-/Fremdgeld-Kasse", "file": "mitarbeiter/dritte-hand-kasse.md", "roleGate": "manager", "summary": "Fremdgeld getrennt führen, damit die Kassendifferenz sauber bleibt.", "keywords": ["fremdgeld", "dritte hand", "kasse", "trennung", "differenz"] },
+        { "slug": "kassierer-pruefung", "title": "Kassierer-Prüfung", "file": "mitarbeiter/kassierer-pruefung.md", "roleGate": "admin", "summary": "Auffälligkeiten bei Kassiervorgängen erkennen – nur für Admins.", "keywords": ["kassierer", "prüfung", "storno", "anomalie", "kontrolle"] }
+      ]
+    },
+    {
+      "id": "passwoerter",
+      "title": "Passwörter",
+      "audience": "mitarbeiter",
+      "icon": "lock",
+      "order": 9,
+      "articles": [
+        { "slug": "passwortmanager", "title": "Passwortmanager", "file": "mitarbeiter/passwortmanager.md", "roleGate": "all", "summary": "Zugangsdaten sicher, verschlüsselt speichern und teilen.", "keywords": ["passwort", "passwortmanager", "zugangsdaten", "verschlüsselt", "teilen", "sicherheit"] }
+      ]
+    },
+    {
+      "id": "arbeitsmodus",
+      "title": "Arbeitsmodus (Laden-Tablet)",
+      "audience": "mitarbeiter",
+      "icon": "tablet_mac",
+      "order": 10,
+      "articles": [
+        { "slug": "arbeitsmodus-kiosk", "title": "Arbeitsmodus (Laden-Tablet)", "file": "mitarbeiter/arbeitsmodus-kiosk.md", "roleGate": "all", "summary": "Das geteilte Laden-Tablet: Anmeldung per PIN, Kacheln und Stempeln.", "keywords": ["arbeitsmodus", "kiosk", "tablet", "pin", "board", "laden"] }
+      ]
+    },
+    {
+      "id": "fuehrung",
+      "title": "Personal & Auswertung (Führung)",
+      "audience": "mitarbeiter",
+      "icon": "badge",
+      "order": 11,
+      "articles": [
+        { "slug": "personal-hr", "title": "Personalbereich (HR)", "file": "mitarbeiter/personal-hr.md", "roleGate": "admin", "summary": "Digitale Personalakte, Aufträge, Lohn und Dokumente – nur für Admins.", "keywords": ["personal", "hr", "personalakte", "lohn", "dokumente", "auftrag"] },
+        { "slug": "buchhaltung", "title": "Buchhaltung & Finanzen", "file": "mitarbeiter/buchhaltung.md", "roleGate": "admin", "summary": "Finanz- und Kostenrechnung, Betriebsergebnis und DATEV-Export.", "keywords": ["buchhaltung", "finanzen", "datev", "kosten", "betriebsergebnis"] },
+        { "slug": "statistik", "title": "Statistiken & Berichte", "file": "mitarbeiter/statistik.md", "roleGate": "manager", "summary": "Auswertungen über Arbeitszeit, Schichten und Team.", "keywords": ["statistik", "bericht", "auswertung", "kennzahl", "team"] },
+        { "slug": "lohnlauf", "title": "Lohnlauf & Monatsabschluss", "file": "mitarbeiter/lohnlauf.md", "roleGate": "admin", "summary": "Monats-Festschreibung, Lohnlauf und Lohn-Herleitung.", "keywords": ["lohn", "lohnlauf", "monatsabschluss", "festschreiben", "gehalt", "zuschlag"] }
+      ]
+    },
+    {
+      "id": "profil",
+      "title": "Profil & Einstellungen",
+      "audience": "mitarbeiter",
+      "icon": "person",
+      "order": 12,
+      "articles": [
+        { "slug": "profil-und-einstellungen", "title": "Profil & Einstellungen", "file": "mitarbeiter/profil-und-einstellungen.md", "roleGate": "all", "summary": "Profil, Dunkelmodus, Schriftgröße, Benachrichtigungen und Abmelden.", "keywords": ["profil", "einstellungen", "theme", "dunkelmodus", "abmelden", "foto"] },
+        { "slug": "meine-akte", "title": "Meine Akte", "file": "mitarbeiter/meine-akte.md", "roleGate": "all", "summary": "Selbstsicht auf die eigenen Personaldaten, Vertrag und Dokumente.", "keywords": ["meine akte", "personalakte", "vertrag", "dokumente", "selbstsicht"] }
+      ]
+    },
+    {
+      "id": "kunden",
+      "title": "Kundeninteraktion",
+      "audience": "mitarbeiter",
+      "icon": "public",
+      "order": 13,
+      "articles": [
+        { "slug": "kundenwunsch-und-feedback", "title": "Kundenwünsche & Feedback", "file": "mitarbeiter/kundenwunsch-und-feedback.md", "roleGate": "all", "summary": "Die öffentlichen Seiten für Wünsche und Feedback und wie das Team sie nutzt.", "keywords": ["kundenwunsch", "feedback", "beschwerde", "wunsch", "öffentlich"] }
+      ]
+    },
+    {
+      "id": "architektur",
+      "title": "Architektur",
+      "audience": "entwickler",
+      "icon": "architecture",
+      "order": 20,
+      "articles": [
+        { "slug": "dev-ueberblick-tech-stack", "title": "Überblick & Tech-Stack", "file": "entwickler/dev-ueberblick-tech-stack.md", "roleGate": "admin", "summary": "Flutter + Firebase, Package, Verzeichnis-Map und Grundprinzipien.", "keywords": ["überblick", "stack", "flutter", "firebase", "architektur", "verzeichnis"] },
+        { "slug": "dev-bootstrap-main", "title": "Bootstrap & main.dart", "file": "entwickler/dev-bootstrap-main.md", "roleGate": "admin", "summary": "Startsequenz, Firebase-Init, Offline-Persistence und öffentliche Routen.", "keywords": ["bootstrap", "main", "start", "firebase", "init", "persistence"] },
+        { "slug": "dev-provider-kette", "title": "Provider-Kette & State-Management", "file": "entwickler/dev-provider-kette.md", "roleGate": "admin", "summary": "Die tragende Provider-Reihenfolge, Proxies, updateSession und AuditSink.", "keywords": ["provider", "state", "proxy", "kette", "updatesession", "notifier"] },
+        { "slug": "dev-routing", "title": "Routing (go_router)", "file": "entwickler/dev-routing.md", "roleGate": "admin", "summary": "Shell mit sieben Branches, Gate-Redirect und Berechtigungs-Gating.", "keywords": ["routing", "go_router", "shell", "redirect", "tab", "route"] },
+        { "slug": "dev-storage-modi", "title": "Speichermodi & lokale Persistenz", "file": "entwickler/dev-storage-modi.md", "roleGate": "admin", "summary": "hybrid/cloud/local, Mutator-Muster und DatabaseService (SharedPreferences).", "keywords": ["storage", "hybrid", "cloud", "local", "sharedpreferences", "cache"] },
+        { "slug": "dev-datenmodell-firestore", "title": "Firestore-Datenmodell", "file": "entwickler/dev-datenmodell-firestore.md", "roleGate": "admin", "summary": "Collections, Org-Skopierung, Config-Singletons und Composite-Indexe.", "keywords": ["firestore", "datenmodell", "collection", "org", "index", "schema"] },
+        { "slug": "dev-zwei-serialisierung", "title": "Die Zwei-Serialisierungs-Regel", "file": "entwickler/dev-zwei-serialisierung.md", "roleGate": "admin", "summary": "camelCase- vs. snake_case-Serialisierung – der wichtigste Footgun.", "keywords": ["serialisierung", "camelcase", "snakecase", "tofirestoremap", "tomap", "callable"] },
+        { "slug": "dev-theme-design-system", "title": "Theme & Design-System", "file": "entwickler/dev-theme-design-system.md", "roleGate": "admin", "summary": "AppTheme, appColors, lib/ui-Komponenten, Tokens und Strichmännchen.", "keywords": ["theme", "design", "tokens", "appcolors", "material", "strichmännchen"] },
+        { "slug": "dev-konfiguration-flags", "title": "Konfiguration, dart-defines & Feature-Flags", "file": "entwickler/dev-konfiguration-flags.md", "roleGate": "admin", "summary": "Das dart-define-Inventar, AppConfig und der FeatureFlagProvider.", "keywords": ["konfiguration", "dart-define", "feature-flag", "appconfig", "env"] }
+      ]
+    },
+    {
+      "id": "backend-sicherheit",
+      "title": "Backend & Sicherheit",
+      "audience": "entwickler",
+      "icon": "security",
+      "order": 21,
+      "articles": [
+        { "slug": "dev-cloud-functions", "title": "Cloud Functions", "file": "entwickler/dev-cloud-functions.md", "roleGate": "admin", "summary": "onCall-Functions, Region, Batch-Limit und validierter Schreibpfad.", "keywords": ["cloud functions", "oncall", "callable", "batch", "region", "node"] },
+        { "slug": "dev-compliance-engine", "title": "Compliance-Engine (Client/Server-Spiegel)", "file": "entwickler/dev-compliance-engine.md", "roleGate": "admin", "summary": "compliance_service.dart als Spiegel der Functions – gleiche Codes/Schwellen.", "keywords": ["compliance", "arbeitszeit", "spiegel", "ruhezeit", "pause", "minijob"] },
+        { "slug": "dev-sicherheit-multi-tenancy", "title": "Sicherheit & Mandantentrennung", "file": "entwickler/dev-sicherheit-multi-tenancy.md", "roleGate": "admin", "summary": "firestore.rules, sameOrg, Secrets, obfuskierte Builds und App Check.", "keywords": ["sicherheit", "multi-tenancy", "sameorg", "rules", "secret", "obfuscation"] },
+        { "slug": "dev-oktopos", "title": "OktoPOS-Kassenanbindung", "file": "entwickler/dev-oktopos.md", "roleGate": "admin", "summary": "Pull und Push zur Kasse via Functions, Secret Manager, Idempotenz.", "keywords": ["oktopos", "kasse", "pos", "sync", "secret", "idempotent"] },
+        { "slug": "dev-passwortmanager-technik", "title": "Passwortmanager (Envelope/KMS)", "file": "entwickler/dev-passwortmanager-technik.md", "roleGate": "admin", "summary": "Envelope-Verschlüsselung mit Cloud KMS + AES-256-GCM und Reauth.", "keywords": ["passwort", "kms", "envelope", "aes", "verschlüsselung", "reauth"] },
+        { "slug": "dev-push-fcm", "title": "Push/FCM-Technik", "file": "entwickler/dev-push-fcm.md", "roleGate": "admin", "summary": "fanOutPush, onDocument-Trigger, notifications-Collection und Kanäle.", "keywords": ["push", "fcm", "trigger", "benachrichtigung", "token", "kanal"] }
+      ]
+    },
+    {
+      "id": "fachlogik",
+      "title": "Fachlogik (Core)",
+      "audience": "entwickler",
+      "icon": "functions",
+      "order": 22,
+      "articles": [
+        { "slug": "dev-auto-schichtverteilung", "title": "Automatische Schichtverteilung", "file": "entwickler/dev-auto-schichtverteilung.md", "roleGate": "admin", "summary": "Phase A Slot-Generator + Phase B Assigner – pure, deterministisch.", "keywords": ["schichtverteilung", "auto", "slot", "assigner", "constraint", "fairness"] },
+        { "slug": "dev-warenwirtschaft-technik", "title": "Warenwirtschaft (technisch)", "file": "entwickler/dev-warenwirtschaft-technik.md", "roleGate": "admin", "summary": "InventoryProvider, Repository-Abstraktion und Bestandsbewegungen.", "keywords": ["warenwirtschaft", "inventory", "repository", "produkt", "bestand"] },
+        { "slug": "dev-kasse-pos-technik", "title": "Kasse/POS (technisch)", "file": "entwickler/dev-kasse-pos-technik.md", "roleGate": "admin", "summary": "Engines kasse_report/cash_state, posDailyStats und Server-Aggregate.", "keywords": ["kasse", "pos", "report", "cash", "stats", "aggregat"] },
+        { "slug": "dev-personal-lohn-technik", "title": "Personal & Lohn (technisch)", "file": "entwickler/dev-personal-lohn-technik.md", "roleGate": "admin", "summary": "PersonalProvider, Lohn-Herleitung, DATEV und Zeitkonto.", "keywords": ["personal", "lohn", "payroll", "datev", "steuer", "zeitkonto"] },
+        { "slug": "dev-zeitwirtschaft-technik", "title": "Zeitwirtschaft (technisch)", "file": "entwickler/dev-zeitwirtschaft-technik.md", "roleGate": "admin", "summary": "clock_service, dienst_abgleich, Monatsabschluss und Zeit-Hub.", "keywords": ["zeitwirtschaft", "clock", "stempel", "dienstabgleich", "monatsabschluss"] },
+        { "slug": "dev-audit-trail", "title": "Änderungsprotokoll (Audit)", "file": "entwickler/dev-audit-trail.md", "roleGate": "admin", "summary": "AuditProvider, AuditSink und was geloggt wird (und was nicht).", "keywords": ["audit", "protokoll", "änderung", "auditsink", "log"] }
+      ]
+    },
+    {
+      "id": "qualitaet-betrieb",
+      "title": "Qualität & Betrieb",
+      "audience": "entwickler",
+      "icon": "verified",
+      "order": 23,
+      "articles": [
+        { "slug": "dev-testing", "title": "Test-Konventionen", "file": "entwickler/dev-testing.md", "roleGate": "admin", "summary": "Fakes statt echtem Firebase, de_DE, Provider-Setup und Quality Gates.", "keywords": ["test", "fake", "firebase", "widget", "provider", "coverage"] },
+        { "slug": "dev-logging-observability", "title": "Logging & Observability", "file": "entwickler/dev-logging-observability.md", "roleGate": "admin", "summary": "AppLogger/ErrorReporter, Redaction und strukturierte Cloud-Logs.", "keywords": ["logging", "observability", "logger", "redaction", "analytics", "crash"] },
+        { "slug": "dev-deployment-release", "title": "Deployment & Release", "file": "entwickler/dev-deployment-release.md", "roleGate": "admin", "summary": "firebase deploy, obfuskierte Builds, Signierung und Blaze.", "keywords": ["deployment", "release", "firebase", "deploy", "build", "obfuscation"] },
+        { "slug": "dev-kritische-kopplungen", "title": "Kritische Kopplungen", "file": "entwickler/dev-kritische-kopplungen.md", "roleGate": "admin", "summary": "Die \"wenn du X änderst, ändere auch Y\"-Regeln mit Beispielen.", "keywords": ["kopplung", "coupling", "regel", "model", "enum", "index"] },
+        { "slug": "dev-beitragen-konventionen", "title": "Beitragen & Konventionen", "file": "entwickler/dev-beitragen-konventionen.md", "roleGate": "admin", "summary": "Definition of Done, Deutsch-only, Lint und der Feature-Lebenszyklus.", "keywords": ["beitragen", "konvention", "definition of done", "lint", "deutsch", "style"] }
+      ]
+    }
+  ]
+}

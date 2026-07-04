@@ -358,6 +358,8 @@ Siehe Abschnitt 6.1 (Dashboard-Redesign) für die vollständige Blockstruktur je
 
 ### 6.1 Dashboard / Heute — 11 Blöcke → 6 je Rolle
 
+> **Sicherheitsnetz vorhanden (04.07.):** [test/home_dashboard_characterization_test.dart](../test/home_dashboard_characterization_test.dart) pinnt den IST-Zustand pro Rolle (employee/teamlead/admin: Hero, Quick-Actions, Metrik-Grid, `DashboardActionItemsCard`, admin↔teamlead-Trennung „Team verwalten"). Diese Baseline muss die Umsortierung überleben (Presence, nicht Reihenfolge) — Rot = ungewollter Feature-Verlust.
+
 Weiche in `home_screen.dart:1387–1411` (`buildHomeTab`). Neue Widgets in `home_dashboards_v2.dart`; V1 (`home_screen_tabs.dart`) bleibt Legacy.
 
 **Employee (P0/P1):** 1) **Status-Hero + Stempel-CTA** (Hero und Stempeluhr verschmelzen, grün „eingestempelt seit HH:mm"). 2) **Heute für mich** (nächste Schicht + Wochen-Ist/Soll kompakt). 3) **Meine offenen Anträge** (vollständig, Zähler statt `take(3)`). 4) Schnellaktionen (Krank/Urlaub/Zeit). 5) Wochenstreifen. 6) Monat kompakt. — *Entfällt:* „Letzte Einträge" (→ `/zeit`), „Nächste Schichten"-Liste (in Block 2), `DashboardActionItemsCard` (für Employee raus).

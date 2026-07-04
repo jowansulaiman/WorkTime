@@ -37,6 +37,7 @@ class AppNavMenu extends StatelessWidget {
     required this.onOpenScanner,
     required this.onOpenSettings,
     this.onOpenMeineAkte,
+    this.onOpenKnowledge,
     this.showScanner = false,
     this.showAreas = false,
     this.siteName,
@@ -68,6 +69,10 @@ class AppNavMenu extends StatelessWidget {
   /// „Meine Personalakte" (PA-2.4) – Selbstsicht für jeden Nutzer. Optional
   /// (backward-compatible); nur gezeigt, wenn gesetzt.
   final VoidCallback? onOpenMeineAkte;
+
+  /// „Wissen & Hilfe" (In-App-Doku). Optional (backward-compatible); nur gezeigt,
+  /// wenn gesetzt.
+  final VoidCallback? onOpenKnowledge;
   final VoidCallback onOpenSettings;
 
   /// Ob der Scanner-Eintrag gezeigt wird. Die „nur Handy"-Entscheidung
@@ -234,6 +239,13 @@ class AppNavMenu extends StatelessWidget {
                 subtitle: 'Profil, Theme und Standardwerte ändern',
                 onTap: onOpenSettings,
               ),
+              if (onOpenKnowledge != null)
+                AppQuickActionTile(
+                  icon: Icons.menu_book_outlined,
+                  title: 'Wissen & Hilfe',
+                  subtitle: 'Anleitungen zu jedem Bereich der App',
+                  onTap: onOpenKnowledge!,
+                ),
             ],
           ),
           SizedBox(height: spacing.lg),

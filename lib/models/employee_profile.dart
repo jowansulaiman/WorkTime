@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
+import 'payroll_extras.dart';
 
 /// Familienstand (lohn-/steuerrelevant).
 enum MaritalStatus {
@@ -182,6 +183,84 @@ extension HealthInsuranceTypeX on HealthInsuranceType {
       };
 }
 
+/// Art des Erwerbs/Beschäftigungsverhältnisses (AllTec-Parität, Status-Tab).
+enum Erwerbsart {
+  festanstellungHaupterwerb,
+  festanstellungNebenerwerb,
+  geringfuegigeBeschaeftigung,
+  midijob,
+  praktikum,
+  werkstudent,
+}
+
+extension ErwerbsartX on Erwerbsart {
+  String get value => switch (this) {
+        Erwerbsart.festanstellungHaupterwerb => 'festanstellung_haupterwerb',
+        Erwerbsart.festanstellungNebenerwerb => 'festanstellung_nebenerwerb',
+        Erwerbsart.geringfuegigeBeschaeftigung =>
+          'geringfuegige_beschaeftigung',
+        Erwerbsart.midijob => 'midijob',
+        Erwerbsart.praktikum => 'praktikum',
+        Erwerbsart.werkstudent => 'werkstudent',
+      };
+
+  String get label => switch (this) {
+        Erwerbsart.festanstellungHaupterwerb => 'Festanstellung Haupterwerb',
+        Erwerbsart.festanstellungNebenerwerb => 'Festanstellung Nebenerwerb',
+        Erwerbsart.geringfuegigeBeschaeftigung => 'Geringfügige Beschäftigung',
+        Erwerbsart.midijob => 'Midijob',
+        Erwerbsart.praktikum => 'Praktikum',
+        Erwerbsart.werkstudent => 'Werkstudent',
+      };
+
+  static Erwerbsart? fromValue(String? value) => switch (value) {
+        'festanstellung_haupterwerb' => Erwerbsart.festanstellungHaupterwerb,
+        'festanstellung_nebenerwerb' => Erwerbsart.festanstellungNebenerwerb,
+        'geringfuegige_beschaeftigung' =>
+          Erwerbsart.geringfuegigeBeschaeftigung,
+        'midijob' => Erwerbsart.midijob,
+        'praktikum' => Erwerbsart.praktikum,
+        'werkstudent' => Erwerbsart.werkstudent,
+        _ => null,
+      };
+}
+
+/// Typ der Kündigungsfrist (AllTec-Parität, Status-Tab).
+enum KuendigungsfristTyp {
+  wochenAbKuendigung,
+  wochenZumMonatsende,
+  monateZumMonatsende,
+  monateZumQuartalsende,
+  monateZumJahresende,
+}
+
+extension KuendigungsfristTypX on KuendigungsfristTyp {
+  String get value => switch (this) {
+        KuendigungsfristTyp.wochenAbKuendigung => 'wochen_ab_kuendigung',
+        KuendigungsfristTyp.wochenZumMonatsende => 'wochen_zum_monatsende',
+        KuendigungsfristTyp.monateZumMonatsende => 'monate_zum_monatsende',
+        KuendigungsfristTyp.monateZumQuartalsende => 'monate_zum_quartalsende',
+        KuendigungsfristTyp.monateZumJahresende => 'monate_zum_jahresende',
+      };
+
+  String get label => switch (this) {
+        KuendigungsfristTyp.wochenAbKuendigung => 'Wochen ab Kündigung',
+        KuendigungsfristTyp.wochenZumMonatsende => 'Wochen zum Monatsende',
+        KuendigungsfristTyp.monateZumMonatsende => 'Monate zum Monatsende',
+        KuendigungsfristTyp.monateZumQuartalsende => 'Monate zum Quartalsende',
+        KuendigungsfristTyp.monateZumJahresende => 'Monate zum Jahresende',
+      };
+
+  static KuendigungsfristTyp? fromValue(String? value) => switch (value) {
+        'wochen_ab_kuendigung' => KuendigungsfristTyp.wochenAbKuendigung,
+        'wochen_zum_monatsende' => KuendigungsfristTyp.wochenZumMonatsende,
+        'monate_zum_monatsende' => KuendigungsfristTyp.monateZumMonatsende,
+        'monate_zum_quartalsende' => KuendigungsfristTyp.monateZumQuartalsende,
+        'monate_zum_jahresende' => KuendigungsfristTyp.monateZumJahresende,
+        _ => null,
+      };
+}
+
 /// Personal-Stammakte eines Mitarbeiters (admin-only).
 ///
 /// Ergänzt die schlanken Login-/Vertragsdaten ([AppUserProfile],
@@ -211,6 +290,9 @@ class EmployeeProfile {
     this.titleAcademic,
     this.birthDate,
     this.nationality,
+    this.kuerzel,
+    this.geburtsort,
+    this.geburtsname,
     // Anschrift
     this.street,
     this.houseNumber,
@@ -250,6 +332,33 @@ class EmployeeProfile {
     this.emergencyContactPhone,
     // Notizen
     this.note,
+    // Klassifizierung / Organisation (AllTec-Parität)
+    this.abteilung,
+    this.position,
+    this.kostenstelle,
+    this.vorgesetzterName,
+    this.vertreterName,
+    this.produktiveZeitProzent,
+    this.fteFaktor,
+    // Status & Vereinbarungen (AllTec-Parität)
+    this.erwerbsart,
+    this.teilnahmeZeiterfassung,
+    this.autoBuchung,
+    this.langzeitkrankAb,
+    this.letzterArbeitstag,
+    this.kuendigungsfristWert,
+    this.kuendigungsfristTyp,
+    this.kuendigungsfristAnmerkung,
+    this.kuendigungsDatum,
+    this.kuendigungsgrund,
+    this.austrittsgrund,
+    this.austrittsmodalitaeten,
+    // Gehalt (AllTec-Parität): Zusatzfelder + eingebettete Nebenobjekte
+    this.entgeltgruppe,
+    this.gehaltGueltigAb,
+    this.vwl,
+    this.zulagen = const [],
+    this.bankAccounts = const [],
     // Meta
     this.createdByUid,
     this.createdAt,
@@ -264,6 +373,9 @@ class EmployeeProfile {
   final String? titleAcademic;
   final DateTime? birthDate;
   final String? nationality;
+  final String? kuerzel;
+  final String? geburtsort;
+  final String? geburtsname;
 
   final String? street;
   final String? houseNumber;
@@ -312,6 +424,36 @@ class EmployeeProfile {
 
   final String? note;
 
+  // Klassifizierung / Organisation (AllTec-Parität).
+  final String? abteilung;
+  final String? position;
+  final String? kostenstelle;
+  final String? vorgesetzterName;
+  final String? vertreterName;
+  final double? produktiveZeitProzent;
+  final double? fteFaktor;
+
+  // Status & Vereinbarungen (AllTec-Parität).
+  final Erwerbsart? erwerbsart;
+  final bool? teilnahmeZeiterfassung;
+  final bool? autoBuchung;
+  final DateTime? langzeitkrankAb;
+  final DateTime? letzterArbeitstag;
+  final int? kuendigungsfristWert;
+  final KuendigungsfristTyp? kuendigungsfristTyp;
+  final String? kuendigungsfristAnmerkung;
+  final DateTime? kuendigungsDatum;
+  final String? kuendigungsgrund;
+  final String? austrittsgrund;
+  final String? austrittsmodalitaeten;
+
+  // Gehalt (AllTec-Parität).
+  final String? entgeltgruppe;
+  final DateTime? gehaltGueltigAb;
+  final VwlData? vwl;
+  final List<SalaryAllowance> zulagen;
+  final List<BankAccount> bankAccounts;
+
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -359,6 +501,19 @@ class EmployeeProfile {
         emergencyContactName,
         emergencyContactPhone,
         note,
+        kuerzel,
+        geburtsort,
+        geburtsname,
+        abteilung,
+        position,
+        kostenstelle,
+        vorgesetzterName,
+        vertreterName,
+        kuendigungsfristAnmerkung,
+        kuendigungsgrund,
+        austrittsgrund,
+        austrittsmodalitaeten,
+        entgeltgruppe,
       ]) &&
       birthDate == null &&
       hireDate == null &&
@@ -372,6 +527,20 @@ class EmployeeProfile {
       healthInsuranceSurchargePercent == null &&
       annualVacationDays == null &&
       childrenCount == 0 &&
+      produktiveZeitProzent == null &&
+      fteFaktor == null &&
+      erwerbsart == null &&
+      teilnahmeZeiterfassung == null &&
+      autoBuchung == null &&
+      langzeitkrankAb == null &&
+      letzterArbeitstag == null &&
+      kuendigungsfristWert == null &&
+      kuendigungsfristTyp == null &&
+      kuendigungsDatum == null &&
+      gehaltGueltigAb == null &&
+      vwl == null &&
+      zulagen.isEmpty &&
+      bankAccounts.isEmpty &&
       status == EmployeeStatus.aktiv;
 
   factory EmployeeProfile.fromFirestore(String id, Map<String, dynamic> map) {
@@ -383,6 +552,9 @@ class EmployeeProfile {
       titleAcademic: map['titleAcademic'] as String?,
       birthDate: FirestoreDateParser.readDate(map['birthDate']),
       nationality: map['nationality'] as String?,
+      kuerzel: map['kuerzel'] as String?,
+      geburtsort: map['geburtsort'] as String?,
+      geburtsname: map['geburtsname'] as String?,
       street: map['street'] as String?,
       houseNumber: map['houseNumber'] as String?,
       postalCode: map['postalCode'] as String?,
@@ -417,6 +589,42 @@ class EmployeeProfile {
       emergencyContactName: map['emergencyContactName'] as String?,
       emergencyContactPhone: map['emergencyContactPhone'] as String?,
       note: map['note'] as String?,
+      abteilung: map['abteilung'] as String?,
+      position: map['position'] as String?,
+      kostenstelle: map['kostenstelle'] as String?,
+      vorgesetzterName: map['vorgesetzterName'] as String?,
+      vertreterName: map['vertreterName'] as String?,
+      produktiveZeitProzent: parse.toDouble(map['produktiveZeitProzent']),
+      fteFaktor: parse.toDouble(map['fteFaktor']),
+      erwerbsart: ErwerbsartX.fromValue(map['erwerbsart']?.toString()),
+      teilnahmeZeiterfassung: parse.toBool(map['teilnahmeZeiterfassung']),
+      autoBuchung: parse.toBool(map['autoBuchung']),
+      langzeitkrankAb: FirestoreDateParser.readDate(map['langzeitkrankAb']),
+      letzterArbeitstag: FirestoreDateParser.readDate(map['letzterArbeitstag']),
+      kuendigungsfristWert: parse.toInt(map['kuendigungsfristWert']),
+      kuendigungsfristTyp: KuendigungsfristTypX.fromValue(
+          map['kuendigungsfristTyp']?.toString()),
+      kuendigungsfristAnmerkung: map['kuendigungsfristAnmerkung'] as String?,
+      kuendigungsDatum: FirestoreDateParser.readDate(map['kuendigungsDatum']),
+      kuendigungsgrund: map['kuendigungsgrund'] as String?,
+      austrittsgrund: map['austrittsgrund'] as String?,
+      austrittsmodalitaeten: map['austrittsmodalitaeten'] as String?,
+      entgeltgruppe: map['entgeltgruppe'] as String?,
+      gehaltGueltigAb: FirestoreDateParser.readDate(map['gehaltGueltigAb']),
+      vwl: map['vwl'] is Map
+          ? VwlData.fromFirestore(Map<String, dynamic>.from(map['vwl'] as Map))
+          : null,
+      zulagen: (map['zulagen'] as List?)
+              ?.whereType<Map>()
+              .map((e) =>
+                  SalaryAllowance.fromFirestore(Map<String, dynamic>.from(e)))
+              .toList() ??
+          const [],
+      bankAccounts: (map['bankAccounts'] as List?)
+              ?.whereType<Map>()
+              .map((e) => BankAccount.fromFirestore(Map<String, dynamic>.from(e)))
+              .toList() ??
+          const [],
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -432,6 +640,9 @@ class EmployeeProfile {
       titleAcademic: map['title_academic'] as String?,
       birthDate: FirestoreDateParser.readLocalDate(map['birth_date']),
       nationality: map['nationality'] as String?,
+      kuerzel: map['kuerzel'] as String?,
+      geburtsort: map['geburtsort'] as String?,
+      geburtsname: map['geburtsname'] as String?,
       street: map['street'] as String?,
       houseNumber: map['house_number'] as String?,
       postalCode: map['postal_code'] as String?,
@@ -466,6 +677,44 @@ class EmployeeProfile {
       emergencyContactName: map['emergency_contact_name'] as String?,
       emergencyContactPhone: map['emergency_contact_phone'] as String?,
       note: map['note'] as String?,
+      abteilung: map['abteilung'] as String?,
+      position: map['position'] as String?,
+      kostenstelle: map['kostenstelle'] as String?,
+      vorgesetzterName: map['vorgesetzter_name'] as String?,
+      vertreterName: map['vertreter_name'] as String?,
+      produktiveZeitProzent: parse.toDouble(map['produktive_zeit_prozent']),
+      fteFaktor: parse.toDouble(map['fte_faktor']),
+      erwerbsart: ErwerbsartX.fromValue(map['erwerbsart']?.toString()),
+      teilnahmeZeiterfassung: parse.toBool(map['teilnahme_zeiterfassung']),
+      autoBuchung: parse.toBool(map['auto_buchung']),
+      langzeitkrankAb: FirestoreDateParser.readLocalDate(map['langzeitkrank_ab']),
+      letzterArbeitstag:
+          FirestoreDateParser.readLocalDate(map['letzter_arbeitstag']),
+      kuendigungsfristWert: parse.toInt(map['kuendigungsfrist_wert']),
+      kuendigungsfristTyp: KuendigungsfristTypX.fromValue(
+          map['kuendigungsfrist_typ']?.toString()),
+      kuendigungsfristAnmerkung: map['kuendigungsfrist_anmerkung'] as String?,
+      kuendigungsDatum:
+          FirestoreDateParser.readLocalDate(map['kuendigungs_datum']),
+      kuendigungsgrund: map['kuendigungsgrund'] as String?,
+      austrittsgrund: map['austrittsgrund'] as String?,
+      austrittsmodalitaeten: map['austrittsmodalitaeten'] as String?,
+      entgeltgruppe: map['entgeltgruppe'] as String?,
+      gehaltGueltigAb:
+          FirestoreDateParser.readLocalDate(map['gehalt_gueltig_ab']),
+      vwl: map['vwl'] is Map
+          ? VwlData.fromMap(Map<String, dynamic>.from(map['vwl'] as Map))
+          : null,
+      zulagen: (map['zulagen'] as List?)
+              ?.whereType<Map>()
+              .map((e) => SalaryAllowance.fromMap(Map<String, dynamic>.from(e)))
+              .toList() ??
+          const [],
+      bankAccounts: (map['bank_accounts'] as List?)
+              ?.whereType<Map>()
+              .map((e) => BankAccount.fromMap(Map<String, dynamic>.from(e)))
+              .toList() ??
+          const [],
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -480,6 +729,9 @@ class EmployeeProfile {
       'titleAcademic': _clean(titleAcademic),
       'birthDate': _dateOnly(birthDate),
       'nationality': _clean(nationality),
+      'kuerzel': _clean(kuerzel),
+      'geburtsort': _clean(geburtsort),
+      'geburtsname': _clean(geburtsname),
       'street': _clean(street),
       'houseNumber': _clean(houseNumber),
       'postalCode': _clean(postalCode),
@@ -510,6 +762,30 @@ class EmployeeProfile {
       'emergencyContactName': _clean(emergencyContactName),
       'emergencyContactPhone': _clean(emergencyContactPhone),
       'note': _clean(note),
+      'abteilung': _clean(abteilung),
+      'position': _clean(position),
+      'kostenstelle': _clean(kostenstelle),
+      'vorgesetzterName': _clean(vorgesetzterName),
+      'vertreterName': _clean(vertreterName),
+      'produktiveZeitProzent': produktiveZeitProzent,
+      'fteFaktor': fteFaktor,
+      'erwerbsart': erwerbsart?.value,
+      'teilnahmeZeiterfassung': teilnahmeZeiterfassung,
+      'autoBuchung': autoBuchung,
+      'langzeitkrankAb': _dateOnly(langzeitkrankAb),
+      'letzterArbeitstag': _dateOnly(letzterArbeitstag),
+      'kuendigungsfristWert': kuendigungsfristWert,
+      'kuendigungsfristTyp': kuendigungsfristTyp?.value,
+      'kuendigungsfristAnmerkung': _clean(kuendigungsfristAnmerkung),
+      'kuendigungsDatum': _dateOnly(kuendigungsDatum),
+      'kuendigungsgrund': _clean(kuendigungsgrund),
+      'austrittsgrund': _clean(austrittsgrund),
+      'austrittsmodalitaeten': _clean(austrittsmodalitaeten),
+      'entgeltgruppe': _clean(entgeltgruppe),
+      'gehaltGueltigAb': _dateOnly(gehaltGueltigAb),
+      'vwl': vwl?.toFirestoreMap(),
+      'zulagen': zulagen.map((e) => e.toFirestoreMap()).toList(),
+      'bankAccounts': bankAccounts.map((e) => e.toFirestoreMap()).toList(),
       'createdByUid': createdByUid,
       // createdAt nur beim Erst-Write setzen: Doc-ID ist deterministisch (id wird
       // vor dem Speichern stets gesetzt), daher knüpfen wir an createdAt == null
@@ -529,6 +805,9 @@ class EmployeeProfile {
       'title_academic': titleAcademic,
       'birth_date': birthDate?.toIso8601String(),
       'nationality': nationality,
+      'kuerzel': kuerzel,
+      'geburtsort': geburtsort,
+      'geburtsname': geburtsname,
       'street': street,
       'house_number': houseNumber,
       'postal_code': postalCode,
@@ -559,6 +838,30 @@ class EmployeeProfile {
       'emergency_contact_name': emergencyContactName,
       'emergency_contact_phone': emergencyContactPhone,
       'note': note,
+      'abteilung': abteilung,
+      'position': position,
+      'kostenstelle': kostenstelle,
+      'vorgesetzter_name': vorgesetzterName,
+      'vertreter_name': vertreterName,
+      'produktive_zeit_prozent': produktiveZeitProzent,
+      'fte_faktor': fteFaktor,
+      'erwerbsart': erwerbsart?.value,
+      'teilnahme_zeiterfassung': teilnahmeZeiterfassung,
+      'auto_buchung': autoBuchung,
+      'langzeitkrank_ab': langzeitkrankAb?.toIso8601String(),
+      'letzter_arbeitstag': letzterArbeitstag?.toIso8601String(),
+      'kuendigungsfrist_wert': kuendigungsfristWert,
+      'kuendigungsfrist_typ': kuendigungsfristTyp?.value,
+      'kuendigungsfrist_anmerkung': kuendigungsfristAnmerkung,
+      'kuendigungs_datum': kuendigungsDatum?.toIso8601String(),
+      'kuendigungsgrund': kuendigungsgrund,
+      'austrittsgrund': austrittsgrund,
+      'austrittsmodalitaeten': austrittsmodalitaeten,
+      'entgeltgruppe': entgeltgruppe,
+      'gehalt_gueltig_ab': gehaltGueltigAb?.toIso8601String(),
+      'vwl': vwl?.toMap(),
+      'zulagen': zulagen.map((e) => e.toMap()).toList(),
+      'bank_accounts': bankAccounts.map((e) => e.toMap()).toList(),
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -573,6 +876,9 @@ class EmployeeProfile {
     String? titleAcademic,
     DateTime? birthDate,
     String? nationality,
+    String? kuerzel,
+    String? geburtsort,
+    String? geburtsname,
     String? street,
     String? houseNumber,
     String? postalCode,
@@ -603,6 +909,50 @@ class EmployeeProfile {
     String? emergencyContactName,
     String? emergencyContactPhone,
     String? note,
+    String? abteilung,
+    String? position,
+    String? kostenstelle,
+    String? vorgesetzterName,
+    String? vertreterName,
+    double? produktiveZeitProzent,
+    double? fteFaktor,
+    Erwerbsart? erwerbsart,
+    bool? teilnahmeZeiterfassung,
+    bool? autoBuchung,
+    DateTime? langzeitkrankAb,
+    DateTime? letzterArbeitstag,
+    int? kuendigungsfristWert,
+    KuendigungsfristTyp? kuendigungsfristTyp,
+    String? kuendigungsfristAnmerkung,
+    DateTime? kuendigungsDatum,
+    String? kuendigungsgrund,
+    String? austrittsgrund,
+    String? austrittsmodalitaeten,
+    // Clear-Flags für die per-Abschnitt-Editoren des Stammdaten-Tabs (AllTec):
+    // erlauben das gezielte Leeren nullbarer Datums-/Enum-/Zahl-Felder (Text-
+    // felder werden über '' + `_clean` geleert).
+    bool clearPersonnelGroup = false,
+    bool clearHireDate = false,
+    bool clearExitDate = false,
+    bool clearProbationEnd = false,
+    bool clearLimitedUntil = false,
+    bool clearMaritalStatus = false,
+    bool clearConfession = false,
+    bool clearProduktiveZeitProzent = false,
+    bool clearFteFaktor = false,
+    bool clearErwerbsart = false,
+    bool clearLangzeitkrankAb = false,
+    bool clearLetzterArbeitstag = false,
+    bool clearKuendigungsfristWert = false,
+    bool clearKuendigungsfristTyp = false,
+    bool clearKuendigungsDatum = false,
+    String? entgeltgruppe,
+    DateTime? gehaltGueltigAb,
+    bool clearGehaltGueltigAb = false,
+    VwlData? vwl,
+    bool clearVwl = false,
+    List<SalaryAllowance>? zulagen,
+    List<BankAccount>? bankAccounts,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -615,6 +965,9 @@ class EmployeeProfile {
       titleAcademic: titleAcademic ?? this.titleAcademic,
       birthDate: birthDate ?? this.birthDate,
       nationality: nationality ?? this.nationality,
+      kuerzel: kuerzel ?? this.kuerzel,
+      geburtsort: geburtsort ?? this.geburtsort,
+      geburtsname: geburtsname ?? this.geburtsname,
       street: street ?? this.street,
       houseNumber: houseNumber ?? this.houseNumber,
       postalCode: postalCode ?? this.postalCode,
@@ -625,13 +978,17 @@ class EmployeeProfile {
       privateEmail: privateEmail ?? this.privateEmail,
       personnelNumber: personnelNumber ?? this.personnelNumber,
       status: status ?? this.status,
-      personnelGroup: personnelGroup ?? this.personnelGroup,
-      hireDate: hireDate ?? this.hireDate,
-      exitDate: exitDate ?? this.exitDate,
-      probationEnd: probationEnd ?? this.probationEnd,
-      limitedUntil: limitedUntil ?? this.limitedUntil,
-      maritalStatus: maritalStatus ?? this.maritalStatus,
-      confession: confession ?? this.confession,
+      personnelGroup:
+          clearPersonnelGroup ? null : (personnelGroup ?? this.personnelGroup),
+      hireDate: clearHireDate ? null : (hireDate ?? this.hireDate),
+      exitDate: clearExitDate ? null : (exitDate ?? this.exitDate),
+      probationEnd:
+          clearProbationEnd ? null : (probationEnd ?? this.probationEnd),
+      limitedUntil:
+          clearLimitedUntil ? null : (limitedUntil ?? this.limitedUntil),
+      maritalStatus:
+          clearMaritalStatus ? null : (maritalStatus ?? this.maritalStatus),
+      confession: clearConfession ? null : (confession ?? this.confession),
       childrenCount: childrenCount ?? this.childrenCount,
       taxId: taxId ?? this.taxId,
       socialSecurityNumber: socialSecurityNumber ?? this.socialSecurityNumber,
@@ -647,6 +1004,45 @@ class EmployeeProfile {
       emergencyContactPhone:
           emergencyContactPhone ?? this.emergencyContactPhone,
       note: note ?? this.note,
+      abteilung: abteilung ?? this.abteilung,
+      position: position ?? this.position,
+      kostenstelle: kostenstelle ?? this.kostenstelle,
+      vorgesetzterName: vorgesetzterName ?? this.vorgesetzterName,
+      vertreterName: vertreterName ?? this.vertreterName,
+      produktiveZeitProzent: clearProduktiveZeitProzent
+          ? null
+          : (produktiveZeitProzent ?? this.produktiveZeitProzent),
+      fteFaktor: clearFteFaktor ? null : (fteFaktor ?? this.fteFaktor),
+      erwerbsart: clearErwerbsart ? null : (erwerbsart ?? this.erwerbsart),
+      teilnahmeZeiterfassung:
+          teilnahmeZeiterfassung ?? this.teilnahmeZeiterfassung,
+      autoBuchung: autoBuchung ?? this.autoBuchung,
+      langzeitkrankAb:
+          clearLangzeitkrankAb ? null : (langzeitkrankAb ?? this.langzeitkrankAb),
+      letzterArbeitstag: clearLetzterArbeitstag
+          ? null
+          : (letzterArbeitstag ?? this.letzterArbeitstag),
+      kuendigungsfristWert: clearKuendigungsfristWert
+          ? null
+          : (kuendigungsfristWert ?? this.kuendigungsfristWert),
+      kuendigungsfristTyp: clearKuendigungsfristTyp
+          ? null
+          : (kuendigungsfristTyp ?? this.kuendigungsfristTyp),
+      kuendigungsfristAnmerkung:
+          kuendigungsfristAnmerkung ?? this.kuendigungsfristAnmerkung,
+      kuendigungsDatum:
+          clearKuendigungsDatum ? null : (kuendigungsDatum ?? this.kuendigungsDatum),
+      kuendigungsgrund: kuendigungsgrund ?? this.kuendigungsgrund,
+      austrittsgrund: austrittsgrund ?? this.austrittsgrund,
+      austrittsmodalitaeten:
+          austrittsmodalitaeten ?? this.austrittsmodalitaeten,
+      entgeltgruppe: entgeltgruppe ?? this.entgeltgruppe,
+      gehaltGueltigAb: clearGehaltGueltigAb
+          ? null
+          : (gehaltGueltigAb ?? this.gehaltGueltigAb),
+      vwl: clearVwl ? null : (vwl ?? this.vwl),
+      zulagen: zulagen ?? this.zulagen,
+      bankAccounts: bankAccounts ?? this.bankAccounts,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

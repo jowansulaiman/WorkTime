@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worktime_app/models/employee_profile.dart';
+import 'package:worktime_app/models/payroll_extras.dart';
 
 EmployeeProfile _sample() => EmployeeProfile(
       orgId: 'org-1',
@@ -39,6 +40,54 @@ EmployeeProfile _sample() => EmployeeProfile(
       emergencyContactName: 'Max Muster',
       emergencyContactPhone: '0171 2223334',
       note: 'Lieber vormittags erreichbar.',
+      // AllTec-Parität (M6)
+      kuerzel: 'LMU',
+      geburtsort: 'Kiel',
+      geburtsname: 'Klein',
+      abteilung: 'Verkauf',
+      position: 'Filialleitung',
+      kostenstelle: 'KST-100',
+      vorgesetzterName: 'Sandra Chefin',
+      vertreterName: 'Peter Vertretung',
+      produktiveZeitProzent: 85,
+      fteFaktor: 1.0,
+      erwerbsart: Erwerbsart.festanstellungHaupterwerb,
+      teilnahmeZeiterfassung: true,
+      autoBuchung: false,
+      langzeitkrankAb: DateTime(2026, 6, 1),
+      letzterArbeitstag: DateTime(2027, 2, 27),
+      kuendigungsfristWert: 3,
+      kuendigungsfristTyp: KuendigungsfristTyp.monateZumQuartalsende,
+      kuendigungsfristAnmerkung: 'laut Tarif',
+      kuendigungsDatum: DateTime(2026, 11, 30),
+      kuendigungsgrund: 'Eigenkündigung',
+      austrittsgrund: 'Umzug',
+      austrittsmodalitaeten: 'Resturlaub abgegolten',
+      entgeltgruppe: 'EG 9',
+      gehaltGueltigAb: DateTime(2026, 1, 1),
+      vwl: const VwlData(
+        arbeitgeberAnteilCents: 4000,
+        arbeitnehmerAnteilCents: 2000,
+        institut: 'DWS',
+        vertragsnummer: 'VWL-1',
+      ),
+      zulagen: const [
+        SalaryAllowance(
+          id: 'z1',
+          bezeichnung: 'Weihnachtsgeld',
+          betragCents: 50000,
+          bemerkung: 'jährlich',
+        ),
+      ],
+      bankAccounts: const [
+        BankAccount(
+          id: 'b1',
+          iban: 'DE02120300000000202051',
+          kontoinhaber: 'Lea Muster',
+          bic: 'BYLADEM1001',
+          bankname: 'DKB',
+        ),
+      ],
     );
 
 void main() {
@@ -82,6 +131,66 @@ void main() {
       expect(restored.emergencyContactName, 'Max Muster');
       expect(restored.emergencyContactPhone, '0171 2223334');
       expect(restored.note, 'Lieber vormittags erreichbar.');
+      // AllTec-Parität (M6)
+      expect(restored.kuerzel, 'LMU');
+      expect(restored.geburtsort, 'Kiel');
+      expect(restored.geburtsname, 'Klein');
+      expect(restored.abteilung, 'Verkauf');
+      expect(restored.position, 'Filialleitung');
+      expect(restored.kostenstelle, 'KST-100');
+      expect(restored.vorgesetzterName, 'Sandra Chefin');
+      expect(restored.vertreterName, 'Peter Vertretung');
+      expect(restored.produktiveZeitProzent, 85);
+      expect(restored.fteFaktor, 1.0);
+      expect(restored.erwerbsart, Erwerbsart.festanstellungHaupterwerb);
+      expect(restored.teilnahmeZeiterfassung, isTrue);
+      expect(restored.autoBuchung, isFalse);
+      expect(restored.langzeitkrankAb, DateTime(2026, 6, 1));
+      expect(restored.letzterArbeitstag, DateTime(2027, 2, 27));
+      expect(restored.kuendigungsfristWert, 3);
+      expect(restored.kuendigungsfristTyp,
+          KuendigungsfristTyp.monateZumQuartalsende);
+      expect(restored.kuendigungsfristAnmerkung, 'laut Tarif');
+      expect(restored.kuendigungsDatum, DateTime(2026, 11, 30));
+      expect(restored.kuendigungsgrund, 'Eigenkündigung');
+      expect(restored.austrittsgrund, 'Umzug');
+      expect(restored.austrittsmodalitaeten, 'Resturlaub abgegolten');
+      // Gehalt (M7)
+      expect(restored.entgeltgruppe, 'EG 9');
+      expect(restored.gehaltGueltigAb, DateTime(2026, 1, 1));
+      expect(restored.vwl?.arbeitgeberAnteilCents, 4000);
+      expect(restored.vwl?.arbeitnehmerAnteilCents, 2000);
+      expect(restored.vwl?.institut, 'DWS');
+      expect(restored.vwl?.vertragsnummer, 'VWL-1');
+      expect(restored.zulagen, hasLength(1));
+      expect(restored.zulagen.first.bezeichnung, 'Weihnachtsgeld');
+      expect(restored.zulagen.first.betragCents, 50000);
+      expect(restored.bankAccounts, hasLength(1));
+      expect(restored.bankAccounts.first.iban, 'DE02120300000000202051');
+      expect(restored.bankAccounts.first.bankname, 'DKB');
+      expect(restored.bankAccounts.first.isPrimary, isTrue);
+    });
+
+    test('copyWith clear-Flags leeren Datums-/Enum-/Zahl-Felder', () {
+      final cleared = _sample().copyWith(
+        clearErwerbsart: true,
+        clearKuendigungsfristTyp: true,
+        clearKuendigungsfristWert: true,
+        clearProduktiveZeitProzent: true,
+        clearLangzeitkrankAb: true,
+        clearProbationEnd: true,
+        clearMaritalStatus: true,
+      );
+      expect(cleared.erwerbsart, isNull);
+      expect(cleared.kuendigungsfristTyp, isNull);
+      expect(cleared.kuendigungsfristWert, isNull);
+      expect(cleared.produktiveZeitProzent, isNull);
+      expect(cleared.langzeitkrankAb, isNull);
+      expect(cleared.probationEnd, isNull);
+      expect(cleared.maritalStatus, isNull);
+      // Nicht-geleerte Felder bleiben erhalten.
+      expect(cleared.abteilung, 'Verkauf');
+      expect(cleared.status, EmployeeStatus.probezeit);
     });
 
     test('Firestore Round-Trip (camelCase + Timestamp) erhält Felder/Daten', () {
@@ -108,6 +217,12 @@ void main() {
       expect(restored.healthInsuranceSurchargePercent, 1.7);
       expect(restored.childrenCount, 2);
       expect(restored.iban, 'DE02120300000000202051');
+      // Eingebettete Gehalts-Nebenobjekte überstehen den Firestore-Trip (M7).
+      expect(map['vwl'], isA<Map>());
+      expect(map['zulagen'], isA<List>());
+      expect(restored.vwl?.institut, 'DWS');
+      expect(restored.zulagen.single.betragCents, 50000);
+      expect(restored.bankAccounts.single.iban, 'DE02120300000000202051');
     });
 
     test('leere Strings werden in toFirestoreMap zu null getrimmt', () {
