@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Marken-Akzentfarbe für FCM-Benachrichtigungen (Signal-Teal, hell). -->
+<!-- Marken-Akzentfarbe für FCM-Benachrichtigungen (AllTec-Gold, hell). -->
 <resources>
-    <color name="push_accent">#0E7C7B</color>
+    <color name="push_accent">#9B7839</color>
 </resources>

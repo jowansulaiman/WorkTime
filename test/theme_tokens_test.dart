@@ -5,17 +5,17 @@ import 'package:worktime_app/theme/app_theme.dart';
 
 void main() {
   group('V2-Theme-Wahl (Signal-Teal-Redesign)', () {
-    test('resolveLight/Dark: V2-Zweig = Strichmännchen-Marke (Flip 03.07.)', () {
+    test('resolveLight/Dark: V2-Zweig = AllTec-Marke (Rebrand 04.07.)', () {
       // V1 (useV2:false) unverändert Navy #244A66 / #9FC2DB.
-      // V2 (useV2:true) = Strichmännchen: hell primary=navy, dunkel primary=gold.
+      // V2 (useV2:true) = AllTec-Gold: hell primary=#9B7839, dunkel primary=#D4A85A.
       expect(AppTheme.resolveLight(useV2: false).colorScheme.primary,
           const Color(0xFF244A66));
       expect(AppTheme.resolveLight(useV2: true).colorScheme.primary,
-          StrichTokens.navy);
+          const Color(0xFF9B7839));
       expect(AppTheme.resolveDark(useV2: false).colorScheme.primary,
           const Color(0xFF9FC2DB));
       expect(AppTheme.resolveDark(useV2: true).colorScheme.primary,
-          StrichTokens.gold);
+          const Color(0xFFD4A85A));
     });
 
     test('V1-Themes bleiben byte-identisch (Leitplanke)', () {
@@ -186,6 +186,22 @@ void main() {
       expect(filledBg(t), t.colorScheme.primary);
       expect(filledFg(t), t.colorScheme.onPrimary);
       expect(filledBg(t), isNot(StrichTokens.primaryAction));
+    });
+
+    test('AllTec-Theme: Primär-CTA = AllTec-Gold (colorScheme.primary)', () {
+      // AllTec hat keine Sonder-CTA-Füllung (anders als Strichmännchens gelber
+      // Pill): gefüllte Buttons tragen das Gold-primary + onPrimary, 1:1 wie
+      // AllTecs eigenes FilledButton-Theme.
+      for (final t in <ThemeData>[
+        AppTheme.alltecLight,
+        AppTheme.alltecDark,
+      ]) {
+        expect(filledBg(t), t.colorScheme.primary);
+        expect(filledFg(t), t.colorScheme.onPrimary);
+        expect(filledBg(t), isNot(StrichTokens.primaryAction));
+      }
+      expect(AppTheme.alltecLight.colorScheme.primary, const Color(0xFF9B7839));
+      expect(AppTheme.alltecDark.colorScheme.primary, const Color(0xFFD4A85A));
     });
   });
 }

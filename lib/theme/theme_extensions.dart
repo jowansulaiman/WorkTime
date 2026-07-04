@@ -74,6 +74,43 @@ class AppThemeColors extends ThemeExtension<AppThemeColors> {
   static final AppThemeColors strichmaennchenDark =
       _strichmaennchen(Brightness.dark);
 
+  /// **AllTec-Marken-Theme** (Gold + Anthrazit) — Status-Basistöne 1:1 aus
+  /// AllTecs `AppColors` (success `#388E3C`, warning `#FFA000`, info `#1976D2`).
+  /// Die Container-/On-Container-Rollen (M3-Pflicht; in AllTecs flacher
+  /// AppColors-Palette nicht vorhanden) sind nachvollziehbar daraus abgeleitet
+  /// (helle Container = AllTecs `*Light`-Töne, dunkle On-Token für Kontrast) und
+  /// erfüllen das DS2-Kontrast-Gate (`test/contrast_audit_test.dart`). Der
+  /// Dunkelmodus hellt die Basistöne auf (AllTec ist light-first).
+  static const alltecLight = AppThemeColors(
+    success: Color(0xFF388E3C),
+    onSuccess: Colors.white,
+    successContainer: Color(0xFFE8F5E9),
+    onSuccessContainer: Color(0xFF14532D),
+    warning: Color(0xFFFFA000),
+    onWarning: Color(0xFF3E2C00),
+    warningContainer: Color(0xFFFFF8E1),
+    onWarningContainer: Color(0xFF513400),
+    info: Color(0xFF1976D2),
+    onInfo: Colors.white,
+    infoContainer: Color(0xFFE3F2FD),
+    onInfoContainer: Color(0xFF0D2E52),
+  );
+
+  static const alltecDark = AppThemeColors(
+    success: Color(0xFF66BB6A),
+    onSuccess: Color(0xFF0A3315),
+    successContainer: Color(0xFF1B4620),
+    onSuccessContainer: Color(0xFFC8E6C9),
+    warning: Color(0xFFFFB74D),
+    onWarning: Color(0xFF3E2C00),
+    warningContainer: Color(0xFF4A3410),
+    onWarningContainer: Color(0xFFFFE0B2),
+    info: Color(0xFF64B5F6),
+    onInfo: Color(0xFF0A2A4D),
+    infoContainer: Color(0xFF12385F),
+    onInfoContainer: Color(0xFFD3E7FF),
+  );
+
   static AppThemeColors _strichmaennchen(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
     final surface = isDark ? StrichTokens.navy : StrichTokens.white;

@@ -39,8 +39,11 @@ class _AppLogoColorMapper extends ColorMapper {
     required this.brightness,
   });
 
-  static const _brandBlue = Color(0xFF155E8C);
-  static const _brandOrange = Color(0xFFF39A1E);
+  // AllTec-Rebrand: Match-Keys müssen exakt den Farben in
+  // assets/images/logo.svg entsprechen, sonst greift der Dark-Mode-Remap nicht.
+  // Primär = AllTec-Gold, Akzent = AllTec-Anthrazit.
+  static const _brandBlue = Color(0xFF9B7839);
+  static const _brandOrange = Color(0xFF13161B);
   static const _logoSurface = Color(0xFFF7FAFC);
   static const _logoOutline = Color(0xFFD9E2E8);
   static const _logoMuted = Color(0xFF6B7280);

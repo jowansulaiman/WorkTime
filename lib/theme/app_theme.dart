@@ -22,16 +22,43 @@ abstract final class AppTheme {
   /// (Consumer2<ThemeProvider, FeatureFlagProvider>). [useV2] kommt aus dem
   /// `redesign_v2`-Flag (RedesignFlags); false -> unveraenderte V1-Optik.
   ///
-  /// **Marken-Flip (03.07.):** `useV2 == true` liefert das **Strichmännchen**-
-  /// Theme (Marken-Palette navy/gold/paper/gelber CTA) statt des früheren
-  /// Signal-Teal-`lightV2`/`darkV2`. Teal bleibt als Getter erhalten (Tests),
-  /// ist aber nicht mehr der App-Default. Zurückdrehen = hier auf `lightV2`/
-  /// `darkV2` zeigen.
+  /// **AllTec-Rebrand (04.07.):** `useV2 == true` liefert das **AllTec**-Theme
+  /// (Gold + Anthrazit, Palette 1:1 aus AllTec übernommen → [alltecLight]/
+  /// [alltecDark]) statt des früheren Strichmännchen-/Signal-Teal-Themes.
+  /// Strichmännchen & Teal bleiben als Getter erhalten (Tests/Referenz), sind
+  /// aber nicht mehr der App-Default. Zurückdrehen = hier auf `strichmaennchen*`
+  /// bzw. `lightV2`/`darkV2` zeigen.
   static ThemeData resolveLight({required bool useV2}) =>
-      useV2 ? strichmaennchenLight : light;
+      useV2 ? alltecLight : light;
 
   static ThemeData resolveDark({required bool useV2}) =>
-      useV2 ? strichmaennchenDark : dark;
+      useV2 ? alltecDark : dark;
+
+  /// **AllTec-Marken-Theme** (Gold + Anthrazit) — App-Default seit dem
+  /// AllTec-Rebrand (04.07.). Nutzt die M3-Expressive-Maschinerie von V2
+  /// (Radien/Typografie/Komponenten), aber mit der **1:1 aus AllTec**
+  /// (`AllTec/lib/app/theme/app_theme.dart`) übernommenen Palette
+  /// ([_buildAlltecColorScheme]) + AllTec-Statusfarben
+  /// ([AppThemeColors.alltecLight]). Keine Sonder-CTA-Füllung → gefüllte Buttons
+  /// tragen AllTec-Gold (`colorScheme.primary`), genau wie in AllTec selbst.
+  static ThemeData get alltecLight => _buildThemeV2(
+        Brightness.light,
+        colorSchemeOverride: _buildAlltecColorScheme(Brightness.light),
+        appColorsOverride: AppThemeColors.alltecLight,
+      );
+
+  static ThemeData get alltecDark => _buildThemeV2(
+        Brightness.dark,
+        colorSchemeOverride: _buildAlltecColorScheme(Brightness.dark),
+        appColorsOverride: AppThemeColors.alltecDark,
+      );
+
+  /// AllTec-Theme für die gegebene [brightness].
+  static ThemeData alltec(Brightness brightness) =>
+      brightness == Brightness.dark ? alltecDark : alltecLight;
+
+  static ColorScheme alltecColorScheme(Brightness brightness) =>
+      _buildAlltecColorScheme(brightness);
 
   /// **Strichmännchen-Theme** (Marken-Rebrand, Memory `strichmaennchen-farbpalette`):
   /// nutzt die M3-Expressive-Maschinerie von V2 (Radien/Typografie/Komponenten),
@@ -1108,6 +1135,90 @@ abstract final class AppTheme {
       shadow: StrichTokens.shadow,
       scrim: StrichTokens.shadow,
       inversePrimary: StrichTokens.gold,
+    );
+  }
+
+  // ===========================================================================
+  // AllTec-Theme — ColorScheme 1:1 aus AllTec (Gold + Anthrazit).
+  // Jede Konstante unten steht wörtlich in `AllTec/lib/app/theme/app_theme.dart`
+  // (`AppTheme.light()` / `AppTheme.dark()` copyWith). Seed = AllTec-Logo-Gold
+  // `#B38B43` (AllTec `AppColors.primaryBlue`); Tertiär/-Container bleiben — wie
+  // in AllTec — dem Gold-Seed überlassen (AllTec überschreibt sie nicht).
+  // Einzige bewusste Abweichung: `surfaceTint` transparent statt AllTecs
+  // `#B38B43` — WorkTime flacht alle Komponenten ohnehin über
+  // `surfaceTintColor: transparent` ab (ruhige Canvas, kein Tonal-Tint), so wie
+  // AllTec es per Komponente selbst tut. Die reinen Palettenfarben sind 1:1.
+  // ===========================================================================
+  static ColorScheme _buildAlltecColorScheme(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final base = ColorScheme.fromSeed(
+      seedColor: const Color(0xFFB38B43), // AllTec AppColors.primaryBlue (Logo-Gold)
+      brightness: brightness,
+    );
+    if (isDark) {
+      return base.copyWith(
+        // Gold leicht aufgehellt für Lesbarkeit auf dunklem Grund.
+        primary: const Color(0xFFD4A85A),
+        onPrimary: const Color(0xFF2A1F08),
+        primaryContainer: const Color(0xFF3D2E14),
+        onPrimaryContainer: const Color(0xFFF5DDA8),
+        // Champagne als sekundärer Akzent.
+        secondary: const Color(0xFFE8C781),
+        onSecondary: const Color(0xFF221A05),
+        secondaryContainer: const Color(0xFF34280F),
+        onSecondaryContainer: const Color(0xFFF5DEA8),
+        // Anthrazit-Surfaces — kühl-neutral, kein Gold-Stich.
+        surface: const Color(0xFF13161B),
+        onSurface: const Color(0xFFE5E7EB),
+        onSurfaceVariant: const Color(0xFFB0B5BF),
+        surfaceContainerLowest: const Color(0xFF0E1014),
+        surfaceContainerLow: const Color(0xFF181B22),
+        surfaceContainer: const Color(0xFF1E222A),
+        surfaceContainerHigh: const Color(0xFF252A33),
+        surfaceContainerHighest: const Color(0xFF2C323D),
+        outline: const Color(0xFF4A4F58),
+        outlineVariant: const Color(0xFF2A2E36),
+        inverseSurface: const Color(0xFFE5E7EB),
+        onInverseSurface: const Color(0xFF13161B),
+        inversePrimary: const Color(0xFF8A6A2C),
+        error: const Color(0xFFE57373),
+        onError: const Color(0xFF410002),
+        errorContainer: const Color(0xFF601410),
+        onErrorContainer: const Color(0xFFFFDAD6),
+        surfaceTint: Colors.transparent,
+        shadow: Colors.black,
+        scrim: Colors.black,
+      );
+    }
+    return base.copyWith(
+      // Brand-Gold leicht abgedunkelt für Lesbarkeit auf hellem Grund.
+      primary: const Color(0xFF9B7839),
+      onPrimary: const Color(0xFFFFFFFF),
+      primaryContainer: const Color(0xFFF5DDA8),
+      onPrimaryContainer: const Color(0xFF2A1F08),
+      secondary: const Color(0xFFB38B43),
+      onSecondary: const Color(0xFFFFFFFF),
+      secondaryContainer: const Color(0xFFFAF0D9),
+      onSecondaryContainer: const Color(0xFF221A05),
+      // Surfaces — warmer Off-White-Stack (statt Material-3-Lavendel).
+      surface: const Color(0xFFFCFBF7),
+      onSurface: const Color(0xFF1A1A1A),
+      onSurfaceVariant: const Color(0xFF54585F),
+      surfaceContainerLowest: const Color(0xFFFFFFFF),
+      surfaceContainerLow: const Color(0xFFFAF7EE),
+      surfaceContainer: const Color(0xFFF5F2E8),
+      surfaceContainerHigh: const Color(0xFFEFECDF),
+      surfaceContainerHighest: const Color(0xFFE9E5D6),
+      outline: const Color(0xFFB8B4A4),
+      outlineVariant: const Color(0xFFE0DCCB),
+      // Error-Töne aus AllTec (weiches, dunkles Rot statt Default-Knallrot).
+      error: const Color(0xFFC62828),
+      onError: const Color(0xFFFFFFFF),
+      errorContainer: const Color(0xFFFFDAD6),
+      onErrorContainer: const Color(0xFF410002),
+      surfaceTint: Colors.transparent,
+      shadow: Colors.black,
+      scrim: Colors.black,
     );
   }
 }

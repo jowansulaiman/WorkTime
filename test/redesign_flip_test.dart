@@ -18,7 +18,7 @@ import 'package:worktime_app/theme/app_theme.dart';
 /// Dev-Override compile-time false, also entscheidet hier allein das Server-Flag.
 void main() {
   const navy = Color(0xFF244A66); // V1-Leitfarbe
-  const strichNavy = StrichTokens.navy; // V2-Zweig nach Flip = Strichmännchen (hell)
+  const alltecGold = Color(0xFF9B7839); // V2-Zweig nach Rebrand = AllTec (hell)
 
   const user = AppUserProfile(
     uid: 'owner-1',
@@ -53,7 +53,7 @@ void main() {
         serverFlag: flags.isEnabled(RedesignFlags.flagKey, fallback: false),
       );
 
-  test('org-Flag redesign_v2=true schaltet auf die Strichmännchen-Marke', () async {
+  test('org-Flag redesign_v2=true schaltet auf die AllTec-Marke', () async {
     await seedConfig({
       'featureFlags': {'redesign_v2': true},
     });
@@ -63,7 +63,7 @@ void main() {
 
     expect(useV2(provider), isTrue);
     expect(AppTheme.resolveLight(useV2: useV2(provider)).colorScheme.primary,
-        strichNavy);
+        alltecGold);
   });
 
   test('org-Flag redesign_v2=false bleibt bei V1 (Navy)', () async {

@@ -60,8 +60,8 @@ class PdfService {
     final monthTitle = '${_monthName(month)} $year';
 
     // ── Colors ─────────────────────────────────────────────────────
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
     const success = PdfColor.fromInt(0xFF27AE60);
 
@@ -151,8 +151,8 @@ class PdfService {
       rangeEnd: effectiveEnd,
     );
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
 
     pdf.addPage(
@@ -235,8 +235,8 @@ class PdfService {
         .where((order) => order.status.isOpen && !order.isPrepared)
         .length;
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
 
     pdf.addPage(
@@ -326,8 +326,8 @@ class PdfService {
         sorted.fold<int>(0, (sum, p) => sum + p.stockValueSellingCents);
     final margin = totalSelling - totalPurchase;
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
     const headerStyle = pw.TextStyle(fontSize: 9, color: PdfColors.white);
     const cellStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);
@@ -457,8 +457,8 @@ class PdfService {
     final sorted = [...products]
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
     const headerStyle = pw.TextStyle(fontSize: 9, color: PdfColors.white);
     const cellStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);
@@ -617,8 +617,8 @@ class PdfService {
       ),
     );
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
 
     // Stabil gruppieren nach Kontaktart (Reihenfolge der Enum-Definition).
@@ -1543,8 +1543,8 @@ class PdfService {
     String money(int cents) => eur.format(cents / 100);
     final period = '${_monthName(record.periodMonth)} ${record.periodYear}';
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
     const success = PdfColor.fromInt(0xFF27AE60);
     const warn = PdfColor.fromInt(0xFFA76E00);
@@ -1626,8 +1626,8 @@ class PdfService {
     final totalEmployer =
         rows.fold<int>(0, (sum, r) => sum + r.employerTotalCents);
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
 
     pdf.addPage(
@@ -1704,8 +1704,8 @@ class PdfService {
         NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
     String money(int cents) => eur.format(cents / 100);
 
-    const primary = PdfColor.fromInt(0xFF1E3A5F);
-    const accent = PdfColor.fromInt(0xFF2E86AB);
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
     const lightBg = PdfColor.fromInt(0xFFF5F7FA);
     const headerStyle = pw.TextStyle(fontSize: 9, color: PdfColors.white);
     const cellStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);

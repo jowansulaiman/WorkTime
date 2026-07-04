@@ -19,15 +19,20 @@ double _contrast(Color a, Color b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-void _audit(ThemeData theme, String name) {
+void _audit(ThemeData theme, String name, {bool primaryTextLarge = false}) {
   final cs = theme.colorScheme;
   final ac = theme.extension<AppThemeColors>();
   expect(ac, isNotNull, reason: '$name: AppThemeColors-Extension fehlt');
 
   // Fließtext (AA normal): >= 4.5.
+  //
+  // `primaryTextLarge`: AllTecs Marken-Gold (#9B7839) trägt weißen Text nur als
+  // Button-Füllung (FilledButton-Label = labelLarge bold = WCAG "large text")
+  // mit ~4,09:1 → wird wie `onError` über die AA-large-Schwelle 3.0 in `uiPairs`
+  // geprüft, nicht über die Fließtext-Schwelle 4.5.
   final bodyPairs = <String, List<Color>>{
     'onSurface/surface': [cs.onSurface, cs.surface],
-    'onPrimary/primary': [cs.onPrimary, cs.primary],
+    if (!primaryTextLarge) 'onPrimary/primary': [cs.onPrimary, cs.primary],
     'onPrimaryContainer/primaryContainer': [
       cs.onPrimaryContainer,
       cs.primaryContainer
@@ -66,6 +71,7 @@ void _audit(ThemeData theme, String name) {
   final uiPairs = <String, List<Color>>{
     'onSurfaceVariant/surface': [cs.onSurfaceVariant, cs.surface],
     'onError/error': [cs.onError, cs.error],
+    if (primaryTextLarge) 'onPrimary/primary': [cs.onPrimary, cs.primary],
     'onSuccess/success': [ac.onSuccess, ac.success],
     'onWarning/warning': [ac.onWarning, ac.warning],
     'onInfo/info': [ac.onInfo, ac.info],
@@ -89,6 +95,14 @@ void main() {
         () => _audit(AppTheme.strichmaennchenLight, 'strichmaennchenLight'));
     test('strichmaennchenDark erfüllt WCAG-AA',
         () => _audit(AppTheme.strichmaennchenDark, 'strichmaennchenDark'));
+
+    // AllTec-Rebrand (App-Default): dieselbe Gate-Schwelle. AllTecs Marken-Gold
+    // als Button-Füllung wird über die AA-large-Schwelle geprüft (siehe
+    // `primaryTextLarge`), alle übrigen Paare über AA-normal.
+    test('alltecLight erfüllt WCAG-AA',
+        () => _audit(AppTheme.alltecLight, 'alltecLight', primaryTextLarge: true));
+    test('alltecDark erfüllt WCAG-AA',
+        () => _audit(AppTheme.alltecDark, 'alltecDark'));
 
     test('Dark/Light-Parität: beide liefern alle AppThemeColors-Felder', () {
       for (final theme in [AppTheme.lightV2, AppTheme.darkV2]) {
@@ -120,6 +134,8 @@ void main() {
     test('Soft-Status-Badge (G5) erfüllt AA-large in allen V2-Themes', () {
       auditSoftBadge(AppTheme.strichmaennchenLight, 'strichLight');
       auditSoftBadge(AppTheme.strichmaennchenDark, 'strichDark');
+      auditSoftBadge(AppTheme.alltecLight, 'alltecLight');
+      auditSoftBadge(AppTheme.alltecDark, 'alltecDark');
       auditSoftBadge(AppTheme.lightV2, 'lightV2');
       auditSoftBadge(AppTheme.darkV2, 'darkV2');
     });

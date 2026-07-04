@@ -101,6 +101,12 @@ flutter:
     - assets/fonts/NotoSans-Regular.ttf
     - assets/fonts/NotoSans-Bold.ttf
     - assets/fonts/NotoSans-Italic.ttf
+    # In-App-Doku (Bereich „Wissen"): Manifest + Markdown-Artikel. Werden zur
+    # Laufzeit via rootBundle geladen (DocRepository). Web-Doku-Site liest
+    # dieselben Quellen (scripts/build-docs-site.mjs).
+    - docs/manifest.json
+    - docs/mitarbeiter/
+    - docs/entwickler/
   fonts:
     - family: NotoSans
       fonts:
@@ -116,13 +122,13 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: true
-  # iOS + Android-Legacy (<API 26): undurchsichtiges Vollbild-Icon (Markenblau,
-  # kein Alpha — iOS verlangt das).
+  # iOS + Android-Legacy (<API 26): undurchsichtiges Vollbild-Icon (AllTec-
+  # Anthrazit, kein Alpha — iOS verlangt das).
   image_path: "assets/icon/app_icon.png"
   remove_alpha_ios: true
-  background_color_ios: "#155E8C"
-  # Android adaptive icon (API 26+): Markenblau-Hintergrund + transparentes Emblem.
-  adaptive_icon_background: "#155E8C"
+  background_color_ios: "#13161B"
+  # Android adaptive icon (API 26+): AllTec-Anthrazit-Hintergrund + Gold-Emblem.
+  adaptive_icon_background: "#13161B"
   adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
   # Kein zusätzlicher Inset: der Sicherheitsrand steckt schon im foreground-SVG
   # (Emblem ~57 % der Fläche). Sonst würde doppelt eingerückt → Emblem zu klein.
