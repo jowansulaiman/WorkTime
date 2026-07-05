@@ -866,11 +866,18 @@ class InventoryProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: _setError);
 
-    _movementsSubscription =
-        _inventory.watchStockMovements(orgId).listen((items) {
-      _movements = items;
-      _safeNotify();
-    }, onError: _setError);
+    // PA-4.4g: Im Kiosk-Build NICHT abonnieren — die stockMovements-Rules
+    // verweigern dem role:kiosk-Geraetekonto den Read (PA-0.1); ein
+    // permission-denied hier wuerde via _setError den GESAMTEN Provider (und
+    // damit das Board: Produkte/Kuehlschrank/Ablauf) in den Fehlerzustand
+    // reissen. Bestandsbewegungen braucht das Board nicht.
+    if (!AppConfig.kioskModeEnabled) {
+      _movementsSubscription =
+          _inventory.watchStockMovements(orgId).listen((items) {
+        _movements = items;
+        _safeNotify();
+      }, onError: _setError);
+    }
 
     _customerOrdersSubscription =
         _inventory.watchCustomerOrders(orgId).listen((items) {

@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 import 'package:provider/provider.dart';
 
 import '../models/employee_document.dart';
@@ -49,6 +50,10 @@ class EmployeeDocumentsCard extends StatelessWidget {
               ? const _Hint('Keine Dokumente hinterlegt.')
               : Column(
                   children: [
+                    // PA-8.1: geführte Löschung nach Ablauf der Aufbewahrungs-
+                    // frist (DSGVO Art. 17) — bewusst admin-getriggert, kein
+                    // Auto-Delete.
+                    if (canManage) _ExpiredRetentionBanner(userId: userId),
                     for (final doc in docs)
                       _DocumentTile(
                         doc: doc,
@@ -156,18 +161,30 @@ class _DocumentTileState extends State<_DocumentTile> {
                     tooltip: 'Gelesen bestätigen',
                     onPressed: _acknowledge,
                   ),
+                if (_isViewable(doc.contentType))
+                  IconButton(
+                    icon: const Icon(Icons.visibility_outlined),
+                    tooltip: 'Ansehen',
+                    onPressed: _view,
+                  ),
                 IconButton(
                   icon: const Icon(Icons.download_outlined),
                   tooltip: 'Herunterladen',
                   onPressed: _download,
                 ),
-                if (widget.canManage)
+                if (widget.canManage) ...[
+                  IconButton(
+                    icon: const Icon(Icons.edit_outlined),
+                    tooltip: 'Metadaten bearbeiten',
+                    onPressed: _editMeta,
+                  ),
                   IconButton(
                     icon: Icon(Icons.delete_outline,
                         color: Theme.of(context).colorScheme.error),
                     tooltip: 'Löschen',
                     onPressed: _delete,
                   ),
+                ],
               ],
             ),
     );
@@ -197,6 +214,31 @@ class _DocumentTileState extends State<_DocumentTile> {
     }
   }
 
+  /// Öffnet das Dokument in einem Vollbild-Viewer (PDF/Bild) – ohne es lokal zu
+  /// speichern. Bytes kommen aus demselben Storage-Read wie der Download.
+  Future<void> _view() async {
+    setState(() => _busy = true);
+    try {
+      final bytes = await widget.personal.downloadDocument(widget.doc);
+      if (bytes == null) {
+        if (mounted) _snack(context, 'Datei nicht gefunden.', isError: true);
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => _DocumentViewerPage(doc: widget.doc, bytes: bytes),
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        _snack(context, 'Ansehen fehlgeschlagen: $error', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _acknowledge() async {
     setState(() => _busy = true);
     try {
@@ -208,6 +250,16 @@ class _DocumentTileState extends State<_DocumentTile> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _editMeta() async {
+    await showAppBottomSheet<void>(
+      context: context,
+      builder: (_) => _DocumentMetaSheet(
+        personal: widget.personal,
+        doc: widget.doc,
+      ),
+    );
   }
 
   Future<void> _delete() async {
@@ -378,6 +430,253 @@ class _DocumentUploadSheetState extends State<_DocumentUploadSheet> {
   }
 }
 
+/// Vollbild-Viewer für ein Personalakte-Dokument (PA-3): PDFs werden per
+/// `printing` in-App gerendert (kein Download), Bilder via [Image.memory]
+/// (zoom-/verschiebbar). Bytes werden vom Aufrufer bereits geladen übergeben.
+class _DocumentViewerPage extends StatelessWidget {
+  const _DocumentViewerPage({required this.doc, required this.bytes});
+
+  final EmployeeDocument doc;
+  final Uint8List bytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPdf = doc.contentType.toLowerCase() == 'application/pdf';
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          doc.title.isEmpty ? doc.fileName : doc.title,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: isPdf
+          ? PdfPreview(
+              build: (format) => bytes,
+              allowPrinting: true,
+              allowSharing: true,
+              canChangePageFormat: false,
+              canChangeOrientation: false,
+              canDebug: false,
+              dynamicLayout: false,
+              pdfFileName: doc.fileName,
+              loadingWidget:
+                  const Center(child: CircularProgressIndicator()),
+            )
+          : ColoredBox(
+              color: Colors.black,
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 5,
+                child: Center(child: Image.memory(bytes)),
+              ),
+            ),
+    );
+  }
+}
+
+bool _isViewable(String contentType) {
+  final ct = contentType.toLowerCase();
+  return ct == 'application/pdf' || ct == 'image/jpeg' || ct == 'image/png';
+}
+
+/// Metadaten-Dialog (personal-alltec-1zu1, M4-Rest): Titel/Kategorie/Notiz/
+/// Sichtbarkeit eines vorhandenen Dokuments nachträglich ändern — die Datei
+/// selbst bleibt unangetastet.
+class _DocumentMetaSheet extends StatefulWidget {
+  const _DocumentMetaSheet({required this.personal, required this.doc});
+
+  final PersonalProvider personal;
+  final EmployeeDocument doc;
+
+  @override
+  State<_DocumentMetaSheet> createState() => _DocumentMetaSheetState();
+}
+
+class _DocumentMetaSheetState extends State<_DocumentMetaSheet> {
+  late final TextEditingController _title =
+      TextEditingController(text: widget.doc.title);
+  late final TextEditingController _note =
+      TextEditingController(text: widget.doc.note ?? '');
+  late DocumentCategory _category = widget.doc.category;
+  late bool _visibleToEmployee = widget.doc.visibleToEmployee;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: 'Dokument bearbeiten',
+      subtitle: widget.doc.fileName,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButtonFormField<DocumentCategory>(
+            initialValue: _category,
+            decoration: const InputDecoration(
+              labelText: 'Kategorie',
+              prefixIcon: Icon(Icons.category_outlined),
+            ),
+            items: [
+              for (final c in DocumentCategory.values)
+                DropdownMenuItem(value: c, child: Text(c.label)),
+            ],
+            onChanged: _saving
+                ? null
+                : (v) => setState(() => _category = v ?? _category),
+          ),
+          SizedBox(height: spacing.md),
+          TextField(
+            controller: _title,
+            enabled: !_saving,
+            decoration: const InputDecoration(
+              labelText: 'Titel',
+              prefixIcon: Icon(Icons.title_outlined),
+            ),
+          ),
+          SizedBox(height: spacing.md),
+          TextField(
+            controller: _note,
+            enabled: !_saving,
+            decoration: const InputDecoration(
+              labelText: 'Notiz (optional)',
+              prefixIcon: Icon(Icons.notes_outlined),
+            ),
+          ),
+          SizedBox(height: spacing.sm),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Für Mitarbeiter sichtbar'),
+            subtitle:
+                const Text('Aus: interne Ablage, nur für Admins sichtbar.'),
+            value: _visibleToEmployee,
+            onChanged: _saving
+                ? null
+                : (v) => setState(() => _visibleToEmployee = v),
+          ),
+          SizedBox(height: spacing.md),
+          FilledButton.icon(
+            onPressed: _saving ? null : _save,
+            icon: const Icon(Icons.save_outlined),
+            label: Text(_saving ? 'Wird gespeichert…' : 'Speichern'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (_title.text.trim().isEmpty) {
+      _snack(context, 'Bitte einen Titel angeben.', isError: true);
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final note = _note.text.trim();
+      await widget.personal.updateDocumentMeta(
+        widget.doc,
+        title: _title.text,
+        category: _category,
+        note: note.isEmpty ? null : note,
+        clearNote: note.isEmpty,
+        visibleToEmployee: _visibleToEmployee,
+      );
+      if (mounted) {
+        Navigator.of(context).pop();
+        _snack(context, 'Dokument aktualisiert.');
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saving = false);
+        _snack(context, 'Speichern fehlgeschlagen: $error', isError: true);
+      }
+    }
+  }
+}
+
+/// PA-8.1: Banner mit Bulk-Löschung, wenn Dokumente dieses Mitarbeiters ihre
+/// Aufbewahrungsfrist überschritten haben. Jede Löschung läuft über
+/// `deleteDocument` (Storage + Metadaten + Audit je Dokument).
+class _ExpiredRetentionBanner extends StatefulWidget {
+  const _ExpiredRetentionBanner({required this.userId});
+  final String userId;
+
+  @override
+  State<_ExpiredRetentionBanner> createState() =>
+      _ExpiredRetentionBannerState();
+}
+
+class _ExpiredRetentionBannerState extends State<_ExpiredRetentionBanner> {
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final personal = context.watch<PersonalProvider>();
+    final expired = personal
+        .documentsForUser(widget.userId)
+        .where((d) => d.retentionExpired(DateTime.now()))
+        .toList(growable: false);
+    if (expired.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: context.spacing.sm),
+      child: AppStatusBanner(
+        tone: AppStatusTone.warning,
+        icon: Icons.auto_delete_outlined,
+        message: expired.length == 1
+            ? 'Bei einem Dokument ist die Aufbewahrungsfrist abgelaufen '
+                '(DSGVO Art. 17).'
+            : 'Bei ${expired.length} Dokumenten ist die Aufbewahrungsfrist '
+                'abgelaufen (DSGVO Art. 17).',
+        action: _busy
+            ? const SizedBox(
+                width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            : TextButton(
+                onPressed: () => _deleteExpired(expired),
+                child: const Text('Löschen'),
+              ),
+      ),
+    );
+  }
+
+  Future<void> _deleteExpired(List<EmployeeDocument> expired) async {
+    final confirmed = await AppConfirmDialog.show(
+      context,
+      title: 'Abgelaufene Dokumente löschen?',
+      message: '${expired.length} Dokument(e) mit abgelaufener '
+          'Aufbewahrungsfrist werden endgültig gelöscht (Datei + Metadaten). '
+          'Jede Löschung wird im Änderungsprotokoll vermerkt.',
+      confirmLabel: 'Endgültig löschen',
+    );
+    if (!confirmed || !mounted) return;
+    setState(() => _busy = true);
+    final personal = context.read<PersonalProvider>();
+    var fehler = 0;
+    for (final doc in expired) {
+      try {
+        await personal.deleteDocument(doc);
+      } catch (_) {
+        fehler += 1;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    _snack(
+      context,
+      fehler == 0
+          ? '${expired.length} Dokument(e) gelöscht.'
+          : '${expired.length - fehler} gelöscht, $fehler fehlgeschlagen.',
+      isError: fehler > 0,
+    );
+  }
+}
+
 class _Hint extends StatelessWidget {
   const _Hint(this.text);
   final String text;
@@ -403,6 +702,10 @@ IconData _iconFor(DocumentCategory category) => switch (category) {
       DocumentCategory.krankmeldung => Icons.healing_outlined,
       DocumentCategory.zeugnis => Icons.workspace_premium_outlined,
       DocumentCategory.schulung => Icons.school_outlined,
+      DocumentCategory.abmahnung => Icons.report_gmailerrorred_outlined,
+      DocumentCategory.kuendigung => Icons.logout_outlined,
+      DocumentCategory.fuehrungszeugnis => Icons.local_police_outlined,
+      DocumentCategory.gesundheitszeugnis => Icons.health_and_safety_outlined,
       DocumentCategory.sonstiges => Icons.insert_drive_file_outlined,
     };
 

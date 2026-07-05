@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../core/app_config.dart';
@@ -21,6 +22,7 @@ import '../providers/team_provider.dart';
 import '../providers/theme_provider.dart';
 import '../providers/work_provider.dart';
 import '../providers/zeitwirtschaft_provider.dart';
+import '../routing/shell_tab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import 'kiosk/kiosk_pin_setup_sheet.dart';
 import 'notification_settings_screen.dart';
@@ -40,11 +42,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _nameCtrl;
-  late TextEditingController _rateCtrl;
-  late TextEditingController _hoursCtrl;
-  late TextEditingController _vacationDaysCtrl;
   late TextEditingController _autoBreakCtrl;
-  String _currency = 'EUR';
   bool _saving = false;
   bool _changingStorage = false;
   bool _initialized = false;
@@ -57,29 +55,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final settings = context.read<WorkProvider>().settings;
     _nameCtrl = TextEditingController(text: settings.name);
-    _rateCtrl = TextEditingController(
-      text:
-          settings.hourlyRate > 0 ? settings.hourlyRate.toStringAsFixed(2) : '',
-    );
-    _hoursCtrl = TextEditingController(
-      text: settings.dailyHours.toStringAsFixed(1),
-    );
-    _vacationDaysCtrl = TextEditingController(
-      text: settings.vacationDays.toString(),
-    );
     _autoBreakCtrl = TextEditingController(
       text: settings.autoBreakAfterMinutes.toString(),
     );
-    _currency = settings.currency;
     _initialized = true;
   }
 
   @override
   void dispose() {
     _nameCtrl.dispose();
-    _rateCtrl.dispose();
-    _hoursCtrl.dispose();
-    _vacationDaysCtrl.dispose();
     _autoBreakCtrl.dispose();
     super.dispose();
   }
@@ -158,6 +142,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ),
                           ),
+                          const SizedBox(height: 8),
+                          // Personaldaten (Stammdaten/Urlaub/Lohn/Dokumente)
+                          // liegen in der eigenen Akte — hier nur der Absprung.
+                          Card(
+                            margin: EdgeInsets.zero,
+                            child: ListTile(
+                              leading: const Icon(Icons.badge_outlined),
+                              title: const Text('Meine Akte'),
+                              subtitle: const Text(
+                                  'Stammdaten, Urlaub, Lohnabrechnungen & '
+                                  'Dokumente einsehen.'),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => context.push(AppRoutes.meineAkte),
+                            ),
+                          ),
                           const SizedBox(height: 20),
                           _sectionTitle('Benachrichtigungen'),
                           Card(
@@ -191,36 +190,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ),
                           const SizedBox(height: 20),
-                          _sectionTitle('Arbeitszeit'),
+                          _sectionTitle('Stempeluhr'),
                           Card(
                             child: Padding(
                               padding: const EdgeInsets.all(16),
                               child: TextFormField(
-                                controller: _hoursCtrl,
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(
-                                  decimal: true,
-                                ),
+                                controller: _autoBreakCtrl,
+                                keyboardType: TextInputType.number,
                                 decoration: const InputDecoration(
-                                  labelText: 'Soll-Stunden pro Tag',
-                                  prefixIcon: Icon(Icons.schedule),
-                                  suffixText: 'h',
+                                  labelText: 'Auto-Pause nach (Minuten)',
+                                  prefixIcon: Icon(Icons.coffee),
+                                  suffixText: 'min',
+                                  helperText:
+                                      'Stempeluhr fuegt 30 min Pause hinzu, wenn '
+                                      'die Arbeitszeit diesen Wert ueberschreitet. '
+                                      '0 = deaktiviert.',
                                 ),
                                 validator: (value) {
-                                  final parsed = double.tryParse(value ?? '');
-                                  if (parsed == null || parsed <= 0) {
+                                  final parsed = int.tryParse(value ?? '');
+                                  if (parsed == null || parsed < 0) {
                                     return 'Ungueltiger Wert';
                                   }
                                   return null;
                                 },
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 20),
-                          _sectionTitle('Urlaub & Pause'),
-                          _VacationQuotaCard(
-                            vacationDaysCtrl: _vacationDaysCtrl,
-                            autoBreakCtrl: _autoBreakCtrl,
                           ),
                           const SizedBox(height: 20),
                           Wrap(
@@ -241,62 +235,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             onCreate: () => _openTemplateEditor(),
                             onEdit: _openTemplateEditor,
                             onDelete: _deleteTemplate,
-                          ),
-                          const SizedBox(height: 20),
-                          _sectionTitle('Lohn'),
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                children: [
-                                  // PA-0.3: Der Stundenlohn ist abrechnungs-
-                                  // relevant und gehoert dem Admin (Vertrag) —
-                                  // nicht der Selbstpflege. Nur noch Anzeige;
-                                  // die Rules pinnen settings.hourlyRate zusaetz-
-                                  // lich gegen Selbstschreiben.
-                                  TextFormField(
-                                    controller: _rateCtrl,
-                                    enabled: false,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Stundenlohn',
-                                      prefixIcon: Icon(Icons.euro),
-                                      helperText:
-                                          'Wird vom Admin im Vertrag gepflegt.',
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  DropdownButtonFormField<String>(
-                                    initialValue: _currency,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Waehrung',
-                                      prefixIcon: Icon(Icons.currency_exchange),
-                                    ),
-                                    items: const [
-                                      DropdownMenuItem(
-                                        value: 'EUR',
-                                        child: Text('EUR - Euro'),
-                                      ),
-                                      DropdownMenuItem(
-                                        value: 'CHF',
-                                        child: Text('CHF - Schweizer Franken'),
-                                      ),
-                                      DropdownMenuItem(
-                                        value: 'USD',
-                                        child: Text('USD - US Dollar'),
-                                      ),
-                                      DropdownMenuItem(
-                                        value: 'GBP',
-                                        child: Text('GBP - Britisches Pfund'),
-                                      ),
-                                    ],
-                                    onChanged: (value) {
-                                      setState(
-                                          () => _currency = value ?? 'EUR');
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
                           ),
                           const SizedBox(height: 20),
                           _sectionTitle('Datenspeicher'),
@@ -365,12 +303,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     setState(() => _saving = true);
 
+    // Personaldaten (Stundenlohn/Urlaub/Soll-Stunden/Währung) werden hier NICHT
+    // mehr gepflegt — sie gehören dem Personalbereich (Vertrag/Sollzeit-Profil,
+    // Anzeige in „Meine Akte"). Die bestehenden Werte werden unverändert
+    // mitgeschrieben, damit der Rules-Pin (PA-0.3,
+    // `settingsPayrollFieldsUnchanged`) das Self-Update nicht verweigert.
+    final current = context.read<WorkProvider>().settings;
     final settings = UserSettings(
       name: _nameCtrl.text.trim(),
-      hourlyRate: double.tryParse(_rateCtrl.text) ?? 0,
-      dailyHours: double.tryParse(_hoursCtrl.text) ?? 8,
-      currency: _currency,
-      vacationDays: int.tryParse(_vacationDaysCtrl.text) ?? 30,
+      hourlyRate: current.hourlyRate,
+      dailyHours: current.dailyHours,
+      currency: current.currency,
+      vacationDays: current.vacationDays,
       autoBreakAfterMinutes: int.tryParse(_autoBreakCtrl.text) ?? 360,
     );
 
@@ -800,120 +744,6 @@ class _RedesignToggle extends StatelessWidget {
   }
 }
 
-class _VacationQuotaCard extends StatelessWidget {
-  const _VacationQuotaCard({
-    required this.vacationDaysCtrl,
-    required this.autoBreakCtrl,
-  });
-
-  final TextEditingController vacationDaysCtrl;
-  final TextEditingController autoBreakCtrl;
-
-  @override
-  Widget build(BuildContext context) {
-    final schedule = context.watch<ScheduleProvider>();
-    final work = context.watch<WorkProvider>();
-    final totalDays = work.settings.vacationDays;
-    final usedDays = schedule.usedVacationDaysThisYear;
-    final remaining = totalDays - usedDays;
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.beach_access, color: colorScheme.primary, size: 20),
-                const SizedBox(width: 8),
-                Text(
-                  'Urlaubskontingent ${DateTime.now().year}',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const Spacer(),
-                Text(
-                  '$usedDays / $totalDays Tage verbraucht',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: remaining < 0
-                            ? colorScheme.error
-                            : colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: LinearProgressIndicator(
-                value: totalDays > 0
-                    ? (usedDays / totalDays).clamp(0.0, 1.0)
-                    : 0.0,
-                minHeight: 8,
-                backgroundColor: colorScheme.surfaceContainerHighest,
-                color: remaining < 0
-                    ? colorScheme.error
-                    : remaining <= 5
-                        ? colorScheme.tertiary
-                        : colorScheme.primary,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              remaining >= 0
-                  ? '$remaining Tage verbleibend'
-                  : '${remaining.abs()} Tage ueberschritten',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: remaining < 0
-                        ? colorScheme.error
-                        : colorScheme.onSurfaceVariant,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            // PA-0.3: Urlaubsanspruch ist planungs-/abrechnungsrelevant und
-            // gehoert dem Admin (Sollzeit-Profil, konsolidierung-M1) — nur noch
-            // Anzeige; die Rules pinnen settings.vacationDays gegen Selbst-
-            // schreiben. Der echte Urlaubskonto-Rest folgt in „Meine Akte" (PA-7).
-            TextFormField(
-              controller: vacationDaysCtrl,
-              enabled: false,
-              decoration: const InputDecoration(
-                labelText: 'Urlaubstage pro Jahr',
-                prefixIcon: Icon(Icons.event_available),
-                suffixText: 'Tage',
-                helperText: 'Wird vom Admin im Sollzeit-Profil gepflegt.',
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: autoBreakCtrl,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Auto-Pause nach (Minuten)',
-                prefixIcon: Icon(Icons.coffee),
-                suffixText: 'min',
-                helperText:
-                    'Stempeluhr fuegt 30 min Pause hinzu wenn Arbeitszeit diesen Wert ueberschreitet. 0 = deaktiviert.',
-              ),
-              validator: (value) {
-                final parsed = int.tryParse(value ?? '');
-                if (parsed == null || parsed < 0) {
-                  return 'Ungueltiger Wert';
-                }
-                return null;
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _InfoCard extends StatelessWidget {
   const _InfoCard();
 
@@ -924,8 +754,9 @@ class _InfoCard extends StatelessWidget {
       child: const Padding(
         padding: EdgeInsets.all(16),
         child: Text(
-          'Die gezeigten Lohndaten sind als Bruttowerte zu verstehen. '
-          'Rollen, Einladungen und Teamverwaltung befinden sich im Admin-Bereich.',
+          'Persoenliche Daten (Stammdaten, Urlaub, Lohn, Dokumente) stehen in '
+          '„Meine Akte". Rollen, Einladungen und Organisation pflegt der Admin '
+          'im Personalbereich.',
         ),
       ),
     );

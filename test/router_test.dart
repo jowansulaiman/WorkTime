@@ -8,7 +8,7 @@ import 'package:worktime_app/screens/auth_screen.dart';
 import 'package:worktime_app/screens/auth_screen_v2.dart';
 import 'package:worktime_app/screens/force_update_screen.dart';
 import 'package:worktime_app/screens/inventory_screen.dart';
-import 'package:worktime_app/screens/team_management_screen.dart';
+import 'package:worktime_app/screens/personal_screen.dart';
 import 'package:worktime_app/screens/zeitwirtschaft/abwesenheiten_screen.dart';
 import 'package:worktime_app/screens/zeitwirtschaft/abwesenheitskalender_screen.dart';
 import 'package:worktime_app/screens/zeitwirtschaft/lohnlauf_screen.dart';
@@ -77,15 +77,15 @@ void main() {
     await h.cleanup();
   });
 
-  testWidgets('Deep-Link /team (Admin) rendert TeamManagementScreen',
+  testWidgets('Deep-Link /personal (Admin) rendert PersonalScreen',
       (tester) async {
     final h = await pumpApp(
       tester,
       profile: _admin,
-      initialLocation: '/team',
+      initialLocation: '/personal',
     );
-    expect(find.byType(TeamManagementScreen), findsOneWidget);
-    expect(_loc(h.router), '/team');
+    expect(find.byType(PersonalScreen), findsOneWidget);
+    expect(_loc(h.router), '/personal');
     await h.cleanup();
   });
 
@@ -101,14 +101,14 @@ void main() {
     await h.cleanup();
   });
 
-  testWidgets('Deep-Link /team ohne Admin-Recht wird auf / umgeleitet',
+  testWidgets('Deep-Link /personal ohne Admin-Recht wird auf / umgeleitet',
       (tester) async {
     final h = await pumpApp(
       tester,
       profile: _employee,
-      initialLocation: '/team',
+      initialLocation: '/personal',
     );
-    expect(find.byType(TeamManagementScreen), findsNothing);
+    expect(find.byType(PersonalScreen), findsNothing);
     expect(_loc(h.router), '/');
     await h.cleanup();
   });

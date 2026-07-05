@@ -92,7 +92,7 @@ void main() {
 
       // Es dürfen KEINE Admin-Quick-Actions auftauchen (Rollen-Trennung).
       expect(find.text('Plan öffnen'), findsNothing);
-      expect(find.text('Team verwalten'), findsNothing);
+      expect(find.text('Personal verwalten'), findsNothing);
 
       // Mindestens Quick-Action- und Sektionskarten rendern.
       expect(find.byType(AppQuickActionCard), findsWidgets);
@@ -107,16 +107,16 @@ void main() {
   // -------------------------------------------------------------------------
   testWidgets(
     'Heute (teamlead): sieht das Admin-Dashboard (canManageShifts), '
-    'aber KEIN „Team verwalten" (nur isAdmin)',
+    'aber KEIN „Personal verwalten" (nur isAdmin)',
     (tester) async {
       final h = await pumpApp(tester, profile: _teamlead, flagOn: true);
 
       expect(find.byType(AppHeroCard), findsWidgets);
       expect(find.text('Plan öffnen'), findsOneWidget);
 
-      // „Team verwalten" ist zusätzlich auf isAdmin gegatet → Teamlead sieht die
+      // „Personal verwalten" ist zusätzlich auf isAdmin gegatet → Teamlead sieht die
       // Karte NICHT. Belegter Unterschied admin↔teamlead.
-      expect(find.text('Team verwalten'), findsNothing);
+      expect(find.text('Personal verwalten'), findsNothing);
 
       // Admin-Metrik-Grid rendert.
       expect(find.byType(AppMetricCard), findsWidgets);
@@ -130,7 +130,7 @@ void main() {
   );
 
   // -------------------------------------------------------------------------
-  // ADMIN: _AdminDashboardTabV2 (voller Umfang inkl. „Team verwalten")
+  // ADMIN: _AdminDashboardTabV2 (voller Umfang inkl. „Personal verwalten")
   // -------------------------------------------------------------------------
   testWidgets(
     'Heute (admin): voller Admin-Block — Hero, Plan/Team, Metrik-Kacheln',
@@ -141,9 +141,9 @@ void main() {
       expect(find.byType(AppHeroCard), findsWidgets);
       expect(find.byType(DashboardActionItemsCard), findsOneWidget);
 
-      // Admin-Quick-Actions (Team verwalten = isAdmin-only).
+      // Admin-Quick-Actions (Personal verwalten = isAdmin-only).
       expect(find.text('Plan öffnen'), findsOneWidget);
-      expect(find.text('Team verwalten'), findsOneWidget);
+      expect(find.text('Personal verwalten'), findsOneWidget);
 
       // Metrik-Grid.
       expect(find.byType(AppMetricCard), findsWidgets);

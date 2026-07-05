@@ -656,6 +656,10 @@ class _AdminDashboardTabV2 extends StatelessWidget {
               ),
               SizedBox(height: spacing.md),
               const DashboardActionItemsCard(parentLabel: 'Heute'),
+              // PA-4.5a: Live-Anwesenheit für Manager — speist sich aus dem
+              // bestehenden watchOngoingClockEntries-Stream (nur für
+              // canManageShifts gefüllt; Kiosk-Stempel erscheinen sofort).
+              const _JetztImDienstCard(),
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [
@@ -667,10 +671,11 @@ class _AdminDashboardTabV2 extends StatelessWidget {
                   ),
                   if (currentUser?.isAdmin ?? false)
                     AppQuickActionCard(
-                      icon: Icons.groups_outlined,
-                      title: 'Team verwalten',
-                      subtitle: 'Standorte, Rollen und Qualifikationen pflegen',
-                      onTap: () => context.push(AppRoutes.team),
+                      icon: Icons.badge_outlined,
+                      title: 'Personal verwalten',
+                      subtitle:
+                          'Mitarbeiter, Rollen, Standorte und Organisation',
+                      onTap: () => context.push(AppRoutes.personal),
                     ),
                   AppQuickActionCard(
                     icon: Icons.inbox_outlined,
@@ -851,6 +856,54 @@ class _PlannerHeroCardV2 extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// PA-4.5a: „Jetzt im Dienst" — Live-Anwesenheit für Manager/Admin auf dem
+/// Heute-Tab. Speist sich aus dem org-weiten `watchOngoingClockEntries`-Stream
+/// des [ZeitwirtschaftProvider] (nur für `canManageShifts` abonniert — für
+/// alle anderen bleibt die Liste leer und die Karte unsichtbar). Kiosk- wie
+/// App-Stempel erscheinen in Echtzeit; versteckt sich selbst, wenn niemand
+/// eingestempelt ist.
+class _JetztImDienstCard extends StatelessWidget {
+  const _JetztImDienstCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final zeit = context.watch<ZeitwirtschaftProvider>();
+    final entries = zeit.ongoingEntries;
+    if (entries.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: context.spacing.md),
+      child: AppSectionCard(
+        title: 'Jetzt im Dienst (${entries.length})',
+        icon: Icons.people_alt_outlined,
+        child: Column(
+          children: [
+            for (final e in entries)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.circle,
+                    size: 10, color: theme.appColors.success),
+                title: Text(
+                  (e.userName == null || e.userName!.trim().isEmpty)
+                      ? 'Mitarbeiter'
+                      : e.userName!,
+                ),
+                subtitle: Text([
+                  'seit ${timeFmt.format(e.kommen)}',
+                  if ((e.siteName ?? '').isNotEmpty) e.siteName!,
+                  if (e.source == 'kiosk') 'Tablet',
+                ].join(' · ')),
+              ),
+          ],
+        ),
       ),
     );
   }

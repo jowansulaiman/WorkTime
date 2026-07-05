@@ -8,6 +8,7 @@ import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
 import 'package:worktime_app/providers/personal_provider.dart';
+import 'package:worktime_app/providers/team_provider.dart';
 import 'package:worktime_app/screens/personal_screen.dart';
 import 'package:worktime_app/services/database_service.dart';
 import 'package:worktime_app/services/firestore_service.dart';
@@ -45,11 +46,16 @@ Future<void> _pump(WidgetTester tester, AppUserProfile user) async {
       PersonalProvider(firestoreService: service, disableAuthentication: true);
   final inventory =
       InventoryProvider(firestoreService: service, disableAuthentication: true);
+  // Für die „Offene Einladungen"-Sektion (aus der aufgelösten Teamverwaltung
+  // in die Personal-Liste übernommen).
+  final team = TeamProvider(firestoreService: service);
   addTearDown(personal.dispose);
   addTearDown(inventory.dispose);
+  addTearDown(team.dispose);
 
   await personal.updateSession(user, localStorageOnly: true);
   await inventory.updateSession(user, localStorageOnly: true);
+  await team.updateSession(user, localStorageOnly: true);
   personal.updateReferenceData(members: [user]);
 
   await tester.pumpWidget(
@@ -57,6 +63,7 @@ Future<void> _pump(WidgetTester tester, AppUserProfile user) async {
       providers: [
         ChangeNotifierProvider<PersonalProvider>.value(value: personal),
         ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+        ChangeNotifierProvider<TeamProvider>.value(value: team),
       ],
       child: MaterialApp(
         theme: AppTheme.resolveLight(useV2: true),

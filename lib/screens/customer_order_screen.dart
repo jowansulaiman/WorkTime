@@ -321,7 +321,7 @@ class _CustomerOrderScreenState extends State<CustomerOrderScreen> {
   ) async {
     if (sites.isEmpty) {
       _showSnack(context,
-          'Bitte zuerst in der Teamverwaltung einen Standort anlegen.');
+          'Bitte zuerst unter Personal → Organisation einen Standort anlegen.');
       return;
     }
     final result = await showCustomerOrderDialog(

@@ -9,6 +9,7 @@ const {onDocumentCreated, onDocumentWritten} =
 const {defineSecret} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const push = require("./push_notifications");
+const monatsLock = require("./monats_lock");
 const oktoposStats = require("./oktopos_stats");
 const {parseThirdPartyAmounts} = require("./third_party_cash");
 const passwordCrypto = require("./password_crypto");
@@ -905,15 +906,61 @@ exports.onClockEntryWritten = documentWrittenTrigger(
     const clockEntryId = event.params.clockEntryId;
     const before = event.data?.before?.data();
     const after = event.data?.after?.data();
-    if (!before || !after) return; // create/delete → kein Klärungs-Übergang
+    const data = after ?? before;
+    if (!data) return;
+    const userId = stringFromEither(data, "userId", "user_id");
 
-    const beforeStatus = stringOrEmpty(before.status);
-    const afterStatus = stringOrEmpty(after.status);
-    if (beforeStatus !== "klaerung" || afterStatus !== "completed") return;
+    // ── kioskPresence-Projektion (PA-4.5b): "wer ist gerade im Dienst" für
+    // das Laden-Tablet, OHNE dem Geraetekonto clockEntries zu oeffnen. Ein
+    // Doc je Mitarbeiter; dank {userId}-open-Guard existiert hoechstens eine
+    // offene Buchung → delete bei allem, was nicht ongoing ist, ist korrekt.
+    // Deckt Callable- UND Direct-Write-Pfad (Review-Auflage). Best-effort.
+    if (userId) {
+      const presenceRef = db.collection("organizations").doc(orgId)
+        .collection("kioskPresence").doc(userId);
+      const ongoing = Boolean(after) && stringOrEmpty(after.status) === "ongoing";
+      try {
+        if (ongoing) {
+          await presenceRef.set({
+            userId,
+            name: stringOrEmpty(after.userName ?? after.user_name),
+            siteId: after.siteId ?? after.site_id ?? null,
+            siteName: after.siteName ?? after.site_name ?? null,
+            kommen: after.kommen ?? null,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        } else {
+          await presenceRef.delete();
+        }
+      } catch (error) {
+        logger.warn("presence_write_failed", {
+          requestId: ctx.requestId, clockEntryId, error: String(error),
+        });
+      }
+    }
 
-    const userId = stringFromEither(after, "userId", "user_id");
-    if (!userId) return;
+    const beforeStatus = before ? stringOrEmpty(before.status) : "";
+    const afterStatus = after ? stringOrEmpty(after.status) : "";
 
+    // ── Neue Klaerung → Manager (PA-4.7): vergessenes Ausstempeln darf nicht
+    // still liegen bleiben (blockiert u. a. den Monatsabschluss).
+    if (userId && afterStatus === "klaerung" && beforeStatus !== "klaerung") {
+      const recipientUids = push.managerUids(await loadOrgUserRecords(orgId));
+      if (recipientUids.length > 0) {
+        const notif = push.buildKlaerungNotification({
+          entryId: clockEntryId,
+          name: stringOrEmpty(after.userName ?? after.user_name),
+        });
+        await fanOutPush({
+          orgId, recipientUids, notif, requestId: ctx.requestId,
+        });
+      }
+    }
+
+    // ── Klaerung geloest → Mitarbeiter (ZV, bestehend).
+    if (!userId || beforeStatus !== "klaerung" || afterStatus !== "completed") {
+      return;
+    }
     const kommenDate = readTriggerDate(after, "kommen", "kommen");
     const nettoMin = Number(after.nettoMinutes ?? after.netto_minutes) || 0;
     const notif = push.buildKlaerungResolvedNotification({
@@ -924,6 +971,34 @@ exports.onClockEntryWritten = documentWrittenTrigger(
     await fanOutPush({
       orgId, recipientUids: [userId], notif, requestId: ctx.requestId,
     });
+  },
+);
+
+// Kiosk-Anmelde-Roster (PA-4.4b): Datensparsamkeits-Projektion je users-Doc —
+// nur Name + aktiv, damit das geteilte Tablet NIE volle users-Docs (mit
+// hourlyRate etc.) lesen muss. Geraetekonten (role kiosk) erscheinen nie.
+exports.onUserWrittenKioskRoster = documentWrittenTrigger(
+  "onUserWrittenKioskRoster",
+  {region: REGION, document: "users/{uid}"},
+  async (event) => {
+    const after = event.data?.after?.data();
+    if (!after) return; // users-Docs werden nie geloescht (Rules delete:false)
+    const uid = event.params.uid;
+    const orgId = stringFromEither(after, "orgId", "org_id");
+    if (!orgId) return;
+    const rosterRef = db.collection("organizations").doc(orgId)
+      .collection("kioskRoster").doc(uid);
+    if (normalizeRole(after.role) === "kiosk") {
+      await rosterRef.delete().catch(() => {});
+      return;
+    }
+    const settings = isPlainObject(after.settings) ? after.settings : {};
+    const name = stringOrEmpty(settings.name) || stringOrEmpty(after.email);
+    await rosterRef.set({
+      name,
+      isActive: isTruthy(valueFromEither(after, "isActive", "is_active")),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
   },
 );
 
@@ -1002,6 +1077,27 @@ exports.publishShiftBatch = callable("publishShiftBatch", {region: REGION}, asyn
   return {savedIds, issues};
 });
 
+// Monats-Festschreibung (PA-5, Server-Schicht): verweigert Writes in einen
+// bereits abgeschlossenen Monat (`zeitkontoSnapshots/{userId}-{jahr}-{mm}`
+// mit `abgeschlossen == true`) mit `failed-precondition`. Pure Anteile in
+// functions/monats_lock.js (node-getestet); Dart-Spiegel
+// lib/core/monats_festschreibung.dart. Nur Reopen (admin) hebt die Sperre auf.
+async function assertMonatNichtFestgeschrieben({orgId, userId, date}) {
+  const ym = monatsLock.jahrMonatVon(date);
+  if (!ym) {
+    return;
+  }
+  const snap = await organizationCollection(orgId, "zeitkontoSnapshots")
+    .doc(monatsLock.zeitkontoSnapshotId(userId, ym.jahr, ym.monat))
+    .get();
+  if (snap.exists && monatsLock.istFestgeschrieben(snap.data())) {
+    throw new HttpsError(
+      "failed-precondition",
+      monatsLock.festgeschriebenMeldung(ym.monat, ym.jahr),
+    );
+  }
+}
+
 exports.upsertWorkEntry = callable("upsertWorkEntry", {region: REGION}, async (request) => {
   assertSupportedVersion(request);
   const caller = await loadCallerProfile(request);
@@ -1014,6 +1110,11 @@ exports.upsertWorkEntry = callable("upsertWorkEntry", {region: REGION}, async (r
       "Nur Admins duerfen Zeiteintraege fuer andere Mitarbeiter aendern.",
     );
   }
+  await assertMonatNichtFestgeschrieben({
+    orgId: entry.orgId,
+    userId: entry.userId,
+    date: entry.date,
+  });
 
   const validation = await validateWorkEntry({callerUid: caller.uid, entry});
   if (validation.violations.some(isBlockingViolation)) {
@@ -1069,6 +1170,26 @@ exports.upsertWorkEntryBatch = callable("upsertWorkEntryBatch", {region: REGION}
         "Nur Admins duerfen Zeiteintraege fuer andere Mitarbeiter aendern.",
       );
     }
+  }
+
+  // PA-5: Festschreibungs-Guard je eindeutigem (userId, Jahr, Monat) — ein
+  // Snapshot-Read pro betroffenem Mitarbeiter-Monat statt pro Eintrag.
+  const geprueft = new Set();
+  for (const entry of entries) {
+    const ym = monatsLock.jahrMonatVon(entry.date);
+    if (!ym) {
+      continue;
+    }
+    const key = monatsLock.zeitkontoSnapshotId(entry.userId, ym.jahr, ym.monat);
+    if (geprueft.has(key)) {
+      continue;
+    }
+    geprueft.add(key);
+    await assertMonatNichtFestgeschrieben({
+      orgId: entry.orgId,
+      userId: entry.userId,
+      date: entry.date,
+    });
   }
 
   const validations = [];
@@ -1377,32 +1498,46 @@ exports.kioskClockPunch = callable(
     }
 
     if (direction === "in") {
+      // Uebergangsphase (PA-4.1): Alt-Buchungen mit zufaelliger ID zaehlen
+      // weiter als offen (query-basiert) — sonst waere doppelt-offen moeglich.
       const existing = await findOpenClockEntry(orgId, employeeId);
       if (existing) {
         return {clockedIn: true, clockEntryId: existing.id};
       }
-      const docRef = clockEntries.doc();
-      await docRef.set({
-        orgId,
-        userId: employeeId,
-        siteId: stringOrNull(request.data?.siteId),
-        siteName: stringOrNull(request.data?.siteName),
-        // Geplante Schicht des Session-Mitarbeiters (ZV-2.1) — vom Client als
-        // Vorschlag mitgeliefert; die WorkEntry-Erzeugung erbt sie als
-        // sourceShiftId (Schicht-Completion-Hook).
-        shiftId: stringOrNull(request.data?.shiftId),
-        kommen: FieldValue.serverTimestamp(),
-        gehen: null,
-        pauseMinuten: 0,
-        nettoMinutes: 0,
-        status: "ongoing",
-        source: "kiosk",
-        deviceId: session.deviceId || null,
-        sessionId: sid,
-        createdByUid: caller.uid,
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+      // PA-4.1: deterministische `{userId}-open`-ID + create() (schlaegt bei
+      // Existenz ATOMAR fehl) — das fruehere read-then-write-Race ist damit zu.
+      // Spiegel: FirestoreService.clockInOpen (App) + firestore.rules.
+      const docRef = clockEntries.doc(`${employeeId}-open`);
+      try {
+        await docRef.create({
+          orgId,
+          userId: employeeId,
+          siteId: stringOrNull(request.data?.siteId),
+          siteName: stringOrNull(request.data?.siteName),
+          // Geplante Schicht des Session-Mitarbeiters (ZV-2.1) — vom Client als
+          // Vorschlag mitgeliefert; die WorkEntry-Erzeugung erbt sie als
+          // sourceShiftId (Schicht-Completion-Hook).
+          shiftId: stringOrNull(request.data?.shiftId),
+          kommen: FieldValue.serverTimestamp(),
+          gehen: null,
+          pauseMinuten: 0,
+          nettoMinutes: 0,
+          status: "ongoing",
+          source: "kiosk",
+          deviceId: session.deviceId || null,
+          sessionId: sid,
+          createdByUid: caller.uid,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } catch (error) {
+        // ALREADY_EXISTS (gRPC-Code 6): parallel eingestempelt (App/anderes
+        // Geraet) — idempotent als "bereits eingestempelt" beantworten.
+        if (error && error.code === 6) {
+          return {clockedIn: true, clockEntryId: docRef.id};
+        }
+        throw error;
+      }
       await writeAudit({
         orgId, action: "created", entityType: "Stempelung",
         entityId: docRef.id, summary: "Eingestempelt (Kiosk-Tablet)",
@@ -1426,13 +1561,42 @@ exports.kioskClockPunch = callable(
       const netto = Math.max(0, grossMin - pause);
       const gehenTs = Timestamp.fromMillis(nowMs);
 
-      await doc.ref.set({
-        gehen: gehenTs,
-        pauseMinuten: pause,
-        nettoMinutes: netto,
-        status: "completed",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true});
+      // PA-4.1: Lief die Buchung unter der deterministischen `{userId}-open`-ID,
+      // wird sie transaktional unter eine endgueltige Auto-ID kopiert und das
+      // open-Doc geloescht — sonst bliebe die open-ID mit status 'completed'
+      // belegt und der naechste create() (Einstempeln) schluege fuer immer fehl.
+      // Alt-Buchungen (zufaellige ID, Uebergangsphase) schliessen in place.
+      let finalId = doc.id;
+      if (doc.id === `${employeeId}-open`) {
+        const closedRef = clockEntries.doc();
+        finalId = closedRef.id;
+        await db.runTransaction(async (tx) => {
+          const open = await tx.get(doc.ref);
+          if (!open.exists) {
+            throw new HttpsError(
+              "failed-precondition",
+              "Keine laufende Buchung gefunden.",
+            );
+          }
+          tx.set(closedRef, {
+            ...open.data(),
+            gehen: gehenTs,
+            pauseMinuten: pause,
+            nettoMinutes: netto,
+            status: "completed",
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          tx.delete(doc.ref);
+        });
+      } else {
+        await doc.ref.set({
+          gehen: gehenTs,
+          pauseMinuten: pause,
+          nettoMinutes: netto,
+          status: "completed",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
 
       // Abrechnungsrelevanten WorkEntry(submitted) erzeugen — best-effort, wie
       // der Client-Stempel (der Admin gibt „submitted" frei). Compliance wird
@@ -1451,19 +1615,20 @@ exports.kioskClockPunch = callable(
         sourceShiftId: data.shiftId ?? null,
         category: "stempel",
         status: "submitted",
-        sourceClockEntryId: doc.id,
+        // Rueckverweis auf die ENDGUELTIGE Doc-ID (nach PA-4.1-copy+delete).
+        sourceClockEntryId: finalId,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
 
       await writeAudit({
         orgId, action: "created", entityType: "Stempelung",
-        entityId: doc.id,
+        entityId: finalId,
         summary: `Ausgestempelt (Kiosk-Tablet, ${netto} min netto)`,
         actorUid: employeeId, sessionId: sid,
         deviceId: data.deviceId || null, requestId: ctx.requestId,
       });
-      return {clockedIn: false, clockEntryId: doc.id};
+      return {clockedIn: false, clockEntryId: finalId};
     }
 
     throw new HttpsError(

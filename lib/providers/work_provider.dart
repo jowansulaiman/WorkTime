@@ -27,7 +27,9 @@ import 'audit_sink.dart';
 import 'schedule_provider.dart';
 import '../core/app_logger.dart';
 import '../core/error_reporter.dart';
+import '../core/monats_festschreibung.dart';
 import '../core/performance_service.dart';
+import '../models/zeitkonto_snapshot.dart';
 
 const _clockInKey = 'clock_in_time';
 const _clockInSiteIdKey = 'clock_in_site_id';
@@ -535,6 +537,47 @@ class WorkProvider extends ChangeNotifier {
     );
   }
 
+  /// Lädt den Monats-Snapshot für den Festschreibungs-Guard (PA-5) — je nach
+  /// Speichermodus aus SharedPreferences oder Firestore. `null` = kein
+  /// Snapshot = Monat nicht festgeschrieben.
+  Future<ZeitkontoSnapshot?> _ladeZeitkontoSnapshot(
+    String userId,
+    int jahr,
+    int monat,
+  ) async {
+    final currentUser = _currentUser;
+    if (currentUser == null) return null;
+    if (usesLocalStorage) {
+      final all = await DatabaseService.loadLocalZeitkontoSnapshots(
+        scope: _localScope,
+      );
+      return all
+          .where((s) =>
+              s.userId == userId && s.jahr == jahr && s.monat == monat)
+          .firstOrNull;
+    }
+    return _firestoreService.getZeitkontoSnapshot(
+      orgId: currentUser.orgId,
+      userId: userId,
+      jahr: jahr,
+      monat: monat,
+    );
+  }
+
+  /// Festschreibungs-Guard (PA-5.1, Client-Schicht): wirft [StateError], wenn
+  /// der Zielmonat des Eintrags bereits per Monatsabschluss festgeschrieben
+  /// ist. Fail-open bei Ladefehlern (offline) — Callable + Rules sind die
+  /// harten Schichten.
+  Future<void> _assertMonatNichtFestgeschrieben(
+    String userId,
+    DateTime datum,
+  ) =>
+      MonatsFestschreibung.assertNichtFestgeschrieben(
+        ladeSnapshot: _ladeZeitkontoSnapshot,
+        userId: userId,
+        datum: datum,
+      );
+
   Future<void> _addEntry(WorkEntry entry) async {
     final currentUser = _currentUser;
     if (currentUser == null || !currentUser.canEditTimeEntries) {
@@ -551,6 +594,23 @@ class WorkProvider extends ChangeNotifier {
       orgId: currentUser.orgId,
       userId: currentUser.uid,
     );
+    // PA-5: Zielmonat des Eintrags darf nicht festgeschrieben sein. Bei einer
+    // Änderung mit Monats-Verschiebung zusätzlich den URSPRUNGS-Monat prüfen —
+    // sonst ließe sich ein Eintrag aus einem gesperrten Monat herausschieben.
+    await _assertMonatNichtFestgeschrieben(
+        preparedEntry.userId, preparedEntry.date);
+    if (!isNew) {
+      final existing = [
+        ..._entries,
+        ..._reportEntries,
+        ..._localEntries,
+      ].firstWhereOrNull((e) => e.id == preparedEntry.id);
+      if (existing != null &&
+          (existing.date.year != preparedEntry.date.year ||
+              existing.date.month != preparedEntry.date.month)) {
+        await _assertMonatNichtFestgeschrieben(existing.userId, existing.date);
+      }
+    }
     final violations = await validateEntry(preparedEntry);
     final blocking = violations.where((item) => item.isBlocking).toList();
     if (blocking.isNotEmpty) {
@@ -679,6 +739,10 @@ class WorkProvider extends ChangeNotifier {
     WorkEntry updated, {
     required String summary,
   }) async {
+    // PA-5: Status-Übergänge (einreichen/genehmigen/ablehnen) sind Writes und
+    // in einem festgeschriebenen Monat ebenso gesperrt (Defense-in-Depth — der
+    // Abschluss verlangt ohnehin, dass keine draft/submitted-Einträge offen sind).
+    await _assertMonatNichtFestgeschrieben(updated.userId, updated.date);
     if (usesLocalStorage) {
       _upsertLocalEntry(updated);
       await _persistLocalEntries();
@@ -844,6 +908,11 @@ class WorkProvider extends ChangeNotifier {
       ..._reportEntries,
       ..._localEntries,
     ].firstWhereOrNull((entry) => entry.id == id);
+    // PA-5: Löschen aus einem festgeschriebenen Monat ist gesperrt.
+    if (deletedEntry != null) {
+      await _assertMonatNichtFestgeschrieben(
+          deletedEntry.userId, deletedEntry.date);
+    }
     final deleteSummary = deletedEntry == null
         ? 'Zeiteintrag gelöscht'
         : 'Zeiteintrag am ${_auditDate(deletedEntry.date)} gelöscht';
@@ -1190,7 +1259,7 @@ class WorkProvider extends ChangeNotifier {
       final clockSite = _clockSiteForUser(user.uid);
       if (clockSite == null) {
         throw StateError(
-          'Fuer die Stempeluhr ist kein Standort zugeordnet. Bitte zuerst in der Teamverwaltung einen Primaerstandort hinterlegen.',
+          'Fuer die Stempeluhr ist kein Standort zugeordnet. Bitte zuerst im Personalbereich einen Primaerstandort hinterlegen.',
         );
       }
       _clockInTime = DateTime.now();

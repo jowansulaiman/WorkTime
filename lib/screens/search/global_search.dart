@@ -67,7 +67,6 @@ const List<GlobalSearchItem> _destinations = <GlobalSearchItem>[
   GlobalSearchItem(label: 'Bestell-Auswertung', category: 'Bereich', icon: Icons.query_stats_outlined, path: AppRoutes.orderAnalytics),
   GlobalSearchItem(label: 'Laden-Benchmark', category: 'Bereich', icon: Icons.leaderboard_outlined, path: AppRoutes.storeHealth),
   GlobalSearchItem(label: 'Kassierer-Prüfung', category: 'Bereich', icon: Icons.rule_folder_outlined, path: AppRoutes.cashierAnomaly),
-  GlobalSearchItem(label: 'Team', category: 'Bereich', icon: Icons.groups_outlined, path: AppRoutes.team),
   GlobalSearchItem(label: 'Personal', category: 'Bereich', icon: Icons.badge_outlined, path: AppRoutes.personal),
   GlobalSearchItem(label: 'Buchhaltung', category: 'Bereich', icon: Icons.account_balance_outlined, path: AppRoutes.finance),
   GlobalSearchItem(label: 'Tagesabschluss', category: 'Bereich', icon: Icons.point_of_sale_outlined, path: AppRoutes.dailyClosing),
@@ -123,7 +122,8 @@ List<GlobalSearchItem> buildGlobalSearchItems(
         label: m.displayName,
         category: 'Mitarbeiter',
         icon: Icons.badge_outlined,
-        path: AppRoutes.team,
+        // Direkt in die Personalakte des Mitarbeiters (9-Tab-Detail).
+        path: AppRoutes.personalDetailPath(m.uid),
       ));
     }
   }

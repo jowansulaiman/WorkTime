@@ -25,6 +25,13 @@ abstract final class RoutePermissions {
     if (loc.startsWith('/personal/')) {
       return p?.isAdmin ?? false;
     }
+    // Kontakt-Detail-Deep-Link `/kontakte/{id}` matcht keinen exakten `case`
+    // unten und fiele sonst auf `default:true`. Spiegelt den `/kontakte`-Tab-
+    // Case (canViewContacts = jedes aktive Mitglied — NICHT admin-only wie
+    // Personal). In `firestore.rules` (contacts read=sameOrg) gespiegelt.
+    if (loc.startsWith('/kontakte/')) {
+      return p?.canViewContacts ?? false;
+    }
     switch (loc) {
       case '/': // Heute
       case '/anfragen': // Anfragen
@@ -69,7 +76,6 @@ abstract final class RoutePermissions {
         return (p?.isAdmin ?? false) || (p?.isTeamLead ?? false);
       case AppRoutes.personal:
       case AppRoutes.finance:
-      case AppRoutes.team:
       case AppRoutes.auditLog:
       // Besetzungs-Profil (P3.1): Kassendaten-Auswertung -> admin-only.
       case AppRoutes.staffingProfile:

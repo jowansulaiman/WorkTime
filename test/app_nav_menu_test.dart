@@ -77,7 +77,6 @@ Future<void> _pump(
           onOpenStatistics: () {},
           onOpenPersonal: onOpenPersonal ?? () {},
           onOpenFinance: () {},
-          onOpenTeam: () {},
           onOpenInventory: () {},
           onOpenCustomerOrders: () {},
           onOpenOrderAnalytics: () {},
@@ -103,13 +102,14 @@ void main() {
     expect(find.text('Statistiken'), findsOneWidget);
     expect(find.text('Verwaltung'), findsOneWidget);
     expect(find.text('Personal'), findsOneWidget);
-    expect(find.text('Teamverwaltung'), findsOneWidget);
+    // Teamverwaltung ist aufgelöst — Organisation lebt im Personalbereich.
+    expect(find.text('Teamverwaltung'), findsNothing);
     expect(find.text('Warenwirtschaft'), findsOneWidget);
     expect(find.text('Einstellungen'), findsOneWidget);
     expect(find.text('Abmelden'), findsOneWidget);
   });
 
-  testWidgets('Mitarbeiter ohne Reports: keine Auswertungen/Teamverwaltung',
+  testWidgets('Mitarbeiter ohne Reports: keine Auswertungen/Personal',
       (tester) async {
     await _pump(tester, user: _employeeNoReports);
 

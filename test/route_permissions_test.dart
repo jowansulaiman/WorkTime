@@ -59,8 +59,6 @@ void main() {
           isFalse);
       expect(RoutePermissions.isLocationAllowed(AppRoutes.finance, _employee),
           isFalse);
-      expect(RoutePermissions.isLocationAllowed(AppRoutes.team, _employee),
-          isFalse);
       expect(RoutePermissions.isLocationAllowed(AppRoutes.auditLog, _employee),
           isFalse);
       expect(RoutePermissions.isLocationAllowed(AppRoutes.personal, _admin),
@@ -79,6 +77,24 @@ void main() {
       // NICHT fälschlich als /personal-Unterpfad greifen.
       expect(RoutePermissions.isLocationAllowed(AppRoutes.meineAkte, _employee),
           isTrue);
+    });
+
+    test('Kontakt-Detail-Deep-Link /kontakte/{id} = canViewContacts', () {
+      // Konkreter Pfad mit gefülltem :id — matcht KEINEN exakten switch-case und
+      // fiele ohne den `/kontakte/`-Prefix-Guard auf default:true (Leck).
+      // Anders als Personal: JEDES aktive Mitglied darf lesen (canViewContacts),
+      // nur der URL-Kontext ist gegatet; Verwaltungs-Aktionen im Screen.
+      final path = AppRoutes.contactDetailPath('kontakt-1');
+      expect(RoutePermissions.isLocationAllowed(path, _admin), isTrue);
+      expect(RoutePermissions.isLocationAllowed(path, _teamlead), isTrue);
+      expect(RoutePermissions.isLocationAllowed(path, _employee), isTrue);
+      expect(RoutePermissions.isLocationAllowed(path, null), isFalse);
+      // Der Kontakt-Tab-Case (/kontakte) und der Detail-Deep-Link müssen
+      // dieselbe Regel tragen.
+      expect(
+        RoutePermissions.isLocationAllowed(path, _employee),
+        RoutePermissions.isLocationAllowed('/kontakte', _employee),
+      );
     });
 
     test('Kassenbericht: nur Admin (EK/Marge/Gewinn, M4)', () {

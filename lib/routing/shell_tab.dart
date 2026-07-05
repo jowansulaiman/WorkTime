@@ -53,11 +53,15 @@ abstract final class AppRoutes {
   // Mitarbeiter-Detail (AllTec-1:1): deep-linkbare Top-Level-Route mit
   // Path-Parameter `:id` (uid). Bau siehe plan/personal-alltec-1zu1.md.
   static const String personalDetail = '/personal/:id';
+  // Kontakt-Detail (AllTec-1:1): deep-linkbare Top-Level-Route mit Path-
+  // Parameter `:id` (contactId). Lese-Gate = canViewContacts (jedes aktive
+  // Mitglied), NICHT admin-only wie Personal. Bau siehe
+  // plan/kontakte-alltec-1zu1.md.
+  static const String contactDetail = '/kontakte/:id';
   static const String meineAkte = '/meine-akte'; // Mitarbeiter-Selbstsicht (PA-2.4)
   static const String finance = '/buchhaltung';
   static const String feedbackInbox = '/feedback-eingang';
   static const String auditLog = '/protokoll';
-  static const String team = '/team';
   static const String settings = '/einstellungen';
   static const String monthReport = '/monatsbericht';
   static const String statistics = '/statistik';
@@ -93,4 +97,8 @@ abstract final class AppRoutes {
   /// Konkreter Deep-Link auf die Mitarbeiter-Detailseite `/personal/{uid}`
   /// (füllt den `:id`-Parameter von [personalDetail]).
   static String personalDetailPath(String uid) => '/personal/$uid';
+
+  /// Konkreter Deep-Link auf die Kontakt-Detailseite `/kontakte/{contactId}`
+  /// (füllt den `:id`-Parameter von [contactDetail]).
+  static String contactDetailPath(String contactId) => '/kontakte/$contactId';
 }

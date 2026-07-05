@@ -1006,10 +1006,11 @@ class _AdminDashboardTab extends StatelessWidget {
                   ),
                   if (currentUser?.isAdmin ?? false)
                     _QuickActionCard(
-                      icon: Icons.groups_outlined,
-                      title: 'Team verwalten',
-                      subtitle: 'Standorte, Rollen und Qualifikationen pflegen',
-                      onTap: () => context.push(AppRoutes.team),
+                      icon: Icons.badge_outlined,
+                      title: 'Personal verwalten',
+                      subtitle:
+                          'Mitarbeiter, Rollen, Standorte und Organisation',
+                      onTap: () => context.push(AppRoutes.personal),
                     ),
                   _QuickActionCard(
                     icon: Icons.inbox_outlined,

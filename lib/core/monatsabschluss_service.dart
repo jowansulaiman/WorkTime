@@ -55,13 +55,17 @@ class MonatsabschlussService {
   /// [now] wird injiziert (Pure-Function-Disziplin), damit der Service
   /// deterministisch testbar bleibt. [offeneKlaerungen] = Anzahl der
   /// `ClockStatus.klaerung`-Buchungen des Zielmonats (der Provider ermittelt sie,
-  /// der Service bleibt pur).
+  /// der Service bleibt pur). [offeneStempelungen] = Anzahl noch LAUFENDER
+  /// (`ongoing`) Stempelungen, deren Kommen im/vor dem Zielmonat liegt (PA-5) —
+  /// ein Abschluss über eine laufende Buchung hinweg würde deren spätere
+  /// WorkEntry-Erzeugung in einen festgeschriebenen Monat zwingen.
   MonatsabschlussValidation validate({
     required ZeitkontoSnapshot snapshot,
     required List<WorkEntry> entries,
     required ZeitkontoSnapshot? vormonat,
     required DateTime now,
     int offeneKlaerungen = 0,
+    int offeneStempelungen = 0,
   }) {
     final errors = <String>[];
     final warnings = <String>[];
@@ -92,6 +96,13 @@ class MonatsabschlussService {
       errors.add(offeneKlaerungen == 1
           ? 'Ein Stempel-Klärungsfall ist noch offen.'
           : '$offeneKlaerungen Stempel-Klärungsfälle sind noch offen.');
+    }
+
+    if (offeneStempelungen > 0) {
+      errors.add(offeneStempelungen == 1
+          ? 'Eine Stempelung läuft noch — bitte zuerst ausstempeln.'
+          : '$offeneStempelungen Stempelungen laufen noch — bitte zuerst '
+              'ausstempeln.');
     }
 
     if (vormonat != null && !vormonat.abgeschlossen) {

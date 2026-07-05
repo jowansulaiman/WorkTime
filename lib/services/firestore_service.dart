@@ -211,6 +211,53 @@ class FirestoreService {
     );
   }
 
+  /// Deterministische Doc-ID der **offenen** Stempel-Buchung eines Mitarbeiters
+  /// (PA-4.1, `{userId}-open`): genau EIN mögliches offenes Doc je Nutzer —
+  /// der harte Doppel-Stempel-Guard. Spiegel: `functions/index.js`
+  /// (`kioskClockPunch`) + `firestore.rules` (kommen-Pin/self-delete).
+  static String openClockDocId(String userId) => '$userId-open';
+
+  /// Einstempeln unter der deterministischen `{userId}-open`-ID — als
+  /// **Transaktion mit Existenz-Check** (create-only-Semantik): läuft bereits
+  /// eine offene Buchung (dieses Doc ODER — Übergangsphase — eine Alt-Buchung
+  /// mit zufälliger ID, die der Aufrufer via Stream kennt), wirft der zweite
+  /// clockIn statt still zu überschreiben.
+  Future<void> clockInOpen(ClockEntry entry) async {
+    final docRef =
+        _clockEntryCollection(entry.orgId).doc(openClockDocId(entry.userId));
+    await _firestore.runTransaction((tx) async {
+      final existing = await tx.get(docRef);
+      if (existing.exists) {
+        throw StateError(
+            'Bereits eingestempelt — die laufende Buchung wurde auf einem '
+            'anderen Gerät gestartet.');
+      }
+      tx.set(docRef, entry.copyWith(id: docRef.id).toFirestoreMap());
+    });
+  }
+
+  /// Ausstempeln des `{userId}-open`-Docs (PA-4.1): kopiert die geschlossene
+  /// Buchung transaktional unter ihre endgültige ID und löscht das open-Doc —
+  /// die ID `{userId}-open` ist damit wieder frei für den nächsten clockIn.
+  /// [closed] MUSS eine neue, endgültige `id` tragen (nicht die open-ID).
+  Future<void> closeOpenClockEntry({
+    required String orgId,
+    required String userId,
+    required ClockEntry closed,
+  }) async {
+    assert(closed.id != null && closed.id != openClockDocId(userId));
+    final openRef = _clockEntryCollection(orgId).doc(openClockDocId(userId));
+    final closedRef = _clockEntryCollection(orgId).doc(closed.id);
+    await _firestore.runTransaction((tx) async {
+      final open = await tx.get(openRef);
+      if (!open.exists) {
+        throw StateError('Keine laufende Buchung gefunden.');
+      }
+      tx.set(closedRef, closed.toFirestoreMap());
+      tx.delete(openRef);
+    });
+  }
+
   Future<void> deleteClockEntry({
     required String orgId,
     required String clockEntryId,
@@ -331,6 +378,23 @@ class FirestoreService {
           snapshot.copyWith(id: id).toFirestoreMap(),
           SetOptions(merge: true),
         );
+  }
+
+  /// Einzelner Monats-Snapshot (deterministische Doc-ID `{userId}-{jahr}-{mm}`)
+  /// — Grundlage des Festschreibungs-Guards (PA-5): `null` = kein Snapshot =
+  /// Monat nicht festgeschrieben.
+  Future<ZeitkontoSnapshot?> getZeitkontoSnapshot({
+    required String orgId,
+    required String userId,
+    required int jahr,
+    required int monat,
+  }) async {
+    final doc = await _snapshotCollection(orgId)
+        .doc(ZeitkontoSnapshot.buildId(userId, jahr, monat))
+        .get();
+    final data = doc.data();
+    if (!doc.exists || data == null) return null;
+    return ZeitkontoSnapshot.fromFirestore(doc.id, data);
   }
 
   /// Monats-Snapshots eines Nutzers für ein Jahr (zwei Gleichheits-Filter →
@@ -1391,6 +1455,62 @@ class FirestoreService {
   /// Beendet eine Kiosk-Session serverseitig (Logout/„Fertig").
   Future<void> kioskEndSession(String sid) async {
     await _callCloudFunction('kioskEndSession', {'sid': sid});
+  }
+
+  /// Admin setzt die Kiosk-PIN eines Mitarbeiters zurück (löscht den Hash und
+  /// hebt eine Sperre auf) — Teil des Offboarding-Flows (PA-7.3). Serverseitig
+  /// admin-gegatet (`resetKioskPin`-Callable).
+  Future<void> resetKioskPin(String employeeId) async {
+    await _callCloudFunction('resetKioskPin', {'employeeId': employeeId});
+  }
+
+  /// „Wer ist gerade im Dienst" (PA-4.5b): live-Stream der server-gepflegten
+  /// `kioskPresence`-Projektion (nur Name/Standort/Kommen). Für das
+  /// Kiosk-Board — das Gerätekonto darf `clockEntries` nicht lesen.
+  Stream<List<({String name, String? siteName, DateTime? kommen})>>
+      watchKioskPresence(String orgId) {
+    return _organizationDoc(orgId).collection('kioskPresence').snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) {
+                final data = doc.data();
+                final kommen = data['kommen'];
+                return (
+                  name: (data['name'] ?? '').toString(),
+                  siteName: data['siteName'] as String?,
+                  kommen: kommen is Timestamp ? kommen.toDate() : null,
+                );
+              })
+              .where((e) => e.name.trim().isNotEmpty)
+              .toList(growable: false),
+        );
+  }
+
+  /// Kiosk-Anmelde-Roster (PA-4.4b): Datensparsamkeits-Projektion
+  /// `kioskRoster/{uid}` (nur Name + aktiv, gepflegt vom
+  /// `onUserWrittenKioskRoster`-Trigger) — das geteilte Tablet liest damit NIE
+  /// die vollen `users`-Docs (Stundensatz etc.). Liefert synthetische, minimale
+  /// [AppUserProfile]-Objekte (nur uid/orgId/Name/aktiv), die für Kiosk-Login
+  /// und Stempel-Callables reichen.
+  Future<List<AppUserProfile>> getKioskRoster(String orgId) async {
+    final snapshot =
+        await _organizationDoc(orgId).collection('kioskRoster').get();
+    final list = snapshot.docs
+        .map((doc) {
+          final data = doc.data();
+          return AppUserProfile(
+            uid: doc.id,
+            orgId: orgId,
+            email: '',
+            role: UserRole.employee,
+            isActive: data['isActive'] != false,
+            settings: UserSettings(name: (data['name'] ?? '').toString()),
+          );
+        })
+        .where((p) => p.isActive && p.settings.name.trim().isNotEmpty)
+        .toList();
+    list.sort((a, b) =>
+        a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+    return list;
   }
 
   /// Stempeln am Kiosk für den Session-Mitarbeiter. [direction] = `'in'` |

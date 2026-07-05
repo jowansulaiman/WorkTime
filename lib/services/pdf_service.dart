@@ -11,8 +11,12 @@ import '../core/finance_analytics.dart';
 import '../core/payroll_calculator.dart';
 import '../core/personnel_cost.dart';
 import '../core/shift_plan_grid.dart';
+import '../core/urlaub_calculator.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
+import '../models/employee_document.dart';
+import '../models/employee_profile.dart';
+import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../models/product.dart';
 import '../models/shift.dart';
@@ -1533,6 +1537,172 @@ class PdfService {
   }
 
   /// PDF-Lohnabrechnung – **RICHTWERT**, keine offizielle Abrechnung.
+  /// Datenauskunft nach **Art. 15 DSGVO** (PA-8.2): kompakte Selbstauskunft
+  /// des Mitarbeiters über die zu seiner Person gespeicherten HR-Daten —
+  /// Stammdaten (nur belegte Felder), Vertragseckdaten, Urlaubskonto,
+  /// Lohnabrechnungen und Dokument-Metadaten. Kein Richtwert-Charakter: das
+  /// PDF listet gespeicherte Daten, es berechnet nichts Neues.
+  static Future<Uint8List> generateSelbstauskunft({
+    required String employeeName,
+    EmployeeProfile? profile,
+    EmploymentContract? contract,
+    UrlaubsReport? urlaub,
+    List<PayrollRecord> payrolls = const [],
+    List<EmployeeDocument> documents = const [],
+  }) async {
+    final pdf = pw.Document(theme: await _loadFonts());
+    final eur =
+        NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
+    String money(int cents) => eur.format(cents / 100);
+
+    const primary = PdfColor.fromInt(0xFF13161B);
+    const accent = PdfColor.fromInt(0xFF9B7839);
+
+    pw.Widget row(String label, String? value) {
+      if (value == null || value.trim().isEmpty || value == '—') {
+        return pw.SizedBox.shrink();
+      }
+      return pw.Padding(
+        padding: const pw.EdgeInsets.symmetric(vertical: 2),
+        child: pw.Row(children: [
+          pw.SizedBox(
+            width: 170,
+            child: pw.Text(label,
+                style:
+                    const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+          ),
+          pw.Expanded(
+              child:
+                  pw.Text(value, style: const pw.TextStyle(fontSize: 10))),
+        ]),
+      );
+    }
+
+    pw.Widget section(String title, List<pw.Widget> children) => pw.Container(
+          margin: const pw.EdgeInsets.only(bottom: 14),
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(title,
+                  style: pw.TextStyle(
+                      fontSize: 12,
+                      fontWeight: pw.FontWeight.bold,
+                      color: accent)),
+              pw.Divider(color: PdfColors.grey300, height: 8),
+              ...children,
+            ],
+          ),
+        );
+
+    final erstellt = DateFormat('dd.MM.yyyy HH:mm', 'de_DE')
+        .format(DateTime.now());
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        footer: (context) => _buildFooter(context, primary),
+        build: (context) => [
+          pw.Text('Datenauskunft nach Art. 15 DSGVO',
+              style: pw.TextStyle(
+                  fontSize: 18,
+                  fontWeight: pw.FontWeight.bold,
+                  color: primary)),
+          pw.SizedBox(height: 2),
+          pw.Text('$employeeName · erstellt am $erstellt',
+              style:
+                  const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+          pw.SizedBox(height: 16),
+          if (profile != null)
+            section('Stammdaten', [
+              row('Personalnummer', profile.personnelNumber),
+              row(
+                  'Geburtsdatum',
+                  profile.birthDate != null
+                      ? dateFmt.format(profile.birthDate!)
+                      : null),
+              row('Anschrift', [
+                [profile.street ?? '', profile.houseNumber ?? '']
+                    .where((e) => e.trim().isNotEmpty)
+                    .join(' '),
+                [profile.postalCode ?? '', profile.city ?? '']
+                    .where((e) => e.trim().isNotEmpty)
+                    .join(' '),
+              ].where((e) => e.trim().isNotEmpty).join(', ')),
+              row('Telefon (privat)', profile.privatePhone),
+              row('Mobil (privat)', profile.privateMobile),
+              row('E-Mail (privat)', profile.privateEmail),
+              row('Beschäftigungsstatus', profile.status.label),
+              row(
+                  'Eintritt',
+                  profile.hireDate != null
+                      ? dateFmt.format(profile.hireDate!)
+                      : null),
+              row(
+                  'Austritt',
+                  profile.exitDate != null
+                      ? dateFmt.format(profile.exitDate!)
+                      : null),
+              row('Steuer-ID', profile.taxId),
+              row('SV-Nummer', profile.socialSecurityNumber),
+              row('Krankenkasse', profile.healthInsurance),
+              row('IBAN', profile.iban),
+              row('Notfallkontakt', profile.emergencyContactName),
+            ]),
+          if (contract != null)
+            section('Arbeitsvertrag (Eckdaten)', [
+              row('Beschäftigungsart', contract.type.label),
+              row('Gültig ab', dateFmt.format(contract.validFrom)),
+              row('Wochenstunden',
+                  '${contract.weeklyHours.toStringAsFixed(1)} h'),
+              row(
+                  'Vergütung',
+                  contract.salaryKind == SalaryKind.monthly
+                      ? (contract.monthlyGrossCents != null
+                          ? '${money(contract.monthlyGrossCents!)} / Monat'
+                          : 'Festgehalt')
+                      : '${contract.hourlyRate.toStringAsFixed(2)} € / Stunde'),
+            ]),
+          if (urlaub != null)
+            section('Urlaubskonto ${urlaub.jahr}', [
+              row('Jahresanspruch',
+                  '${urlaub.anspruchJahr.toStringAsFixed(1)} Tage'),
+              row('Vortrag Vorjahr',
+                  '${urlaub.vortragVorjahr.toStringAsFixed(1)} Tage'),
+              row('Genommen', '${urlaub.genommen.toStringAsFixed(1)} Tage'),
+              row('Resturlaub',
+                  '${urlaub.resturlaub.toStringAsFixed(1)} Tage'),
+            ]),
+          if (payrolls.isNotEmpty)
+            section('Lohnabrechnungen (${payrolls.length})', [
+              for (final r in payrolls)
+                row(
+                    '${r.periodMonth.toString().padLeft(2, '0')}/${r.periodYear}',
+                    'Brutto ${money(r.grossCents)} · Netto '
+                        '${money(r.netCents)} · ${r.status.label}'),
+            ]),
+          if (documents.isNotEmpty)
+            section('Dokumente in der Personalakte (${documents.length})', [
+              for (final d in documents)
+                row(
+                    d.createdAt != null ? dateFmt.format(d.createdAt!) : '—',
+                    '${d.title} (${d.category.label})'),
+            ]),
+          pw.SizedBox(height: 8),
+          pw.Text(
+            'Diese Auskunft umfasst die in der WorkTime-App zu Ihrer Person '
+            'gespeicherten Personal-Daten (Art. 15 Abs. 1, Abs. 3 DSGVO). '
+            'Zeiteinträge und Schichten sind in der App unter „Zeit" bzw. '
+            '„Plan" einsehbar.',
+            style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey600),
+          ),
+        ],
+      ),
+    );
+    return pdf.save();
+  }
+
   static Future<Uint8List> generatePayrollReport({
     required PayrollRecord record,
     required String employeeName,

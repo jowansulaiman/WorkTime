@@ -15,6 +15,10 @@ import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/finance_models.dart';
 import '../models/customer_order.dart';
+import '../core/urlaub_calculator.dart';
+import '../models/employee_document.dart';
+import '../models/employee_profile.dart';
+import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../models/product.dart';
 import '../models/shift.dart';
@@ -558,6 +562,30 @@ class ExportService {
   }
 
   // --- Personal-Bereich: Lohnabrechnung & Personalkosten -------------------
+
+  /// Datenauskunft nach Art. 15 DSGVO als PDF (PA-8.2) — Download über den
+  /// plattformneutralen PDF-Pfad (Web-Download bzw. Teilen auf Mobile).
+  static Future<void> exportSelbstauskunftPdf({
+    required String employeeName,
+    EmployeeProfile? profile,
+    EmploymentContract? contract,
+    UrlaubsReport? urlaub,
+    List<PayrollRecord> payrolls = const [],
+    List<EmployeeDocument> documents = const [],
+  }) async {
+    final bytes = await PdfService.generateSelbstauskunft(
+      employeeName: employeeName,
+      profile: profile,
+      contract: contract,
+      urlaub: urlaub,
+      payrolls: payrolls,
+      documents: documents,
+    );
+    await downloadPdfBytes(
+      bytes: bytes,
+      fileName: 'datenauskunft-art15.pdf',
+    );
+  }
 
   static Future<void> exportPayrollPdf({
     required PayrollRecord record,

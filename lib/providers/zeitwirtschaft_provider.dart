@@ -6,6 +6,7 @@ import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/clock_service.dart';
 import '../core/dienst_abgleich.dart';
+import '../core/monats_festschreibung.dart';
 import '../core/monatsabschluss_service.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
@@ -208,6 +209,17 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
   Future<void> Function(PayrollRecord record)? _payrollDraftPoster;
   void setPayrollDraftPoster(Future<void> Function(PayrollRecord record) poster) {
     _payrollDraftPoster = poster;
+  }
+
+  /// Seam für die Abrechnungssperre (PA-5.2): liefert den [PayrollStatus] der
+  /// Lohnabrechnung eines Mitarbeiter-Monats (oder `null`, wenn keine
+  /// existiert). In `main.dart` mit `PersonalProvider.payrollForUserPeriod`
+  /// verdrahtet — gleiches Entkopplungs-Muster wie [_payrollDraftPoster].
+  PayrollStatus? Function(String userId, int jahr, int monat)?
+      _payrollStatusLookup;
+  void setPayrollStatusLookup(
+      PayrollStatus? Function(String userId, int jahr, int monat) lookup) {
+    _payrollStatusLookup = lookup;
   }
 
   void surfaceSessionError(Object error) {
@@ -473,12 +485,31 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
       );
     }
     final clock = now ?? DateTime.now();
+    // PA-5: Laufende (ongoing) Stempelungen des Ziel-Mitarbeiters, deren Kommen
+    // im/vor dem Zielmonat liegt, blockieren den Abschluss — sonst würde das
+    // spätere Ausstempeln einen WorkEntry in den festgeschriebenen Monat
+    // erzwingen. Aus dem Live-Zustand des Providers abgeleitet (eigene offene
+    // Buchung + org-weiter Manager-Stream), per ID dedupliziert.
+    final monatsEnde = DateTime(
+        liveSnapshot.jahr, liveSnapshot.monat + 1, 1)
+        .subtract(const Duration(seconds: 1));
+    final offeneStempelungen = <String?>{
+      for (final e in [
+        if (_openEntry != null) _openEntry!,
+        ..._ongoingEntries,
+      ])
+        if (e.userId == liveSnapshot.userId &&
+            e.status == ClockStatus.ongoing &&
+            !e.kommen.isAfter(monatsEnde))
+          e.id,
+    }.length;
     final validation = _monatsabschluss.validate(
       snapshot: liveSnapshot,
       entries: monthEntries,
       vormonat: vormonat,
       now: clock,
       offeneKlaerungen: offeneKlaerungen,
+      offeneStempelungen: offeneStempelungen,
     );
     if (!validation.canClose) return validation;
 
@@ -531,12 +562,33 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
 
   /// Nimmt einen Monatsabschluss zurück (Unlock) — Zeiteinträge werden dadurch
   /// wieder bearbeitbar. [snapshot] ist der bereits persistierte (gesperrte).
+  ///
+  /// **Admin-only** (PA-5.2, in den Rules gespiegelt: `zeitkontoSnapshots`-
+  /// update auf gesperrten Snapshots nur `isAdmin`). Zusätzlich gesperrt, wenn
+  /// die Lohnabrechnung des Monats bereits **freigegeben/bezahlt** ist — dann
+  /// wäre das Zeitkonto rückwirkend änderbar, obwohl der Lohn schon auf dem
+  /// festgeschriebenen Stand basiert. Weg: Lohnabrechnung zuerst stornieren
+  /// (`setPayrollStatus(storniert)`), dann Reopen.
   Future<void> reopenMonth(
     ZeitkontoSnapshot snapshot, {
     String? actorUid,
   }) async {
     final user = _currentUser;
     if (user == null) return;
+    if (!user.isAdmin) {
+      throw StateError(
+          'Nur Admins dürfen einen Monatsabschluss zurücknehmen.');
+    }
+    final payrollStatus = _payrollStatusLookup?.call(
+        snapshot.userId, snapshot.jahr, snapshot.monat);
+    if (payrollStatus == PayrollStatus.freigegeben ||
+        payrollStatus == PayrollStatus.bezahlt) {
+      throw StateError(
+          'Die Lohnabrechnung ${snapshot.monat.toString().padLeft(2, '0')}/'
+          '${snapshot.jahr} ist bereits ${payrollStatus!.label.toLowerCase()} '
+          '— bitte zuerst im Lohnlauf stornieren, dann den Monatsabschluss '
+          'zurücknehmen.');
+    }
     final id = ZeitkontoSnapshot.buildId(
         snapshot.userId, snapshot.jahr, snapshot.monat);
     final unlocked = _monatsabschluss.applyUnlock(snapshot).copyWith(id: id);
@@ -692,8 +744,17 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     if (user == null || !user.canEditTimeEntries || isClockedIn) {
       return;
     }
+    // PA-4.1: Im Cloud-/Hybrid-Modus läuft die offene Buchung unter der
+    // deterministischen Doc-ID `{userId}-open` (Transaktion mit Existenz-Check
+    // = harter Doppel-Stempel-Guard über Geräte hinweg). Local-Modus und der
+    // hybrid-Offline-Fallback nutzen weiter zufällige IDs (ein Gerät, keine
+    // Concurrency; und ein lokales `-open`-Doc würde beim Schließen in place
+    // die ID des nächsten clockIn blockieren).
+    final randomId = 'clock-${DateTime.now().microsecondsSinceEpoch}';
     final entry = ClockEntry(
-      id: 'clock-${DateTime.now().microsecondsSinceEpoch}',
+      id: usesLocalStorage
+          ? randomId
+          : FirestoreService.openClockDocId(user.uid),
       orgId: user.orgId,
       userId: user.uid,
       userName: user.settings.name,
@@ -705,11 +766,32 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
       status: ClockStatus.ongoing,
       createdByUid: user.uid,
     );
-    await _persist(entry, ongoing: true);
+    if (usesLocalStorage) {
+      await _persist(entry, ongoing: true);
+    } else {
+      try {
+        await _firestoreService.clockInOpen(entry);
+        _openEntry = entry;
+        _safeNotify();
+      } on StateError {
+        // Doppel-Stempel-Guard hat gegriffen (anderes Gerät) — deutsche
+        // Meldung an die UI durchreichen, NICHT lokal fallbacken.
+        rethrow;
+      } catch (error) {
+        if (!usesHybridStorage) rethrow;
+        // Hybrid offline: lokale Buchung mit zufälliger ID (Rück-Sync über
+        // syncLocalStateToCloud; clockOut nimmt dann den Legacy-Pfad).
+        final localEntry = entry.copyWith(id: randomId);
+        _upsertLocal(localEntry);
+        await _persistLocal();
+        _recomputeOpenFromLocal();
+        _safeNotify();
+      }
+    }
     _audit?.call(
       action: AuditAction.created,
       entityType: 'Stempelzeit',
-      entityId: entry.id,
+      entityId: _openEntry?.id ?? entry.id,
       summary: 'Eingestempelt${siteName != null ? ' · $siteName' : ''}',
     );
     await _loadMonthEntries();
@@ -751,11 +833,44 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
       klaerung: needsKlaerung,
       anmerkung: anmerkung,
     );
-    await _persist(updated, ongoing: false);
+    // PA-4.1: Lief die Buchung unter der deterministischen `{userId}-open`-ID
+    // (Cloud-/Hybrid-clockIn), wird sie beim Schließen transaktional unter ihre
+    // endgültige ID kopiert und das open-Doc gelöscht — die open-ID ist damit
+    // für den nächsten clockIn frei. Local-Modus und Alt-Buchungen (zufällige
+    // ID, Übergangsphase) schließen wie bisher in place.
+    final istOpenDoc = !usesLocalStorage &&
+        open.id == FirestoreService.openClockDocId(user.uid);
+    var persisted = updated;
+    if (istOpenDoc) {
+      final closed = updated.copyWith(
+          id: 'clock-${DateTime.now().microsecondsSinceEpoch}');
+      try {
+        await _firestoreService.closeOpenClockEntry(
+          orgId: user.orgId,
+          userId: user.uid,
+          closed: closed,
+        );
+        persisted = closed;
+        _openEntry = null;
+        _safeNotify();
+      } catch (error) {
+        if (!usesHybridStorage) rethrow;
+        // Hybrid offline: geschlossene Buchung lokal ablegen (Rück-Sync via
+        // syncLocalStateToCloud); das Cloud-open-Doc räumt der Rück-Sync bzw.
+        // der nächste Online-clockOut ab.
+        persisted = closed;
+        _upsertLocal(closed);
+        await _persistLocal();
+        _recomputeOpenFromLocal();
+        _safeNotify();
+      }
+    } else {
+      await _persist(updated, ongoing: false);
+    }
     _audit?.call(
       action: AuditAction.updated,
       entityType: 'Stempelzeit',
-      entityId: updated.id,
+      entityId: persisted.id,
       summary:
           'Ausgestempelt (${(netto / 60).toStringAsFixed(1)} h)${needsKlaerung ? ' · Klärung' : ''}',
     );
@@ -764,19 +879,21 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
     // bereits gespeicherte Ausstempeln NICHT ab.
     if (!needsKlaerung && _workEntryPoster != null) {
       final workEntry = WorkEntry(
-        orgId: updated.orgId,
-        userId: updated.userId,
+        orgId: persisted.orgId,
+        userId: persisted.userId,
         date: open.kommen,
         startTime: open.kommen,
         endTime: now,
         breakMinutes: pause.toDouble(),
-        siteId: updated.siteId,
-        siteName: updated.siteName,
-        sourceShiftId: updated.shiftId,
+        siteId: persisted.siteId,
+        siteName: persisted.siteName,
+        sourceShiftId: persisted.shiftId,
         note: anmerkung,
         category: 'stempel',
         status: WorkEntryStatus.submitted,
-        sourceClockEntryId: updated.id,
+        // Rückverweis auf die ENDGÜLTIGE Doc-ID (nach dem PA-4.1-copy+delete),
+        // nicht auf die wiederverwendbare `{userId}-open`-ID.
+        sourceClockEntryId: persisted.id,
       );
       try {
         await _workEntryPoster!(workEntry);
@@ -866,6 +983,45 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
         .length;
   }
 
+  /// Lädt den Monats-Snapshot für den Festschreibungs-Guard (PA-5) — Storage-
+  /// modus-bewusst (SharedPreferences im Local-Modus, sonst Firestore).
+  Future<ZeitkontoSnapshot?> _ladeZeitkontoSnapshot(
+    String userId,
+    int jahr,
+    int monat,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return null;
+    if (usesLocalStorage) {
+      final all = await DatabaseService.loadLocalZeitkontoSnapshots(
+        scope: LocalStorageScope.fromUser(user),
+      );
+      for (final s in all) {
+        if (s.userId == userId && s.jahr == jahr && s.monat == monat) return s;
+      }
+      return null;
+    }
+    return _firestoreService.getZeitkontoSnapshot(
+      orgId: user.orgId,
+      userId: userId,
+      jahr: jahr,
+      monat: monat,
+    );
+  }
+
+  /// Festschreibungs-Guard (PA-5.1, Client-Schicht) für Stempel-Korrekturen:
+  /// wirft [StateError], wenn der Monat von [datum] für [userId] bereits per
+  /// Monatsabschluss festgeschrieben ist. Fail-open bei Ladefehlern (offline).
+  Future<void> _assertMonatNichtFestgeschrieben(
+    String userId,
+    DateTime datum,
+  ) =>
+      MonatsFestschreibung.assertNichtFestgeschrieben(
+        ladeSnapshot: _ladeZeitkontoSnapshot,
+        userId: userId,
+        datum: datum,
+      );
+
   /// Löst einen Klärungsfall auf (ZV-3.1): setzt die korrekten Zeiten, schließt
   /// die Buchung (`completed`) und erzeugt — wie ein sauberes Ausstempeln — einen
   /// `WorkEntry(submitted)` (läuft durch die Compliance-Freigabe). Nur
@@ -879,6 +1035,13 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
   }) async {
     final user = _currentUser;
     if (user == null || !user.canManageShifts) return;
+    // PA-5: Klärung in einem festgeschriebenen Monat erst nach Reopen lösbar
+    // (alter UND neuer Kommen-Monat, falls die Korrektur den Monat wechselt).
+    await _assertMonatNichtFestgeschrieben(entry.userId, entry.kommen);
+    if (kommen.year != entry.kommen.year ||
+        kommen.month != entry.kommen.month) {
+      await _assertMonatNichtFestgeschrieben(entry.userId, kommen);
+    }
     final pause = ClockService.effectivePauseMinutes(
       kommen: kommen,
       gehen: gehen,
@@ -921,6 +1084,8 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
   }) async {
     final user = _currentUser;
     if (user == null || !user.canManageShifts) return;
+    // PA-5: auch das Verwerfen ändert einen festgeschriebenen Monat.
+    await _assertMonatNichtFestgeschrieben(entry.userId, entry.kommen);
     final dismissed = entry.copyWith(
       status: ClockStatus.deaktiviert,
       klaerung: false,
@@ -953,6 +1118,8 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
   }) async {
     final user = _currentUser;
     if (user == null || !user.canManageShifts) return;
+    // PA-5: Nachtragen in einen festgeschriebenen Monat erst nach Reopen.
+    await _assertMonatNichtFestgeschrieben(userId, kommen);
     final pause = ClockService.effectivePauseMinutes(
       kommen: kommen,
       gehen: gehen,

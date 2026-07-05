@@ -18,6 +18,7 @@ import '../screens/customer_feedback_screen.dart';
 import '../screens/customer_order_screen.dart';
 import '../screens/cashier_anomaly_screen.dart';
 import '../screens/customer_wishes_screen.dart';
+import '../screens/contacts/contact_detail_screen.dart';
 import '../screens/daily_closing_screen.dart';
 import '../screens/finance_screen.dart';
 import '../screens/force_update_screen.dart';
@@ -38,7 +39,6 @@ import '../screens/sortiment_screen.dart';
 import '../screens/staffing_profile_screen.dart';
 import '../screens/store_health_screen.dart';
 import '../screens/statistics_screen.dart';
-import '../screens/team_management_screen.dart';
 import '../screens/zeitwirtschaft/abwesenheiten_screen.dart';
 import '../screens/zeitwirtschaft/abwesenheitskalender_screen.dart';
 import '../screens/zeitwirtschaft/lohnlauf_screen.dart';
@@ -177,6 +177,16 @@ GoRouter buildAppRouter({
         builder: (context, state) =>
             EmployeeDetailScreen(userId: state.pathParameters['id'] ?? ''),
       ),
+      // Kontakt-Detail (AllTec-1:1): deep-linkbare Route mit Path-Parameter
+      // `:id` (contactId). `_sectionRoute` reicht keine Parameter durch →
+      // explizite GoRoute über dem Root-Navigator. Gate in RoutePermissions
+      // (`/kontakte/`-Prefix = canViewContacts) + _gateRedirect.
+      GoRoute(
+        path: AppRoutes.contactDetail,
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) =>
+            ContactDetailScreen(contactId: state.pathParameters['id'] ?? ''),
+      ),
       _sectionRoute(AppRoutes.meineAkte,
           (c, s) => const MeineAkteScreen(parentLabel: 'Profil')),
       _sectionRoute(AppRoutes.finance,
@@ -185,8 +195,6 @@ GoRouter buildAppRouter({
           (c, s) => const CustomerFeedbackScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.auditLog,
           (c, s) => const AuditLogScreen(parentLabel: 'Laden')),
-      _sectionRoute(AppRoutes.team,
-          (c, s) => const TeamManagementScreen(parentLabel: 'Profil')),
       _sectionRoute(AppRoutes.settings,
           (c, s) => const SettingsScreen(parentLabel: 'Profil')),
       _sectionRoute(AppRoutes.monthReport,
@@ -246,7 +254,6 @@ const Set<String> _denseSectionPaths = <String>{
   AppRoutes.inventory,
   AppRoutes.personal,
   AppRoutes.finance,
-  AppRoutes.team,
   AppRoutes.monthReport,
   AppRoutes.statistics,
   AppRoutes.orderAnalytics,

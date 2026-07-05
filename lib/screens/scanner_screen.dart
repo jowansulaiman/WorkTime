@@ -737,7 +737,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     final sites = context.read<TeamProvider>().sites;
     final siteId = _selectedSiteId ?? (sites.isNotEmpty ? sites.first.id : null);
     if (sites.isEmpty) {
-      _showSnack('Bitte zuerst in der Teamverwaltung einen Standort anlegen.');
+      _showSnack('Bitte zuerst unter Personal → Organisation einen Standort anlegen.');
       return;
     }
     final result = await showProductDialog(
@@ -871,7 +871,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
     if (sites.isEmpty) {
       return const _CenteredHint(
-        'Bitte zuerst in der Teamverwaltung einen Standort anlegen.',
+        'Bitte zuerst unter Personal → Organisation einen Standort anlegen.',
       );
     }
 

@@ -1,0 +1,17 @@
+[
+  {
+    "origin": [
+      "https://taskmaster-ebcez.web.app",
+      "https://taskmaster-ebcez.firebaseapp.com"
+    ],
+    "method": ["GET", "HEAD"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Disposition",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

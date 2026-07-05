@@ -849,7 +849,7 @@ class _InventoryScreenState extends State<InventoryScreen>
   ) async {
     if (sites.isEmpty) {
       _showSnack(context,
-          'Bitte zuerst in der Teamverwaltung einen Standort anlegen.');
+          'Bitte zuerst unter Personal → Organisation einen Standort anlegen.');
       return;
     }
     final result = await showProductDialog(
@@ -894,7 +894,7 @@ class _InventoryScreenState extends State<InventoryScreen>
   Future<void> _addOrder(BuildContext context, List<SiteDefinition> sites) async {
     if (sites.isEmpty) {
       _showSnack(context,
-          'Bitte zuerst in der Teamverwaltung einen Standort anlegen.');
+          'Bitte zuerst unter Personal → Organisation einen Standort anlegen.');
       return;
     }
     await Navigator.of(context).push(

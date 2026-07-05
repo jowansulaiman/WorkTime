@@ -20,6 +20,12 @@ class _CapturingFirestoreService extends FirestoreService {
   Future<void> saveClockEntry(ClockEntry entry) async {
     saved = entry;
   }
+
+  // PA-4.1: clockIn läuft im Cloud-Modus über die {userId}-open-Transaktion.
+  @override
+  Future<void> clockInOpen(ClockEntry entry) async {
+    saved = entry;
+  }
 }
 
 void main() {

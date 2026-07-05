@@ -280,7 +280,7 @@ class _EntryFormScreenState extends State<EntryFormScreen> {
                     child: Padding(
                       padding: EdgeInsets.all(16),
                       child: Text(
-                        'Es ist noch kein Standort hinterlegt. Bitte zuerst einen Standort in der Teamverwaltung anlegen.',
+                        'Es ist noch kein Standort hinterlegt. Bitte zuerst unter Personal → Organisation einen Standort anlegen.',
                       ),
                     ),
                   )

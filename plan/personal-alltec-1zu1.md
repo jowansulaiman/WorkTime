@@ -1,6 +1,6 @@
 # Personalbereich — UI/Tabs genau 1:1 wie AllTec
 
-**Stand:** 2026-07-04 · **Status:** **M1–M11 fertig+verifiziert; alle 9 Tabs gefüllt; committet + auf `main` + gepusht** (nur M12-Deploy offen) · **Priorität:** hoch
+**Stand:** 2026-07-05 · **Status:** **M1–M12 code-fertig (inkl. aller Politur-Reste); 1555 Tests grün, `flutter analyze` clean** (offen nur externer Rules-Deploy) · **Priorität:** hoch
 **Auftrag (Betreiber):** „Das Design bzw. die UI des Personalbereichs soll genau 1:1 wie in AllTec sein — die Tabs."
 
 **Umsetzungsstand (2026-07-04):**
@@ -21,11 +21,28 @@
 
 - **M11** (Anlegen — WorkTime-konform statt AllTec-1:1): „Neuer Mitarbeiter"-Aktion (`person_add_alt_1`) in der Personalverwaltung öffnet einen **Einladungs-Dialog** (Name/E-Mail/Rolle) → `TeamProvider.saveInvite` (Mitarbeiter = Auth-gebundenes Login via `userInvites`; HR-Stammdaten danach in den Detail-Tabs). Bearbeiten läuft über die Detail-Tabs; Rollen bestehender MA bleiben in der Teamverwaltung. `_NewEmployeeDialog` in `personal_screen.dart` + Test.
 
-**Tab-Stand: 9/9 gefüllt** ✅ Übersicht · ✅ Stammdaten · ✅ Gehalt · ✅ Qualifikationen · ✅ Ausbildungen · ✅ Kinder · ✅ Dokumente · ✅ Notizen · ✅ Verwalten. Top-Level-Liste (M10) ✅ + „Neuer Mitarbeiter" (M11) ✅. **`flutter analyze` ohne Fehler** (nur 2 vorbestehende Fremd-Warnungen). **Committet als `ef56423` (+ M11-Folgecommit), auf `main` + `origin/main` gepusht.** Offen nur M12-Deploy (`firebase deploy --only firestore:rules` für `employeeNotes`).
+**Tab-Stand: 9/9 gefüllt** ✅ Übersicht · ✅ Stammdaten · ✅ Gehalt · ✅ Qualifikationen · ✅ Ausbildungen · ✅ Kinder · ✅ Dokumente · ✅ Notizen · ✅ Verwalten. Top-Level-Liste (M10) ✅ + „Neuer Mitarbeiter" (M11) ✅. Committet als `ef56423` + `a02b7fb`, auf `main` gepusht.
 
-`flutter analyze` sauber (nur 3 vorbestehende, fremde Baseline-Hinweise). Tests grün: route_permissions 8, employee_detail_screen 2, employee_kinder_tab 2, employee_hr_models (EmployeeChild-Round-Trip inkl. `anmerkungen`), personal_provider/-screen/-documents. Uncommitted auf `feat/mhd-ablauf-warnung`.
+**Politur-Reste — ERLEDIGT (2026-07-05):**
+- **FilterBar komplett (M10-Politur):** Die Personalverwaltungs-Liste hat jetzt Suche (Name/Rolle) + Statusfilter (Alle/Aktiv/Probezeit/Inaktiv) + **Standortfilter** (Chips aus `personal.sites`, nur sichtbar bei >1 Standort; Match über neue `PersonalProvider.siteIdsForUser`) + Sortiermenü (Name/Stunden/Rolle) — damit ist die Ziel-IA-FilterBar (Suche/Status/Standort) vollständig.
+- **Dokument-Kategorien auf AllTec-Parität (M4-Rest):** `DocumentCategory` 7→11 — die 4 fehlenden AllTec-Kategorien `abmahnung`/`kuendigung`/`fuehrungszeugnis`/`gesundheitszeugnis` ergänzt (AllTec-`fortbildung` mappt als `fromValue`-Alias auf `schulung`); WorkTime-eigene `lohnabrechnung`/`krankmeldung` bleiben. Deutsche Labels, Retention-Defaults (Abmahnung 3 J., Führungszeugnis 3 J. datensparsam, Kündigung/Gesundheitszeugnis 10 J.), Icon-Mapping erweitert. Rein additiv, `fromValue`-Default `sonstiges`.
+- **Dokument-Metadaten-Dialog (M4-Rest):** `_DocumentMetaSheet` in `employee_documents_card.dart` (Edit-Button je Dokument, nur `canManage`) — Titel/Kategorie/Notiz/Sichtbarkeit nachträglich änderbar; neue `PersonalProvider.updateDocumentMeta` (admin-only, Audit „bearbeitet", Binärdatei unangetastet).
+- **M12-Gates:** `flutter analyze` clean (nur 2 vorbestehende Fremd-Baseline-Warnungen: `analysis_options.yaml` removed_lint + `home_screen_tabs.dart` onNavigateBack), **`flutter test` 1555 grün** (inkl. neuer Tests: Kategorie-Round-Trip/Alias/Retention, updateDocumentMeta + Nicht-Admin-Gate).
 
-**Offen:** M5 (Quali/Ausbildung +Felder) · M6 (EmployeeProfile ~15 Felder + Stammdaten) · M7 (VWL/Zulagen/Multi-Bank + Gehalt) · M8 (EmployeeNote + Notizen) · M9 (Verwalten) · M10 (Liste + Aggregat-Verlagerung) · M11 (Dialoge) · M12 (Gates+Deploy).
+**Offen (extern, M12-Deploy):** `firebase deploy --only firestore:rules` (u. a. `employeeNotes`-Block) — Blaze/Betreiber. Kein Composite-Index nötig (Personal-Konvention: kein orderBy). Storage-Regeln (`storage.rules`) + `storage.cors.json` beim selben Deploy mitnehmen (`--only storage`).
+
+## Folge-Umbau (2026-07-05): Teamverwaltung aufgelöst → Personal; Einstellungen aufgeräumt
+
+**Betreiber-Auftrag:** „Räume Teamverwaltung auf, integriere sie in Personal, dann mache sie weg. Integriere auch die Personaldaten in den Einstellungen [in Personal] und räume die Einstellungen auf." — UMGESETZT (1555 Tests grün, analyze clean):
+
+1. **Mitarbeiter-Editoren nach Personal:** `showMemberConfigurationSheet` + `showShiftPreferenceSheet` als öffentliche Top-Level-Helper in `team_management_screen.dart` extrahiert (die 500-Zeilen-Sheets bleiben in der Datei); Verwalten-Tab des 9-Tab-Details hat jetzt die Karte „Rolle, Vertrag & Standorte" (Konfiguration bearbeiten + Schicht-Vorlieben).
+2. **Teamverwaltung → „Organisation":** Mitarbeiter-Tab entfernt (TabController 4→3; `_MembersTab`/`_MemberCard`/`_InviteCard`/`_InviteEditorSheet` + tote Helper gelöscht, ~600 Zeilen), Banner/Breadcrumb/Titel „Organisation" (Standorte · Teams & Qualifikationen · Regelwerk). Erreichbar NUR noch über die Personal-AppBar-Aktion `domain_outlined` (imperativ, keine eigene URL mehr).
+3. **Offene Einladungen** (Liste + Zurückziehen) als selbst-versteckende `_PendingInvitesSection` in die Personalverwaltungs-Liste übernommen (Anlegen war schon M11).
+4. **`/team` restlos entfernt:** `AppRoutes.team` + GoRoute + Permission-Case + `_denseSectionPaths`-Eintrag weg; Nav-Menü-Tile, V1-Profil-Hub-Kachel, V1/V2-Dashboard-Karten („Team verwalten" → „Personal verwalten" → `/personal`), Quick-Action-Sheet, globale Suche (Bereich „Team" raus; **Mitarbeiter-Treffer deep-linken jetzt auf `/personal/{uid}`**). Alle „in der Teamverwaltung…"-Hinweistexte → „unter Personal → Organisation…".
+5. **Einstellungen aufgeräumt:** Sektionen „Arbeitszeit" (Soll-Stunden), „Urlaub & Pause" (Kontingent-Karte + Urlaubstage) und „Lohn" (Stundenlohn-Anzeige + Währung) ENTFERNT (`_VacationQuotaCard` gelöscht, tote Controller raus) — diese Daten leben in Vertrag/Sollzeit-Profil und werden in **„Meine Akte"** angezeigt (neue Link-Karte unter Profil). Auto-Pause bleibt als Sektion „Stempeluhr" (Funktionseinstellung). `_save()` schreibt die gepinnten Werte (hourlyRate/vacationDays/dailyHours/currency) unverändert aus `work.settings` weiter — der PA-0.3-Rules-Pin (`settingsPayrollFieldsUnchanged`) bleibt erfüllt.
+6. **Tests angepasst:** router_test (`/team`→`/personal`), route_permissions_test, app_nav_menu_test (Teamverwaltung `findsNothing`), home_dashboard_characterization_test („Personal verwalten"), personal_screen_test-Harness + TeamProvider.
+
+**Bewusste Entscheidungen:** Organisation behält keine eigene URL (imperativer Push aus Personal — Deep-Link-Bedarf gering, ein Gate weniger); `TeamProvider` bleibt unverändert der Daten-Provider (nur UI wurde konsolidiert); Anzeigename + Auto-Pause bleiben in den Einstellungen (App-/Gerätenahe Selbstpflege).
 
 AllTec (`/Users/jowan/Documents/dev/AllTec`, Schwester-App desselben Entwicklers) hat im Personnel-Modul das Muster **Liste → Mitarbeiter-Detail mit 9 Tabs**. Dieses Muster wird in WorkTime **per Hand** in dessen Konventionen re-implementiert (Provider + go_router, kein bloc/GoRouter/Freezed-Transplant, Material 3, AllTec-Farbpalette ist bereits app-weit aktiv, Deutsch-only, Zwei-Serialisierungs-Regel).
 

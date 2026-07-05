@@ -15,8 +15,6 @@ import '../models/third_party_cash.dart';
 import '../models/site_schedule.dart';
 import '../models/team_definition.dart';
 import '../models/travel_time_rule.dart';
-import '../models/user_invite.dart';
-import '../models/user_settings.dart';
 import '../providers/auth_provider.dart';
 import '../providers/team_provider.dart';
 import '../theme/app_theme.dart';
@@ -43,6 +41,81 @@ Future<bool> _confirmDelete(BuildContext context, String itemName) async {
   return confirmed == true;
 }
 
+/// Öffnet den vollständigen Mitarbeiter-Konfigurations-Editor (Name/Rolle/
+/// Rechte/Vertrag/Standorte/Qualifikationen) und speichert via
+/// [TeamProvider.saveMemberConfiguration]. Öffentlich, damit der Personalbereich
+/// (Verwalten-Tab des 9-Tab-Details) denselben Editor nutzt — die Teamverwaltung
+/// als eigenes Ziel ist aufgelöst, der Editor lebt weiter in dieser Datei.
+Future<void> showMemberConfigurationSheet(
+  BuildContext context,
+  AppUserProfile member,
+) async {
+  final teamProvider = context.read<TeamProvider>();
+  final existingContract = teamProvider.contracts
+      .where((contract) => contract.userId == member.uid)
+      .firstOrNull;
+  final existingAssignments = teamProvider.siteAssignments
+      .where((assignment) => assignment.userId == member.uid)
+      .toList(growable: false);
+  final result = await showModalBottomSheet<_MemberConfigurationResult>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (sheetContext) => Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+      ),
+      child: _MemberEditorSheet(
+        member: member,
+        sites: teamProvider.sites,
+        qualifications: teamProvider.qualifications,
+        contract: existingContract,
+        assignments: existingAssignments,
+      ),
+    ),
+  );
+
+  if (result == null) {
+    return;
+  }
+  await teamProvider.saveMemberConfiguration(
+    profile: result.profile,
+    contract: result.contract,
+    siteAssignments: result.assignments,
+  );
+}
+
+/// Öffnet den Schicht-Vorlieben-Editor eines Mitarbeiters (weich prefer/avoid +
+/// hart block) und speichert via [TeamProvider.saveShiftPreference]. Öffentlich
+/// aus demselben Grund wie [showMemberConfigurationSheet].
+Future<void> showShiftPreferenceSheet(
+  BuildContext context,
+  AppUserProfile member,
+) async {
+  final teamProvider = context.read<TeamProvider>();
+  final existing = teamProvider.shiftPreferenceForUser(member.uid);
+  final result = await showModalBottomSheet<EmployeeShiftPreference>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    builder: (sheetContext) => Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+      ),
+      child: _ShiftPreferenceEditorSheet(member: member, existing: existing),
+    ),
+  );
+  if (result == null || !context.mounted) {
+    return;
+  }
+  await teamProvider.saveShiftPreference(result);
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Schicht-Vorlieben gespeichert.')),
+  );
+}
+
 class TeamManagementScreen extends StatefulWidget {
   const TeamManagementScreen({
     super.key,
@@ -58,12 +131,11 @@ class TeamManagementScreen extends StatefulWidget {
 class _TeamManagementScreenState extends State<TeamManagementScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
-  String _memberSearch = '';
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -82,13 +154,9 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
 
     if (!auth.isAdmin) {
       return const Center(
-        child: Text('Teamverwaltung ist nur fuer Admins verfuegbar.'),
+        child: Text('Die Organisation ist nur fuer Admins verfuegbar.'),
       );
     }
-
-    final activeMembers =
-        team.members.where((member) => member.isActive).length;
-    final inactiveMembers = team.members.length - activeMembers;
 
     return Scaffold(
       appBar: BreadcrumbAppBar(
@@ -97,7 +165,7 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
             label: widget.parentLabel,
             onTap: () => Navigator.of(context).pop(),
           ),
-          const BreadcrumbItem(label: 'Teamverwaltung'),
+          const BreadcrumbItem(label: 'Organisation'),
         ],
       ),
       body: SafeArea(
@@ -112,11 +180,8 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                     child: _TeamHeroBanner(
-                      activeMembers: activeMembers,
-                      inactiveMembers: inactiveMembers,
                       siteCount: team.sites.length,
                       teamCount: team.teams.length,
-                      inviteCount: team.invites.length,
                       colorScheme: colorScheme,
                       appColors: appColors,
                     ),
@@ -145,10 +210,6 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
                       ),
                       tabs: [
                         Tab(
-                          icon: const Icon(Icons.people_alt_outlined),
-                          text: 'Mitarbeiter (${team.members.length})',
-                        ),
-                        Tab(
                           icon: const Icon(Icons.storefront_outlined),
                           text: 'Standorte (${team.sites.length})',
                         ),
@@ -169,16 +230,6 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
               body: TabBarView(
                 controller: _tabController,
                 children: [
-                  _MembersTab(
-                    searchQuery: _memberSearch,
-                    onSearchChanged: (query) =>
-                        setState(() => _memberSearch = query),
-                    onOpenInviteEditor: () => _openInviteEditor(context),
-                    onOpenMemberEditor: (member) =>
-                        _openMemberEditor(context, member),
-                    onOpenPreferenceEditor: (member) =>
-                        _openShiftPreferenceEditor(context, member),
-                  ),
                   _SitesTab(
                     onOpenSiteEditor: ({SiteDefinition? site}) =>
                         _openSiteEditor(context, site: site),
@@ -204,97 +255,6 @@ class _TeamManagementScreenState extends State<TeamManagementScreen>
           ),
         ),
       ),
-    );
-  }
-
-  Future<void> _openInviteEditor(BuildContext context) async {
-    final currentUser = context.read<AuthProvider>().profile;
-    final teamProvider = context.read<TeamProvider>();
-    if (currentUser == null) {
-      return;
-    }
-    final result = await showModalBottomSheet<UserInvite>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (sheetContext) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
-        ),
-        child: _InviteEditorSheet(currentUser: currentUser),
-      ),
-    );
-
-    if (result == null) {
-      return;
-    }
-    await teamProvider.saveInvite(result);
-  }
-
-  Future<void> _openMemberEditor(
-    BuildContext context,
-    AppUserProfile member,
-  ) async {
-    final teamProvider = context.read<TeamProvider>();
-    final existingContract = teamProvider.contracts
-        .where((contract) => contract.userId == member.uid)
-        .firstOrNull;
-    final existingAssignments = teamProvider.siteAssignments
-        .where((assignment) => assignment.userId == member.uid)
-        .toList(growable: false);
-    final result = await showModalBottomSheet<_MemberConfigurationResult>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (sheetContext) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
-        ),
-        child: _MemberEditorSheet(
-          member: member,
-          sites: teamProvider.sites,
-          qualifications: teamProvider.qualifications,
-          contract: existingContract,
-          assignments: existingAssignments,
-        ),
-      ),
-    );
-
-    if (result == null) {
-      return;
-    }
-    await teamProvider.saveMemberConfiguration(
-      profile: result.profile,
-      contract: result.contract,
-      siteAssignments: result.assignments,
-    );
-  }
-
-  Future<void> _openShiftPreferenceEditor(
-    BuildContext context,
-    AppUserProfile member,
-  ) async {
-    final teamProvider = context.read<TeamProvider>();
-    final existing = teamProvider.shiftPreferenceForUser(member.uid);
-    final result = await showModalBottomSheet<EmployeeShiftPreference>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (sheetContext) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
-        ),
-        child: _ShiftPreferenceEditorSheet(member: member, existing: existing),
-      ),
-    );
-    if (result == null || !context.mounted) {
-      return;
-    }
-    await teamProvider.saveShiftPreference(result);
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Schicht-Vorlieben gespeichert.')),
     );
   }
 
@@ -525,20 +485,14 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
 
 class _TeamHeroBanner extends StatelessWidget {
   const _TeamHeroBanner({
-    required this.activeMembers,
-    required this.inactiveMembers,
     required this.siteCount,
     required this.teamCount,
-    required this.inviteCount,
     required this.colorScheme,
     required this.appColors,
   });
 
-  final int activeMembers;
-  final int inactiveMembers;
   final int siteCount;
   final int teamCount;
-  final int inviteCount;
   final ColorScheme colorScheme;
   final AppThemeColors appColors;
 
@@ -563,14 +517,15 @@ class _TeamHeroBanner extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Teamverwaltung',
+              'Organisation',
               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Organisation, Mitarbeiter und Compliance zentral verwalten.',
+              'Standorte, Teams, Qualifikationen und Regelwerk verwalten. '
+              'Mitarbeiter werden im Personalbereich gepflegt.',
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: colorScheme.onSurfaceVariant,
                   ),
@@ -581,17 +536,6 @@ class _TeamHeroBanner extends StatelessWidget {
               runSpacing: 10,
               children: [
                 _TeamOverviewChip(
-                  icon: Icons.people_alt_outlined,
-                  label: '$activeMembers aktiv',
-                  color: colorScheme.primary,
-                ),
-                if (inactiveMembers > 0)
-                  _TeamOverviewChip(
-                    icon: Icons.person_off_outlined,
-                    label: '$inactiveMembers inaktiv',
-                    color: colorScheme.outline,
-                  ),
-                _TeamOverviewChip(
                   icon: Icons.storefront_outlined,
                   label: '$siteCount Standorte',
                   color: colorScheme.tertiary,
@@ -601,12 +545,6 @@ class _TeamHeroBanner extends StatelessWidget {
                   label: '$teamCount Teams',
                   color: colorScheme.secondary,
                 ),
-                if (inviteCount > 0)
-                  _TeamOverviewChip(
-                    icon: Icons.mark_email_unread_outlined,
-                    label: '$inviteCount Einladungen',
-                    color: appColors.info,
-                  ),
               ],
             ),
           ],
@@ -770,159 +708,6 @@ class _ResponsiveTeamGrid extends StatelessWidget {
           ],
         );
       },
-    );
-  }
-}
-
-class _MembersTab extends StatelessWidget {
-  const _MembersTab({
-    required this.searchQuery,
-    required this.onSearchChanged,
-    required this.onOpenInviteEditor,
-    required this.onOpenMemberEditor,
-    required this.onOpenPreferenceEditor,
-  });
-
-  final String searchQuery;
-  final ValueChanged<String> onSearchChanged;
-  final VoidCallback onOpenInviteEditor;
-  final void Function(AppUserProfile member) onOpenMemberEditor;
-  final void Function(AppUserProfile member) onOpenPreferenceEditor;
-
-  @override
-  Widget build(BuildContext context) {
-    final team = context.watch<TeamProvider>();
-    final colorScheme = Theme.of(context).colorScheme;
-    final contractByUser = {
-      for (final contract in team.contracts) contract.userId: contract,
-    };
-    final assignmentsByUser = <String, List<EmployeeSiteAssignment>>{};
-    for (final assignment in team.siteAssignments) {
-      assignmentsByUser
-          .putIfAbsent(assignment.userId, () => [])
-          .add(assignment);
-    }
-
-    final query = searchQuery.toLowerCase();
-    final filteredMembers = query.isEmpty
-        ? team.members
-        : team.members.where((member) {
-            return member.displayName.toLowerCase().contains(query) ||
-                member.email.toLowerCase().contains(query);
-          }).toList(growable: false);
-
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _TeamTabIntroCard(
-          icon: Icons.people_alt_outlined,
-          title: 'Mitarbeiter und Einladungen',
-          subtitle:
-              'Profile, Rollen, Sollstunden und Standortzuweisungen an einer Stelle pflegen.',
-          color: colorScheme.primary,
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final narrow = constraints.maxWidth < 720;
-                final searchField = TextField(
-                  onChanged: onSearchChanged,
-                  decoration: InputDecoration(
-                    hintText: 'Mitarbeiter suchen...',
-                    prefixIcon: const Icon(Icons.search),
-                    isDense: true,
-                    filled: true,
-                    fillColor: colorScheme.surfaceContainerHighest
-                        .withValues(alpha: 0.5),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                );
-                final inviteButton = FilledButton.icon(
-                  onPressed: onOpenInviteEditor,
-                  icon: const Icon(Icons.person_add_alt_1),
-                  label: const Text('Einladen'),
-                );
-
-                if (narrow) {
-                  return Column(
-                    children: [
-                      searchField,
-                      const SizedBox(height: 12),
-                      SizedBox(width: double.infinity, child: inviteButton),
-                    ],
-                  );
-                }
-
-                return Row(
-                  children: [
-                    Expanded(child: searchField),
-                    const SizedBox(width: 12),
-                    inviteButton,
-                  ],
-                );
-              },
-            ),
-          ),
-        ),
-        const SizedBox(height: 20),
-        if (team.invites.isNotEmpty) ...[
-          _SectionHeader(
-            icon: Icons.mark_email_unread_outlined,
-            title: 'Offene Einladungen (${team.invites.length})',
-          ),
-          const SizedBox(height: 12),
-          _ResponsiveTeamGrid(
-            children: [
-              for (final invite in team.invites)
-                _InviteCard(
-                  invite: invite,
-                  onDelete: () async {
-                    if (await _confirmDelete(context, 'Einladung')) {
-                      if (context.mounted) {
-                        context.read<TeamProvider>().deleteInvite(invite.id!);
-                      }
-                    }
-                  },
-                ),
-            ],
-          ),
-          const SizedBox(height: 20),
-        ],
-        _SectionHeader(
-          icon: Icons.people_alt_outlined,
-          title: 'Mitarbeiter (${filteredMembers.length})',
-        ),
-        const SizedBox(height: 12),
-        if (filteredMembers.isEmpty)
-          const _TeamEmptyState(
-            icon: Icons.group_outlined,
-            text: 'Keine Mitarbeiter gefunden.',
-          )
-        else
-          _ResponsiveTeamGrid(
-            children: [
-              for (final member in filteredMembers)
-                _MemberCard(
-                  member: member,
-                  contract: contractByUser[member.uid],
-                  assignments: assignmentsByUser[member.uid] ?? const [],
-                  onEdit: () => onOpenMemberEditor(member),
-                  onEditPreferences: () => onOpenPreferenceEditor(member),
-                  onToggleActive: () =>
-                      context.read<TeamProvider>().setMemberActive(
-                            uid: member.uid,
-                            isActive: !member.isActive,
-                          ),
-                ),
-            ],
-          ),
-      ],
     );
   }
 }
@@ -1772,201 +1557,6 @@ class _TeamMetaChip extends StatelessWidget {
   }
 }
 
-class _MemberCard extends StatelessWidget {
-  const _MemberCard({
-    required this.member,
-    required this.contract,
-    required this.assignments,
-    required this.onEdit,
-    required this.onEditPreferences,
-    required this.onToggleActive,
-  });
-
-  final AppUserProfile member;
-  final EmploymentContract? contract;
-  final List<EmployeeSiteAssignment> assignments;
-  final VoidCallback onEdit;
-  final VoidCallback onEditPreferences;
-  final VoidCallback onToggleActive;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final appColors = Theme.of(context).appColors;
-    final accent = member.isActive ? colorScheme.primary : colorScheme.outline;
-    final contractLabel = contract == null
-        ? 'Kein Vertrag'
-        : '${contract!.type.label} · ${contract!.dailyHours.toStringAsFixed(1)} h Soll';
-    // Standortnamen live aus siteId auflösen (H-C2); EmployeeSiteAssignment
-    // trägt siteName als (Pflicht-)Snapshot, der bei Umbenennung sonst driftet.
-    final team = context.watch<TeamProvider>();
-    final siteNames = assignments
-        .map((item) =>
-            team.siteNameById(item.siteId, fallback: item.siteName) ?? '')
-        .where((name) => name.isNotEmpty)
-        .toSet()
-        .toList(growable: false);
-    final primarySite = assignments.firstWhereOrNull((item) => item.isPrimary);
-    final primarySiteName = primarySite == null
-        ? null
-        : team.siteNameById(primarySite.siteId,
-            fallback: primarySite.siteName);
-    final qualificationCount =
-        assignments.expand((item) => item.qualificationIds).toSet().length;
-    final permissionSummary = member.isAdmin
-        ? 'Vollzugriff'
-        : _permissionSummaryLabel(member.effectivePermissions);
-
-    return _ManagementCardShell(
-      icon: member.isActive ? Icons.person_outline : Icons.person_off_outlined,
-      accent: accent,
-      title: member.displayName,
-      subtitle: member.email,
-      badges: [
-        _TeamMetaChip(
-          icon: Icons.security_outlined,
-          label: member.role.label,
-          color: accent,
-        ),
-        _TeamMetaChip(
-          icon: Icons.schedule_outlined,
-          label: contractLabel,
-          color: colorScheme.secondary,
-        ),
-        _TeamMetaChip(
-          icon: Icons.verified_user_outlined,
-          label: permissionSummary,
-          color: colorScheme.tertiary,
-        ),
-        _TeamMetaChip(
-          icon: member.isActive
-              ? Icons.check_circle_outline
-              : Icons.pause_circle_outline,
-          label: member.isActive ? 'Aktiv' : 'Inaktiv',
-          color: member.isActive ? appColors.success : colorScheme.outline,
-        ),
-        if (siteNames.isNotEmpty)
-          _TeamMetaChip(
-            icon: Icons.storefront_outlined,
-            label: '${siteNames.length} Standorte',
-            color: colorScheme.tertiary,
-          ),
-        if (qualificationCount > 0)
-          _TeamMetaChip(
-            icon: Icons.verified_user_outlined,
-            label: '$qualificationCount Qualifikationen',
-            color: colorScheme.secondary,
-          ),
-      ],
-      trailing: PopupMenuButton<String>(
-        onSelected: (value) {
-          if (value == 'edit') {
-            onEdit();
-          } else if (value == 'preferences') {
-            onEditPreferences();
-          } else if (value == 'toggle') {
-            onToggleActive();
-          }
-        },
-        itemBuilder: (_) => [
-          const PopupMenuItem(
-            value: 'edit',
-            child: Text('Bearbeiten'),
-          ),
-          const PopupMenuItem(
-            value: 'preferences',
-            child: Text('Schicht-Vorlieben'),
-          ),
-          PopupMenuItem(
-            value: 'toggle',
-            child: Text(member.isActive ? 'Deaktivieren' : 'Aktivieren'),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (primarySiteName != null)
-            Text(
-              'Primaerstandort: $primarySiteName',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-          if (siteNames.isNotEmpty) ...[
-            if (primarySite != null) const SizedBox(height: 6),
-            Text(
-              siteNames.join(', '),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _InviteCard extends StatelessWidget {
-  const _InviteCard({
-    required this.invite,
-    required this.onDelete,
-  });
-
-  final UserInvite invite;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final appColors = Theme.of(context).appColors;
-    return _ManagementCardShell(
-      icon: Icons.mail_outline,
-      accent: appColors.info,
-      title: invite.settings.name.isEmpty ? invite.email : invite.settings.name,
-      subtitle: invite.email,
-      badges: [
-        _TeamMetaChip(
-          icon: Icons.pending_outlined,
-          label: 'Ausstehend',
-          color: appColors.info,
-        ),
-        _TeamMetaChip(
-          icon: Icons.security_outlined,
-          label: invite.role.label,
-          color: colorScheme.primary,
-        ),
-        _TeamMetaChip(
-          icon: Icons.schedule_outlined,
-          label: '${invite.settings.dailyHours.toStringAsFixed(1)} h Soll',
-          color: colorScheme.secondary,
-        ),
-        _TeamMetaChip(
-          icon: Icons.verified_user_outlined,
-          label: invite.role == UserRole.admin
-              ? 'Vollzugriff'
-              : _permissionSummaryLabel(invite.effectivePermissions),
-          color: colorScheme.tertiary,
-        ),
-      ],
-      trailing: IconButton(
-        tooltip: 'Einladung löschen',
-        onPressed: onDelete,
-        icon: const Icon(Icons.delete_outline),
-      ),
-    );
-  }
-}
-
-String _permissionSummaryLabel(UserPermissions permissions) {
-  final labels = permissions.summaryLabels();
-  if (labels.isEmpty) {
-    return 'Eingeschraenkt';
-  }
-  return labels.take(3).join(' · ');
-}
-
 class _TeamCard extends StatelessWidget {
   const _TeamCard({
     required this.team,
@@ -2245,177 +1835,6 @@ class _TeamEmptyState extends StatelessWidget {
           const SizedBox(height: 12),
           Text(text, style: TextStyle(color: muted)),
         ],
-      ),
-    );
-  }
-}
-
-class _InviteEditorSheet extends StatefulWidget {
-  const _InviteEditorSheet({required this.currentUser});
-
-  final AppUserProfile currentUser;
-
-  @override
-  State<_InviteEditorSheet> createState() => _InviteEditorSheetState();
-}
-
-class _InviteEditorSheetState extends State<_InviteEditorSheet> {
-  final _formKey = GlobalKey<FormState>();
-  final _emailCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
-  final _rateCtrl = TextEditingController();
-  final _hoursCtrl = TextEditingController(text: '8.0');
-  String _currency = 'EUR';
-  UserRole _role = UserRole.employee;
-  UserPermissions _permissions =
-      UserPermissions.defaultsForRole(UserRole.employee);
-
-  @override
-  void dispose() {
-    _emailCtrl.dispose();
-    _nameCtrl.dispose();
-    _rateCtrl.dispose();
-    _hoursCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Einladung anlegen',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _emailCtrl,
-              decoration: const InputDecoration(
-                labelText: 'E-Mail',
-                prefixIcon: Icon(Icons.mail_outline),
-              ),
-              validator: (value) {
-                if ((value ?? '').trim().isEmpty || !(value!.contains('@'))) {
-                  return 'Bitte gueltige E-Mail eingeben';
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _nameCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Name',
-                prefixIcon: Icon(Icons.person_outline),
-              ),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<UserRole>(
-              initialValue: _role,
-              decoration: const InputDecoration(
-                labelText: 'Rolle',
-                prefixIcon: Icon(Icons.security_outlined),
-              ),
-              items: UserRole.values
-                  .map(
-                    (role) => DropdownMenuItem(
-                      value: role,
-                      child: Text(role.label),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() {
-                    _role = value;
-                    _permissions = UserPermissions.defaultsForRole(value);
-                  });
-                }
-              },
-            ),
-            const SizedBox(height: 16),
-            _PermissionsSection(
-              role: _role,
-              permissions: _permissions,
-              onChanged: (value) => setState(() => _permissions = value),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _hoursCtrl,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'Soll-Stunden pro Tag',
-                prefixIcon: Icon(Icons.schedule),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _rateCtrl,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'Stundenlohn',
-                prefixIcon: Icon(Icons.euro),
-              ),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _currency,
-              decoration: const InputDecoration(
-                labelText: 'Waehrung',
-                prefixIcon: Icon(Icons.currency_exchange),
-              ),
-              items: const [
-                DropdownMenuItem(value: 'EUR', child: Text('EUR')),
-                DropdownMenuItem(value: 'CHF', child: Text('CHF')),
-                DropdownMenuItem(value: 'USD', child: Text('USD')),
-                DropdownMenuItem(value: 'GBP', child: Text('GBP')),
-              ],
-              onChanged: (value) {
-                setState(() => _currency = value ?? 'EUR');
-              },
-            ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.send),
-              label: const Text('Einladung speichern'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(52),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _save() {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    Navigator.of(context).pop(
-      UserInvite(
-        orgId: widget.currentUser.orgId,
-        email: _emailCtrl.text.trim(),
-        role: _role,
-        settings: UserSettings(
-          name: _nameCtrl.text.trim(),
-          hourlyRate: double.tryParse(_rateCtrl.text) ?? 0,
-          dailyHours: double.tryParse(_hoursCtrl.text) ?? 8,
-          currency: _currency,
-        ),
-        permissions: _permissions,
-        createdByUid: widget.currentUser.uid,
       ),
     );
   }

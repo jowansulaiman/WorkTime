@@ -46,6 +46,7 @@ app.*.map.json
 
 # Local Firebase config
 firebase.local.json
+firebase.prod.json
 .firebase/
 .firebaserc
 firestore-debug.log

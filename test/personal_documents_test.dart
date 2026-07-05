@@ -198,6 +198,76 @@ void main() {
       expect(storage.files, isEmpty);
     });
 
+    test('updateDocumentMeta ändert Titel/Kategorie/Sichtbarkeit + Notiz-Clear '
+        '(Datei unangetastet)', () async {
+      final storage = _FakeDocumentStorage();
+      final logged = <String>[];
+      final provider = PersonalProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      provider.setDocumentStorage(storage);
+      provider.setAuditSink(({
+        required action,
+        required entityType,
+        entityId,
+        required summary,
+      }) =>
+          logged.add('${action.name}:$entityType'));
+      await provider.updateSession(_admin);
+      await Future<void>.delayed(Duration.zero);
+
+      await provider.uploadDocument(
+        userId: 'emp-1',
+        category: DocumentCategory.sonstiges,
+        title: 'Alt',
+        fileName: 'x.pdf',
+        contentType: 'application/pdf',
+        bytes: bytes(),
+        note: 'alte Notiz',
+      );
+      await Future<void>.delayed(Duration.zero);
+      final doc = provider.documentsForUser('emp-1').single;
+      final storedBytes = Map.of(storage.files);
+
+      await provider.updateDocumentMeta(
+        doc,
+        title: 'Abmahnung 07/2026',
+        category: DocumentCategory.abmahnung,
+        visibleToEmployee: false,
+        clearNote: true,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final updated = provider.documentsForUser('emp-1').single;
+      expect(updated.title, 'Abmahnung 07/2026');
+      expect(updated.category, DocumentCategory.abmahnung);
+      expect(updated.visibleToEmployee, isFalse);
+      expect(updated.note, isNull);
+      // Binärdatei unverändert (kein Re-Upload, kein Delete).
+      expect(storage.files, storedBytes);
+      expect(logged, contains('updated:Personaldokument'));
+    });
+
+    test('Nicht-Admin darf Metadaten nicht bearbeiten', () async {
+      final provider = PersonalProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_employee);
+      await Future<void>.delayed(Duration.zero);
+
+      await expectLater(
+        provider.updateDocumentMeta(
+          const EmployeeDocument(
+            id: 'd-x',
+            orgId: 'org-1',
+            userId: 'emp-1',
+            title: 'x',
+            storagePath: 'p',
+          ),
+          title: 'Neu',
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
     test('Mitarbeiter-Self-Stream sieht NUR eigene SICHTBARE Dokumente',
         () async {
       // Zwei Dokumente von emp-1: sichtbar + intern; eins von emp-2.

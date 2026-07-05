@@ -177,8 +177,12 @@ void main() {
     expect(stored.first.abgeschlossen, isTrue);
   });
 
-  test('reopenMonth hebt die Sperre wieder auf', () async {
-    final provider = await localProvider();
+  test('reopenMonth hebt die Sperre wieder auf (admin-only, PA-5.2)',
+      () async {
+    // Reopen ist seit PA-5.2 admin-only (+ Abrechnungssperre) — der Test läuft
+    // daher als Admin; der Nicht-Admin-Fall ist in
+    // monats_festschreibung_test.dart abgedeckt.
+    final provider = await localProvider(user: admin);
     await provider.closeMonth(
       liveSnapshot: live(),
       monthEntries: [entry(WorkEntryStatus.approved)],

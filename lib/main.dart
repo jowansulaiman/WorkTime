@@ -202,6 +202,14 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   Settings _buildFirestoreSettings() {
+    // PA-4.4e (Kiosk-Datensparsamkeit, Plan arbeitsmodus-laden-tablet §4):
+    // Auf dem GETEILTEN Laden-Tablet keine Offline-Persistenz — gelesene
+    // Org-Daten sollen nicht dauerhaft auf der Platte des Geraets liegen.
+    // Das Board degradiert offline sichtbar (Kacheln melden Verbindung)
+    // statt still aus einem alten Plattencache zu lesen.
+    if (AppConfig.kioskModeEnabled) {
+      return const Settings(persistenceEnabled: false);
+    }
     if (kIsWeb) {
       // ZV-1.3 (Web-Persistenz-Entscheid): bewusst **Single-Tab**-Persistenz.
       // Der cloud_firestore-Flutter-Plugin exponiert KEINEN Multi-Tab-Manager
@@ -596,6 +604,12 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
             // (zuvor in der Kette gebaut) nimmt den Draft-PayrollRecord auf.
             provider.setPayrollDraftPoster(
                 context.read<PersonalProvider>().savePayrollRecord);
+            // Abrechnungssperre (PA-5.2): Reopen eines Monatsabschlusses prüft
+            // den Lohn-Status des Monats gegen den lebenden PersonalProvider.
+            provider.setPayrollStatusLookup((userId, jahr, monat) => context
+                .read<PersonalProvider>()
+                .payrollForUserPeriod(userId, jahr, monat)
+                ?.status);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,

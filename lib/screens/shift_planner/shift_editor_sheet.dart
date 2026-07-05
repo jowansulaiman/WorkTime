@@ -2095,7 +2095,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               icon: Icons.location_off_outlined,
               title: 'Noch keine Standorte angelegt',
               message:
-                  'Bitte hinterlege zuerst Standorte in der Teamverwaltung, um die Schicht einem Standort zuzuordnen.',
+                  'Bitte hinterlege zuerst Standorte unter Personal → Organisation, um die Schicht einem Standort zuzuordnen.',
               tone: _EditorNoticeTone.warning,
             ),
           ] else

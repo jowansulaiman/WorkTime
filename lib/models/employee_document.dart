@@ -7,6 +7,13 @@ import '../core/firestore_num_parser.dart' as parse;
 /// und die Default-Aufbewahrungsfrist (PA-8). Enthält bewusst KEINE Art.-9-
 /// Kategorien (keine Diagnosen o. ä.) — eine Krankmeldung ist nur der Nachweis,
 /// nicht die Diagnose.
+///
+/// AllTec-Parität (personal-alltec-1zu1, M4-Rest): deckt alle 9 AllTec-
+/// Kategorien ab (`fortbildung` heißt hier `schulung`) und behält zusätzlich
+/// die WorkTime-eigenen `lohnabrechnung`/`krankmeldung` (Lohnzettel-Ablage,
+/// eAU-Nachweis). Erweiterung ist rein additiv — bestehende Dokumente behalten
+/// ihre Kategorie, unbekannte Werte fallen via [DocumentCategoryX.fromValue]
+/// auf `sonstiges`.
 enum DocumentCategory {
   arbeitsvertrag,
   lohnabrechnung,
@@ -14,6 +21,10 @@ enum DocumentCategory {
   krankmeldung,
   zeugnis,
   schulung,
+  abmahnung,
+  kuendigung,
+  fuehrungszeugnis,
+  gesundheitszeugnis,
   sonstiges,
 }
 
@@ -25,6 +36,10 @@ extension DocumentCategoryX on DocumentCategory {
         DocumentCategory.krankmeldung => 'krankmeldung',
         DocumentCategory.zeugnis => 'zeugnis',
         DocumentCategory.schulung => 'schulung',
+        DocumentCategory.abmahnung => 'abmahnung',
+        DocumentCategory.kuendigung => 'kuendigung',
+        DocumentCategory.fuehrungszeugnis => 'fuehrungszeugnis',
+        DocumentCategory.gesundheitszeugnis => 'gesundheitszeugnis',
         DocumentCategory.sonstiges => 'sonstiges',
       };
 
@@ -35,6 +50,10 @@ extension DocumentCategoryX on DocumentCategory {
         DocumentCategory.krankmeldung => 'Krankmeldung',
         DocumentCategory.zeugnis => 'Zeugnis',
         DocumentCategory.schulung => 'Schulung',
+        DocumentCategory.abmahnung => 'Abmahnung',
+        DocumentCategory.kuendigung => 'Kündigung',
+        DocumentCategory.fuehrungszeugnis => 'Führungszeugnis',
+        DocumentCategory.gesundheitszeugnis => 'Gesundheitszeugnis',
         DocumentCategory.sonstiges => 'Sonstiges',
       };
 
@@ -46,9 +65,18 @@ extension DocumentCategoryX on DocumentCategory {
   int get defaultRetentionYears => switch (this) {
         DocumentCategory.lohnabrechnung => 6,
         DocumentCategory.krankmeldung => 2,
+        // Abmahnungen werden nach HR-Praxis nach wenigen Jahren entfernt
+        // (kein gesetzlicher Aufbewahrungszwang; Wirkung verblasst).
+        DocumentCategory.abmahnung => 3,
         DocumentCategory.arbeitsvertrag => 10,
+        DocumentCategory.kuendigung => 10,
         DocumentCategory.zeugnis => 10,
         DocumentCategory.bescheinigung => 10,
+        // Führungszeugnis: datensparsam — kurze Frist, i. d. R. reicht die
+        // dokumentierte Einsichtnahme statt Dauer-Ablage.
+        DocumentCategory.fuehrungszeugnis => 3,
+        // Gesundheitszeugnis/IfSG-Belehrung (§ 43): nachweisrelevant im Handel.
+        DocumentCategory.gesundheitszeugnis => 10,
         DocumentCategory.schulung => 10,
         DocumentCategory.sonstiges => 10,
       };
@@ -61,6 +89,12 @@ extension DocumentCategoryX on DocumentCategory {
         'krankmeldung' => DocumentCategory.krankmeldung,
         'zeugnis' => DocumentCategory.zeugnis,
         'schulung' => DocumentCategory.schulung,
+        // AllTec-Alias: dort heißt die Kategorie `fortbildung`.
+        'fortbildung' => DocumentCategory.schulung,
+        'abmahnung' => DocumentCategory.abmahnung,
+        'kuendigung' => DocumentCategory.kuendigung,
+        'fuehrungszeugnis' => DocumentCategory.fuehrungszeugnis,
+        'gesundheitszeugnis' => DocumentCategory.gesundheitszeugnis,
         _ => DocumentCategory.sonstiges,
       };
 }

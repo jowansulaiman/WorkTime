@@ -54,6 +54,22 @@ void main() {
       expect(DocumentCategoryX.fromValue(null), DocumentCategory.sonstiges);
     });
 
+    test('AllTec-Paritäts-Kategorien: value↔fromValue round-trippen + Alias',
+        () {
+      for (final c in DocumentCategory.values) {
+        expect(DocumentCategoryX.fromValue(c.value), c,
+            reason: 'Kategorie ${c.name} muss round-trippen');
+      }
+      // AllTec nennt Schulungen `fortbildung` — Alias mappt aufs WorkTime-Enum.
+      expect(DocumentCategoryX.fromValue('fortbildung'),
+          DocumentCategory.schulung);
+      // Neue Kategorien haben deutsche Labels + Retention-Defaults.
+      expect(DocumentCategory.abmahnung.label, 'Abmahnung');
+      expect(DocumentCategory.abmahnung.defaultRetentionYears, 3);
+      expect(DocumentCategory.kuendigung.defaultRetentionYears, 10);
+      expect(DocumentCategory.fuehrungszeugnis.defaultRetentionYears, 3);
+    });
+
     test('unsichtbares Dokument (visibleToEmployee=false) round-trippt', () {
       final internal = doc.copyWith(visibleToEmployee: false);
       expect(EmployeeDocument.fromMap(internal.toMap()).visibleToEmployee,

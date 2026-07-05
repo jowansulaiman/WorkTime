@@ -30,7 +30,6 @@ class AppNavMenu extends StatelessWidget {
     required this.onOpenStatistics,
     required this.onOpenPersonal,
     required this.onOpenFinance,
-    required this.onOpenTeam,
     required this.onOpenInventory,
     required this.onOpenCustomerOrders,
     required this.onOpenOrderAnalytics,
@@ -60,7 +59,6 @@ class AppNavMenu extends StatelessWidget {
   final VoidCallback onOpenStatistics;
   final VoidCallback onOpenPersonal;
   final VoidCallback onOpenFinance;
-  final VoidCallback onOpenTeam;
   final VoidCallback onOpenInventory;
   final VoidCallback onOpenCustomerOrders;
   final VoidCallback onOpenOrderAnalytics;
@@ -162,13 +160,6 @@ class AppNavMenu extends StatelessWidget {
           title: 'Buchhaltung',
           subtitle: 'Kostenstellen, Buchungen, Budgets & DATEV',
           onTap: onOpenFinance,
-        ),
-      if (isAdmin)
-        AppQuickActionTile(
-          icon: Icons.groups_outlined,
-          title: 'Teamverwaltung',
-          subtitle: 'Mitarbeiter, Standorte und Rollen pflegen',
-          onTap: onOpenTeam,
         ),
       if (canViewInventory)
         AppQuickActionTile(

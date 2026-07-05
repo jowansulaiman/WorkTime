@@ -18,6 +18,12 @@ class KioskController extends ChangeNotifier {
 
   final Duration inactivityTimeout;
 
+  /// PA-4.4c: Wird beim Logout/Auto-Logout mit der Server-`sid` aufgerufen,
+  /// damit die `kioskSessions`-Doc serverseitig revoked wird (statt nur bis
+  /// zum 10-min-TTL weiterzuleben). Best-effort — Fehler (offline) dürfen den
+  /// UI-Logout nie blockieren. Im Dev-Pfad (`'dev-local'`) no-op.
+  void Function(String sid)? onSessionEnd;
+
   AppUserProfile? _employee;
   String? _sessionId;
   Timer? _logoutTimer;
@@ -48,11 +54,17 @@ class KioskController extends ChangeNotifier {
   }
 
   void logout() {
+    final sid = _sessionId;
     _employee = null;
     _sessionId = null;
     _logoutTimer?.cancel();
     _logoutTimer = null;
     _expiresAt = null;
+    // Server-Session best-effort beenden (PA-4.4c) — nach dem UI-Reset, damit
+    // ein langsamer/fehlschlagender Callable-Aufruf den Logout nie verzögert.
+    if (sid != null && sid != 'dev-local') {
+      onSessionEnd?.call(sid);
+    }
     _safeNotify();
   }
 

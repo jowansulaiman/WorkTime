@@ -612,8 +612,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
 
   // Hauptbereich-Routen über die Shell pushen (Back kehrt zum Hub zurück).
-  Future<void> _pushTeamManagement() => context.push(AppRoutes.team);
-
   Future<void> _pushMonthReport() => context.push(AppRoutes.monthReport);
 
   /// Schließt das Slide-in-Menü und navigiert zur Section-Route — Back führt
@@ -781,12 +779,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       },
                     ),
                   _QuickActionListTile(
-                    icon: Icons.groups_outlined,
-                    title: 'Teamverwaltung',
-                    subtitle: 'Standorte, Qualifikationen und Rollen pflegen',
+                    icon: Icons.badge_outlined,
+                    title: 'Personal',
+                    subtitle:
+                        'Mitarbeiter, Rollen, Standorte und Organisation',
                     onTap: () async {
                       Navigator.of(sheetContext).pop();
-                      await _pushTeamManagement();
+                      await context.push(AppRoutes.personal);
                     },
                   ),
                   if (currentUser?.canViewReports ?? false)
@@ -973,7 +972,6 @@ class _HomeScreenState extends State<HomeScreen> {
             onOpenStatistics: () => _openSection(AppRoutes.statistics),
             onOpenPersonal: () => _openSection(AppRoutes.personal),
             onOpenFinance: () => _openSection(AppRoutes.finance),
-            onOpenTeam: () => _openSection(AppRoutes.team),
             onOpenInventory: () => _openSection(AppRoutes.inventory),
             onOpenCustomerOrders: () => _openSection(AppRoutes.customerOrders),
             onOpenOrderAnalytics: () => _openSection(AppRoutes.orderAnalytics),
@@ -3086,14 +3084,6 @@ class _ProfileHubTab extends StatelessWidget {
               AdaptiveCardGrid(
                 minItemWidth: 180,
                 children: [
-                  if (currentUser?.isAdmin ?? false)
-                    _QuickActionCard(
-                      icon: Icons.groups_outlined,
-                      title: 'Teamverwaltung',
-                      subtitle:
-                          'Mitarbeiter, Standorte und Rollen weiter pflegen',
-                      onTap: () => context.push(AppRoutes.team),
-                    ),
                   if (currentUser?.isAdmin ?? false)
                     _QuickActionCard(
                       icon: Icons.badge_outlined,

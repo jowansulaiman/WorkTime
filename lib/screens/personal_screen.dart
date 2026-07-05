@@ -39,6 +39,7 @@ import '../services/export_service.dart';
 import '../ui/ui.dart';
 import '../widgets/employee_documents_card.dart';
 import 'abwesenheit_screen.dart';
+import 'team_management_screen.dart' show TeamManagementScreen;
 
 /// Personal-Bereich (nur Admin): Übersicht, Aufträge, Lohn (Richtwert),
 /// Finanzen (Personalkosten) und Statistiken – mit Monats-/Statusfilter und
@@ -123,6 +124,19 @@ class _PersonalScreenState extends State<PersonalScreen> {
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
                   builder: (_) => const _PersonalAuswertungenScreen(),
+                ),
+              ),
+            ),
+            // Organisation (Standorte/Teams/Qualifikationen/Regelwerk) — die
+            // frühere Teamverwaltung, jetzt ohne Mitarbeiter-Tab und nur noch
+            // aus dem Personalbereich erreichbar.
+            IconButton(
+              tooltip: 'Organisation (Standorte · Teams · Regelwerk)',
+              icon: const Icon(Icons.domain_outlined),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      const TeamManagementScreen(parentLabel: 'Personal'),
                 ),
               ),
             ),
@@ -410,6 +424,10 @@ double _hoursForUser(List<WorkEntry> entries, String userId) => entries
     .where((e) => e.userId == userId)
     .fold<double>(0, (sum, e) => sum + e.workedHours);
 
+/// Arbeitsstunden mit deutschem Dezimalkomma und ohne überflüssige Null
+/// („0 h" statt „0.0 h", „12,5 h").
+String _hoursLabel(double hours) => '${_formatTage(hours)} h';
+
 /// Personalkosten je Mitarbeiter (Stunden × Stundenlohn + AG-Kosten aus Lohn).
 List<PersonnelCostRow> _costByEmployee(
   List<AppUserProfile> members,
@@ -543,7 +561,31 @@ EdgeInsets _tabPadding(BuildContext context) => EdgeInsets.fromLTRB(
 
 // ───────────────────────────── Übersicht ──────────────────────────────────
 
-class _OverviewTab extends StatelessWidget {
+/// Statusfilter der Mitarbeiterliste. „Inaktiv" bündelt die nicht laufenden
+/// Verhältnisse (gekündigt/ausgeschieden/ruhend).
+enum _EmployeeFilter { alle, aktiv, probezeit, inaktiv }
+
+extension on _EmployeeFilter {
+  String get label => switch (this) {
+        _EmployeeFilter.alle => 'Alle',
+        _EmployeeFilter.aktiv => 'Aktiv',
+        _EmployeeFilter.probezeit => 'Probezeit',
+        _EmployeeFilter.inaktiv => 'Inaktiv',
+      };
+}
+
+/// Sortierreihenfolge der Mitarbeiterliste.
+enum _EmployeeSort { name, stunden, rolle }
+
+extension on _EmployeeSort {
+  String get label => switch (this) {
+        _EmployeeSort.name => 'Name (A–Z)',
+        _EmployeeSort.stunden => 'Stunden (meiste zuerst)',
+        _EmployeeSort.rolle => 'Rolle',
+      };
+}
+
+class _OverviewTab extends StatefulWidget {
   const _OverviewTab({
     required this.month,
     required this.monthEntries,
@@ -555,10 +597,51 @@ class _OverviewTab extends StatelessWidget {
   final bool entriesLoading;
 
   @override
+  State<_OverviewTab> createState() => _OverviewTabState();
+}
+
+class _OverviewTabState extends State<_OverviewTab> {
+  final _searchController = TextEditingController();
+  String _query = '';
+  _EmployeeFilter _filter = _EmployeeFilter.alle;
+  _EmployeeSort _sort = _EmployeeSort.name;
+
+  /// Standort-Filter (M10-FilterBar: Suche/Status/Standort). `null` = alle.
+  String? _siteFilter;
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  EmployeeStatus _statusOf(PersonalProvider personal, String uid) =>
+      personal.employeeProfileForUser(uid)?.status ?? EmployeeStatus.aktiv;
+
+  bool _matchesFilter(EmployeeStatus status) => switch (_filter) {
+        _EmployeeFilter.alle => true,
+        _EmployeeFilter.aktiv => status == EmployeeStatus.aktiv,
+        _EmployeeFilter.probezeit => status == EmployeeStatus.probezeit,
+        _EmployeeFilter.inaktiv => !status.isCurrent,
+      };
+
+  void _resetFilters() {
+    setState(() {
+      _searchController.clear();
+      _query = '';
+      _filter = _EmployeeFilter.alle;
+      _siteFilter = null;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final personal = context.watch<PersonalProvider>();
     final members = personal.members;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final spacing = context.spacing;
+    final month = widget.month;
 
     if (members.isEmpty) {
       return const EmptyState(
@@ -569,18 +652,50 @@ class _OverviewTab extends StatelessWidget {
     }
 
     final totalHours =
-        monthEntries.fold<double>(0, (sum, e) => sum + e.workedHours);
+        widget.monthEntries.fold<double>(0, (sum, e) => sum + e.workedHours);
     final totalCost = _costByEmployee(
       members,
-      monthEntries,
+      widget.monthEntries,
       personal,
       month.year,
       month.month,
     ).fold<int>(0, (sum, r) => sum + r.laborCostCents);
 
+    // Suche (Name/Rolle) + Status- + Standortfilter anwenden.
+    final query = _query.trim().toLowerCase();
+    final filtered = members.where((m) {
+      final matchesFilter = _matchesFilter(_statusOf(personal, m.uid));
+      final matchesQuery = query.isEmpty ||
+          m.displayName.toLowerCase().contains(query) ||
+          m.role.label.toLowerCase().contains(query);
+      final matchesSite = _siteFilter == null ||
+          personal.siteIdsForUser(m.uid).contains(_siteFilter);
+      return matchesFilter && matchesQuery && matchesSite;
+    }).toList();
+
+    // Danach sortieren (Name-Tie-Break für stabile Reihenfolge).
+    int byName(AppUserProfile a, AppUserProfile b) =>
+        a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    switch (_sort) {
+      case _EmployeeSort.name:
+        filtered.sort(byName);
+      case _EmployeeSort.stunden:
+        filtered.sort((a, b) {
+          final byHours = _hoursForUser(widget.monthEntries, b.uid)
+              .compareTo(_hoursForUser(widget.monthEntries, a.uid));
+          return byHours != 0 ? byHours : byName(a, b);
+        });
+      case _EmployeeSort.rolle:
+        filtered.sort((a, b) {
+          final byRole = a.role.index.compareTo(b.role.index);
+          return byRole != 0 ? byRole : byName(a, b);
+        });
+    }
+
     return ListView(
       padding: _tabPadding(context),
       children: [
+        // Kennzahlen des Monats.
         Row(
           children: [
             Expanded(
@@ -594,9 +709,7 @@ class _OverviewTab extends StatelessWidget {
             Expanded(
               child: AppMetricCard(
                 label: 'Stunden ($_monthShort)',
-                value: entriesLoading
-                    ? '…'
-                    : '${totalHours.toStringAsFixed(1)} h',
+                value: widget.entriesLoading ? '…' : _hoursLabel(totalHours),
                 icon: Icons.schedule_outlined,
               ),
             ),
@@ -604,7 +717,7 @@ class _OverviewTab extends StatelessWidget {
             Expanded(
               child: AppMetricCard(
                 label: 'Personalkosten',
-                value: entriesLoading ? '…' : _euro(totalCost),
+                value: widget.entriesLoading ? '…' : _euro(totalCost),
                 icon: Icons.payments_outlined,
               ),
             ),
@@ -612,6 +725,7 @@ class _OverviewTab extends StatelessWidget {
         ),
         SizedBox(height: spacing.lg),
         const _UrlaubMigrationCard(),
+        // Schnellzugriff auf die Abwesenheits-/Urlaubsübersicht.
         AppCard(
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute<void>(
@@ -621,22 +735,18 @@ class _OverviewTab extends StatelessWidget {
           child: Row(
             children: [
               Icon(Icons.beach_access_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: context.iconSizes.md),
+                  color: colorScheme.primary, size: context.iconSizes.md),
               SizedBox(width: spacing.md),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text('Abwesenheits-Übersicht',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleSmall
+                        style: theme.textTheme.titleSmall
                             ?.copyWith(fontWeight: FontWeight.w800)),
                     Text('Urlaubskonten & §9-Hinweise je Mitarbeiter',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant)),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant)),
                   ],
                 ),
               ),
@@ -644,29 +754,204 @@ class _OverviewTab extends StatelessWidget {
             ],
           ),
         ),
-        SizedBox(height: spacing.sm),
-        Text(
-          'Mitarbeiter',
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.w800),
+        SizedBox(height: spacing.lg),
+        // Suche über Name/Rolle.
+        AppSearchField(
+          controller: _searchController,
+          hint: 'Mitarbeiter suchen',
+          onChanged: (value) => setState(() => _query = value),
         ),
         SizedBox(height: spacing.sm),
-        for (final member in members) ...[
-          _EmployeeCard(
-            member: member,
-            hours: _hoursForUser(monthEntries, member.uid),
-            month: month,
-            monthEntries: monthEntries,
+        // Statusfilter.
+        Wrap(
+          spacing: spacing.sm,
+          runSpacing: spacing.xs,
+          children: [
+            for (final filter in _EmployeeFilter.values)
+              AppFilterChip(
+                label: filter.label,
+                selected: _filter == filter,
+                onSelected: (_) => setState(() => _filter = filter),
+              ),
+          ],
+        ),
+        // Standortfilter (nur bei mehreren Standorten sinnvoll).
+        if (personal.sites.length > 1) ...[
+          SizedBox(height: spacing.xs),
+          Wrap(
+            spacing: spacing.sm,
+            runSpacing: spacing.xs,
+            children: [
+              AppFilterChip(
+                label: 'Alle Standorte',
+                selected: _siteFilter == null,
+                onSelected: (_) => setState(() => _siteFilter = null),
+              ),
+              for (final site in personal.sites)
+                AppFilterChip(
+                  label: site.name,
+                  selected: _siteFilter == site.id,
+                  onSelected: (_) => setState(() => _siteFilter = site.id),
+                ),
+            ],
           ),
-          SizedBox(height: spacing.sm),
         ],
+        SizedBox(height: spacing.md),
+        // Listen-Kopf: Trefferzahl + Sortiermenü.
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Mitarbeiter (${filtered.length})',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+            ),
+            PopupMenuButton<_EmployeeSort>(
+              tooltip: 'Sortieren',
+              initialValue: _sort,
+              onSelected: (value) => setState(() => _sort = value),
+              itemBuilder: (_) => [
+                for (final sort in _EmployeeSort.values)
+                  PopupMenuItem<_EmployeeSort>(
+                    value: sort,
+                    child: Text(sort.label),
+                  ),
+              ],
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                    horizontal: spacing.sm, vertical: spacing.xs),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.swap_vert,
+                        size: context.iconSizes.sm,
+                        color: colorScheme.onSurfaceVariant),
+                    SizedBox(width: spacing.xs),
+                    Text('Sortieren',
+                        style: theme.textTheme.labelLarge
+                            ?.copyWith(color: colorScheme.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: spacing.sm),
+        if (filtered.isEmpty)
+          _NoEmployeeMatches(onReset: _resetFilters)
+        else
+          for (final member in filtered) ...[
+            _EmployeeCard(
+              member: member,
+              hours: _hoursForUser(widget.monthEntries, member.uid),
+              month: month,
+              monthEntries: widget.monthEntries,
+            ),
+            SizedBox(height: spacing.sm),
+          ],
+        // Offene Einladungen (aus der aufgelösten Teamverwaltung übernommen):
+        // per „Neuer Mitarbeiter" erzeugte, noch nicht angenommene userInvites.
+        const _PendingInvitesSection(),
       ],
     );
   }
 
-  String get _monthShort => DateFormat('MMM', 'de_DE').format(month);
+  String get _monthShort => DateFormat('MMM', 'de_DE').format(widget.month);
+}
+
+/// Offene Einladungen (noch nicht angenommene `userInvites`) — übernommen aus
+/// der aufgelösten Teamverwaltung. Selbst-versteckend, wenn keine offen sind.
+class _PendingInvitesSection extends StatelessWidget {
+  const _PendingInvitesSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final team = context.watch<TeamProvider>();
+    final invites = team.invites.where((i) => i.isActive).toList();
+    if (invites.isEmpty) return const SizedBox.shrink();
+    final spacing = context.spacing;
+
+    return Padding(
+      padding: EdgeInsets.only(top: spacing.md),
+      child: AppSectionCard(
+        title: 'Offene Einladungen (${invites.length})',
+        icon: Icons.mark_email_unread_outlined,
+        child: Column(
+          children: [
+            for (final invite in invites)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.mail_outline),
+                title: Text(invite.settings.name.isEmpty
+                    ? invite.email
+                    : invite.settings.name),
+                subtitle: Text('${invite.email} · ${invite.role.label}'),
+                trailing: IconButton(
+                  tooltip: 'Einladung zurückziehen',
+                  icon: Icon(Icons.delete_outline,
+                      color: Theme.of(context).colorScheme.error),
+                  onPressed: () async {
+                    final confirmed = await AppConfirmDialog.show(
+                      context,
+                      title: 'Einladung zurückziehen?',
+                      message:
+                          '${invite.email} kann sich damit nicht mehr registrieren.',
+                      confirmLabel: 'Zurückziehen',
+                    );
+                    if (!confirmed || !context.mounted) return;
+                    final id = invite.id;
+                    if (id != null) {
+                      await context.read<TeamProvider>().deleteInvite(id);
+                    }
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Leerzustand, wenn Suche/Filter keine Mitarbeiter übrig lassen (im Gegensatz
+/// zum „gar keine Mitarbeiter"-Fall — dort erklärt [EmptyState] die Anlage).
+class _NoEmployeeMatches extends StatelessWidget {
+  const _NoEmployeeMatches({required this.onReset});
+
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    return AppCard(
+      child: Center(
+        child: Column(
+          children: [
+            Icon(Icons.search_off_outlined,
+                size: context.iconSizes.lg,
+                color: theme.colorScheme.onSurfaceVariant),
+            SizedBox(height: spacing.sm),
+            Text('Keine Mitarbeiter gefunden',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            SizedBox(height: spacing.xs),
+            Text('Passe Suche oder Filter an.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            SizedBox(height: spacing.sm),
+            TextButton.icon(
+              onPressed: onReset,
+              icon: const Icon(Icons.restart_alt, size: 18),
+              label: const Text('Filter zurücksetzen'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// Selbst-versteckende M0-Hinweiskarte: bietet (admin) das einmalige Übernehmen
@@ -780,13 +1065,37 @@ class _EmployeeCard extends StatelessWidget {
     final personal = context.watch<PersonalProvider>();
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
     final openTasks = personal.openTaskCountForUser(member.uid);
     final latest = personal.latestPayrollForUser(member.uid);
     final stats = personal.absenceStatsForUser(member.uid, year: month.year);
+    final badge = _statusBadge(personal.employeeProfileForUser(member.uid));
+
+    // Nur aussagekräftige Kennzeichen zeigen (kein „0 offen"-Rauschen mehr):
+    // offene Aufgaben, Kranktage und zuletzt abgerechneter Netto-Lohn.
+    final chips = <Widget>[
+      if (openTasks > 0)
+        _MiniChip(
+          icon: Icons.assignment_outlined,
+          label: '$openTasks offen',
+          tone: AppStatusTone.warning,
+        ),
+      if (stats.sicknessDays > 0)
+        _MiniChip(
+          icon: Icons.sick_outlined,
+          label: '${stats.sicknessDays} Krank-Tg.',
+          tone: AppStatusTone.error,
+        ),
+      if (latest != null)
+        _MiniChip(
+          icon: Icons.payments_outlined,
+          label: 'Netto ${_euro(latest.netCents)}',
+          tone: AppStatusTone.success,
+        ),
+    ];
 
     return AppCard(
-      // AllTec-1:1: Öffnet die neue deep-linkbare Mitarbeiter-Detailseite mit
-      // 9 Tabs (statt des früheren file-privaten Monats-Detail-Screens).
+      // AllTec-1:1: Öffnet die deep-linkbare Mitarbeiter-Detailseite (9 Tabs).
       onTap: () => context.push(AppRoutes.personalDetailPath(member.uid)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -801,15 +1110,28 @@ class _EmployeeCard extends StatelessWidget {
                     ? '?'
                     : member.displayName.characters.first.toUpperCase()),
               ),
-              SizedBox(width: context.spacing.sm + context.spacing.xs),
+              SizedBox(width: spacing.s12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      member.displayName,
-                      style: theme.textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            member.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        // PA-7.3: Beschäftigungsstatus nur wenn NICHT „aktiv".
+                        if (badge != null) ...[
+                          SizedBox(width: spacing.xs),
+                          badge,
+                        ],
+                      ],
                     ),
                     Text(
                       member.role.label,
@@ -819,46 +1141,29 @@ class _EmployeeCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // PA-7.3: Beschäftigungsstatus sichtbar machen — nur wenn NICHT
-              // „aktiv" (gekündigt/ausgeschieden = error, ruhend = warning,
-              // Probezeit = info). So sieht der Admin auf einen Blick, wer nicht
-              // im regulären Beschäftigungsverhältnis steht.
-              if (_statusBadge(personal.employeeProfileForUser(member.uid))
-                  case final badge?) ...[
-                badge,
-                SizedBox(width: context.spacing.xs),
-              ],
-              const Icon(Icons.chevron_right),
+              SizedBox(width: spacing.sm),
+              // Geleistete Monatsstunden als Leit-Kennzahl rechts (gedämpft bei 0).
+              Text(
+                _hoursLabel(hours),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: hours > 0
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                ),
+              ),
+              SizedBox(width: spacing.xs),
+              Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
             ],
           ),
-          SizedBox(height: context.spacing.sm + context.spacing.xs),
-          Wrap(
-            spacing: context.spacing.sm,
-            runSpacing: context.spacing.xs,
-            children: [
-              _MiniChip(
-                icon: Icons.schedule_outlined,
-                label: '${hours.toStringAsFixed(1)} h',
-              ),
-              _MiniChip(
-                icon: Icons.assignment_outlined,
-                label: '$openTasks offen',
-                tone: openTasks > 0 ? AppStatusTone.warning : null,
-              ),
-              if (latest != null)
-                _MiniChip(
-                  icon: Icons.payments_outlined,
-                  label: 'Netto ${_euro(latest.netCents)}',
-                  tone: AppStatusTone.success,
-                ),
-              if (stats.sicknessDays > 0)
-                _MiniChip(
-                  icon: Icons.sick_outlined,
-                  label: '${stats.sicknessDays} Krank-Tg.',
-                  tone: AppStatusTone.error,
-                ),
-            ],
-          ),
+          if (chips.isNotEmpty) ...[
+            SizedBox(height: spacing.s12),
+            Wrap(
+              spacing: spacing.sm,
+              runSpacing: spacing.xs,
+              children: chips,
+            ),
+          ],
         ],
       ),
     );

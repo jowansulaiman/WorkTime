@@ -395,6 +395,35 @@ service cloud.firestore {
       return isActiveUser() && currentOrgId() == orgId;
     }
 
+    // === Monats-Festschreibung (PA-5, Rules-Schicht) ========================
+    // Verweigert workEntries-Writes in einen per Monatsabschluss gesperrten
+    // Monat (zeitkontoSnapshots/{userId}-{jahr}-{mm} mit abgeschlossen==true).
+    // NUR fuer workEntries: deren `date` ist auf 12:00 LOKAL normalisiert und
+    // damit in UTC monatsstabil; `clockEntries.kommen` ist ein echter Zeitpunkt
+    // und wuerde an der Monatsgrenze in UTC in den Nachbarmonat kippen — deren
+    // Sperre laeuft deshalb nur ueber Client + Callable (Spiegel:
+    // lib/core/monats_festschreibung.dart + functions/monats_lock.js).
+    // exists()-sicher: der laufende Monat hat NIE einen Snapshot (entsteht erst
+    // beim Abschluss) -> ohne Snapshot ist der Write erlaubt. Kostet 1 get()
+    // je Write (bewusst akzeptiert). Monat zero-padded wie
+    // ZeitkontoSnapshot.buildId.
+    function zeitkontoLockPath(orgId, userId, ts) {
+      return /databases/$(database)/documents/organizations/$(orgId)/zeitkontoSnapshots/$(userId + '-' + string(ts.year()) + '-' + (ts.month() < 10 ? '0' + string(ts.month()) : string(ts.month())));
+    }
+
+    function monatNichtFestgeschrieben(orgId, userId, ts) {
+      return !exists(zeitkontoLockPath(orgId, userId, ts))
+          || get(zeitkontoLockPath(orgId, userId, ts)).data.abgeschlossen
+              != true;
+    }
+
+    // Tolerant gegen Alt-Docs ohne/mit kaputtem date-Feld (kein error-deny).
+    function workEntryMonatFrei(orgId, data) {
+      return !('date' in data)
+          || !(data.date is timestamp)
+          || monatNichtFestgeschrieben(orgId, data.userId, data.date);
+    }
+
     // Org, deren öffentliche Seiten (/wunsch UND /feedback) anonyme
     // Schreibzugriffe annehmen dürfen. MUSS mit AppConfig.defaultOrganizationId
     // (dart-define APP_DEFAULT_ORG_ID) übereinstimmen — sonst werden anonyme
@@ -585,7 +614,9 @@ service cloud.firestore {
                 && canEditTimeEntries()
               )
             )
-            && request.resource.data.orgId == orgId;
+            && request.resource.data.orgId == orgId
+            // PA-5: kein Anlegen in einem festgeschriebenen Monat.
+            && workEntryMonatFrei(orgId, request.resource.data);
 
         allow update: if sameOrg(orgId)
             && (
@@ -595,7 +626,11 @@ service cloud.firestore {
                 && canEditTimeEntries()
               )
             )
-            && request.resource.data.orgId == orgId;
+            && request.resource.data.orgId == orgId
+            // PA-5: weder aus einem festgeschriebenen Monat heraus (alt) noch
+            // in einen hinein (neu) verschieben/aendern.
+            && workEntryMonatFrei(orgId, resource.data)
+            && workEntryMonatFrei(orgId, request.resource.data);
 
         allow delete: if sameOrg(orgId)
             && (
@@ -604,7 +639,9 @@ service cloud.firestore {
                 resource.data.userId == request.auth.uid
                 && canEditTimeEntries()
               )
-            );
+            )
+            // PA-5: kein Loeschen aus einem festgeschriebenen Monat.
+            && workEntryMonatFrei(orgId, resource.data);
       }
 
       // Zeitwirtschaft: Stempel-Sessions (ClockEntry, M3). Mitarbeiter lesen/
@@ -638,6 +675,9 @@ service cloud.firestore {
         // ändern (clockOut-Übergang ongoing→completed/klaerung) — eine bereits
         // abgeschlossene/geklärte Buchung ist für ihn read-only (ZV-3.2;
         // Korrekturwunsch läuft über den Manager bzw. WorkEntry-Workflow).
+        // PA-4.1: `kommen` ist dabei GEPINNT — ein zweites Gerät kann die
+        // laufende Buchung nicht per Overwrite "neu einstempeln" (der
+        // {userId}-open-Guard bliebe sonst per set() umgehbar).
         allow update: if sameOrg(orgId)
             && (
               canManageShifts()
@@ -645,11 +685,24 @@ service cloud.firestore {
                 resource.data.userId == request.auth.uid
                 && canEditTimeEntries()
                 && resource.data.status == 'ongoing'
+                && request.resource.data.kommen == resource.data.kommen
               )
             )
             && request.resource.data.orgId == orgId;
 
-        allow delete: if sameOrg(orgId) && isAdmin();
+        // Löschen: Admin — plus der Mitarbeiter selbst für sein EIGENES
+        // `{uid}-open`-Doc (PA-4.1: der clockOut-Direct-Write-Pfad kopiert die
+        // geschlossene Buchung unter ihre endgültige ID und löscht das
+        // open-Doc; ohne diesen Zweig wäre Ausstempeln für Nicht-Admins tot).
+        allow delete: if sameOrg(orgId)
+            && (
+              isAdmin()
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+                && clockEntryId == request.auth.uid + '-open'
+              )
+            );
       }
 
       // Zeitwirtschaft: Stundenkonto-Snapshots (ZeitkontoSnapshot, M4). Lesen:
@@ -666,9 +719,23 @@ service cloud.firestore {
               )
             );
 
-        allow create, update: if sameOrg(orgId)
+        allow create: if sameOrg(orgId)
             && canManageShifts()
             && request.resource.data.orgId == orgId;
+
+        // PA-5: Ein FESTGESCHRIEBENER Snapshot ist fuer Manager unantastbar —
+        // nur Admins duerfen ihn aendern (= Reopen/Korrektur; Client-Spiegel:
+        // reopenMonth ist admin-only + Abrechnungssperre PA-5.2). Das Sperren
+        // selbst (abgeschlossen false->true) bleibt Manager-Recht.
+        allow update: if sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && (
+              isAdmin()
+              || (
+                canManageShifts()
+                && resource.data.abgeschlossen != true
+              )
+            );
 
         allow delete: if sameOrg(orgId) && isAdmin();
       }
@@ -986,6 +1053,14 @@ service cloud.firestore {
       match /kioskRoster/{rosterUid} {
         allow read: if sameOrg(orgId);
         allow write: if isAdmin() && sameOrg(orgId);
+      }
+      // "Wer ist gerade im Dienst" (PA-4.5b): server-gepflegte Projektion
+      // (onClockEntryWritten-Trigger, deckt Callable- UND Direct-Write-Pfad).
+      // Lesbar fuer die Org inkl. Geraetekonto (nur Name/Standort/Kommen, KEINE
+      // Zeit-/Lohndaten); Clients schreiben nie.
+      match /kioskPresence/{presenceUid} {
+        allow read: if sameOrg(orgId);
+        allow write: if false;
       }
 
       // Lohndaten enthalten Verguetungsinformationen -> Lesen Admin-only.

@@ -56,6 +56,11 @@ class _KioskScreenState extends State<KioskScreen> {
   @override
   void initState() {
     super.initState();
+    // PA-4.4c: Server-Session beim (Auto-)Logout revoken — best-effort,
+    // fire-and-forget (Fehler offline egal, TTL räumt dann auf).
+    _controller.onSessionEnd = (sid) {
+      unawaited(_firestore.kioskEndSession(sid).catchError((_) {}));
+    };
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _now = DateTime.now());
     });
@@ -205,10 +210,29 @@ class _KioskScreenState extends State<KioskScreen> {
   }
 
   Future<void> _openLoginSheet(BuildContext context, SiteDefinition? site) async {
-    final members = context.read<TeamProvider>().members;
-    final roster = members.where((m) => m.isActive).toList()
-      ..sort((a, b) =>
-          a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+    // PA-4.4b: Im echten Betrieb kommt die Namensliste aus der
+    // Datensparsamkeits-Projektion `kioskRoster` (Trigger-gepflegt) — das
+    // Geräte-Konto ohne canManageShifts sähe über TeamProvider.members nur
+    // sich selbst (leere Liste). Fallback auf TeamProvider.members für den
+    // Demo-Modus und die Übergangsphase, bis der Trigger das Roster befüllt
+    // hat (erster users-Write nach Deploy).
+    var roster = <AppUserProfile>[];
+    final orgId = context.read<AuthProvider>().profile?.orgId;
+    if (!AppConfig.disableAuthentication && orgId != null) {
+      try {
+        roster = await _firestore.getKioskRoster(orgId);
+      } catch (_) {
+        roster = <AppUserProfile>[];
+      }
+    }
+    if (roster.isEmpty && context.mounted) {
+      final members = context.read<TeamProvider>().members;
+      roster = members.where((m) => m.isActive).toList()
+        ..sort((a, b) => a.displayName
+            .toLowerCase()
+            .compareTo(b.displayName.toLowerCase()));
+    }
+    if (!context.mounted) return;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -444,6 +468,7 @@ class _KioskBoard extends StatelessWidget {
     // Kachel-Registry: neue „wichtige Sachen" hier ergänzen.
     final tiles = <Widget>[
       _ClockTile(siteId: siteId, siteName: siteName),
+      _PresenceTile(firestore: firestore),
       _StoreTasksTile(siteId: siteId, siteName: siteName),
       _CashCountTile(
           siteId: siteId,
@@ -582,36 +607,61 @@ class _ClockTileState extends State<_ClockTile> {
   String? _sessionUid;
   bool? _clockedIn;
   bool _busy = false;
+  String? _fehler;
 
+  /// PA-4.4a/f: Alle Service-Aufrufe laufen offline gegen die Callable ins
+  /// Leere — ohne try/catch hing die Kachel dauerhaft (busy/Spinner) und der
+  /// Stempel ging still verloren. Jetzt: deutsche Meldung + Retry; `_busy`
+  /// wird IMMER im finally zurückgesetzt. Bewusst KEINE Offline-Queue (die
+  /// PIN-Prüfung ist serverseitig; eine Queue würde unverifizierte
+  /// Identitäten puffern — Plan-Entscheidung).
   Future<void> _refresh(AppUserProfile employee, String? sid) async {
-    final value = await _service.isClockedIn(employee, sid: sid);
-    if (mounted && employee.uid == _sessionUid) {
-      setState(() => _clockedIn = value);
+    try {
+      final value = await _service.isClockedIn(employee, sid: sid);
+      if (mounted && employee.uid == _sessionUid) {
+        setState(() {
+          _clockedIn = value;
+          _fehler = null;
+        });
+      }
+    } catch (_) {
+      if (mounted && employee.uid == _sessionUid) {
+        setState(() => _fehler =
+            'Keine Verbindung — Stempel-Status konnte nicht geladen werden.');
+      }
     }
   }
 
   Future<void> _toggle(
       KioskController controller, AppUserProfile employee) async {
     if (_busy) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _fehler = null;
+    });
     controller.touch();
     final sid = controller.sessionId;
-    final bool now;
-    if (_clockedIn == true) {
-      now = await _service.clockOut(employee, sid: sid);
-    } else {
-      now = await _service.clockIn(
-        employee,
-        sid: sid,
-        siteId: widget.siteId,
-        siteName: widget.siteName,
-      );
-    }
-    if (mounted) {
-      setState(() {
-        _clockedIn = now;
-        _busy = false;
-      });
+    try {
+      final bool now;
+      if (_clockedIn == true) {
+        now = await _service.clockOut(employee, sid: sid);
+      } else {
+        now = await _service.clockIn(
+          employee,
+          sid: sid,
+          siteId: widget.siteId,
+          siteName: widget.siteName,
+        );
+      }
+      if (mounted) setState(() => _clockedIn = now);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _fehler =
+            'Keine Verbindung — Stempeln ist derzeit nicht möglich. '
+            'Bitte erneut versuchen.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -634,6 +684,29 @@ class _ClockTileState extends State<_ClockTile> {
     Widget body;
     if (employee == null) {
       body = const _KioskEmpty('Zum Stempeln oben „Anmelden" antippen.');
+    } else if (_fehler != null) {
+      // PA-4.4f: sichtbare Offline-/Fehlermeldung statt hängender Kachel.
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(_fehler!, style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Erneut versuchen'),
+            onPressed: _busy
+                ? null
+                : () {
+                    setState(() => _fehler = null);
+                    if (_clockedIn == null) {
+                      _refresh(employee, controller.sessionId);
+                    } else {
+                      _toggle(controller, employee);
+                    }
+                  },
+          ),
+        ],
+      );
     } else if (_clockedIn == null) {
       body = const Padding(
         padding: EdgeInsets.symmetric(vertical: 12),
@@ -671,6 +744,73 @@ class _ClockTileState extends State<_ClockTile> {
       icon: Icons.schedule,
       title: 'Zeiterfassung',
       child: body,
+    );
+  }
+}
+
+// ---- Wer ist im Dienst (PA-4.5b) --------------------------------------------
+
+/// Live-Anwesenheit aus der server-gepflegten `kioskPresence`-Projektion —
+/// das Gerätekonto liest NIE `clockEntries` (PA-0.1-Deny). Zeigt bewusst nur
+/// Vornamen + „seit HH:mm" (Kachel-Entscheidung #2, kundensichtbares Board).
+class _PresenceTile extends StatelessWidget {
+  const _PresenceTile({required this.firestore});
+  final FirestoreService firestore;
+
+  @override
+  Widget build(BuildContext context) {
+    final orgId = context.read<AuthProvider>().profile?.orgId;
+    if (orgId == null || AppConfig.disableAuthentication) {
+      return const SizedBox.shrink();
+    }
+    return StreamBuilder<
+        List<({String name, String? siteName, DateTime? kommen})>>(
+      stream: firestore.watchKioskPresence(orgId),
+      builder: (context, snapshot) {
+        final entries = snapshot.data ?? const [];
+        return _KioskTile(
+          icon: Icons.people_alt_outlined,
+          title: 'Im Dienst',
+          badge: entries.isEmpty ? null : '${entries.length}',
+          child: entries.isEmpty
+              ? const _KioskEmpty('Gerade ist niemand eingestempelt.')
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final e in entries)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.circle,
+                                size: 10, color: Colors.green),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                // Nur der Vorname (kundensichtbar).
+                                e.name.split(' ').first,
+                                style:
+                                    Theme.of(context).textTheme.bodyLarge,
+                              ),
+                            ),
+                            if (e.kommen != null)
+                              Text(
+                                'seit ${DateFormat('HH:mm', 'de_DE').format(e.kommen!)}',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant),
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+        );
+      },
     );
   }
 }
@@ -1287,15 +1427,15 @@ class _PinPadState extends State<_PinPad> {
   String _errorMsg = 'PIN eingeben';
   bool _checking = false;
 
+  // PA-4.4d: PINs dürfen 4–8 Ziffern haben (Spiegel von KIOSK_PIN_REGEX in
+  // functions/index.js). Kein Auto-Submit mehr — Bestätigung über die OK-Taste,
+  // sonst wären 5–8-stellige PINs nie eingebbar gewesen.
   Future<void> _onDigit(String d) async {
-    if (_pin.length >= 4 || _checking) return;
+    if (_pin.length >= 8 || _checking) return;
     setState(() {
       _pin += d;
       _error = false;
     });
-    if (_pin.length == 4) {
-      await _verify();
-    }
   }
 
   void _onBackspace() {
@@ -1356,7 +1496,9 @@ class _PinPadState extends State<_PinPad> {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            for (var i = 0; i < 4; i++)
+            // 4 Pflicht-Punkte; ab der 5. Ziffer wachsen die Punkte mit
+            // (PIN darf 4–8 Ziffern lang sein).
+            for (var i = 0; i < (_pin.length > 4 ? _pin.length : 4); i++)
               Container(
                 margin: const EdgeInsets.symmetric(horizontal: 8),
                 width: 18,
@@ -1371,7 +1513,11 @@ class _PinPadState extends State<_PinPad> {
           ],
         ),
         const SizedBox(height: 16),
-        _NumPad(onDigit: _onDigit, onBackspace: _onBackspace),
+        _NumPad(
+          onDigit: _onDigit,
+          onBackspace: _onBackspace,
+          onSubmit: _pin.length >= 4 && !_checking ? _verify : null,
+        ),
         if (AppConfig.disableAuthentication)
           Padding(
             padding: const EdgeInsets.only(top: 8),
@@ -1388,9 +1534,18 @@ class _PinPadState extends State<_PinPad> {
 }
 
 class _NumPad extends StatelessWidget {
-  const _NumPad({required this.onDigit, required this.onBackspace});
+  const _NumPad({
+    required this.onDigit,
+    required this.onBackspace,
+    this.onSubmit,
+  });
   final void Function(String) onDigit;
   final VoidCallback onBackspace;
+
+  /// PA-4.4d: explizite OK-Taste — PINs dürfen 4–8 Ziffern haben
+  /// (`setKioskPin` erlaubt das), das frühere Auto-Submit bei exakt 4 machte
+  /// längere PINs am Tablet unbenutzbar. `null` = deaktiviert (< 4 Ziffern).
+  final VoidCallback? onSubmit;
 
   @override
   Widget build(BuildContext context) {
@@ -1427,9 +1582,9 @@ class _NumPad extends StatelessWidget {
           digit('9'),
         ]),
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          key(const SizedBox.shrink(), null),
-          digit('0'),
           key(const Icon(Icons.backspace_outlined), onBackspace),
+          digit('0'),
+          key(const Icon(Icons.check), onSubmit),
         ]),
       ],
     );

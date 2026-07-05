@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/app_user.dart';
+import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../providers/auth_provider.dart';
 import '../providers/personal_provider.dart';
+import '../providers/team_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 import '../widgets/employee_documents_card.dart';
@@ -31,6 +34,14 @@ class MeineAkteScreen extends StatelessWidget {
             onTap: () => Navigator.of(context).maybePop(),
           ),
           const BreadcrumbItem(label: 'Meine Akte'),
+        ],
+        actions: [
+          if (profile != null)
+            IconButton(
+              tooltip: 'Meine Daten exportieren (Art. 15 DSGVO)',
+              icon: const Icon(Icons.download_for_offline_outlined),
+              onPressed: () => _exportSelbstauskunft(context, profile),
+            ),
         ],
       ),
       body: profile == null
@@ -61,6 +72,45 @@ class MeineAkteScreen extends StatelessWidget {
               ],
             ),
     );
+  }
+}
+
+/// Art.-15-Selbstauskunft (PA-8.2): sammelt die eigenen, per Self-Read
+/// verfügbaren Daten aus den Providern und exportiert sie als PDF.
+Future<void> _exportSelbstauskunft(
+  BuildContext context,
+  AppUserProfile user,
+) async {
+  final personal = context.read<PersonalProvider>();
+  final team = context.read<TeamProvider>();
+  final name =
+      user.settings.name.isEmpty ? user.email : user.settings.name;
+  try {
+    await ExportService.exportSelbstauskunftPdf(
+      employeeName: name,
+      profile: personal.employeeProfileForUser(user.uid),
+      contract: team.contracts
+          .where((c) => c.userId == user.uid)
+          .fold<EmploymentContract?>(
+              null,
+              (best, c) => best == null || c.validFrom.isAfter(best.validFrom)
+                  ? c
+                  : best),
+      urlaub: personal.urlaubsReportFor(user.uid, DateTime.now().year),
+      payrolls: personal.payrollRecords
+          .where((r) => r.userId == user.uid)
+          .toList(growable: false),
+      documents: personal.documentsForUser(user.uid),
+    );
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Export fehlgeschlagen: $error'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
   }
 }
 

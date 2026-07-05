@@ -293,6 +293,26 @@ function buildDocumentNotification({docId, title}) {
   };
 }
 
+// Stempel-Klaerungsfall (PA-4.7): vergessenes Ausstempeln/Kommen vom Vortag →
+// Manager muessen die Buchung klaeren, sonst fehlen die Stunden still in
+// Zeitkonto/Lohn. Kanal `genehmigungen` (zeitkritisch, umgeht Ruhezeiten wie
+// Abwesenheits-Entscheidungen).
+function buildKlaerungNotification({entryId, name}) {
+  return {
+    type: "clock_klaerung",
+    title: "Stempel-Klärung nötig",
+    body: name ?
+      `${name}: eine Stempelung braucht Klärung (vergessenes Ausstempeln?).` :
+      "Eine Stempelung braucht Klärung (vergessenes Ausstempeln?).",
+    route: "/zeit",
+    entityType: "Stempelzeit",
+    entityId: entryId,
+    dedupeId: entryId,
+    thread: "klaerung",
+    priority: "high",
+  };
+}
+
 // Lohnabrechnung freigegeben -> an den Mitarbeiter (PA-7.4). Deep-Link „Meine
 // Akte". Kanal `aufgaben` (default) — bewusst kein eigener Lohn-Kanal.
 function buildPayrollReleasedNotification({recordId, monthLabel}) {
@@ -361,6 +381,8 @@ function channelIdForType(type) {
     case "shift_swap_declined":
     case "shift_swap_confirmed":
     case "shift_swap_rejected":
+    // Stempel-Klaerung (PA-4.7): zeitkritisch wie Genehmigungen.
+    case "clock_klaerung":
       return "genehmigungen";
     case "shift_published":
     case "shift_open":

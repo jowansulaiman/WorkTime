@@ -52,7 +52,7 @@ class LocalDemoData {
     password: 'demo1234',
     name: 'Lokaler Admin',
     role: UserRole.admin,
-    description: 'Voller Zugriff auf Teamverwaltung, Planung und Auswertungen.',
+    description: 'Voller Zugriff auf Personal, Planung und Auswertungen.',
   );
 
   static const LocalDemoAccount employeeAccount = LocalDemoAccount(

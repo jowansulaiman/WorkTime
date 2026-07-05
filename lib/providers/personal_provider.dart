@@ -757,6 +757,13 @@ class PersonalProvider extends ChangeNotifier {
     // sonst Rebuild-Loop, vgl. TeamProvider-Konvention).
   }
 
+  /// Alle Standort-IDs, denen ein Mitarbeiter zugeordnet ist (für den
+  /// Standort-Filter der Personalverwaltungs-Liste, M10-FilterBar).
+  Set<String> siteIdsForUser(String userId) => _siteAssignments
+      .where((a) => a.userId == userId)
+      .map((a) => a.siteId)
+      .toSet();
+
   /// Primär-Standortzuordnung eines Mitarbeiters (oder die erste vorhandene).
   EmployeeSiteAssignment? _primaryAssignmentForUser(String userId) {
     final assignments =
@@ -1711,6 +1718,54 @@ class PersonalProvider extends ChangeNotifier {
       entityId: document.id,
       summary: 'Dokument „${document.title}" gelöscht',
     );
+  }
+
+  /// Metadaten eines Dokuments bearbeiten (Admin): Titel/Kategorie/Notiz/
+  /// Sichtbarkeit/Aufbewahrung — die Binärdatei bleibt unangetastet
+  /// (personal-alltec-1zu1, M4-Rest „Metadaten-Dialog").
+  Future<void> updateDocumentMeta(
+    EmployeeDocument document, {
+    String? title,
+    DocumentCategory? category,
+    String? note,
+    bool clearNote = false,
+    bool? visibleToEmployee,
+    DateTime? retentionUntil,
+    bool clearRetentionUntil = false,
+  }) async {
+    _assertAdmin();
+    _requireOrg();
+    if (!_usesFirestore || document.id == null) {
+      throw StateError('Bearbeiten benötigt den Cloud-Modus.');
+    }
+    final updated = document.copyWith(
+      title: title?.trim(),
+      category: category,
+      note: note,
+      clearNote: clearNote,
+      visibleToEmployee: visibleToEmployee,
+      retentionUntil: retentionUntil,
+      clearRetentionUntil: clearRetentionUntil,
+    );
+    await _firestore.saveEmployeeDocument(updated);
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Personaldokument',
+      entityId: document.id,
+      summary: 'Dokument „${updated.title}" bearbeitet',
+    );
+  }
+
+  /// Setzt die Kiosk-PIN eines Mitarbeiters zurück (Offboarding, PA-7.3):
+  /// löscht den scrypt-Hash serverseitig (`resetKioskPin`-Callable, dort
+  /// admin-gegatet + Server-Audit — deshalb hier bewusst KEIN doppeltes
+  /// Client-Audit). Cloud-only (im Local-/Demo-Modus gibt es keine PINs).
+  Future<void> resetKioskPinFor(String userId) async {
+    _assertAdmin();
+    if (!_usesFirestore) {
+      throw StateError('PIN-Reset benötigt den Cloud-Modus.');
+    }
+    await _firestore.resetKioskPin(userId);
   }
 
   /// Lesebestätigung durch den Mitarbeiter selbst (feldgranular — setzt nur
