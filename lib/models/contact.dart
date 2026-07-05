@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
 import 'contact_activity.dart';
+import 'contact_details.dart';
 
 /// Art eines Kontakts (Kategorie fuer Filter und Gruppierung).
 ///
@@ -106,6 +107,29 @@ class Contact {
     this.siteName,
     this.tags = const [],
     this.activities = const [],
+    this.addresses = const [],
+    this.channels = const [],
+    this.contactPersons = const [],
+    this.bankAccounts = const [],
+    this.kind = ContactKind.company,
+    this.status = ContactStatus.aktiv,
+    this.blacklisted = false,
+    this.alias,
+    this.firstName,
+    this.lastName,
+    this.title,
+    this.gender = Gender.unbekannt,
+    this.birthday,
+    this.position,
+    this.department,
+    this.companyName,
+    this.legalName,
+    this.registrationNumber,
+    this.companyAnniversary,
+    this.debitorNumber,
+    this.creditorNumber,
+    this.avatarUrl,
+    this.customerSince,
     this.isFavorite = false,
     this.isActive = true,
     this.createdByUid,
@@ -146,6 +170,78 @@ class Contact {
 
   /// Eingebettete Kontakthistorie (Anrufe, E-Mails, Notizen …), neueste zuerst.
   final List<ContactActivity> activities;
+
+  /// Zusätzliche Adressen (Rechnung/Lieferung/Niederlassung …). Die flache
+  /// Hauptadresse bleibt in [street]/[postalCode]/[city]. (AllTec-1:1, M2)
+  final List<ContactAddress> addresses;
+
+  /// Typisierte Kommunikationskanäle (E-Mail/Telefon/Mobil/Fax/Website) mit
+  /// Kontext/Primär. Ergänzt die flachen [email]/[phone]/[mobile]/[website].
+  final List<CommunicationChannel> channels;
+
+  /// Ansprechpartner-Verknüpfungen (Referenzen auf Personen-Kontakte).
+  final List<ContactPerson> contactPersons;
+
+  /// Bankverbindungen des Kontakts.
+  final List<BankAccount> bankAccounts;
+
+  // ── Person/Firma-Split + Klassifizierung (AllTec-1:1, M3) ──────────────────
+
+  /// Natürliche Person oder Firma. Steuert Stammdaten-Felder + Anzeige.
+  final ContactKind kind;
+
+  /// Feiner Status (ergänzt das grobe [isActive]-Archiv-Flag).
+  final ContactStatus status;
+
+  /// Auf der Blacklist (z. B. Zahlungsausfall).
+  final bool blacklisted;
+
+  /// Anzeigename/Alias (hat Vorrang vor Firmen-/Personenname).
+  final String? alias;
+
+  // Person-Felder (nur sinnvoll bei [ContactKind.person]).
+  final String? firstName;
+  final String? lastName;
+
+  /// Titel/Grad der Person (z. B. „Dr.").
+  final String? title;
+  final Gender gender;
+  final DateTime? birthday;
+  final String? position;
+  final String? department;
+
+  // Firma-Felder (nur sinnvoll bei [ContactKind.company]).
+  final String? companyName;
+
+  /// Offizieller/vollständiger Name (Handelsregister).
+  final String? legalName;
+  final String? registrationNumber;
+  final DateTime? companyAnniversary;
+
+  // Nummern (Finanzbuchhaltung). [customerNumber]/[taxId] existieren bereits.
+  final String? debitorNumber;
+  final String? creditorNumber;
+
+  /// Profilbild-URL (Firebase Storage; Upload folgt in M8).
+  final String? avatarUrl;
+
+  /// Kunde seit.
+  final DateTime? customerSince;
+
+  /// Anzeigename: [alias] → Firmenname → Personenname → [name]-Fallback.
+  String get displayName {
+    final a = alias?.trim();
+    if (a != null && a.isNotEmpty) return a;
+    if (kind == ContactKind.company) {
+      final c = companyName?.trim();
+      if (c != null && c.isNotEmpty) return c;
+    } else {
+      final person =
+          [firstName?.trim() ?? '', lastName?.trim() ?? ''].where((v) => v.isNotEmpty).join(' ');
+      if (person.isNotEmpty) return person;
+    }
+    return name;
+  }
 
   /// Als wichtig markiert (Favorit).
   final bool isFavorite;
@@ -219,6 +315,30 @@ class Contact {
       siteName: map['siteName'] as String?,
       tags: _tagsFromList(map['tags']),
       activities: _activitiesFromList(map['activities'], firestore: true),
+      addresses: _addressesFromList(map['addresses'], firestore: true),
+      channels: _channelsFromList(map['channels'], firestore: true),
+      contactPersons:
+          _contactPersonsFromList(map['contactPersons'], firestore: true),
+      bankAccounts: _bankAccountsFromList(map['bankAccounts'], firestore: true),
+      kind: ContactKindX.fromValue(map['kind']?.toString()),
+      status: ContactStatusX.fromValue(map['status']?.toString()),
+      blacklisted: parse.toBool(map['blacklisted']) ?? false,
+      alias: map['alias'] as String?,
+      firstName: map['firstName'] as String?,
+      lastName: map['lastName'] as String?,
+      title: map['title'] as String?,
+      gender: GenderX.fromValue(map['gender']?.toString()),
+      birthday: FirestoreDateParser.readDate(map['birthday']),
+      position: map['position'] as String?,
+      department: map['department'] as String?,
+      companyName: map['companyName'] as String?,
+      legalName: map['legalName'] as String?,
+      registrationNumber: map['registrationNumber'] as String?,
+      companyAnniversary: FirestoreDateParser.readDate(map['companyAnniversary']),
+      debitorNumber: map['debitorNumber'] as String?,
+      creditorNumber: map['creditorNumber'] as String?,
+      avatarUrl: map['avatarUrl'] as String?,
+      customerSince: FirestoreDateParser.readDate(map['customerSince']),
       isFavorite: parse.toBool(map['isFavorite']) ?? false,
       isActive: parse.toBool(map['isActive']) ?? true,
       createdByUid: map['createdByUid'] as String?,
@@ -248,6 +368,32 @@ class Contact {
       siteName: map['site_name'] as String?,
       tags: _tagsFromList(map['tags']),
       activities: _activitiesFromList(map['activities'], firestore: false),
+      addresses: _addressesFromList(map['addresses'], firestore: false),
+      channels: _channelsFromList(map['channels'], firestore: false),
+      contactPersons:
+          _contactPersonsFromList(map['contact_persons'], firestore: false),
+      bankAccounts:
+          _bankAccountsFromList(map['bank_accounts'], firestore: false),
+      kind: ContactKindX.fromValue(map['kind']?.toString()),
+      status: ContactStatusX.fromValue(map['status']?.toString()),
+      blacklisted: parse.toBool(map['blacklisted']) ?? false,
+      alias: map['alias'] as String?,
+      firstName: map['first_name'] as String?,
+      lastName: map['last_name'] as String?,
+      title: map['title'] as String?,
+      gender: GenderX.fromValue(map['gender']?.toString()),
+      birthday: FirestoreDateParser.readLocalDate(map['birthday']),
+      position: map['position'] as String?,
+      department: map['department'] as String?,
+      companyName: map['company_name'] as String?,
+      legalName: map['legal_name'] as String?,
+      registrationNumber: map['registration_number'] as String?,
+      companyAnniversary:
+          FirestoreDateParser.readLocalDate(map['company_anniversary']),
+      debitorNumber: map['debitor_number'] as String?,
+      creditorNumber: map['creditor_number'] as String?,
+      avatarUrl: map['avatar_url'] as String?,
+      customerSince: FirestoreDateParser.readLocalDate(map['customer_since']),
       isFavorite: parse.toBool(map['is_favorite']) ?? false,
       isActive: parse.toBool(map['is_active']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
@@ -277,6 +423,29 @@ class Contact {
       'siteName': _trimmedOrNull(siteName),
       'tags': tags,
       'activities': activities.map((a) => a.toFirestoreMap()).toList(),
+      'addresses': addresses.map((a) => a.toFirestoreMap()).toList(),
+      'channels': channels.map((c) => c.toFirestoreMap()).toList(),
+      'contactPersons': contactPersons.map((p) => p.toFirestoreMap()).toList(),
+      'bankAccounts': bankAccounts.map((b) => b.toFirestoreMap()).toList(),
+      'kind': kind.value,
+      'status': status.value,
+      'blacklisted': blacklisted,
+      'alias': _trimmedOrNull(alias),
+      'firstName': _trimmedOrNull(firstName),
+      'lastName': _trimmedOrNull(lastName),
+      'title': _trimmedOrNull(title),
+      'gender': gender.value,
+      'birthday': birthday,
+      'position': _trimmedOrNull(position),
+      'department': _trimmedOrNull(department),
+      'companyName': _trimmedOrNull(companyName),
+      'legalName': _trimmedOrNull(legalName),
+      'registrationNumber': _trimmedOrNull(registrationNumber),
+      'companyAnniversary': companyAnniversary,
+      'debitorNumber': _trimmedOrNull(debitorNumber),
+      'creditorNumber': _trimmedOrNull(creditorNumber),
+      'avatarUrl': _trimmedOrNull(avatarUrl),
+      'customerSince': customerSince,
       'isFavorite': isFavorite,
       'isActive': isActive,
       'createdByUid': createdByUid,
@@ -305,6 +474,29 @@ class Contact {
       'site_name': siteName,
       'tags': tags,
       'activities': activities.map((a) => a.toMap()).toList(),
+      'addresses': addresses.map((a) => a.toMap()).toList(),
+      'channels': channels.map((c) => c.toMap()).toList(),
+      'contact_persons': contactPersons.map((p) => p.toMap()).toList(),
+      'bank_accounts': bankAccounts.map((b) => b.toMap()).toList(),
+      'kind': kind.value,
+      'status': status.value,
+      'blacklisted': blacklisted,
+      'alias': alias,
+      'first_name': firstName,
+      'last_name': lastName,
+      'title': title,
+      'gender': gender.value,
+      'birthday': birthday?.toIso8601String(),
+      'position': position,
+      'department': department,
+      'company_name': companyName,
+      'legal_name': legalName,
+      'registration_number': registrationNumber,
+      'company_anniversary': companyAnniversary?.toIso8601String(),
+      'debitor_number': debitorNumber,
+      'creditor_number': creditorNumber,
+      'avatar_url': avatarUrl,
+      'customer_since': customerSince?.toIso8601String(),
       'is_favorite': isFavorite,
       'is_active': isActive,
       'created_by_uid': createdByUid,
@@ -333,9 +525,47 @@ class Contact {
     String? siteName,
     List<String>? tags,
     List<ContactActivity>? activities,
+    List<ContactAddress>? addresses,
+    List<CommunicationChannel>? channels,
+    List<ContactPerson>? contactPersons,
+    List<BankAccount>? bankAccounts,
+    ContactKind? kind,
+    ContactStatus? status,
+    bool? blacklisted,
+    String? alias,
+    String? firstName,
+    String? lastName,
+    String? title,
+    Gender? gender,
+    DateTime? birthday,
+    String? position,
+    String? department,
+    String? companyName,
+    String? legalName,
+    String? registrationNumber,
+    DateTime? companyAnniversary,
+    String? debitorNumber,
+    String? creditorNumber,
+    String? avatarUrl,
+    DateTime? customerSince,
     bool? isFavorite,
     bool? isActive,
     bool clearContactPerson = false,
+    bool clearAlias = false,
+    bool clearFirstName = false,
+    bool clearLastName = false,
+    bool clearTitle = false,
+    bool clearBirthday = false,
+    bool clearPosition = false,
+    bool clearDepartment = false,
+    bool clearCompanyName = false,
+    bool clearLegalName = false,
+    bool clearRegistrationNumber = false,
+    bool clearCompanyAnniversary = false,
+    bool clearDebitorNumber = false,
+    bool clearCreditorNumber = false,
+    bool clearAvatarUrl = false,
+    bool clearCustomerSince = false,
     bool clearEmail = false,
     bool clearPhone = false,
     bool clearMobile = false,
@@ -373,6 +603,36 @@ class Contact {
       siteName: clearSite ? null : (siteName ?? this.siteName),
       tags: tags ?? this.tags,
       activities: activities ?? this.activities,
+      addresses: addresses ?? this.addresses,
+      channels: channels ?? this.channels,
+      contactPersons: contactPersons ?? this.contactPersons,
+      bankAccounts: bankAccounts ?? this.bankAccounts,
+      kind: kind ?? this.kind,
+      status: status ?? this.status,
+      blacklisted: blacklisted ?? this.blacklisted,
+      alias: clearAlias ? null : (alias ?? this.alias),
+      firstName: clearFirstName ? null : (firstName ?? this.firstName),
+      lastName: clearLastName ? null : (lastName ?? this.lastName),
+      title: clearTitle ? null : (title ?? this.title),
+      gender: gender ?? this.gender,
+      birthday: clearBirthday ? null : (birthday ?? this.birthday),
+      position: clearPosition ? null : (position ?? this.position),
+      department: clearDepartment ? null : (department ?? this.department),
+      companyName: clearCompanyName ? null : (companyName ?? this.companyName),
+      legalName: clearLegalName ? null : (legalName ?? this.legalName),
+      registrationNumber: clearRegistrationNumber
+          ? null
+          : (registrationNumber ?? this.registrationNumber),
+      companyAnniversary: clearCompanyAnniversary
+          ? null
+          : (companyAnniversary ?? this.companyAnniversary),
+      debitorNumber:
+          clearDebitorNumber ? null : (debitorNumber ?? this.debitorNumber),
+      creditorNumber:
+          clearCreditorNumber ? null : (creditorNumber ?? this.creditorNumber),
+      avatarUrl: clearAvatarUrl ? null : (avatarUrl ?? this.avatarUrl),
+      customerSince:
+          clearCustomerSince ? null : (customerSince ?? this.customerSince),
       isFavorite: isFavorite ?? this.isFavorite,
       isActive: isActive ?? this.isActive,
       createdByUid: createdByUid ?? this.createdByUid,
@@ -397,6 +657,58 @@ class Contact {
               : ContactActivity.fromMap(map);
         })
         .toList(growable: false);
+  }
+
+  static List<ContactAddress> _addressesFromList(
+    dynamic value, {
+    required bool firestore,
+  }) {
+    if (value is! List) return const [];
+    return value.whereType<Map>().map((item) {
+      final map = item.cast<String, dynamic>();
+      return firestore
+          ? ContactAddress.fromFirestoreMap(map)
+          : ContactAddress.fromMap(map);
+    }).toList(growable: false);
+  }
+
+  static List<CommunicationChannel> _channelsFromList(
+    dynamic value, {
+    required bool firestore,
+  }) {
+    if (value is! List) return const [];
+    return value.whereType<Map>().map((item) {
+      final map = item.cast<String, dynamic>();
+      return firestore
+          ? CommunicationChannel.fromFirestoreMap(map)
+          : CommunicationChannel.fromMap(map);
+    }).toList(growable: false);
+  }
+
+  static List<ContactPerson> _contactPersonsFromList(
+    dynamic value, {
+    required bool firestore,
+  }) {
+    if (value is! List) return const [];
+    return value.whereType<Map>().map((item) {
+      final map = item.cast<String, dynamic>();
+      return firestore
+          ? ContactPerson.fromFirestoreMap(map)
+          : ContactPerson.fromMap(map);
+    }).toList(growable: false);
+  }
+
+  static List<BankAccount> _bankAccountsFromList(
+    dynamic value, {
+    required bool firestore,
+  }) {
+    if (value is! List) return const [];
+    return value.whereType<Map>().map((item) {
+      final map = item.cast<String, dynamic>();
+      return firestore
+          ? BankAccount.fromFirestoreMap(map)
+          : BankAccount.fromMap(map);
+    }).toList(growable: false);
   }
 
   static List<String> _tagsFromList(dynamic value) {

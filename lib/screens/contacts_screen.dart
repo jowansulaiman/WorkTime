@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../core/contact_csv_import.dart';
@@ -11,6 +12,7 @@ import '../models/site_definition.dart';
 import '../providers/auth_provider.dart';
 import '../providers/contact_provider.dart';
 import '../providers/team_provider.dart';
+import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 import '../widgets/action_fab.dart';
@@ -169,7 +171,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                           child: _ContactCard(
                             contact: contact,
                             canManage: canManage,
-                            onTap: () => _openDetail(contact),
+                            onTap: () => _openContact(contact),
                             onToggleFavorite: () =>
                                 contactProvider.toggleFavorite(contact),
                             onEdit: () => _openEditor(contact),
@@ -535,6 +537,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
       _snack('$count Kontakt(e) importiert.');
     } catch (error) {
       _snack('Import fehlgeschlagen: $error', isError: true);
+    }
+  }
+
+  /// Öffnet die Kontakt-Detailseite (AllTec-1:1, Liste→Detail mit 7 Tabs).
+  /// Deep-linkbare Top-Level-Route `/kontakte/{id}` — ersetzt das frühere
+  /// Detail-Bottom-Sheet. Kontakte ohne Doc-ID (Randfall) fallen auf das
+  /// Sheet zurück.
+  void _openContact(Contact contact) {
+    final id = contact.id;
+    if (id != null && id.isNotEmpty) {
+      context.push(AppRoutes.contactDetailPath(id));
+    } else {
+      _openDetail(contact);
     }
   }
 
