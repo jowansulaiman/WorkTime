@@ -3,7 +3,11 @@ import 'package:worktime_app/core/zeitkonto_calculator.dart';
 import 'package:worktime_app/models/sollzeit_profile.dart';
 import 'package:worktime_app/models/work_entry.dart';
 
-WorkEntry _entry(DateTime date, double hours) {
+WorkEntry _entry(
+  DateTime date,
+  double hours, {
+  WorkEntryStatus status = WorkEntryStatus.approved,
+}) {
   final start = DateTime(date.year, date.month, date.day, 8);
   return WorkEntry(
     orgId: 'org-1',
@@ -12,6 +16,7 @@ WorkEntry _entry(DateTime date, double hours) {
     startTime: start,
     endTime: start.add(Duration(minutes: (hours * 60).round())),
     breakMinutes: 0,
+    status: status,
   );
 }
 
@@ -120,6 +125,22 @@ void main() {
           _entry(DateTime(2026, 7, 1), 8), // Folgemonat → ignoriert
         ],
       );
+      expect(result.istHours, 8);
+    });
+
+    test('strenge Zählung (E3): nur approved zählt ins Ist', () {
+      final result = computeZeitkonto(
+        year: 2026,
+        month: 6,
+        profiles: const [],
+        entries: [
+          _entry(DateTime(2026, 6, 2), 8, status: WorkEntryStatus.approved),
+          _entry(DateTime(2026, 6, 3), 8, status: WorkEntryStatus.submitted),
+          _entry(DateTime(2026, 6, 4), 8, status: WorkEntryStatus.draft),
+          _entry(DateTime(2026, 6, 5), 8, status: WorkEntryStatus.rejected),
+        ],
+      );
+      // Nur der genehmigte Eintrag zählt; submitted/draft/rejected nicht.
       expect(result.istHours, 8);
     });
   });

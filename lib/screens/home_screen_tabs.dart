@@ -2303,6 +2303,9 @@ class _TimeTrackingTabState extends State<_TimeTrackingTab> {
                           (plannedHoursByDay[dayKey] ?? 0) + shift.workedHours;
                     }
                     for (final entry in provider.entries) {
+                      // E3: nur genehmigte Zeiten in die „Ist"-Seite des
+                      // Kalenders (Planseite bleibt Planzeit).
+                      if (!countsAsIst(entry)) continue;
                       final dayKey = _calendarDayKey(entry.date);
                       actualHoursByDay[dayKey] =
                           (actualHoursByDay[dayKey] ?? 0) + entry.workedHours;

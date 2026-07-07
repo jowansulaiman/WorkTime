@@ -6,10 +6,12 @@ import 'package:provider/provider.dart';
 
 import '../../core/clock_service.dart';
 import '../../core/dienst_abgleich.dart';
+import '../../core/shift_punch_matcher.dart';
 import '../../models/clock_entry.dart';
 import '../../models/site_definition.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/team_provider.dart';
+import '../../providers/work_provider.dart';
 import '../../providers/zeitwirtschaft_provider.dart';
 import '../../ui/ui.dart';
 
@@ -156,7 +158,32 @@ class _StempelScreenState extends State<StempelScreen>
 
   Future<void> _handleClockIn() async {
     final provider = context.read<ZeitwirtschaftProvider>();
+    final work = context.read<WorkProvider>();
     final sites = context.read<TeamProvider>().sites;
+
+    // Z1/E1 (hart): Einstempeln nur innerhalb einer geplanten Schicht. Die
+    // passende Schicht des Nutzers für „jetzt" wird aufgelöst und als `shiftId`
+    // mitgegeben (fließt beim Ausstempeln in `sourceShiftId`); ohne Treffer wird
+    // das Kommen verweigert.
+    final now = DateTime.now();
+    final userId = work.currentUser?.uid ?? '';
+    final dayShifts = await work.loadConfirmedShiftsForDay(now);
+    if (!mounted) return;
+    final matched = matchShiftForPunch(dayShifts, now, userId: userId);
+    if (matched == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Einstempeln nur innerhalb einer geplanten Schicht möglich '
+            '(±15 Min. vor Beginn). Ohne passenden Dienst bitte an die '
+            'Leitung wenden.',
+          ),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+
     SiteDefinition? site;
     if (sites.length == 1) {
       site = sites.first;
@@ -166,7 +193,12 @@ class _StempelScreenState extends State<StempelScreen>
       // Abgebrochen → nicht stempeln.
       if (site == null) return;
     }
-    await provider.clockIn(siteId: site?.id, siteName: site?.name);
+    // Standort aus der Schicht vorbelegen, wenn keiner gewählt wurde.
+    await provider.clockIn(
+      siteId: site?.id ?? matched.siteId,
+      siteName: site?.name ?? matched.siteName,
+      shiftId: matched.id,
+    );
   }
 
   Future<SiteDefinition?> _pickSite(List<SiteDefinition> sites) {

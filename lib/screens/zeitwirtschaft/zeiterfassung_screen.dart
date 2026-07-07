@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/work_entry_rules.dart';
 import '../../models/absence_request.dart';
 import '../../models/work_entry.dart';
 import '../../providers/schedule_provider.dart';
@@ -207,9 +208,13 @@ class _ArbeitszeitenTab extends StatelessWidget {
                 e.status == WorkEntryStatus.rejected)
             .toList()
         : entries;
-    // Summe ohne abgelehnte Einträge.
+    // E3: bindende Summe zählt nur genehmigte Zeiten; eingereichte/Entwürfe
+    // werden getrennt als „in Freigabe" ausgewiesen (nicht im Saldo).
     final totalHours = filtered
-        .where((e) => e.status != WorkEntryStatus.rejected)
+        .where(countsAsIst)
+        .fold<double>(0, (sum, e) => sum + e.workedHours);
+    final vorlaeufigHours = filtered
+        .where(isVorlaeufig)
         .fold<double>(0, (sum, e) => sum + e.workedHours);
 
     return ListView(
@@ -247,12 +252,25 @@ class _ArbeitszeitenTab extends StatelessWidget {
               Text('${filtered.length} Einträge',
                   style: theme.textTheme.bodyMedium),
               const Spacer(),
-              Text(
-                'Summe: ${totalHours.toStringAsFixed(1)} h',
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: theme.colorScheme.primary,
-                ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Summe: ${totalHours.toStringAsFixed(1)} h',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  if (vorlaeufigHours > 0.05)
+                    Text(
+                      '+ ${vorlaeufigHours.toStringAsFixed(1)} h in Freigabe',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
               ),
             ],
           ),

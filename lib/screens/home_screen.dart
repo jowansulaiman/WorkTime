@@ -9,6 +9,7 @@ import '../core/accessibility.dart';
 import '../core/analytics_service.dart';
 import '../core/app_config.dart';
 import '../core/redesign_flags.dart';
+import '../core/work_entry_rules.dart';
 import '../routing/route_permissions.dart';
 import '../routing/shell_tab.dart';
 import '../models/absence_request.dart';

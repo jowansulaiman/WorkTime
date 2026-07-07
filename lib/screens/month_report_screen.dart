@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/work_entry_rules.dart';
 import '../models/app_user.dart';
 import '../models/work_entry.dart';
 import '../providers/auth_provider.dart';
@@ -87,9 +88,12 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
                 (e) => e.siteId != null && _selectedSiteIds.contains(e.siteId))
             .toList();
 
+    // E3: bindende Summen zählen nur genehmigte Zeiten (Tabelle zeigt weiter
+    // alle Einträge inkl. Status).
+    final counted = entries.where(countsAsIst);
     final totalHours =
-        entries.fold(0.0, (sum, entry) => sum + entry.workedHours);
-    final overtimeHours = entries.fold(0.0, (sum, entry) {
+        counted.fold(0.0, (sum, entry) => sum + entry.workedHours);
+    final overtimeHours = counted.fold(0.0, (sum, entry) {
       final diff = entry.workedHours - settings.dailyHours;
       return sum + (diff > 0 ? diff : 0);
     });

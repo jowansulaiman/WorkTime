@@ -151,6 +151,22 @@ function buildAbsenceDecisionNotification({absenceId, typeLabel, start, end, app
   };
 }
 
+// Zeit-Freigabe (Z7): Entscheidung des Freigebers über eine eingereichte Zeit
+// -> Push an den Mitarbeiter. Kanal `genehmigungen` (zeitkritisch).
+function buildWorkEntryDecisionNotification({entryId, dateLabel, approved}) {
+  return {
+    type: "work_entry_decision",
+    title: approved ? "Zeit genehmigt" : "Zeit abgelehnt",
+    body: `Deine erfasste Zeit${dateLabel ? ` am ${dateLabel}` : ""} wurde ` +
+      `${approved ? "genehmigt" : "abgelehnt"}.`,
+    route: "/zeit/erfassung",
+    entityType: "workEntry",
+    entityId: entryId,
+    thread: `work_entry_${entryId}`,
+    priority: "normal",
+  };
+}
+
 // Schichttausch-Lebenszyklus. `phase` bestimmt Typ (=> eigener Dedupe-Key) und
 // Empfaenger (in index.js).
 function buildSwapNotification(phase, {swapId, requesterName, targetName, shiftDate}) {
@@ -376,6 +392,7 @@ function channelIdForType(type) {
   switch (type) {
     case "absence_submitted":
     case "absence_decision":
+    case "work_entry_decision":
     case "shift_swap_request":
     case "shift_swap_accepted":
     case "shift_swap_declined":
@@ -464,6 +481,7 @@ module.exports = {
   buildFeedbackNotification,
   buildAbsenceSubmittedNotification,
   buildAbsenceDecisionNotification,
+  buildWorkEntryDecisionNotification,
   buildSwapNotification,
   buildShiftPublishedNotification,
   buildShiftOpenNotification,

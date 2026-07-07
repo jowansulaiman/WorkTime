@@ -1,6 +1,7 @@
 // lib/core/zeitkonto_snapshot_builder.dart
 
 import '../models/absence_request.dart';
+import '../models/shift.dart';
 import '../models/sollzeit_profile.dart';
 import '../models/work_entry.dart';
 import '../models/zeitkonto_snapshot.dart';
@@ -27,6 +28,7 @@ ZeitkontoSnapshot buildZeitkontoSnapshot({
   int ausgezahltMinutes = 0,
   double urlaubstageGesamt = 0,
   double urlaubstageGenommen = 0,
+  int plannedMinutes = 0,
 }) {
   final base = computeZeitkonto(
     year: jahr,
@@ -73,11 +75,34 @@ ZeitkontoSnapshot buildZeitkontoSnapshot({
     ausgezahltMinutes: ausgezahltMinutes,
     uebertragMinutes: uebertrag,
     saldoMinutes: saldo,
+    geplantMinutes: plannedMinutes,
     urlaubstageGesamt: urlaubstageGesamt,
     urlaubstageGenommen: urlaubstageGenommen,
     urlaubstageRest: urlaubstageGesamt - urlaubstageGenommen,
     kranktage: kranktage,
   );
+}
+
+/// Z9/E6: Planzeit (Minuten) eines Mitarbeiters im Monat — Summe der
+/// zugewiesenen Schicht-Netto-Zeiten (`Shift.workedHours`), ohne `cancelled`
+/// und ohne unassigned. **Pure**, offline testbar. Rein anzeigend (fließt NICHT
+/// in Saldo/Ist). Eine Schicht zählt zum Monat ihres `startTime`.
+int plannedMinutesForMonth({
+  required List<Shift> shifts,
+  required String userId,
+  required int jahr,
+  required int monat,
+}) {
+  var minutes = 0.0;
+  for (final shift in shifts) {
+    if (shift.userId != userId) continue;
+    if (shift.status == ShiftStatus.cancelled || shift.isUnassigned) continue;
+    if (shift.startTime.year != jahr || shift.startTime.month != monat) {
+      continue;
+    }
+    minutes += shift.workedHours * 60.0;
+  }
+  return minutes.round();
 }
 
 /// EFZG § 3: Entgeltfortzahlung im Krankheitsfall ist auf **6 Wochen

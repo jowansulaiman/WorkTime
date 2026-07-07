@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/work_entry_rules.dart';
 import '../providers/work_provider.dart';
 import '../services/download_service.dart';
 import '../theme/app_theme.dart';
@@ -171,13 +172,16 @@ class StatisticsScreen extends StatelessWidget {
     // UTF-8-BOM voranstellen, damit deutsches Excel Umlaute korrekt erkennt
     // (Konvention wie im ExportService, probleme #13).
     final buffer = StringBuffer('﻿');
-    buffer.writeln('Datum;Start;Ende;Pause (min);Stunden;Notiz');
+    // E3: Export ist nicht bindend, aber status-bewusst — der Freigabe-Status
+    // wird als eigene Spalte ausgewiesen (statt eingereichte Zeiten still wie
+    // genehmigte zu exportieren).
+    buffer.writeln('Datum;Start;Ende;Pause (min);Stunden;Status;Notiz');
     final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
     final timeFmt = DateFormat('HH:mm', 'de_DE');
     for (final entry in entries) {
       final note = _escapeCsvField(entry.note ?? '');
       buffer.writeln(
-        '${dateFmt.format(entry.date)};${timeFmt.format(entry.startTime)};${timeFmt.format(entry.endTime)};${entry.breakMinutes};${entry.workedHours.toStringAsFixed(2)};$note',
+        '${dateFmt.format(entry.date)};${timeFmt.format(entry.startTime)};${timeFmt.format(entry.endTime)};${entry.breakMinutes};${entry.workedHours.toStringAsFixed(2)};${entry.status.label};$note',
       );
     }
     // utf8.encode statt .codeUnits: .codeUnits liefert UTF-16-Einheiten und
@@ -459,9 +463,9 @@ class _MonthlyHoursChart extends StatelessWidget {
     final daysInMonth =
         DateTime(selectedMonth.year, selectedMonth.month + 1, 0).day;
 
-    // Aggregate hours per day
+    // Aggregate hours per day (E3: nur genehmigte Zeiten).
     final hoursPerDay = List<double>.filled(daysInMonth, 0);
-    for (final entry in entries) {
+    for (final entry in entries.where((e) => countsAsIst(e))) {
       final day = entry.date.day;
       if (day >= 1 && day <= daysInMonth) {
         hoursPerDay[day - 1] += entry.workedHours;
@@ -612,7 +616,7 @@ class _YearOverviewChart extends StatelessWidget {
     // implementation would load all months, but the provider scopes data to
     // the selected month, so we display what is available.
     final hoursPerMonth = List<double>.filled(12, 0);
-    for (final entry in entries) {
+    for (final entry in entries.where(countsAsIst)) {
       if (entry.date.year == year) {
         hoursPerMonth[entry.date.month - 1] += entry.workedHours;
       }

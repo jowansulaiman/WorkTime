@@ -29,6 +29,7 @@ import '../core/app_logger.dart';
 import '../core/error_reporter.dart';
 import '../core/monats_festschreibung.dart';
 import '../core/performance_service.dart';
+import '../core/work_entry_rules.dart';
 import '../models/zeitkonto_snapshot.dart';
 
 const _clockInKey = 'clock_in_time';
@@ -251,8 +252,12 @@ class WorkProvider extends ChangeNotifier {
           ? 'hybrid'
           : 'cloud';
 
-  double get totalHoursThisMonth =>
-      _entries.fold(0, (sum, entry) => sum + entry.workedHours);
+  // E3 (strenge Zählung): nur genehmigte Zeiten zählen in die bindenden
+  // Selbst-Schätzungen (Stunden/Lohn/Überstunden/Soll). `submitted`/`draft` sind
+  // „vorläufig" (per-Eintrag-Badge sichtbar), `rejected` zählt nie.
+  double get totalHoursThisMonth => _entries
+      .where(countsAsIst)
+      .fold(0, (sum, entry) => sum + entry.workedHours);
 
   /// Lohn-Schätzung des Monats. **Quelle: `EmploymentContract`** (SSoT, H-B1) —
   /// pro Eintrag wird der am `entry.date` gültige Vertrag aufgelöst
@@ -268,7 +273,7 @@ class WorkProvider extends ChangeNotifier {
     if (festgehaltCents != null && festgehaltCents > 0) {
       return festgehaltCents / 100.0;
     }
-    return _entries.fold(
+    return _entries.where(countsAsIst).fold(
         0.0, (sum, entry) => sum + entry.workedHours * _hourlyRateOn(entry.date));
   }
 
@@ -283,7 +288,8 @@ class WorkProvider extends ChangeNotifier {
     return contract.monthlyGrossCents;
   }
 
-  double get overtimeThisMonth => _entries.fold(0.0, (sum, entry) {
+  double get overtimeThisMonth =>
+      _entries.where(countsAsIst).fold(0.0, (sum, entry) {
         final diff = entry.workedHours - _dailyHoursOn(entry.date);
         return sum + (diff > 0 ? diff : 0);
       });
@@ -296,6 +302,9 @@ class WorkProvider extends ChangeNotifier {
     final seenDays = <String>{};
     var sum = 0.0;
     for (final entry in _entries) {
+      // Konsistent zu [overtimeThisMonth]/[totalHoursThisMonth]: nur genehmigte
+      // Erfassungstage tragen zum Tagessoll bei (E3).
+      if (!countsAsIst(entry)) continue;
       final key = '${entry.date.year}-${entry.date.month}-${entry.date.day}';
       if (seenDays.add(key)) {
         sum += _dailyHoursOn(entry.date);
@@ -586,13 +595,19 @@ class WorkProvider extends ChangeNotifier {
     // Vor dem Vergeben einer neuen id erfassen, ob es ein Neuanlage- oder
     // Änderungs-Vorgang ist (fürs Änderungsprotokoll).
     final isNew = entry.id == null;
-    final preparedEntry = entry.copyWith(
-      // ID bereits hier vergeben (nicht erst im local-Zweig), damit auch der
-      // Cloud-Pfad eine stabile Doc-ID nutzt und Callable-Retries idempotent
-      // sind (no-idempotency-key).
-      id: entry.id ?? _nextLocalId('entry'),
-      orgId: currentUser.orgId,
-      userId: currentUser.uid,
+    // Z2/Z4 (plan/zeit-schichtbindung-freigabe.md): Eigen-Erfassung/-Korrektur
+    // wird für Nicht-Admins auf `submitted` gezwungen (Freigabe geleert); Admins
+    // dürfen `approved`. Server-seitig erzwingen Rules/Callable dasselbe.
+    final preparedEntry = applyOwnEntrySubmissionPolicy(
+      entry.copyWith(
+        // ID bereits hier vergeben (nicht erst im local-Zweig), damit auch der
+        // Cloud-Pfad eine stabile Doc-ID nutzt und Callable-Retries idempotent
+        // sind (no-idempotency-key).
+        id: entry.id ?? _nextLocalId('entry'),
+        orgId: currentUser.orgId,
+        userId: currentUser.uid,
+      ),
+      isAdmin: currentUser.isAdmin,
     );
     // PA-5: Zielmonat des Eintrags darf nicht festgeschrieben sein. Bei einer
     // Änderung mit Monats-Verschiebung zusätzlich den URSPRUNGS-Monat prüfen —
@@ -692,12 +707,25 @@ class WorkProvider extends ChangeNotifier {
     );
   }
 
+  /// E2/Z7: Darf [currentUser] den [entry] genehmigen/ablehnen? Nur Freigeber
+  /// (`canManageShifts`), **nie den eigenen** Eintrag (kein Selbst-Genehmigen),
+  /// und **nicht** die Zeit eines Admins (Admin-Zeiten sind freigabefrei). Der
+  /// Server (Rules/Callable) erzwingt dasselbe; dies ist der Client-Vorlauf fürs
+  /// Button-Gating (fail-soft: unbekanntes Ziel bleibt dem Server überlassen).
+  bool _canReviewEntry(WorkEntry entry, AppUserProfile currentUser) {
+    if (!currentUser.canManageShifts) return false;
+    if (entry.userId == currentUser.uid) return false;
+    final target = _members.firstWhereOrNull((m) => m.uid == entry.userId);
+    if (target != null && target.isAdmin) return false;
+    return true;
+  }
+
   /// Manager/Admin genehmigt einen Zeiteintrag.
   Future<void> approveWorkEntry(WorkEntry entry) async {
     final currentUser = _currentUser;
     if (currentUser == null ||
         entry.id == null ||
-        !currentUser.canManageShifts) {
+        !_canReviewEntry(entry, currentUser)) {
       return;
     }
     final updated = entry.copyWith(
@@ -711,12 +739,22 @@ class WorkProvider extends ChangeNotifier {
     );
   }
 
+  /// E4/Z7: Sammel-Freigabe mehrerer Einträge. Jeder durchläuft dieselbe
+  /// [_canReviewEntry]-Prüfung wie [approveWorkEntry] (kein Selbst-Genehmigen,
+  /// Zielperson kein Admin). Der Aufrufer filtert vorab per
+  /// `isEligibleForBulkApproval` (schicht-konform, aus Stempel, unkorrigiert).
+  Future<void> approveWorkEntries(Iterable<WorkEntry> entries) async {
+    for (final entry in entries) {
+      await approveWorkEntry(entry);
+    }
+  }
+
   /// Manager/Admin lehnt einen Zeiteintrag ab (optionaler Grund landet in `note`).
   Future<void> rejectWorkEntry(WorkEntry entry, {String? reason}) async {
     final currentUser = _currentUser;
     if (currentUser == null ||
         entry.id == null ||
-        !currentUser.canManageShifts) {
+        !_canReviewEntry(entry, currentUser)) {
       return;
     }
     final trimmed = reason?.trim();
@@ -788,12 +826,21 @@ class WorkProvider extends ChangeNotifier {
 
     final preparedEntries = <WorkEntry>[];
     for (final entry in entries) {
-      final preparedEntry = entry.copyWith(
+      var preparedEntry = entry.copyWith(
         // Stabile Doc-ID schon vor dem Callable-Aufruf (no-idempotency-key).
         id: entry.id ?? _nextLocalId('entry'),
         orgId: entry.orgId.isNotEmpty ? entry.orgId : currentUser.orgId,
         userId: entry.userId.isNotEmpty ? entry.userId : currentUser.uid,
       );
+      // Z2/Z4: Eigen-Erfassung (auch der Overtime-Split-Pfad) erzwingt für
+      // Nicht-Admins `submitted`. Fremd-Einträge im Batch bleiben unberührt
+      // (Freigeber-/Server-Pfad).
+      if (preparedEntry.userId == currentUser.uid) {
+        preparedEntry = applyOwnEntrySubmissionPolicy(
+          preparedEntry,
+          isAdmin: currentUser.isAdmin,
+        );
+      }
       final violations = await validateEntry(preparedEntry);
       final blocking = violations.where((item) => item.isBlocking).toList();
       if (blocking.isNotEmpty) {

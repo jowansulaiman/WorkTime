@@ -465,6 +465,39 @@ exports.onAbsenceRequestWritten = documentWrittenTrigger(
   },
 );
 
+// Zeit-Freigabe (Z7): eingereichte Zeit -> genehmigt/abgelehnt durch einen
+// Freigeber -> Push an den betroffenen Mitarbeiter. Nur dieser eine Übergang
+// benachrichtigt (nicht jede Statusänderung). Idempotent via thread/dedupe.
+exports.onWorkEntryWritten = documentWrittenTrigger(
+  "onWorkEntryWritten",
+  {region: REGION, document: "organizations/{orgId}/workEntries/{entryId}"},
+  async (event, ctx) => {
+    const orgId = event.params.orgId;
+    const entryId = event.params.entryId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) {
+      return;
+    }
+    const beforeStatus = before ? stringOrEmpty(before.status) : null;
+    const afterStatus = stringOrEmpty(after.status);
+    if (beforeStatus === "submitted" &&
+        (afterStatus === "approved" || afterStatus === "rejected")) {
+      const userId = stringFromEither(after, "userId", "user_id");
+      if (!userId) {
+        return;
+      }
+      const dateLabel = push.formatDe(readTriggerDate(after, "date", "date"));
+      const notif = push.buildWorkEntryDecisionNotification({
+        entryId, dateLabel, approved: afterStatus === "approved",
+      });
+      await fanOutPush({
+        orgId, recipientUids: [userId], notif, requestId: ctx.requestId,
+      });
+    }
+  },
+);
+
 // Neues (fuer den Mitarbeiter sichtbares) Dokument in der Personalakte (PA-3.5)
 // -> Push an genau diesen Mitarbeiter. Interne Ablagen (visibleToEmployee=false)
 // loesen KEINE Benachrichtigung aus. Idempotent ueber dedupeId=docId.
@@ -1104,12 +1137,6 @@ exports.upsertWorkEntry = callable("upsertWorkEntry", {region: REGION}, async (r
   assertTimeEntryEditor(caller);
   const entry = parseWorkEntry(request.data?.entry);
   assertSameOrg(caller, entry.orgId);
-  if (caller.uid !== entry.userId && !caller.isAdmin) {
-    throw new HttpsError(
-      "permission-denied",
-      "Nur Admins duerfen Zeiteintraege fuer andere Mitarbeiter aendern.",
-    );
-  }
   await assertMonatNichtFestgeschrieben({
     orgId: entry.orgId,
     userId: entry.userId,
@@ -1129,9 +1156,30 @@ exports.upsertWorkEntry = callable("upsertWorkEntry", {region: REGION}, async (r
   const docId = entry.id ?? buildWorkEntryDocumentId(entry);
   const docRef = collection.doc(docId);
   const snapshot = await docRef.get();
+  const existingData = snapshot.exists ? snapshot.data() : null;
+  // Z6: Freigabe-Semantik serverseitig durchsetzen (Status/Genehmiger/Re-Approval).
+  const decision = resolveWorkEntryApproval({
+    caller,
+    entry,
+    existingStatus: existingData ? stringOrEmpty(existingData.status) : null,
+    materialChanged: existingData
+      ? correctionReasonRequired(existingData, entry)
+      : false,
+    targetIsAdmin: caller.uid === entry.userId
+      ? false
+      : await loadTargetIsAdmin(entry.userId),
+  });
+  if (!decision.ok) {
+    throw new HttpsError(decision.code, decision.message);
+  }
+  const fireDoc = applyApprovalDecision(
+    toFirestoreWorkEntry(entry, caller.uid),
+    decision,
+    entry,
+  );
   await docRef.set(
     {
-      ...toFirestoreWorkEntry(entry, caller.uid),
+      ...fireDoc,
       ...(snapshot.exists ? {} : {createdAt: FieldValue.serverTimestamp()}),
     },
     {merge: true},
@@ -1164,12 +1212,6 @@ exports.upsertWorkEntryBatch = callable("upsertWorkEntryBatch", {region: REGION}
   const entries = rawEntries.map((item) => parseWorkEntry(item));
   for (const entry of entries) {
     assertSameOrg(caller, entry.orgId);
-    if (caller.uid !== entry.userId && !caller.isAdmin) {
-      throw new HttpsError(
-        "permission-denied",
-        "Nur Admins duerfen Zeiteintraege fuer andere Mitarbeiter aendern.",
-      );
-    }
   }
 
   // PA-5: Festschreibungs-Guard je eindeutigem (userId, Jahr, Monat) — ein
@@ -1206,7 +1248,7 @@ exports.upsertWorkEntryBatch = callable("upsertWorkEntryBatch", {region: REGION}
   }
 
   const savedIds = await writeWorkEntryBatch({
-    callerUid: caller.uid,
+    caller,
     entries,
   });
   return {savedIds, validations};
@@ -2661,7 +2703,7 @@ function validateSingleShift({
   if (!shift.isUnassigned && !shift.siteId) {
     violations.push(blockingViolation(
       "site_required",
-      "Fuer geplante Schichten ist ein Standort Pflicht.",
+      "Für geplante Schichten ist ein Standort Pflicht.",
     ));
   }
 
@@ -2669,7 +2711,7 @@ function validateSingleShift({
     violations.push({
       code: "site_assignment_missing",
       severity: "blocking",
-      message: `${shift.employeeName} ist dem gewaehlten Standort nicht zugeordnet.`,
+      message: `${shift.employeeName} ist dem gewählten Standort nicht zugeordnet.`,
       relatedEntityIds: [shift.userId, shift.siteId].filter(Boolean),
     });
   }
@@ -3423,6 +3465,117 @@ function correctionReasonRequired(existingRaw, nextEntry) {
     stringOrNull(existing.siteId) !== stringOrNull(nextEntry.siteId);
 }
 
+// ── Zeitwirtschaft-Freigabe-Workflow (plan/zeit-schichtbindung-freigabe.md, Z6)
+// Serverseitige Durchsetzung auf dem Callable-Pfad, spiegelbildlich zu den Rules
+// (Z5): Nicht-Admins reichen nur ein (nie selbst genehmigen); nur ein Freigeber
+// (canManageShifts, nicht der eigene Eintrag, Zielperson kein Admin) genehmigt/
+// lehnt ab mit server-gesetzter Genehmiger-Identitaet + Server-Zeitstempel;
+// Korrektur eines genehmigten Eintrags erzwingt einen Grund (Re-Approval, Z4).
+
+function isReviewer(caller) {
+  return Boolean(
+    caller.isAdmin || (caller.permissions && caller.permissions.canEditSchedule),
+  );
+}
+
+// PURE (ohne IO, node-testbar). Liefert die durchzusetzende Freigabe-Semantik:
+// {ok:true, status, approvedByUid, approvedAtServer, clearApprovedAt} oder
+// {ok:false, code, message}. `targetIsAdmin`: true/false, oder null wenn das
+// Zielprofil fehlt (dann kein Fremd-Approval — fail-closed).
+function resolveWorkEntryApproval(
+  {caller, entry, existingStatus, materialChanged, targetIsAdmin},
+) {
+  const isOwn = caller.uid === entry.userId;
+  if (isOwn) {
+    if (caller.isAdmin) {
+      // Admins sind laut Freigabe-Konzept ausgenommen.
+      return {
+        ok: true,
+        status: normalizeWorkEntryStatus(entry.status),
+        approvedByUid: entry.approvedByUid || null,
+        approvedAtServer: false,
+        clearApprovedAt: false,
+      };
+    }
+    // Nicht-Admin Eigen-Erfassung/-Korrektur: immer submitted, Freigabe leeren.
+    if (
+      existingStatus === "approved" &&
+      materialChanged &&
+      !(entry.correctionReason && String(entry.correctionReason).trim())
+    ) {
+      return {
+        ok: false,
+        code: "failed-precondition",
+        message:
+          "Fuer die Korrektur eines genehmigten Zeiteintrags ist ein Grund erforderlich.",
+      };
+    }
+    return {
+      ok: true,
+      status: "submitted",
+      approvedByUid: null,
+      approvedAtServer: false,
+      clearApprovedAt: true,
+    };
+  }
+  // Fremd-Eintrag: nur Freigeber, Zielperson kein Admin.
+  if (!isReviewer(caller)) {
+    return {
+      ok: false,
+      code: "permission-denied",
+      message: "Nur Freigeber duerfen Zeiteintraege anderer Mitarbeiter bearbeiten.",
+    };
+  }
+  if (targetIsAdmin === null || targetIsAdmin === true) {
+    return {
+      ok: false,
+      code: "permission-denied",
+      message: "Fuer diese Zielperson ist keine Fremd-Freigabe zulaessig.",
+    };
+  }
+  const status = normalizeWorkEntryStatus(entry.status);
+  if (status === "approved" || status === "rejected") {
+    return {
+      ok: true,
+      status,
+      approvedByUid: caller.uid,
+      approvedAtServer: true,
+      clearApprovedAt: false,
+    };
+  }
+  return {
+    ok: true,
+    status,
+    approvedByUid: null,
+    approvedAtServer: false,
+    clearApprovedAt: true,
+  };
+}
+
+async function loadTargetIsAdmin(userId) {
+  const snap = await db.collection("users").doc(userId).get();
+  if (!snap.exists) {
+    return null;
+  }
+  return normalizeRole((snap.data() || {}).role) === "admin";
+}
+
+// Wendet die Freigabe-Entscheidung auf die Firestore-Schreibmap an: setzt
+// status/approvedByUid, Server-Zeitstempel bzw. geleerte Freigabe, und leitet
+// `date` aus `startTime` ab (schliesst das Direct-Write-Loch „date allein
+// verschieben" auch auf dem Callable-Pfad).
+function applyApprovalDecision(fireDoc, decision, entry) {
+  fireDoc.status = decision.status;
+  fireDoc.approvedByUid = decision.approvedByUid;
+  if (decision.approvedAtServer) {
+    fireDoc.approvedAt = FieldValue.serverTimestamp();
+  } else if (decision.clearApprovedAt) {
+    fireDoc.approvedAt = null;
+  }
+  fireDoc.date = Timestamp.fromDate(normalizeDate(entry.startTime));
+  return fireDoc;
+}
+
 function dedupeViolations(violations) {
   const seen = new Set();
   return violations.filter((item) => {
@@ -3490,6 +3643,8 @@ function parseShift(raw, index, fallbackOrgId) {
     seriesId: stringOrNull(map.series_id),
     recurrencePattern: stringOrEmpty(map.recurrence_pattern) || "none",
     status: stringOrEmpty(map.status) || "planned",
+    // Plan-Metadatum "geplante Überstunden" in Minuten (siehe lib/models/shift.dart).
+    overtimeMinutes: asInteger(map.overtime_minutes),
     createdByUid: stringOrNull(map.created_by_uid),
     isUnassigned: stringOrEmpty(map.user_id).trim().length === 0,
   };
@@ -3561,6 +3716,7 @@ function toFirestoreShift(shift, callerUid, existingSnapshot) {
     seriesId: shift.seriesId,
     recurrencePattern: shift.recurrencePattern,
     status: shift.status,
+    overtimeMinutes: asInteger(shift.overtimeMinutes),
     createdByUid: shift.createdByUid || existingData?.createdByUid || callerUid,
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -3617,6 +3773,7 @@ function fromFirestoreShift(doc) {
     seriesId: stringOrNull(data.seriesId),
     recurrencePattern: stringOrEmpty(data.recurrencePattern) || "none",
     status: stringOrEmpty(data.status) || "planned",
+    overtimeMinutes: asInteger(data.overtimeMinutes),
     createdByUid: stringOrNull(data.createdByUid),
     isUnassigned: stringOrEmpty(data.userId).trim().length === 0,
   };
@@ -3774,7 +3931,7 @@ function buildWorkEntryDocumentId(entry) {
   ])}`;
 }
 
-async function writeWorkEntryBatch({callerUid, entries}) {
+async function writeWorkEntryBatch({caller, entries}) {
   const collection = organizationCollection(entries[0].orgId, "workEntries");
   const refs = entries.map((entry) =>
     collection.doc(entry.id || buildWorkEntryDocumentId(entry)),
@@ -3784,17 +3941,51 @@ async function writeWorkEntryBatch({callerUid, entries}) {
     snapshots.map((snapshot) => [snapshot.id, snapshot]),
   );
 
+  // Ziel-Admin-Status je fremder Zielperson einmalig laden (fail-closed).
+  const foreignTargets = [
+    ...new Set(
+      entries
+        .filter((entry) => entry.userId !== caller.uid)
+        .map((entry) => entry.userId),
+    ),
+  ];
+  const targetAdminById = new Map();
+  for (const uid of foreignTargets) {
+    targetAdminById.set(uid, await loadTargetIsAdmin(uid));
+  }
+
   const batch = db.batch();
   const savedIds = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     const docRef = refs[index];
     const existing = existingById.get(docRef.id);
+    const existingData = existing && existing.exists ? existing.data() : null;
+    // Z6: Freigabe-Semantik je Eintrag serverseitig durchsetzen.
+    const decision = resolveWorkEntryApproval({
+      caller,
+      entry,
+      existingStatus: existingData ? stringOrEmpty(existingData.status) : null,
+      materialChanged: existingData
+        ? correctionReasonRequired(existingData, entry)
+        : false,
+      targetIsAdmin: entry.userId === caller.uid
+        ? false
+        : targetAdminById.get(entry.userId),
+    });
+    if (!decision.ok) {
+      throw new HttpsError(decision.code, decision.message);
+    }
+    const fireDoc = applyApprovalDecision(
+      toFirestoreWorkEntry(entry, caller.uid),
+      decision,
+      entry,
+    );
     savedIds.push(docRef.id);
     batch.set(
       docRef,
       {
-        ...toFirestoreWorkEntry(entry, callerUid),
+        ...fireDoc,
         ...(existing?.exists ? {} : {createdAt: FieldValue.serverTimestamp()}),
       },
       {merge: true},
@@ -5609,3 +5800,14 @@ function splitPersonName(name) {
     familyName: parts[parts.length - 1],
   };
 }
+
+// Nur für Offline-Tests (functions/test, node --test): pure Serialisierungs-
+// Helfer exportieren. KEIN Cloud-Function-Export — die Functions-Discovery
+// registriert nur Exporte mit __endpoint, plain Functions werden ignoriert.
+exports._testables = {
+  parseShift,
+  toFirestoreShift,
+  fromFirestoreShift,
+  resolveWorkEntryApproval,
+  isReviewer,
+};

@@ -20,7 +20,10 @@ double _sumShiftHours(Iterable<Shift> shifts) {
 }
 
 double _sumEntryHours(Iterable<WorkEntry> entries) {
-  return entries.fold<double>(0, (sum, entry) => sum + entry.workedHours);
+  // E3: nur genehmigte Zeiten zählen ins Ist (Kacheln/Kalender „Ist"-Seite).
+  return entries
+      .where(countsAsIst)
+      .fold<double>(0, (sum, entry) => sum + entry.workedHours);
 }
 
 String _formatSignedHours(double value) {

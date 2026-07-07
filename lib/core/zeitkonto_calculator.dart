@@ -1,5 +1,6 @@
 import '../models/sollzeit_profile.dart';
 import '../models/work_entry.dart';
+import 'work_entry_rules.dart';
 
 /// Ergebnis eines Monats-Zeitkontos (Soll/Ist/Saldo) in Minuten.
 class ZeitkontoResult {
@@ -77,10 +78,11 @@ ZeitkontoResult computeZeitkonto({
 
   var istHours = 0.0;
   for (final entry in entries) {
-    // Abgelehnte Einträge zählen nicht ins Ist (konsistent zur Monatssumme in
-    // zeiterfassung_screen.dart; sonst bläht ein abgelehnter Eintrag das
-    // Stundenkonto/Saldo auf).
-    if (entry.status == WorkEntryStatus.rejected) continue;
+    // Strenge Zählung (E3, plan/zeit-schichtbindung-freigabe.md): nur genehmigte
+    // Zeiten zählen ins bindende Ist. `draft`/`submitted` sind „vorläufig, in
+    // Freigabe" (getrennt ausweisen), `rejected` zählt nie. Alt-Einträge ohne
+    // `status` sind `approved` (abwärtskompatibel) und zählen voll.
+    if (!countsAsIst(entry)) continue;
     if (entry.date.year == year && entry.date.month == month) {
       istHours += entry.workedHours;
     }

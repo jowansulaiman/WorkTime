@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worktime_app/core/zeitkonto_snapshot_builder.dart';
 import 'package:worktime_app/models/absence_request.dart';
+import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/sollzeit_profile.dart';
 import 'package:worktime_app/models/work_entry.dart';
 import 'package:worktime_app/models/zeitkonto_snapshot.dart';
@@ -57,6 +58,7 @@ void main() {
         ueberstundenMinutes: 120,
         uebertragMinutes: 600,
         saldoMinutes: 720,
+        geplantMinutes: 9600,
         urlaubstageGesamt: 30,
         urlaubstageGenommen: 5,
         urlaubstageRest: 25,
@@ -67,8 +69,15 @@ void main() {
       );
       final restored = ZeitkontoSnapshot.fromMap(snap.toMap());
       expect(restored.saldoMinutes, 720);
+      expect(restored.geplantMinutes, 9600);
       expect(restored.uebertragMinutes, 600);
       expect(restored.urlaubstageRest, 25);
+      // camelCase-Firestore-Round-Trip trägt geplantMinutes ebenfalls.
+      expect(
+        ZeitkontoSnapshot.fromFirestore('s1', snap.toFirestoreMap())
+            .geplantMinutes,
+        9600,
+      );
       expect(restored.kranktage, 2);
       expect(restored.abgeschlossen, isTrue);
       expect(restored.abgeschlossenVon, 'adm-1');
@@ -399,6 +408,79 @@ void main() {
           snap.ueberstundenMinutes -
           snap.ausgezahltMinutes;
       expect(snap.saldoMinutes, saldoOhneAbzug); // kein Abzug für Urlaub
+    });
+  });
+
+  group('plannedMinutesForMonth (Z9/E6)', () {
+    Shift shift({
+      required String id,
+      String userId = 'emp-1',
+      required DateTime start,
+      required DateTime end,
+      double breakMinutes = 0,
+      ShiftStatus status = ShiftStatus.confirmed,
+    }) =>
+        Shift(
+          id: id,
+          orgId: 'org-1',
+          userId: userId,
+          employeeName: 'Anna',
+          title: 'Dienst',
+          startTime: start,
+          endTime: end,
+          breakMinutes: breakMinutes,
+          status: status,
+        );
+
+    test('summiert Netto-Zeit der Nutzer-Schichten des Monats', () {
+      final minutes = plannedMinutesForMonth(
+        shifts: [
+          // 8 h − 30 min Pause = 450 min
+          shift(
+              id: 'a',
+              start: DateTime(2026, 6, 2, 9),
+              end: DateTime(2026, 6, 2, 17),
+              breakMinutes: 30),
+          // 4 h = 240 min
+          shift(
+              id: 'b',
+              start: DateTime(2026, 6, 3, 9),
+              end: DateTime(2026, 6, 3, 13)),
+        ],
+        userId: 'emp-1',
+        jahr: 2026,
+        monat: 6,
+      );
+      expect(minutes, 690);
+    });
+
+    test('ignoriert cancelled, fremde userId, anderen Monat', () {
+      final minutes = plannedMinutesForMonth(
+        shifts: [
+          shift(
+              id: 'ok',
+              start: DateTime(2026, 6, 2, 9),
+              end: DateTime(2026, 6, 2, 13)), // 240
+          shift(
+              id: 'cancel',
+              start: DateTime(2026, 6, 4, 9),
+              end: DateTime(2026, 6, 4, 17),
+              status: ShiftStatus.cancelled),
+          shift(
+              id: 'foreign',
+              userId: 'other',
+              start: DateTime(2026, 6, 5, 9),
+              end: DateTime(2026, 6, 5, 17)),
+          shift(
+              id: 'prevMonth',
+              start: DateTime(2026, 5, 31, 9),
+              end: DateTime(2026, 5, 31, 17)),
+        ],
+        userId: 'emp-1',
+        jahr: 2026,
+        monat: 6,
+      );
+      expect(minutes, 240);
     });
   });
 }

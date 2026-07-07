@@ -35,6 +35,12 @@ class ZeitkontoSnapshot {
   /// Kumulierter Saldo zum Monatsende (= Übertrag + Überstunden − Ausgezahlt).
   final int saldoMinutes;
 
+  /// Planzeit des Monats (Minuten): Summe der dem Mitarbeiter zugewiesenen
+  /// Schicht-Netto-Zeiten (`Shift.workedHours`, ohne cancelled/unassigned) —
+  /// Z9/E6. Rein anzeigende Schichtplan-Sicht **neben** Soll (Vertrag) und Ist
+  /// (genehmigt); fließt NICHT in Saldo/Überstunden. Alt-Snapshots ohne Feld = 0.
+  final int geplantMinutes;
+
   final double urlaubstageGesamt;
   final double urlaubstageGenommen;
   final double urlaubstageRest;
@@ -61,6 +67,7 @@ class ZeitkontoSnapshot {
     this.ausgezahltMinutes = 0,
     this.uebertragMinutes = 0,
     this.saldoMinutes = 0,
+    this.geplantMinutes = 0,
     this.urlaubstageGesamt = 0,
     this.urlaubstageGenommen = 0,
     this.urlaubstageRest = 0,
@@ -83,6 +90,7 @@ class ZeitkontoSnapshot {
   double get saldoHours => saldoMinutes / 60.0;
   double get ausgezahltHours => ausgezahltMinutes / 60.0;
   double get uebertragHours => uebertragMinutes / 60.0;
+  double get geplantHours => geplantMinutes / 60.0;
 
   static DateTime? _parseDate(dynamic raw) {
     if (raw == null) return null;
@@ -105,6 +113,7 @@ class ZeitkontoSnapshot {
       'ausgezahlt_minutes': ausgezahltMinutes,
       'uebertrag_minutes': uebertragMinutes,
       'saldo_minutes': saldoMinutes,
+      'geplant_minutes': geplantMinutes,
       'urlaubstage_gesamt': urlaubstageGesamt,
       'urlaubstage_genommen': urlaubstageGenommen,
       'urlaubstage_rest': urlaubstageRest,
@@ -131,6 +140,7 @@ class ZeitkontoSnapshot {
       ausgezahltMinutes: parse.toInt(map['ausgezahlt_minutes']) ?? 0,
       uebertragMinutes: parse.toInt(map['uebertrag_minutes']) ?? 0,
       saldoMinutes: parse.toInt(map['saldo_minutes']) ?? 0,
+      geplantMinutes: parse.toInt(map['geplant_minutes']) ?? 0,
       urlaubstageGesamt: parse.toDouble(map['urlaubstage_gesamt']) ?? 0,
       urlaubstageGenommen: parse.toDouble(map['urlaubstage_genommen']) ?? 0,
       urlaubstageRest: parse.toDouble(map['urlaubstage_rest']) ?? 0,
@@ -157,6 +167,7 @@ class ZeitkontoSnapshot {
       ausgezahltMinutes: parse.toInt(map['ausgezahltMinutes']) ?? 0,
       uebertragMinutes: parse.toInt(map['uebertragMinutes']) ?? 0,
       saldoMinutes: parse.toInt(map['saldoMinutes']) ?? 0,
+      geplantMinutes: parse.toInt(map['geplantMinutes']) ?? 0,
       urlaubstageGesamt: parse.toDouble(map['urlaubstageGesamt']) ?? 0,
       urlaubstageGenommen: parse.toDouble(map['urlaubstageGenommen']) ?? 0,
       urlaubstageRest: parse.toDouble(map['urlaubstageRest']) ?? 0,
@@ -182,6 +193,7 @@ class ZeitkontoSnapshot {
       'ausgezahltMinutes': ausgezahltMinutes,
       'uebertragMinutes': uebertragMinutes,
       'saldoMinutes': saldoMinutes,
+      'geplantMinutes': geplantMinutes,
       'urlaubstageGesamt': urlaubstageGesamt,
       'urlaubstageGenommen': urlaubstageGenommen,
       'urlaubstageRest': urlaubstageRest,
@@ -208,6 +220,7 @@ class ZeitkontoSnapshot {
     int? ausgezahltMinutes,
     int? uebertragMinutes,
     int? saldoMinutes,
+    int? geplantMinutes,
     double? urlaubstageGesamt,
     double? urlaubstageGenommen,
     double? urlaubstageRest,
@@ -233,6 +246,7 @@ class ZeitkontoSnapshot {
       ausgezahltMinutes: ausgezahltMinutes ?? this.ausgezahltMinutes,
       uebertragMinutes: uebertragMinutes ?? this.uebertragMinutes,
       saldoMinutes: saldoMinutes ?? this.saldoMinutes,
+      geplantMinutes: geplantMinutes ?? this.geplantMinutes,
       urlaubstageGesamt: urlaubstageGesamt ?? this.urlaubstageGesamt,
       urlaubstageGenommen: urlaubstageGenommen ?? this.urlaubstageGenommen,
       urlaubstageRest: urlaubstageRest ?? this.urlaubstageRest,

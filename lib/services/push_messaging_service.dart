@@ -304,6 +304,7 @@ String _channelIdForType(String type) {
   switch (type) {
     case 'absence_submitted':
     case 'absence_decision':
+    case 'work_entry_decision':
     case 'shift_swap_request':
     case 'shift_swap_accepted':
     case 'shift_swap_declined':

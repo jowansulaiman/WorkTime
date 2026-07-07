@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../core/de_number_input.dart';
 import '../core/lohn_herleitung.dart';
+import '../core/work_entry_rules.dart';
 import '../core/money.dart';
 import '../core/payroll_calculator.dart';
 import '../core/personnel_cost.dart';
@@ -421,7 +422,7 @@ String _centsToInput(int cents) =>
     (cents / 100).toStringAsFixed(2).replaceAll('.', ',');
 
 double _hoursForUser(List<WorkEntry> entries, String userId) => entries
-    .where((e) => e.userId == userId)
+    .where((e) => e.userId == userId && countsAsIst(e))
     .fold<double>(0, (sum, e) => sum + e.workedHours);
 
 /// Arbeitsstunden mit deutschem Dezimalkomma und ohne überflüssige Null
@@ -467,8 +468,10 @@ List<PersonnelCostRow> _costBySite(
   int year,
   int month,
 ) {
+  // E3: nur genehmigte Zeiten in Personalkosten/Standort-Verteilung.
+  final counted = entries.where(countsAsIst).toList();
   final hoursByUser = <String, double>{};
-  for (final entry in entries) {
+  for (final entry in counted) {
     hoursByUser.update(entry.userId, (v) => v + entry.workedHours,
         ifAbsent: () => entry.workedHours);
   }
@@ -482,7 +485,7 @@ List<PersonnelCostRow> _costBySite(
 
   final hoursBySite = <String, double>{};
   final costBySite = <String, double>{};
-  for (final entry in entries) {
+  for (final entry in counted) {
     final site = (entry.siteName == null || entry.siteName!.trim().isEmpty)
         ? 'Ohne Standort'
         : entry.siteName!.trim();
@@ -651,8 +654,9 @@ class _OverviewTabState extends State<_OverviewTab> {
       );
     }
 
-    final totalHours =
-        widget.monthEntries.fold<double>(0, (sum, e) => sum + e.workedHours);
+    final totalHours = widget.monthEntries
+        .where(countsAsIst)
+        .fold<double>(0, (sum, e) => sum + e.workedHours);
     final totalCost = _costByEmployee(
       members,
       widget.monthEntries,

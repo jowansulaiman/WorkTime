@@ -424,6 +424,67 @@ service cloud.firestore {
           || monatNichtFestgeschrieben(orgId, data.userId, data.date);
     }
 
+    // ── Zeitwirtschaft-Freigabe-Workflow (plan/zeit-schichtbindung-freigabe.md,
+    // Z5). Erzwingt: Nicht-Admins reichen nur ein (nie selbst genehmigen); nur
+    // ein Freigeber (canManageShifts, nicht der eigene Eintrag, Zielperson kein
+    // Admin) genehmigt/lehnt ab mit gepinnter Genehmiger-Identitaet; `date` ist
+    // nicht unabhaengig von `startTime` verschiebbar. Der autoritative
+    // Server-Zeitstempel (approvedAt/correctedAt) und die Material-Feld-basierte
+    // Re-Approval-Pruefung liegen zusaetzlich im Callable upsertWorkEntry (Z6);
+    // der Direct-Write-Client setzt approvedAt auf Geraetezeit, daher hier KEIN
+    // `approvedAt == request.time`-Pin (die Identitaet ist die kritische Groesse).
+
+    // Rolle der Zielperson aus users/{uid}; fail-closed bei fehlendem Profil
+    // (kein Fremd-Approval auf ein unbekanntes/fehlendes Ziel).
+    function weTargetIsAdmin(uid) {
+      return hasUserProfile(uid) && roleIsAdminValue(userProfile(uid).data.role);
+    }
+
+    // date-Tag == startTime-Tag (schliesst das Direct-Write-Loch „date allein
+    // verschieben"). Vergleich in UTC; fuer die de_DE-Zeitzone (UTC+1/+2) faellt
+    // die auf lokale Mittagszeit normalisierte `date` nie ueber eine
+    // UTC-Tagesgrenze, ist also tagesgleich mit `startTime`.
+    function weDateConsistent(data) {
+      return data.date is timestamp
+          && data.startTime is timestamp
+          && data.date.year() == data.startTime.year()
+          && data.date.month() == data.startTime.month()
+          && data.date.day() == data.startTime.day();
+    }
+
+    // Eigen-Schreibpfad (Nicht-Admin): darf nur `draft`/`submitted` setzen, nie
+    // die Freigabe-Felder; `correctedByUid` nur null oder der eigene uid.
+    function weSelfSubmissionOk(data) {
+      return data.status in ['draft', 'submitted']
+          && data.approvedByUid == null
+          && data.approvedAt == null
+          && (data.correctedByUid == null
+              || data.correctedByUid == request.auth.uid);
+    }
+
+    // Freigeber-Ziel: canManageShifts, nicht der eigene Eintrag, Zielperson
+    // existiert und ist kein Admin (Admin-Zeiten sind freigabefrei).
+    function weReviewerTargetOk(data) {
+      return canManageShifts()
+          && data.userId != request.auth.uid
+          && hasUserProfile(data.userId)
+          && !weTargetIsAdmin(data.userId);
+    }
+
+    // Freigeber-Status: approve/reject pinnt den Genehmiger auf den Aufrufer;
+    // eine Zurueckweisung in Bearbeitung (submitted/draft) leert die Freigabe.
+    function weReviewerStatusOk(data) {
+      return (
+          data.status in ['approved', 'rejected']
+          && data.approvedByUid == request.auth.uid
+          && data.approvedAt is timestamp
+        ) || (
+          data.status in ['draft', 'submitted']
+          && data.approvedByUid == null
+          && data.approvedAt == null
+        );
+    }
+
     // Org, deren öffentliche Seiten (/wunsch UND /feedback) anonyme
     // Schreibzugriffe annehmen dürfen. MUSS mit AppConfig.defaultOrganizationId
     // (dart-define APP_DEFAULT_ORG_ID) übereinstimmen — sonst werden anonyme
@@ -607,30 +668,56 @@ service cloud.firestore {
             );
 
         allow create: if sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            // PA-5: kein Anlegen in einem festgeschriebenen Monat.
+            && workEntryMonatFrei(orgId, request.resource.data)
+            // Z5: date nicht unabhaengig von startTime.
+            && weDateConsistent(request.resource.data)
             && (
               isAdmin()
+              // Eigen-Erfassung (Nicht-Admin): nur einreichen, nie genehmigen.
               || (
                 request.resource.data.userId == request.auth.uid
                 && canEditTimeEntries()
+                && weSelfSubmissionOk(request.resource.data)
               )
-            )
-            && request.resource.data.orgId == orgId
-            // PA-5: kein Anlegen in einem festgeschriebenen Monat.
-            && workEntryMonatFrei(orgId, request.resource.data);
+              // Fremd-Erfassung durch einen Freigeber (darf direkt genehmigen).
+              || (
+                weReviewerTargetOk(request.resource.data)
+                && weReviewerStatusOk(request.resource.data)
+              )
+            );
 
         allow update: if sameOrg(orgId)
-            && (
-              isAdmin()
-              || (
-                resource.data.userId == request.auth.uid
-                && canEditTimeEntries()
-              )
-            )
             && request.resource.data.orgId == orgId
             // PA-5: weder aus einem festgeschriebenen Monat heraus (alt) noch
             // in einen hinein (neu) verschieben/aendern.
             && workEntryMonatFrei(orgId, resource.data)
-            && workEntryMonatFrei(orgId, request.resource.data);
+            && workEntryMonatFrei(orgId, request.resource.data)
+            // Z5: date nicht unabhaengig von startTime; Eigentuemer unveraenderlich.
+            && weDateConsistent(request.resource.data)
+            && request.resource.data.userId == resource.data.userId
+            && (
+              isAdmin()
+              // Eigen-Korrektur (Nicht-Admin): faellt zwingend auf draft/submitted
+              // zurueck (Re-Approval, Z4); ein bereits genehmigter Eintrag braucht
+              // beim Selbst-Aendern einen Korrekturgrund.
+              || (
+                resource.data.userId == request.auth.uid
+                && canEditTimeEntries()
+                && weSelfSubmissionOk(request.resource.data)
+                && (
+                  resource.data.status != 'approved'
+                  || (request.resource.data.correctionReason != null
+                      && request.resource.data.correctionReason != '')
+                )
+              )
+              // Freigeber genehmigt/lehnt ab/korrigiert einen fremden Eintrag.
+              || (
+                weReviewerTargetOk(request.resource.data)
+                && weReviewerStatusOk(request.resource.data)
+              )
+            );
 
         allow delete: if sameOrg(orgId)
             && (
@@ -1151,10 +1238,15 @@ service cloud.firestore {
       // M7-Self-Read (L2): eigenes Profil lesbar (Doc trägt userId), damit
       // Stundenkonto/Mein-Monatsabschluss das Soll berechnen; Schreiben (steuert
       // Lohn/Stundenkonto/Urlaubsanspruch) bleibt admin-only.
+      // E5 (Schichtplaner): Planer (canManageShifts, z.B. Teamleads) lesen die
+      // Profile org-weit — die Sollzeit-Ziele speisen die Auto-Planung/Board-
+      // Pillen. Sollzeit ist ein Arbeitszeitmodell, KEINE Lohn-/Art.-9-Daten;
+      // die HR-Stammakte (employeeProfiles) bleibt bewusst admin/self-only.
       match /sollzeitProfiles/{profileId} {
         allow read: if sameOrg(orgId)
             && (
               isAdmin()
+              || canManageShifts()
               || (resource.data.userId == request.auth.uid
                   && canViewTimeTracking())
             );

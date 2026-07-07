@@ -44,6 +44,14 @@ void main() {
     isActive: true,
     settings: UserSettings(name: 'Admin'),
   );
+  const teamlead = AppUserProfile(
+    uid: 'tl-1',
+    orgId: 'org-1',
+    email: 'tl@example.com',
+    role: UserRole.teamlead,
+    isActive: true,
+    settings: UserSettings(name: 'Teamleitung'),
+  );
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -134,6 +142,32 @@ void main() {
       await provider.submitWorkEntry(draftEntry()); // emp-1, nicht admin
 
       expect(capture.saved, isNull);
+    });
+
+    test('approveWorkEntry auf EIGENEN Eintrag ist No-Op (kein Selbst-Genehmigen)',
+        () async {
+      final capture =
+          _CapturingFirestoreService(firestore: FakeFirebaseFirestore());
+      final provider = WorkProvider(firestoreService: capture);
+      await provider.updateSession(admin);
+
+      // Admin genehmigt seinen EIGENEN Eintrag → verboten (E2).
+      await provider.approveWorkEntry(draftEntry(userId: 'adm-1'));
+
+      expect(capture.saved, isNull);
+    });
+
+    test('Teamleiter darf fremden (Nicht-Admin-)Eintrag genehmigen', () async {
+      final capture =
+          _CapturingFirestoreService(firestore: FakeFirebaseFirestore());
+      final provider = WorkProvider(firestoreService: capture);
+      await provider.updateSession(teamlead);
+
+      await provider.approveWorkEntry(draftEntry()); // emp-1
+
+      expect(capture.saved, isNotNull);
+      expect(capture.saved!.status, WorkEntryStatus.approved);
+      expect(capture.saved!.approvedByUid, 'tl-1');
     });
   });
 }

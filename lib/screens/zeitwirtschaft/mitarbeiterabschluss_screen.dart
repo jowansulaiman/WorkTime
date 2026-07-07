@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/app_logger.dart';
+import '../../core/work_entry_rules.dart';
 import '../../core/zeitkonto_snapshot_builder.dart';
 import '../../models/app_user.dart';
 import '../../models/work_entry.dart';
@@ -997,6 +998,26 @@ class _OffeneEintraegeSheetState extends State<_OffeneEintraegeSheet> {
     });
   }
 
+  /// E4/Z7: Sammel-Freigabe aller schicht-konformen Stempel-Einträge. Manuelle,
+  /// nachgearbeitete und ungeplante Einträge bleiben bewusst einzeln.
+  List<WorkEntry> get _eligible =>
+      _entries.where((e) => isEligibleForBulkApproval(e)).toList();
+
+  Future<void> _approveAll() async {
+    final eligible = _eligible;
+    if (eligible.isEmpty) return;
+    final ids = eligible.map((e) => e.id).whereType<String>().toSet();
+    setState(() => _busy.addAll(ids));
+    for (final e in eligible) {
+      await widget.onApprove(e);
+    }
+    if (!mounted) return;
+    setState(() {
+      _entries.removeWhere((x) => ids.contains(x.id));
+      _busy.removeAll(ids);
+    });
+  }
+
   Future<String?> _askReason() async {
     final ctrl = TextEditingController();
     final reason = await showDialog<String>(
@@ -1043,6 +1064,18 @@ class _OffeneEintraegeSheetState extends State<_OffeneEintraegeSheet> {
           : Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (_eligible.length > 1) ...[
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton.tonalIcon(
+                      icon: const Icon(Icons.done_all, size: 18),
+                      label: Text(
+                          'Schicht-konforme freigeben (${_eligible.length})'),
+                      onPressed: _busy.isEmpty ? _approveAll : null,
+                    ),
+                  ),
+                  SizedBox(height: context.spacing.sm),
+                ],
                 for (final e in _entries)
                   ListTile(
                     contentPadding: EdgeInsets.zero,

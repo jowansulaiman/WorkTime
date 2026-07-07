@@ -83,6 +83,7 @@ class _ZeitwirtschaftHubScreenState extends State<ZeitwirtschaftHubScreen> {
 
     _refreshMonthShiftsFuture(provider);
     final isAdmin = currentUser.isAdmin;
+    final canManageShifts = currentUser.canManageShifts;
     final spacing = context.spacing;
 
     return SafeArea(
@@ -137,7 +138,8 @@ class _ZeitwirtschaftHubScreenState extends State<ZeitwirtschaftHubScreen> {
                     icon: Icons.trending_up,
                   ),
                   SizedBox(height: spacing.lg),
-                  _HubTileGrid(isAdmin: isAdmin),
+                  _HubTileGrid(
+                      isAdmin: isAdmin, canManageShifts: canManageShifts),
                 ],
               );
             },
@@ -214,6 +216,7 @@ class _HubDestination {
     required this.route,
     required this.group,
     this.adminOnly = false,
+    this.reviewerOnly = false,
   });
 
   final IconData icon;
@@ -222,6 +225,10 @@ class _HubDestination {
   final String route;
   final _HubGroup group;
   final bool adminOnly;
+
+  /// Sichtbar für Freigeber (Admin **und** Teamleiter, `canManageShifts`) —
+  /// Zeit-Freigabe (Z7/E2). Vs. [adminOnly] = nur Admin.
+  final bool reviewerOnly;
 }
 
 const List<_HubDestination> _hubDestinations = [
@@ -273,7 +280,7 @@ const List<_HubDestination> _hubDestinations = [
     subtitle: 'Monatsabschlüsse aller Mitarbeiter',
     route: AppRoutes.zeitMitarbeiterabschluss,
     group: _HubGroup.teamAbschluss,
-    adminOnly: true,
+    reviewerOnly: true,
   ),
   _HubDestination(
     icon: Icons.payments,
@@ -286,9 +293,10 @@ const List<_HubDestination> _hubDestinations = [
 ];
 
 class _HubTileGrid extends StatelessWidget {
-  const _HubTileGrid({required this.isAdmin});
+  const _HubTileGrid({required this.isAdmin, required this.canManageShifts});
 
   final bool isAdmin;
+  final bool canManageShifts;
 
   @override
   Widget build(BuildContext context) {
@@ -297,7 +305,10 @@ class _HubTileGrid extends StatelessWidget {
     final sections = <Widget>[];
     for (final group in _HubGroup.values) {
       final tiles = _hubDestinations
-          .where((d) => d.group == group && (isAdmin || !d.adminOnly))
+          .where((d) =>
+              d.group == group &&
+              (isAdmin || !d.adminOnly) &&
+              (canManageShifts || !d.reviewerOnly))
           .toList(growable: false);
       if (tiles.isEmpty) continue; // Leere (nicht berechtigte) Gruppe ausblenden.
       if (sections.isNotEmpty) {

@@ -144,6 +144,8 @@ class _MonatsabschlussScreenState extends State<MonatsabschlussScreen> {
       final start = DateTime(_year, monat);
       final end = DateTime(_year, monat + 1);
       final entries = await work.loadEntriesForRange(start: start, end: end);
+      // Z9/E6: Planzeit des Monats für den persistierten Snapshot mitziehen.
+      final monthShifts = await work.loadShiftsForRange(start: start, end: end);
       final profiles = personal.sollzeitProfilesForUser(user.uid);
       final absences = schedule.absenceRequests
           .where((a) => a.userId == user.uid)
@@ -171,6 +173,12 @@ class _MonatsabschlussScreenState extends State<MonatsabschlussScreen> {
         approvedAbsences: absences,
         previous: previous,
         ausgezahltMinutes: persisted?.ausgezahltMinutes ?? 0,
+        plannedMinutes: plannedMinutesForMonth(
+          shifts: monthShifts,
+          userId: user.uid,
+          jahr: _year,
+          monat: monat,
+        ),
       ).copyWith(createdAt: persisted?.createdAt);
 
       final draft = personal.buildDraftPayrollForMonth(

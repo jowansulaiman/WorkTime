@@ -57,8 +57,12 @@ abstract final class RoutePermissions {
       case AppRoutes.zeitAbwesenheitenKalender:
       case AppRoutes.zeitMonatsabschluss:
         return p?.canViewTimeTracking ?? false;
-      // Admin-Bereiche der Zeitwirtschaft.
+      // Zeit-Freigabe (Z7/E2): Admin UND Teamleiter dürfen fremde Zeiten
+      // genehmigen (canManageShifts); der Server (Rules/Callable) verhindert
+      // Selbst-Genehmigung + Admin-Ziele.
       case AppRoutes.zeitMitarbeiterabschluss:
+        return p?.canManageShifts ?? false;
+      // Lohnlauf bleibt admin-only (abrechnungssensibel).
       case AppRoutes.zeitLohnlauf:
         return p?.isAdmin ?? false;
       case '/kontakte':

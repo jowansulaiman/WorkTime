@@ -80,6 +80,16 @@ class _StundenkontoScreenState extends State<StundenkontoScreen> {
         ? zeit.snapshotFor(prevYear, prevMonth)
         : zeit.carryover;
 
+    // Z9/E6: Planzeit des Monats aus den zugewiesenen Schichten (rein anzeigend,
+    // neben Soll/Ist). Quelle = die geladenen Schichten des ScheduleProviders.
+    final plannedMinutes = user == null
+        ? 0
+        : plannedMinutesForMonth(
+            shifts: schedule.shifts,
+            userId: user.uid,
+            jahr: month.year,
+            monat: month.month,
+          );
     final live = user == null
         ? null
         : buildZeitkontoSnapshot(
@@ -91,6 +101,7 @@ class _StundenkontoScreenState extends State<StundenkontoScreen> {
             entries: work.entries,
             approvedAbsences: absences,
             previous: persistedPrev,
+            plannedMinutes: plannedMinutes,
           );
     final hasSoll = profiles.isNotEmpty;
 
@@ -219,6 +230,7 @@ class _SummaryCard extends StatelessWidget {
               _Metric(
                   label: 'Soll',
                   value: hasSoll ? _h(snapshot.sollHours) : '—'),
+              _Metric(label: 'Geplant', value: _h(snapshot.geplantHours)),
               _Metric(label: 'Ist', value: _h(snapshot.istHours)),
               _Metric(
                 label: 'Überstunden',
@@ -394,6 +406,7 @@ class _YearTable extends StatelessWidget {
           columns: const [
             DataColumn(label: Text('Monat')),
             DataColumn(label: Text('Soll'), numeric: true),
+            DataColumn(label: Text('Geplant'), numeric: true),
             DataColumn(label: Text('Ist'), numeric: true),
             DataColumn(label: Text('Saldo'), numeric: true),
             DataColumn(label: Text('Status')),
@@ -417,6 +430,7 @@ class _YearTable extends StatelessWidget {
         const DataCell(Text('—')),
         const DataCell(Text('—')),
         const DataCell(Text('—')),
+        const DataCell(Text('—')),
         DataCell(Text('offen',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant))),
@@ -425,6 +439,7 @@ class _YearTable extends StatelessWidget {
     return DataRow(cells: [
       DataCell(Text(monthAbbr[monat - 1])),
       DataCell(Text(hasSoll ? _h(snap.sollHours) : '—')),
+      DataCell(Text(_h(snap.geplantHours))),
       DataCell(Text(_h(snap.istHours))),
       DataCell(Text(hasSoll ? _signed(snap.saldoHours) : '—')),
       DataCell(
