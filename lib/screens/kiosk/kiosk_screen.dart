@@ -17,11 +17,13 @@ import '../../models/third_party_cash.dart';
 import '../../models/store_task.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/product_batch.dart';
+import '../../providers/connectivity_status_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/store_task_provider.dart';
 import '../../providers/team_provider.dart';
 import '../../services/firestore_service.dart';
 import '../../theme/theme_extensions.dart';
+import '../../ui/app_offline_banner.dart';
 import '../../widgets/cash_count_sheet.dart';
 import 'kiosk_clock_service.dart';
 import 'kiosk_controller.dart';
@@ -33,9 +35,11 @@ import 'store_task_editor_sheet.dart';
 /// Laden-To-Dos, Kühlschrank-Nachfüllung, Hinweise) und lässt Mitarbeiter sich
 /// per Name + PIN anmelden, um zu stempeln, nachzufüllen und Aufgaben abzuhaken.
 ///
-/// Increment 0: läuft komplett offline (`APP_DISABLE_AUTH`), PIN über den lokalen
-/// Dev-Pfad ([KioskPinStore]). Server-geprüfte PIN + echte Per-Mitarbeiter-
-/// Stempelung folgen in Increment 2.
+/// Offline/Demo (`APP_DISABLE_AUTH`) läuft komplett lokal, PIN über den Dev-Pfad
+/// ([KioskPinStore]). Im Echtbetrieb sind server-geprüfte PIN
+/// ([ServerKioskPinService]), Per-Mitarbeiter-Stempelung ([ServerKioskClockService]
+/// → `kioskClockPunch`) und die blinde Kassenzählung (`kioskSaveCashCount`) gebaut
+/// und verdrahtet; der Dev-Pfad ist nur noch der Offline-/Demo-Fallback.
 class KioskScreen extends StatefulWidget {
   const KioskScreen({super.key});
 
@@ -176,6 +180,17 @@ class _KioskScreenState extends State<KioskScreen> {
                     ? () => _openSitePicker(context, sites)
                     : null,
                 onLogin: () => _openLoginSheet(context, site),
+              ),
+              // Offline-Banner: der Kiosk ist für Stempeln/Kassenzählung
+              // cloud-only — bei fehlender Verbindung sichtbar warnen statt
+              // Aktionen still ins Leere laufen zu lassen. Im Dev-/Offline-Modus
+              // (optimistisch online) bleibt es eingeklappt.
+              AppOfflineBanner(
+                offline: context.select<ConnectivityStatusProvider, bool>(
+                  (c) => c.isOffline,
+                ),
+                message: 'Offline – Stempeln und Kassenzählung sind gerade '
+                    'nicht möglich. Bitte Verbindung prüfen.',
               ),
               Expanded(
                 child: _KioskBoard(

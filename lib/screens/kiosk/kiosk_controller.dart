@@ -10,9 +10,10 @@ import '../../models/app_user.dart';
 /// Hält den aktuell am Kiosk angemeldeten Mitarbeiter und einen
 /// Inaktivitäts-Timer (Auto-Logout nach [inactivityTimeout], Default 90 s — E8).
 /// **Wichtig:** Es findet KEIN Firebase-Identitätswechsel statt — der Mitarbeiter
-/// ist hier ein reiner UI-Session-Zustand. In Increment 2 wird die Anmeldung
-/// server-geprüft (`kioskBeginSession`) und sensible Writes (Stempeln) laufen
-/// über eine Callable; in Increment 0 ist es ein lokaler Dev-Pfad.
+/// ist hier ein reiner UI-Session-Zustand. Im Echtbetrieb ist die Anmeldung
+/// server-geprüft (`kioskBeginSession`) und sensible Writes (Stempeln,
+/// Kassenzählung) laufen über Callables; im Offline-/Demo-Modus ist es ein
+/// lokaler Dev-Pfad.
 class KioskController extends ChangeNotifier {
   KioskController({this.inactivityTimeout = const Duration(seconds: 90)});
 
@@ -86,13 +87,13 @@ class KioskController extends ChangeNotifier {
   }
 }
 
-/// **Dev-PIN-Speicher (Increment 0, NUR Offline-/Demo-Pfad).**
+/// **Dev-PIN-Speicher (NUR Offline-/Demo-Pfad).**
 ///
-/// Lokaler 4-stelliger PIN je Mitarbeiter in [SharedPreferences]. Ersetzt in
-/// Increment 2 vollständig die server-geprüfte PIN (`userSecrets/{uid}` +
-/// `kioskBeginSession`-Callable, scrypt-Hash, Rate-Limit). Hier bewusst KEIN
-/// Hashing/Rate-Limit — ausschließlich, um die Anmelde-UX offline durchspielen
-/// zu können. Ohne gesetzte PIN gilt die Demo-PIN [demoPin].
+/// Lokaler 4-stelliger PIN je Mitarbeiter in [SharedPreferences]. Im Echtbetrieb
+/// gilt stattdessen die server-geprüfte PIN (`userSecrets/{uid}` +
+/// `kioskBeginSession`-Callable, scrypt-Hash, Rate-Limit — gebaut). Hier bewusst
+/// KEIN Hashing/Rate-Limit — ausschließlich, um die Anmelde-UX offline
+/// durchspielen zu können. Ohne gesetzte PIN gilt die Demo-PIN [demoPin].
 class KioskPinStore {
   KioskPinStore._();
 

@@ -1807,6 +1807,12 @@ service cloud.firestore {
             // OPTIONAL (Filialen ohne Fremdgeld schreiben das Feld nicht) —
             // nur Typ prüfen, kein Pflicht-Check. Berührt den Blind-Zwang
             // nicht (keine top-level expected/difference-Felder).
+            // BEWUSSTE GRENZE: Rules können Listen-Elemente nicht iterieren →
+            // KEINE Per-Element-Validierung (amountCents>=0, blind expectedCents
+            // ==null). Das erledigt allein der gehärtete Callable-Pfad
+            // (kioskSaveCashCount → parseThirdPartyAmounts, blind). Ein manipulierter
+            // Direkt-Write verzerrt höchstens die getrennte Fremdgeld-Auswertung der
+            // Leitung (computeThirdPartySummary) — NIE Umsatz/USt/Kassendifferenz.
             && (!('thirdParty' in request.resource.data)
                  || request.resource.data.thirdParty is list)
             // Akteur-Pin gegen Audit-Spoofing (Muster stockMovements).
