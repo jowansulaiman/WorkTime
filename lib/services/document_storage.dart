@@ -22,6 +22,10 @@ abstract class DocumentStorage {
 
   /// Entfernt die Datei unter [path] (best-effort; wirft bei echten Fehlern).
   Future<void> delete(String path);
+
+  /// Öffentlich abrufbare Download-URL der Datei unter [path] (z. B. für
+  /// `NetworkImage` bei Kontakt-Avataren).
+  Future<String> getDownloadUrl(String path);
 }
 
 /// Firebase-Storage-gestützte Umsetzung (Produktivpfad). Kapselt die einzige
@@ -62,4 +66,8 @@ class FirebaseDocumentStorage implements DocumentStorage {
 
   @override
   Future<void> delete(String path) => _storage.ref(path).delete();
+
+  @override
+  Future<String> getDownloadUrl(String path) =>
+      _storage.ref(path).getDownloadURL();
 }

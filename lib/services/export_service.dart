@@ -13,6 +13,7 @@ import '../core/shift_plan_grid.dart';
 import '../core/third_party_report.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
+import '../models/contact_details.dart';
 import '../models/finance_models.dart';
 import '../models/customer_order.dart';
 import '../core/urlaub_calculator.dart';
@@ -528,7 +529,7 @@ class ExportService {
     }
     buffer.writeln();
     buffer.writeln(
-      'Name;Kategorie;Ansprechpartner;Telefon;Mobil;E-Mail;Website;Straße;PLZ;Ort;USt-IdNr.;Kunden-/Lief.-Nr.;Standort;Schlagworte;Wichtig;Aktiv;Notiz',
+      'Name;Kategorie;Ansprechpartner;Telefon;Mobil;E-Mail;Website;Straße;PLZ;Ort;USt-IdNr.;Kunden-/Lief.-Nr.;Standort;Schlagworte;Wichtig;Aktiv;Notiz;Art;Vorname;Nachname;Firmenname;Debitor-Nr.;Kreditor-Nr.;Status',
     );
 
     for (final contact in sorted) {
@@ -550,6 +551,13 @@ class ExportService {
         contact.isFavorite ? 'Ja' : 'Nein',
         contact.isActive ? 'Ja' : 'Nein',
         contact.notes ?? '',
+        contact.kind.label,
+        contact.firstName ?? '',
+        contact.lastName ?? '',
+        contact.companyName ?? '',
+        contact.debitorNumber ?? '',
+        contact.creditorNumber ?? '',
+        contact.status.label,
       ].map(_escapeCsv).join(';'));
     }
 

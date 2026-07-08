@@ -8,6 +8,7 @@ import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/contact.dart';
+import '../models/contact_organization.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
@@ -113,6 +114,8 @@ class DatabaseService {
   static const _fridgeRefillListsKey = 'fridge_refill_lists';
   // Kontakte (Kunden/Lieferanten/Partner): org-skopiert, ohne Legacy-Migration.
   static const _contactsKey = 'contacts';
+  // Kontakt-Organisationen (eigenständiges Adressbuch, M9): org-skopiert.
+  static const _contactOrganizationsKey = 'contact_organizations';
   // Laden-To-Dos (Arbeitsmodus/Kiosk): org-skopiert, je Laden (Broadcast).
   static const _storeTasksKey = 'store_tasks';
   // Personal-Bereich (nur Admin): org-skopiert, ohne Legacy-Migration.
@@ -189,6 +192,8 @@ class DatabaseService {
     _fridgeRefillListsKey,
     // Kontakte: org-skopiert, neue Collection ohne Altbestand.
     _contactsKey,
+    // Kontakt-Organisationen: org-skopiert, neue Collection ohne Altbestand.
+    _contactOrganizationsKey,
     // Laden-To-Dos (Arbeitsmodus/Kiosk): org-skopiert (je Laden / org-weit).
     _storeTasksKey,
     // Personal-Bereich: org-skopiert, neue Collections ohne Altbestand.
@@ -1480,6 +1485,29 @@ class DatabaseService {
       key: _contactsKey,
       scope: scope,
       items: contacts,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<ContactOrganization>> loadLocalContactOrganizations({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _contactOrganizationsKey,
+      scope: scope,
+      fromMap: ContactOrganization.fromMap,
+      compare: (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+  }
+
+  static Future<void> saveLocalContactOrganizations(
+    List<ContactOrganization> organizations, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _contactOrganizationsKey,
+      scope: scope,
+      items: organizations,
       toMap: (item) => item.toMap(),
     );
   }

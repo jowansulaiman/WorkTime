@@ -9,6 +9,7 @@ import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/contact_activity.dart';
+import '../models/contact_organization.dart';
 import '../repositories/contact_repository.dart';
 import '../services/database_service.dart';
 import '../services/firestore_service.dart';
@@ -46,9 +47,11 @@ class ContactProvider extends ChangeNotifier {
   bool _hybridStorageEnabled = false;
 
   StreamSubscription<List<Contact>>? _contactsSubscription;
+  StreamSubscription<List<ContactOrganization>>? _organizationsSubscription;
 
   AppUserProfile? _currentUser;
   List<Contact> _items = [];
+  List<ContactOrganization> _organizations = [];
   bool _loading = false;
   String? _errorMessage;
   bool _disposed = false;
@@ -56,6 +59,7 @@ class ContactProvider extends ChangeNotifier {
   int _localSeq = 0;
 
   List<Contact> get contacts => _items;
+  List<ContactOrganization> get organizations => _organizations;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
@@ -201,6 +205,7 @@ class ContactProvider extends ChangeNotifier {
 
     if (user == null) {
       _items = [];
+      _organizations = [];
       _loading = false;
       _seededLocalDemo = false;
       _safeNotify();
@@ -221,10 +226,16 @@ class ContactProvider extends ChangeNotifier {
 
   Future<void> _loadLocalData() async {
     _items = await DatabaseService.loadLocalContacts(scope: _localScope);
+    _organizations =
+        await DatabaseService.loadLocalContactOrganizations(scope: _localScope);
   }
 
   Future<void> _persistContacts() =>
       DatabaseService.saveLocalContacts(_items, scope: _localScope);
+
+  Future<void> _persistOrganizations() =>
+      DatabaseService.saveLocalContactOrganizations(_organizations,
+          scope: _localScope);
 
   // --- Speichermodus-Migration (H-H1) -------------------------------------
 
@@ -276,11 +287,19 @@ class ContactProvider extends ChangeNotifier {
       _loading = false;
       _safeNotify();
     }, onError: _setError);
+
+    _organizationsSubscription =
+        _contacts.watchOrganizations(orgId).listen((items) {
+      _organizations = items;
+      _safeNotify();
+    }, onError: _setError);
   }
 
   Future<void> _cancelSubscriptions() async {
     await _contactsSubscription?.cancel();
     _contactsSubscription = null;
+    await _organizationsSubscription?.cancel();
+    _organizationsSubscription = null;
   }
 
   String _nextLocalId(String prefix) {
@@ -480,6 +499,85 @@ class ContactProvider extends ChangeNotifier {
     } else {
       _items = [..._items, item];
     }
+  }
+
+  // --- Kontakt-Organisationen (M9) ----------------------------------------
+
+  Future<void> saveOrganization(ContactOrganization organization) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final isNew = organization.id == null || organization.id!.isEmpty;
+    final prepared = organization.copyWith(
+      orgId: orgId,
+      createdByUid: organization.createdByUid ?? _currentUser?.uid,
+    );
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveOrganization',
+          () => _contacts.saveOrganization(prepared),
+        )) {
+      _auditOrganization(isNew, prepared.id, prepared.name);
+      return;
+    }
+    final stored = prepared.id == null
+        ? prepared.copyWith(id: _nextLocalId('org'))
+        : prepared;
+    final index = _organizations.indexWhere((o) => o.id == stored.id);
+    if (index >= 0) {
+      _organizations[index] = stored;
+    } else {
+      _organizations = [..._organizations, stored];
+    }
+    _organizations
+        .sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    await _persistOrganizations();
+    _auditOrganization(isNew, stored.id, stored.name);
+    _safeNotify();
+  }
+
+  Future<void> deleteOrganization(String organizationId) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      return;
+    }
+    final match =
+        _organizations.where((o) => o.id == organizationId).toList();
+    final name = match.isEmpty ? organizationId : match.first.name;
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteOrganization',
+          () => _contacts.deleteOrganization(
+              orgId: orgId, organizationId: organizationId),
+        )) {
+      _auditOrganizationDeleted(organizationId, name);
+      return;
+    }
+    _organizations = _organizations
+        .where((o) => o.id != organizationId)
+        .toList(growable: false);
+    await _persistOrganizations();
+    _auditOrganizationDeleted(organizationId, name);
+    _safeNotify();
+  }
+
+  void _auditOrganization(bool isNew, String? id, String name) {
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Kontakt-Organisation',
+      entityId: id,
+      summary: 'Organisation „$name" ${isNew ? 'angelegt' : 'aktualisiert'}',
+    );
+  }
+
+  void _auditOrganizationDeleted(String id, String name) {
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Kontakt-Organisation',
+      entityId: id,
+      summary: 'Organisation „$name" gelöscht',
+    );
   }
 
   @override

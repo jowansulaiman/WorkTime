@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/contact.dart';
 import 'package:worktime_app/models/contact_activity.dart';
+import 'package:worktime_app/models/contact_details.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
 import 'package:worktime_app/providers/contact_provider.dart';
@@ -46,9 +47,19 @@ const _inactive = AppUserProfile(
   settings: UserSettings(name: 'Gesperrt'),
 );
 
+const _admin = AppUserProfile(
+  uid: 'admin-1',
+  orgId: 'org-1',
+  email: 'chef@laden.test',
+  role: UserRole.admin,
+  isActive: true,
+  settings: UserSettings(name: 'Chef'),
+);
+
 Future<String> _pump(
   WidgetTester tester, {
   AppUserProfile profile = _employee,
+  Contact? contact,
 }) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = const Size(900, 1600);
@@ -71,26 +82,27 @@ Future<String> _pump(
   await team.updateSession(profile);
   await contacts.updateSession(profile);
   await contacts.saveContact(
-    Contact(
-      orgId: 'org-1',
-      name: 'Nord-Tabak GmbH',
-      type: ContactType.wholesaler,
-      contactPerson: 'Frau Meier',
-      email: 'info@nord-tabak.test',
-      phone: '0431 12345',
-      street: 'Holtenauer Str. 1',
-      postalCode: '24105',
-      city: 'Kiel',
-      notes: 'Zuverlässiger Großhändler.',
-      tags: const ['Priorität A'],
-      activities: [
-        ContactActivity(
-          type: ContactActivityType.call,
-          occurredAt: DateTime(2026, 7, 1),
-          note: 'Nachbestellung besprochen',
+    contact ??
+        Contact(
+          orgId: 'org-1',
+          name: 'Nord-Tabak GmbH',
+          type: ContactType.wholesaler,
+          contactPerson: 'Frau Meier',
+          email: 'info@nord-tabak.test',
+          phone: '0431 12345',
+          street: 'Holtenauer Str. 1',
+          postalCode: '24105',
+          city: 'Kiel',
+          notes: 'Zuverlässiger Großhändler.',
+          tags: const ['Priorität A'],
+          activities: [
+            ContactActivity(
+              type: ContactActivityType.call,
+              occurredAt: DateTime(2026, 7, 1),
+              note: 'Nachbestellung besprochen',
+            ),
+          ],
         ),
-      ],
-    ),
   );
 
   addTearDown(() {
@@ -99,9 +111,7 @@ Future<String> _pump(
     auth.dispose();
   });
 
-  final id = contacts.contacts
-      .firstWhere((c) => c.name == 'Nord-Tabak GmbH')
-      .id!;
+  final id = contacts.contacts.first.id!;
 
   await tester.pumpWidget(
     MultiProvider(
@@ -172,5 +182,105 @@ void main() {
     expect(find.text('Keine Berechtigung für Kontakte.'), findsOneWidget);
     // Keine TabBar für gesperrte Nutzer.
     expect(find.text('Übersicht'), findsNothing);
+  });
+
+  testWidgets('M4: VCard-Chips + Person-Stammdaten (voll ausgebautes Modell)',
+      (tester) async {
+    await _pump(
+      tester,
+      contact: const Contact(
+        orgId: 'org-1',
+        name: 'Dr. Anna Meier',
+        kind: ContactKind.person,
+        status: ContactStatus.gesperrt,
+        firstName: 'Anna',
+        lastName: 'Meier',
+        title: 'Dr.',
+        gender: Gender.weiblich,
+        position: 'Inhaberin',
+        debitorNumber: 'D-100',
+      ),
+    );
+
+    // displayName (Person → Vor-/Nachname) im Kopf (VCard + Breadcrumb).
+    expect(find.text('Anna Meier'), findsWidgets);
+    // Person-Chip + Status-Chip (gesperrt).
+    expect(find.text('Person'), findsOneWidget);
+    expect(find.text('Gesperrt'), findsOneWidget);
+    // Übersicht-Stammdaten zeigen Person-Felder + Geschäftsdaten.
+    expect(find.text('Vorname'), findsOneWidget);
+    expect(find.text('Anna'), findsOneWidget);
+    expect(find.text('Debitoren-Nr.'), findsOneWidget);
+  });
+
+  testWidgets('M4: Bank-Tab + strukturierte Adresse rendern', (tester) async {
+    await _pump(
+      tester,
+      contact: const Contact(
+        orgId: 'org-1',
+        name: 'Nord-Tabak GmbH',
+        addresses: [
+          ContactAddress(
+            id: 'a-1',
+            type: AddressType.lieferung,
+            street: 'Lagerweg',
+            houseNumber: '5',
+            zip: '24106',
+            city: 'Kiel',
+          ),
+        ],
+        bankAccounts: [
+          BankAccount(
+            id: 'b-1',
+            iban: 'DE89370400440532013000',
+            bankName: 'Commerzbank',
+          ),
+        ],
+      ),
+    );
+
+    // Bank-Tab öffnen und IBAN prüfen (Tab kann in der scrollbaren TabBar
+    // außerhalb des sichtbaren Bereichs liegen → erst sichtbar machen).
+    await tester.ensureVisible(find.text('Bank'));
+    await tester.tap(find.text('Bank'));
+    await tester.pumpAndSettle();
+    expect(find.text('DE89370400440532013000'), findsOneWidget);
+    expect(find.text('Commerzbank'), findsOneWidget);
+
+    // Adressen-Tab: strukturierte Lieferadresse.
+    await tester.ensureVisible(find.text('Adressen'));
+    await tester.tap(find.text('Adressen'));
+    await tester.pumpAndSettle();
+    expect(find.text('Lieferadresse'), findsOneWidget);
+  });
+
+  testWidgets('M5b: Manager sieht Bearbeiten + kann eine Adresse hinzufügen',
+      (tester) async {
+    await _pump(
+      tester,
+      profile: _admin,
+      contact: const Contact(orgId: 'org-1', name: 'Nord-Tabak GmbH'),
+    );
+
+    // „Bearbeiten"-Aktion in der AppBar (nur Manager).
+    expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+
+    // In den Adressen-Tab und eine Rechnungsadresse hinzufügen.
+    await tester.ensureVisible(find.text('Adressen'));
+    await tester.tap(find.text('Adressen'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Adresse'));
+    await tester.pumpAndSettle();
+
+    // Dialog: Straße eintragen (Typ-Default = Rechnungsadresse) und speichern.
+    await tester.enterText(
+        find.widgetWithText(TextFormField, 'Straße'), 'Lagerweg 5');
+    await tester.tap(find.widgetWithText(FilledButton, 'Speichern'));
+    await tester.pumpAndSettle();
+
+    // Persistiert → neue Rechnungsadresse-Sektion im Tab.
+    expect(find.text('Rechnungsadresse'), findsOneWidget);
+    expect(find.text('Lagerweg 5'), findsOneWidget);
   });
 }

@@ -111,6 +111,7 @@ class Contact {
     this.channels = const [],
     this.contactPersons = const [],
     this.bankAccounts = const [],
+    this.consents = const [],
     this.kind = ContactKind.company,
     this.status = ContactStatus.aktiv,
     this.blacklisted = false,
@@ -130,6 +131,7 @@ class Contact {
     this.creditorNumber,
     this.avatarUrl,
     this.customerSince,
+    this.parentContactId,
     this.isFavorite = false,
     this.isActive = true,
     this.createdByUid,
@@ -185,6 +187,9 @@ class Contact {
   /// Bankverbindungen des Kontakts.
   final List<BankAccount> bankAccounts;
 
+  /// DSGVO-Einwilligungen (eingebettet). Aktiv = `withdrawnAt == null`.
+  final List<ContactConsent> consents;
+
   // ── Person/Firma-Split + Klassifizierung (AllTec-1:1, M3) ──────────────────
 
   /// Natürliche Person oder Firma. Steuert Stammdaten-Felder + Anzeige.
@@ -227,6 +232,10 @@ class Contact {
 
   /// Kunde seit.
   final DateTime? customerSince;
+
+  /// Zugehörige Firma bei einem Personen-Kontakt (Referenz auf einen anderen
+  /// Contact vom Typ Firma). AllTec-Beziehung Person → Firma.
+  final String? parentContactId;
 
   /// Anzeigename: [alias] → Firmenname → Personenname → [name]-Fallback.
   String get displayName {
@@ -320,6 +329,7 @@ class Contact {
       contactPersons:
           _contactPersonsFromList(map['contactPersons'], firestore: true),
       bankAccounts: _bankAccountsFromList(map['bankAccounts'], firestore: true),
+      consents: _consentsFromList(map['consents'], firestore: true),
       kind: ContactKindX.fromValue(map['kind']?.toString()),
       status: ContactStatusX.fromValue(map['status']?.toString()),
       blacklisted: parse.toBool(map['blacklisted']) ?? false,
@@ -339,6 +349,7 @@ class Contact {
       creditorNumber: map['creditorNumber'] as String?,
       avatarUrl: map['avatarUrl'] as String?,
       customerSince: FirestoreDateParser.readDate(map['customerSince']),
+      parentContactId: map['parentContactId'] as String?,
       isFavorite: parse.toBool(map['isFavorite']) ?? false,
       isActive: parse.toBool(map['isActive']) ?? true,
       createdByUid: map['createdByUid'] as String?,
@@ -374,6 +385,7 @@ class Contact {
           _contactPersonsFromList(map['contact_persons'], firestore: false),
       bankAccounts:
           _bankAccountsFromList(map['bank_accounts'], firestore: false),
+      consents: _consentsFromList(map['consents'], firestore: false),
       kind: ContactKindX.fromValue(map['kind']?.toString()),
       status: ContactStatusX.fromValue(map['status']?.toString()),
       blacklisted: parse.toBool(map['blacklisted']) ?? false,
@@ -394,6 +406,7 @@ class Contact {
       creditorNumber: map['creditor_number'] as String?,
       avatarUrl: map['avatar_url'] as String?,
       customerSince: FirestoreDateParser.readLocalDate(map['customer_since']),
+      parentContactId: map['parent_contact_id'] as String?,
       isFavorite: parse.toBool(map['is_favorite']) ?? false,
       isActive: parse.toBool(map['is_active']) ?? true,
       createdByUid: map['created_by_uid'] as String?,
@@ -427,6 +440,7 @@ class Contact {
       'channels': channels.map((c) => c.toFirestoreMap()).toList(),
       'contactPersons': contactPersons.map((p) => p.toFirestoreMap()).toList(),
       'bankAccounts': bankAccounts.map((b) => b.toFirestoreMap()).toList(),
+      'consents': consents.map((c) => c.toFirestoreMap()).toList(),
       'kind': kind.value,
       'status': status.value,
       'blacklisted': blacklisted,
@@ -446,6 +460,7 @@ class Contact {
       'creditorNumber': _trimmedOrNull(creditorNumber),
       'avatarUrl': _trimmedOrNull(avatarUrl),
       'customerSince': customerSince,
+      'parentContactId': _trimmedOrNull(parentContactId),
       'isFavorite': isFavorite,
       'isActive': isActive,
       'createdByUid': createdByUid,
@@ -478,6 +493,7 @@ class Contact {
       'channels': channels.map((c) => c.toMap()).toList(),
       'contact_persons': contactPersons.map((p) => p.toMap()).toList(),
       'bank_accounts': bankAccounts.map((b) => b.toMap()).toList(),
+      'consents': consents.map((c) => c.toMap()).toList(),
       'kind': kind.value,
       'status': status.value,
       'blacklisted': blacklisted,
@@ -497,6 +513,7 @@ class Contact {
       'creditor_number': creditorNumber,
       'avatar_url': avatarUrl,
       'customer_since': customerSince?.toIso8601String(),
+      'parent_contact_id': parentContactId,
       'is_favorite': isFavorite,
       'is_active': isActive,
       'created_by_uid': createdByUid,
@@ -529,6 +546,7 @@ class Contact {
     List<CommunicationChannel>? channels,
     List<ContactPerson>? contactPersons,
     List<BankAccount>? bankAccounts,
+    List<ContactConsent>? consents,
     ContactKind? kind,
     ContactStatus? status,
     bool? blacklisted,
@@ -548,9 +566,11 @@ class Contact {
     String? creditorNumber,
     String? avatarUrl,
     DateTime? customerSince,
+    String? parentContactId,
     bool? isFavorite,
     bool? isActive,
     bool clearContactPerson = false,
+    bool clearParentContactId = false,
     bool clearAlias = false,
     bool clearFirstName = false,
     bool clearLastName = false,
@@ -607,6 +627,7 @@ class Contact {
       channels: channels ?? this.channels,
       contactPersons: contactPersons ?? this.contactPersons,
       bankAccounts: bankAccounts ?? this.bankAccounts,
+      consents: consents ?? this.consents,
       kind: kind ?? this.kind,
       status: status ?? this.status,
       blacklisted: blacklisted ?? this.blacklisted,
@@ -633,6 +654,9 @@ class Contact {
       avatarUrl: clearAvatarUrl ? null : (avatarUrl ?? this.avatarUrl),
       customerSince:
           clearCustomerSince ? null : (customerSince ?? this.customerSince),
+      parentContactId: clearParentContactId
+          ? null
+          : (parentContactId ?? this.parentContactId),
       isFavorite: isFavorite ?? this.isFavorite,
       isActive: isActive ?? this.isActive,
       createdByUid: createdByUid ?? this.createdByUid,
@@ -708,6 +732,19 @@ class Contact {
       return firestore
           ? BankAccount.fromFirestoreMap(map)
           : BankAccount.fromMap(map);
+    }).toList(growable: false);
+  }
+
+  static List<ContactConsent> _consentsFromList(
+    dynamic value, {
+    required bool firestore,
+  }) {
+    if (value is! List) return const [];
+    return value.whereType<Map>().map((item) {
+      final map = item.cast<String, dynamic>();
+      return firestore
+          ? ContactConsent.fromFirestoreMap(map)
+          : ContactConsent.fromMap(map);
     }).toList(growable: false);
   }
 

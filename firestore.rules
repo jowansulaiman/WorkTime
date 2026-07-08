@@ -1686,6 +1686,17 @@ service cloud.firestore {
         allow delete: if sameOrg(orgId) && canManageContacts();
       }
 
+      // Kontakt-Organisationen (eigenstaendiges Adressbuch, M9) – gleiche
+      // Rechte wie Kontakte: lesen alle aktiven Mitglieder, verwalten Admins +
+      // Schichtleiter.
+      match /contactOrganizations/{organizationId} {
+        allow read: if sameOrg(orgId) && !isKiosk();
+        allow create, update: if sameOrg(orgId)
+            && canManageContacts()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageContacts();
+      }
+
       // Bestandsbewegungen sind ein Audit-Log: anlegen ja, aendern/loeschen nein.
       // Feld-Allowlist + Typ-/Wertpruefung gegen Mass Assignment (BOPLA) und
       // Manipulation des Audit-Logs (counters-bopla-no-monotonic-check).

@@ -59,6 +59,10 @@ class _FakeDocumentStorage implements DocumentStorage {
     deleted.add(path);
     files.remove(path);
   }
+
+  @override
+  Future<String> getDownloadUrl(String path) async =>
+      'https://fake.storage/$path';
 }
 
 /// FirestoreService, dessen Metadaten-Write fehlschlägt (für Rollback-Test).

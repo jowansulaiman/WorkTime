@@ -1,4 +1,5 @@
 import '../models/contact.dart';
+import '../models/contact_details.dart';
 
 /// Ein möglicher Dubletten-Kandidat mit Ähnlichkeits-Score (0..1).
 class DuplicateCandidate {
@@ -99,5 +100,88 @@ class ContactDedup {
     final raw = c.primaryPhone;
     if (raw == null || raw.trim().isEmpty) return null;
     return raw.replaceAll(RegExp(r'[\s\-/()]+'), '');
+  }
+
+  /// Führt zwei Kontakte zusammen (Portierung AllTecs `ContactMergeService`):
+  /// [master] behält Id und seine gesetzten Werte; [victim] liefert nur die im
+  /// Master fehlenden Felder. Eingebettete Listen werden dedupliziert vereinigt,
+  /// Notizen konkateniert. `kind`/`type`/`status`/Flags bleiben vom Master.
+  static Contact mergeContacts({
+    required Contact master,
+    required Contact victim,
+  }) {
+    String? pick(String? a, String? b) {
+      final at = a?.trim();
+      if (at != null && at.isNotEmpty) return a;
+      return b;
+    }
+
+    return master.copyWith(
+      alias: pick(master.alias, victim.alias),
+      firstName: pick(master.firstName, victim.firstName),
+      lastName: pick(master.lastName, victim.lastName),
+      title: pick(master.title, victim.title),
+      position: pick(master.position, victim.position),
+      department: pick(master.department, victim.department),
+      companyName: pick(master.companyName, victim.companyName),
+      legalName: pick(master.legalName, victim.legalName),
+      registrationNumber:
+          pick(master.registrationNumber, victim.registrationNumber),
+      contactPerson: pick(master.contactPerson, victim.contactPerson),
+      email: pick(master.email, victim.email),
+      phone: pick(master.phone, victim.phone),
+      mobile: pick(master.mobile, victim.mobile),
+      website: pick(master.website, victim.website),
+      street: pick(master.street, victim.street),
+      postalCode: pick(master.postalCode, victim.postalCode),
+      city: pick(master.city, victim.city),
+      taxId: pick(master.taxId, victim.taxId),
+      customerNumber: pick(master.customerNumber, victim.customerNumber),
+      debitorNumber: pick(master.debitorNumber, victim.debitorNumber),
+      creditorNumber: pick(master.creditorNumber, victim.creditorNumber),
+      avatarUrl: pick(master.avatarUrl, victim.avatarUrl),
+      parentContactId: pick(master.parentContactId, victim.parentContactId),
+      siteId: master.siteId ?? victim.siteId,
+      siteName: master.siteName ?? victim.siteName,
+      birthday: master.birthday ?? victim.birthday,
+      companyAnniversary:
+          master.companyAnniversary ?? victim.companyAnniversary,
+      customerSince: master.customerSince ?? victim.customerSince,
+      notes: _mergeNotes(master.notes, victim.notes),
+      isFavorite: master.isFavorite || victim.isFavorite,
+      // Listen dedupliziert vereinigen.
+      tags: _unionBy<String>(master.tags, victim.tags, (t) => t.toLowerCase()),
+      channels: _unionBy<CommunicationChannel>(
+          master.channels, victim.channels, (c) => '${c.type.value}:${c.value}'),
+      addresses: _unionBy<ContactAddress>(master.addresses, victim.addresses,
+          (a) => '${a.street}|${a.zip}|${a.city}'),
+      bankAccounts: _unionBy<BankAccount>(
+          master.bankAccounts, victim.bankAccounts, (b) => b.iban),
+      contactPersons: _unionBy<ContactPerson>(master.contactPersons,
+          victim.contactPersons, (p) => p.personContactId),
+      consents: _unionBy<ContactConsent>(
+          master.consents, victim.consents, (c) => c.id),
+      activities: [...master.activities, ...victim.activities]
+          .take(50)
+          .toList(growable: false),
+    );
+  }
+
+  static List<T> _unionBy<T>(
+      List<T> a, List<T> b, String Function(T) keyOf) {
+    final seen = <String>{};
+    final result = <T>[];
+    for (final item in [...a, ...b]) {
+      if (seen.add(keyOf(item))) result.add(item);
+    }
+    return result;
+  }
+
+  static String? _mergeNotes(String? a, String? b) {
+    final at = a?.trim() ?? '';
+    final bt = b?.trim() ?? '';
+    if (at.isEmpty) return bt.isEmpty ? null : bt;
+    if (bt.isEmpty || at == bt) return at;
+    return '$at\n--- Zusammengeführt ---\n$bt';
   }
 }

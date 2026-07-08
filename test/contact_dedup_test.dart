@@ -52,4 +52,33 @@ void main() {
       expect(ContactDedup.findDuplicates(self, existing), isEmpty);
     });
   });
+
+  group('mergeContacts', () {
+    test('Master behält Id + Werte, Victim füllt Lücken + vereinigt Listen', () {
+      const master = Contact(
+        id: 'm1',
+        orgId: 'o',
+        name: 'Nord-Tabak GmbH',
+        email: 'info@nord.test',
+        tags: ['A'],
+      );
+      const victim = Contact(
+        id: 'v1',
+        orgId: 'o',
+        name: 'Nord Tabak',
+        email: 'ignored@nord.test', // Master hat schon eine E-Mail
+        phone: '0431 999', // fehlt im Master → übernommen
+        tags: ['A', 'B'],
+        notes: 'Notiz vom Duplikat',
+      );
+
+      final merged = ContactDedup.mergeContacts(master: master, victim: victim);
+      expect(merged.id, 'm1'); // Master-Id bleibt
+      expect(merged.email, 'info@nord.test'); // Master-Wert bleibt
+      expect(merged.phone, '0431 999'); // aus Victim ergänzt
+      expect(merged.tags, containsAll(['A', 'B'])); // vereinigt
+      expect(merged.tags.length, 2); // dedupliziert
+      expect(merged.notes, 'Notiz vom Duplikat'); // Master hatte keine
+    });
+  });
 }

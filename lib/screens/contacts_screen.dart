@@ -8,6 +8,7 @@ import '../core/contact_dedup.dart';
 import '../models/app_user.dart';
 import '../models/contact.dart';
 import '../models/contact_activity.dart';
+import '../models/contact_details.dart';
 import '../models/site_definition.dart';
 import '../providers/auth_provider.dart';
 import '../providers/contact_provider.dart';
@@ -16,6 +17,9 @@ import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 import '../widgets/action_fab.dart';
+import 'contacts/contact_editor_sheet.dart';
+import 'contacts/contact_visuals.dart';
+import 'contacts/organizations_screen.dart';
 
 /// Sentinel-Wert fuer den Standort-Filter „Allgemein" (Kontakte ohne Laden).
 const String _kGeneralSite = '__general__';
@@ -43,6 +47,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   ContactType? _typeFilter;
+  ContactKind? _kindFilter; // null = alle, sonst Person/Firma
   String? _siteFilter; // null = alle, _kGeneralSite = ohne Laden, sonst siteId
   bool _favoritesOnly = false;
   bool _showInactive = false;
@@ -115,11 +120,25 @@ class _ContactsScreenState extends State<ContactsScreen> {
                               ? widget.onNavigateBack
                               : null,
                         ),
-                        SizedBox(height: spacing.md),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const OrganizationsScreen(),
+                              ),
+                            ),
+                            icon: const Icon(Icons.domain_outlined, size: 18),
+                            label: const Text('Organisationen'),
+                          ),
+                        ),
+                        SizedBox(height: spacing.sm),
                         _StatsRow(contacts: all),
                         SizedBox(height: spacing.md),
                         _buildSearchAndExport(filtered, sites),
                         SizedBox(height: spacing.sm),
+                        _buildKindFilter(),
+                        SizedBox(height: spacing.xs),
                         _buildCategoryFilters(all),
                         SizedBox(height: spacing.xs),
                         _buildSiteAndToggleFilters(sites),
@@ -194,6 +213,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   bool get _hasActiveFilters =>
       _searchQuery.trim().isNotEmpty ||
       _typeFilter != null ||
+      _kindFilter != null ||
       _siteFilter != null ||
       _favoritesOnly ||
       _showInactive;
@@ -203,6 +223,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       _searchController.clear();
       _searchQuery = '';
       _typeFilter = null;
+      _kindFilter = null;
       _siteFilter = null;
       _favoritesOnly = false;
       _showInactive = false;
@@ -240,6 +261,28 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
+  Widget _buildKindFilter() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SegmentedButton<ContactKind?>(
+        showSelectedIcon: false,
+        segments: const [
+          ButtonSegment(value: null, label: Text('Alle')),
+          ButtonSegment(
+              value: ContactKind.person,
+              icon: Icon(Icons.person_outline),
+              label: Text('Personen')),
+          ButtonSegment(
+              value: ContactKind.company,
+              icon: Icon(Icons.business),
+              label: Text('Firmen')),
+        ],
+        selected: {_kindFilter},
+        onSelectionChanged: (s) => setState(() => _kindFilter = s.first),
+      ),
+    );
+  }
+
   Widget _buildCategoryFilters(List<Contact> all) {
     final counts = <ContactType, int>{};
     for (final contact in all) {
@@ -262,7 +305,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
             SizedBox(width: context.spacing.xs),
             AppFilterChip(
               label: '${type.label} (${counts[type]})',
-              icon: _typeIcon(type),
+              icon: contactTypeIcon(type),
               selected: _typeFilter == type,
               onSelected: (_) => setState(
                 () => _typeFilter = _typeFilter == type ? null : type,
@@ -368,6 +411,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
       if (_typeFilter != null && contact.type != _typeFilter) {
         return false;
       }
+      if (_kindFilter != null && contact.kind != _kindFilter) {
+        return false;
+      }
       if (_siteFilter != null) {
         final hasSite = contact.siteId != null && contact.siteId!.isNotEmpty;
         if (_siteFilter == _kGeneralSite) {
@@ -379,6 +425,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
       if (query.isNotEmpty) {
         final haystack = [
           contact.name,
+          contact.displayName,
+          contact.firstName ?? '',
+          contact.lastName ?? '',
+          contact.companyName ?? '',
           contact.contactPerson ?? '',
           contact.email ?? '',
           contact.phone ?? '',
@@ -679,7 +729,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     final orgId = context.read<AuthProvider>().profile?.orgId ?? '';
     final result = await showAppBottomSheet<Contact>(
       context: context,
-      builder: (_) => _ContactEditorSheet(
+      builder: (_) => ContactEditorSheet(
         contact: contact,
         sites: sites,
         orgId: orgId,
@@ -695,16 +745,22 @@ class _ContactsScreenState extends State<ContactsScreen> {
         context.read<ContactProvider>().contacts,
       );
       if (dups.isNotEmpty) {
-        final proceed = await AppConfirmDialog.show(
-          context,
-          title: 'Möglicherweise doppelt',
-          message: 'Es gibt bereits einen ähnlichen Kontakt: '
-              '„${dups.first.contact.name}". Trotzdem neu anlegen?',
-          icon: Icons.people_alt_outlined,
-          confirmLabel: 'Trotzdem anlegen',
-          destructive: false,
-        );
-        if (!proceed || !mounted) {
+        final choice = await _showDuplicateDialog(dups.first.contact);
+        if (choice == null || choice == _DedupChoice.cancel || !mounted) {
+          return;
+        }
+        if (choice == _DedupChoice.merge) {
+          // In den bestehenden Kontakt zusammenführen (fehlende Felder + Listen).
+          final merged = ContactDedup.mergeContacts(
+            master: dups.first.contact,
+            victim: result,
+          );
+          try {
+            await context.read<ContactProvider>().saveContact(merged);
+            _snack('Kontakt „${merged.displayName}" zusammengeführt.');
+          } catch (error) {
+            _snack('Speichern fehlgeschlagen: $error', isError: true);
+          }
           return;
         }
       }
@@ -717,6 +773,32 @@ class _ContactsScreenState extends State<ContactsScreen> {
     } catch (error) {
       _snack('Speichern fehlgeschlagen: $error', isError: true);
     }
+  }
+
+  Future<_DedupChoice?> _showDuplicateDialog(Contact existing) {
+    return showDialog<_DedupChoice>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.people_alt_outlined),
+        title: const Text('Möglicherweise doppelt'),
+        content: Text('Es gibt bereits einen ähnlichen Kontakt: '
+            '„${existing.displayName}". Was möchtest du tun?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(_DedupChoice.cancel),
+            child: const Text('Abbrechen'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(_DedupChoice.createAnyway),
+            child: const Text('Trotzdem anlegen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(_DedupChoice.merge),
+            child: const Text('Zusammenführen'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _confirmDelete(Contact contact) async {
@@ -755,6 +837,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
 }
 
 enum _DetailAction { edit, delete, toggleFavorite, addActivity }
+
+/// Auswahl im Dubletten-Dialog beim Neuanlegen.
+enum _DedupChoice { cancel, merge, createAnyway }
 
 // --- Statistik-Zeile ------------------------------------------------------
 
@@ -938,7 +1023,7 @@ class _ContactCard extends StatelessWidget {
                   children: [
                     Expanded(
                       child: Text(
-                        contact.name,
+                        contact.displayName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.titleMedium?.copyWith(
@@ -963,8 +1048,8 @@ class _ContactCard extends StatelessWidget {
                   children: [
                     AppStatusBadge(
                       label: contact.type.shortLabel,
-                      tone: _typeTone(contact.type),
-                      icon: _typeIcon(contact.type),
+                      tone: contactTypeTone(contact.type),
+                      icon: contactTypeIcon(contact.type),
                     ),
                     if (!contact.isActive)
                       const AppStatusBadge(
@@ -1040,7 +1125,7 @@ class _Avatar extends StatelessWidget {
       ),
       alignment: Alignment.center,
       child: Icon(
-        _typeIcon(contact.type),
+        contactTypeIcon(contact.type),
         color: colorScheme.onSecondaryContainer,
         size: context.iconSizes.md,
       ),
@@ -1249,8 +1334,8 @@ class _ContactDetailSheet extends StatelessWidget {
             children: [
               AppStatusBadge(
                 label: contact.type.label,
-                tone: _typeTone(contact.type),
-                icon: _typeIcon(contact.type),
+                tone: contactTypeTone(contact.type),
+                icon: contactTypeIcon(contact.type),
                 filled: true,
               ),
               if (!contact.isActive)
@@ -1482,386 +1567,6 @@ class _DetailRow extends StatelessWidget {
     );
   }
 }
-
-// --- Editor-Sheet ---------------------------------------------------------
-
-class _ContactEditorSheet extends StatefulWidget {
-  const _ContactEditorSheet({
-    required this.contact,
-    required this.sites,
-    required this.orgId,
-  });
-
-  final Contact? contact;
-  final List<SiteDefinition> sites;
-  final String orgId;
-
-  @override
-  State<_ContactEditorSheet> createState() => _ContactEditorSheetState();
-}
-
-class _ContactEditorSheetState extends State<_ContactEditorSheet> {
-  final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _name;
-  late final TextEditingController _contactPerson;
-  late final TextEditingController _email;
-  late final TextEditingController _phone;
-  late final TextEditingController _mobile;
-  late final TextEditingController _website;
-  late final TextEditingController _street;
-  late final TextEditingController _postalCode;
-  late final TextEditingController _city;
-  late final TextEditingController _taxId;
-  late final TextEditingController _customerNumber;
-  late final TextEditingController _notes;
-  late final TextEditingController _tags;
-
-  late ContactType _type;
-  late String? _siteId;
-  late bool _isFavorite;
-  late bool _isActive;
-
-  @override
-  void initState() {
-    super.initState();
-    final c = widget.contact;
-    _name = TextEditingController(text: c?.name ?? '');
-    _contactPerson = TextEditingController(text: c?.contactPerson ?? '');
-    _email = TextEditingController(text: c?.email ?? '');
-    _phone = TextEditingController(text: c?.phone ?? '');
-    _mobile = TextEditingController(text: c?.mobile ?? '');
-    _website = TextEditingController(text: c?.website ?? '');
-    _street = TextEditingController(text: c?.street ?? '');
-    _postalCode = TextEditingController(text: c?.postalCode ?? '');
-    _city = TextEditingController(text: c?.city ?? '');
-    _taxId = TextEditingController(text: c?.taxId ?? '');
-    _customerNumber = TextEditingController(text: c?.customerNumber ?? '');
-    _notes = TextEditingController(text: c?.notes ?? '');
-    _tags = TextEditingController(text: c?.tags.join(', ') ?? '');
-    _type = c?.type ?? ContactType.customer;
-    _isFavorite = c?.isFavorite ?? false;
-    _isActive = c?.isActive ?? true;
-    // Standort nur uebernehmen, wenn er noch existiert (sonst „Allgemein").
-    final siteId = c?.siteId;
-    _siteId = (siteId != null && widget.sites.any((s) => s.id == siteId))
-        ? siteId
-        : null;
-  }
-
-  @override
-  void dispose() {
-    for (final controller in [
-      _name,
-      _contactPerson,
-      _email,
-      _phone,
-      _mobile,
-      _website,
-      _street,
-      _postalCode,
-      _city,
-      _taxId,
-      _customerNumber,
-      _notes,
-      _tags,
-    ]) {
-      controller.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final spacing = context.spacing;
-    final isEditing = widget.contact != null;
-    return AppBottomSheetScaffold(
-      title: isEditing ? 'Kontakt bearbeiten' : 'Neuer Kontakt',
-      subtitle: 'Kunde, Lieferant, Partner, Behörde …',
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AppFormField(
-              controller: _name,
-              label: 'Name / Firma *',
-              hint: 'z. B. Nord-Tabak Großhandel GmbH',
-              prefixIcon: const Icon(Icons.business_outlined),
-              textCapitalization: TextCapitalization.words,
-              validator: (value) =>
-                  (value == null || value.trim().isEmpty) ? 'Pflichtfeld' : null,
-            ),
-            SizedBox(height: spacing.md),
-            DropdownButtonFormField<ContactType>(
-              initialValue: _type,
-              decoration: const InputDecoration(
-                labelText: 'Kategorie',
-                prefixIcon: Icon(Icons.category_outlined),
-              ),
-              items: [
-                for (final type in ContactTypeX.ordered)
-                  DropdownMenuItem(
-                    value: type,
-                    child: Row(
-                      children: [
-                        Icon(_typeIcon(type), size: 18),
-                        const SizedBox(width: 10),
-                        Text(type.label),
-                      ],
-                    ),
-                  ),
-              ],
-              onChanged: (value) =>
-                  setState(() => _type = value ?? ContactType.customer),
-            ),
-            SizedBox(height: spacing.md),
-            AppFormField(
-              controller: _contactPerson,
-              label: 'Ansprechpartner',
-              prefixIcon: const Icon(Icons.badge_outlined),
-              textCapitalization: TextCapitalization.words,
-            ),
-            SizedBox(height: spacing.md),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: AppFormField(
-                    controller: _phone,
-                    label: 'Telefon',
-                    prefixIcon: const Icon(Icons.call_outlined),
-                    keyboardType: TextInputType.phone,
-                  ),
-                ),
-                SizedBox(width: spacing.sm),
-                Expanded(
-                  child: AppFormField(
-                    controller: _mobile,
-                    label: 'Mobil',
-                    prefixIcon: const Icon(Icons.smartphone_outlined),
-                    keyboardType: TextInputType.phone,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: spacing.md),
-            AppFormField(
-              controller: _email,
-              label: 'E-Mail',
-              prefixIcon: const Icon(Icons.mail_outline),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            SizedBox(height: spacing.md),
-            AppFormField(
-              controller: _website,
-              label: 'Website',
-              prefixIcon: const Icon(Icons.language_outlined),
-              keyboardType: TextInputType.url,
-            ),
-            SizedBox(height: spacing.md),
-            AppFormField(
-              controller: _street,
-              label: 'Straße & Nr.',
-              prefixIcon: const Icon(Icons.location_on_outlined),
-              textCapitalization: TextCapitalization.words,
-            ),
-            SizedBox(height: spacing.md),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: 120,
-                  child: AppFormField(
-                    controller: _postalCode,
-                    label: 'PLZ',
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-                SizedBox(width: spacing.sm),
-                Expanded(
-                  child: AppFormField(
-                    controller: _city,
-                    label: 'Ort',
-                    textCapitalization: TextCapitalization.words,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: spacing.md),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: AppFormField(
-                    controller: _taxId,
-                    label: 'USt-IdNr.',
-                    prefixIcon: const Icon(Icons.receipt_long_outlined),
-                  ),
-                ),
-                SizedBox(width: spacing.sm),
-                Expanded(
-                  child: AppFormField(
-                    controller: _customerNumber,
-                    label: 'Kunden-/Lief.-Nr.',
-                    prefixIcon: const Icon(Icons.tag_outlined),
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: spacing.md),
-            if (widget.sites.isNotEmpty) ...[
-              DropdownButtonFormField<String?>(
-                initialValue: _siteId,
-                decoration: const InputDecoration(
-                  labelText: 'Standort',
-                  prefixIcon: Icon(Icons.place_outlined),
-                  helperText: 'Allgemein = gilt für beide Läden',
-                ),
-                items: [
-                  const DropdownMenuItem<String?>(
-                    value: null,
-                    child: Text('Allgemein (beide Läden)'),
-                  ),
-                  for (final site in widget.sites)
-                    DropdownMenuItem<String?>(
-                      value: site.id,
-                      child: Text(site.name),
-                    ),
-                ],
-                onChanged: (value) => setState(() => _siteId = value),
-              ),
-              SizedBox(height: spacing.md),
-            ],
-            AppFormField(
-              controller: _tags,
-              label: 'Schlagworte',
-              hint: 'Komma-getrennt, z. B. Tabak, Stammlieferant',
-              prefixIcon: const Icon(Icons.sell_outlined),
-            ),
-            SizedBox(height: spacing.md),
-            AppFormField(
-              controller: _notes,
-              label: 'Notiz',
-              prefixIcon: const Icon(Icons.sticky_note_2_outlined),
-              maxLines: 3,
-              minLines: 2,
-            ),
-            SizedBox(height: spacing.sm),
-            SwitchListTile.adaptive(
-              contentPadding: EdgeInsets.zero,
-              value: _isFavorite,
-              onChanged: (value) => setState(() => _isFavorite = value),
-              secondary: const Icon(Icons.star_outline_rounded),
-              title: const Text('Als wichtig markieren'),
-            ),
-            SwitchListTile.adaptive(
-              contentPadding: EdgeInsets.zero,
-              value: _isActive,
-              onChanged: (value) => setState(() => _isActive = value),
-              secondary: const Icon(Icons.check_circle_outline),
-              title: const Text('Aktiv'),
-              subtitle: const Text('Archivierte Kontakte sind standardmäßig ausgeblendet.'),
-            ),
-            SizedBox(height: spacing.md),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _submit,
-                icon: const Icon(Icons.check),
-                label: Text(isEditing ? 'Speichern' : 'Kontakt anlegen'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _submit() {
-    if (!(_formKey.currentState?.validate() ?? false)) {
-      return;
-    }
-    final selectedSite =
-        widget.sites.where((s) => s.id == _siteId).toList();
-    final base = widget.contact ??
-        Contact(orgId: widget.orgId, name: _name.text.trim());
-    final result = base.copyWith(
-      orgId: widget.orgId,
-      name: _name.text.trim(),
-      type: _type,
-      contactPerson: _trim(_contactPerson.text),
-      clearContactPerson: _trim(_contactPerson.text) == null,
-      email: _trim(_email.text),
-      clearEmail: _trim(_email.text) == null,
-      phone: _trim(_phone.text),
-      clearPhone: _trim(_phone.text) == null,
-      mobile: _trim(_mobile.text),
-      clearMobile: _trim(_mobile.text) == null,
-      website: _trim(_website.text),
-      clearWebsite: _trim(_website.text) == null,
-      street: _trim(_street.text),
-      clearStreet: _trim(_street.text) == null,
-      postalCode: _trim(_postalCode.text),
-      clearPostalCode: _trim(_postalCode.text) == null,
-      city: _trim(_city.text),
-      clearCity: _trim(_city.text) == null,
-      taxId: _trim(_taxId.text),
-      clearTaxId: _trim(_taxId.text) == null,
-      customerNumber: _trim(_customerNumber.text),
-      clearCustomerNumber: _trim(_customerNumber.text) == null,
-      notes: _trim(_notes.text),
-      clearNotes: _trim(_notes.text) == null,
-      siteId: _siteId,
-      siteName: selectedSite.isEmpty ? null : selectedSite.first.name,
-      clearSite: _siteId == null,
-      tags: _parseTags(_tags.text),
-      isFavorite: _isFavorite,
-      isActive: _isActive,
-    );
-    Navigator.of(context).pop(result);
-  }
-
-  static String? _trim(String value) {
-    final trimmed = value.trim();
-    return trimmed.isEmpty ? null : trimmed;
-  }
-
-  static List<String> _parseTags(String raw) {
-    return raw
-        .split(',')
-        .map((tag) => tag.trim())
-        .where((tag) => tag.isNotEmpty)
-        .toList(growable: false);
-  }
-}
-
-// --- Typ-Darstellung ------------------------------------------------------
-
-IconData _typeIcon(ContactType type) => switch (type) {
-      ContactType.customer => Icons.person_outline,
-      ContactType.supplier => Icons.local_shipping_outlined,
-      ContactType.wholesaler => Icons.warehouse_outlined,
-      ContactType.company => Icons.handshake_outlined,
-      ContactType.serviceProvider => Icons.handyman_outlined,
-      ContactType.authority => Icons.account_balance_outlined,
-      ContactType.landlord => Icons.home_work_outlined,
-      ContactType.bankInsurance => Icons.account_balance_wallet_outlined,
-      ContactType.taxAdvisor => Icons.calculate_outlined,
-      ContactType.other => Icons.contacts_outlined,
-    };
-
-AppStatusTone _typeTone(ContactType type) => switch (type) {
-      ContactType.customer => AppStatusTone.primary,
-      ContactType.supplier => AppStatusTone.info,
-      ContactType.wholesaler => AppStatusTone.info,
-      ContactType.company => AppStatusTone.secondary,
-      ContactType.serviceProvider => AppStatusTone.tertiary,
-      ContactType.authority => AppStatusTone.warning,
-      ContactType.landlord => AppStatusTone.secondary,
-      ContactType.bankInsurance => AppStatusTone.success,
-      ContactType.taxAdvisor => AppStatusTone.tertiary,
-      ContactType.other => AppStatusTone.neutral,
-    };
 
 /// Fehler-Banner der Kontakteliste (Stream-/Ladefehler des ContactProvider).
 class _ContactsErrorBanner extends StatelessWidget {

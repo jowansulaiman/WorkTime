@@ -1,3 +1,4 @@
+import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
 
 /// Sub-Objekte eines [Contact] für die AllTec-1:1-Parität: mehrere Adressen,
@@ -142,6 +143,32 @@ extension ChannelTypeX on ChannelType {
         'fax' => ChannelType.fax,
         'website' => ChannelType.website,
         _ => ChannelType.email,
+      };
+}
+
+/// Art einer DSGVO-Einwilligung.
+enum ConsentType { dataProcessing, emailContact, phoneContact, dataSharing }
+
+extension ConsentTypeX on ConsentType {
+  String get value => switch (this) {
+        ConsentType.dataProcessing => 'data_processing',
+        ConsentType.emailContact => 'email_contact',
+        ConsentType.phoneContact => 'phone_contact',
+        ConsentType.dataSharing => 'data_sharing',
+      };
+
+  String get label => switch (this) {
+        ConsentType.dataProcessing => 'Datenverarbeitung',
+        ConsentType.emailContact => 'E-Mail-Kontakt',
+        ConsentType.phoneContact => 'Telefon-Kontakt',
+        ConsentType.dataSharing => 'Datenweitergabe',
+      };
+
+  static ConsentType fromValue(String? value) => switch (value) {
+        'email_contact' => ConsentType.emailContact,
+        'phone_contact' => ConsentType.phoneContact,
+        'data_sharing' => ConsentType.dataSharing,
+        _ => ConsentType.dataProcessing,
       };
 }
 
@@ -512,6 +539,83 @@ class BankAccount {
       'bankName': bankName,
       'accountHolder': accountHolder,
       'deactivated': deactivated,
+    };
+  }
+}
+
+/// Eine DSGVO-Einwilligung des Kontakts. Wie die übrigen Sub-Objekte
+/// **eingebettet** in den Contact (Spark-frugal); Daten als ISO-8601-Strings
+/// (einfacher als Timestamps in Arrays). Ein aktiver Consent hat
+/// `withdrawnAt == null`.
+class ContactConsent {
+  const ContactConsent({
+    required this.id,
+    required this.consentType,
+    required this.grantedAt,
+    this.withdrawnAt,
+    this.note,
+  });
+
+  final String id;
+  final ConsentType consentType;
+  final DateTime grantedAt;
+  final DateTime? withdrawnAt;
+  final String? note;
+
+  bool get isActive => withdrawnAt == null;
+
+  ContactConsent copyWith({
+    DateTime? withdrawnAt,
+    bool clearWithdrawnAt = false,
+  }) {
+    return ContactConsent(
+      id: id,
+      consentType: consentType,
+      grantedAt: grantedAt,
+      withdrawnAt: clearWithdrawnAt ? null : (withdrawnAt ?? this.withdrawnAt),
+      note: note,
+    );
+  }
+
+  factory ContactConsent.fromMap(Map<String, dynamic> map) {
+    return ContactConsent(
+      id: (map['id'] ?? '').toString(),
+      consentType: ConsentTypeX.fromValue(map['consent_type']?.toString()),
+      grantedAt: FirestoreDateParser.readLocalDate(map['granted_at']) ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      withdrawnAt: FirestoreDateParser.readLocalDate(map['withdrawn_at']),
+      note: map['note'] as String?,
+    );
+  }
+
+  factory ContactConsent.fromFirestoreMap(Map<String, dynamic> map) {
+    return ContactConsent(
+      id: (map['id'] ?? '').toString(),
+      consentType: ConsentTypeX.fromValue(map['consentType']?.toString()),
+      grantedAt: FirestoreDateParser.readLocalDate(map['grantedAt']) ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      withdrawnAt: FirestoreDateParser.readLocalDate(map['withdrawnAt']),
+      note: map['note'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'consent_type': consentType.value,
+      'granted_at': grantedAt.toIso8601String(),
+      'withdrawn_at': withdrawnAt?.toIso8601String(),
+      'note': note,
+    };
+  }
+
+  Map<String, dynamic> toFirestoreMap() {
+    return {
+      'id': id,
+      'consentType': consentType.value,
+      'grantedAt': grantedAt.toIso8601String(),
+      'withdrawnAt': withdrawnAt?.toIso8601String(),
+      'note': note,
     };
   }
 }

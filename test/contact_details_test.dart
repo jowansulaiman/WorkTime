@@ -128,12 +128,49 @@ void main() {
     });
   });
 
+  group('ContactConsent Zwei-Serialisierung', () {
+    final active = ContactConsent(
+      id: 'con-1',
+      consentType: ConsentType.emailContact,
+      grantedAt: DateTime(2026, 5, 1),
+      note: 'Am Telefon erteilt',
+    );
+    final withdrawn = ContactConsent(
+      id: 'con-2',
+      consentType: ConsentType.dataSharing,
+      grantedAt: DateTime(2026, 1, 1),
+      withdrawnAt: DateTime(2026, 6, 1),
+    );
+
+    test('aktiver Consent snake_case round-trip', () {
+      final c = ContactConsent.fromMap(active.toMap());
+      expect(c.consentType, ConsentType.emailContact);
+      expect(c.grantedAt, DateTime(2026, 5, 1));
+      expect(c.withdrawnAt, isNull);
+      expect(c.isActive, isTrue);
+      expect(c.note, 'Am Telefon erteilt');
+    });
+    test('widerrufener Consent camelCase round-trip', () {
+      final c = ContactConsent.fromFirestoreMap(withdrawn.toFirestoreMap());
+      expect(c.consentType, ConsentType.dataSharing);
+      expect(c.withdrawnAt, DateTime(2026, 6, 1));
+      expect(c.isActive, isFalse);
+    });
+    test('copyWith setzt withdrawnAt (widerrufen)', () {
+      final c = active.copyWith(withdrawnAt: DateTime(2026, 7, 1));
+      expect(c.isActive, isFalse);
+      expect(c.withdrawnAt, DateTime(2026, 7, 1));
+      expect(c.consentType, ConsentType.emailContact); // unberührt
+    });
+  });
+
   group('Enum fromValue-Defaults (nie werfen)', () {
     test('unbekannte Werte fallen auf Default', () {
       expect(AddressTypeX.fromValue('quatsch'), AddressType.haupt);
       expect(ChannelTypeX.fromValue('quatsch'), ChannelType.email);
       expect(CommunicationContextX.fromValue('quatsch'),
           CommunicationContext.dienst);
+      expect(ConsentTypeX.fromValue('quatsch'), ConsentType.dataProcessing);
       expect(AddressTypeX.fromValue(null), AddressType.haupt);
     });
   });
@@ -225,6 +262,7 @@ void main() {
       debitorNumber: 'D-100',
       creditorNumber: 'K-200',
       customerSince: DateTime(2020, 1, 1),
+      parentContactId: 'firma-9',
     );
 
     final company = Contact(
@@ -254,6 +292,7 @@ void main() {
       expect(c.debitorNumber, 'D-100');
       expect(c.creditorNumber, 'K-200');
       expect(c.customerSince, DateTime(2020, 1, 1));
+      expect(c.parentContactId, 'firma-9');
     }
 
     void expectCompany(Contact c) {

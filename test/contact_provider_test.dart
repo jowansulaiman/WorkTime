@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/audit_log_entry.dart';
 import 'package:worktime_app/models/contact.dart';
+import 'package:worktime_app/models/contact_organization.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/contact_provider.dart';
 import 'package:worktime_app/repositories/contact_repository.dart';
@@ -35,6 +36,22 @@ class _OfflineContactRepository implements ContactRepository {
     required String contactId,
   }) =>
       _delegate.deleteContact(orgId: orgId, contactId: contactId);
+
+  @override
+  Stream<List<ContactOrganization>> watchOrganizations(String orgId) =>
+      _delegate.watchOrganizations(orgId);
+
+  @override
+  Future<void> saveOrganization(ContactOrganization organization) =>
+      _delegate.saveOrganization(organization);
+
+  @override
+  Future<void> deleteOrganization({
+    required String orgId,
+    required String organizationId,
+  }) =>
+      _delegate.deleteOrganization(
+          orgId: orgId, organizationId: organizationId);
 }
 
 /// Fake fuer den Cloud-Stream-Fehlerpfad: der Kontakt-Stream schlaegt fehl.

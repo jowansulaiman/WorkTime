@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/contact.dart';
+import '../models/contact_organization.dart';
 import 'contact_repository.dart';
 
 /// Firestore-Implementierung der [ContactRepository] — die einzige Stelle mit
@@ -49,5 +50,40 @@ class FirestoreContactRepository implements ContactRepository {
     required String contactId,
   }) {
     return _contactCollection(orgId).doc(contactId).delete();
+  }
+
+  // --- Kontakt-Organisationen (M9) ------------------------------------------
+
+  CollectionReference<Map<String, dynamic>> _organizationCollection(
+          String orgId) =>
+      _organizationDoc(orgId).collection('contactOrganizations');
+
+  @override
+  Stream<List<ContactOrganization>> watchOrganizations(String orgId) {
+    return _organizationCollection(orgId).orderBy('nameLower').snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => ContactOrganization.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<void> saveOrganization(ContactOrganization organization) async {
+    final collection = _organizationCollection(organization.orgId);
+    final docRef = organization.id == null
+        ? collection.doc()
+        : collection.doc(organization.id);
+    await docRef.set({
+      ...organization.copyWith(id: docRef.id).toFirestoreMap(),
+      if (organization.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  @override
+  Future<void> deleteOrganization({
+    required String orgId,
+    required String organizationId,
+  }) {
+    return _organizationCollection(orgId).doc(organizationId).delete();
   }
 }

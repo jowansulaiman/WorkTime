@@ -1,4 +1,5 @@
 import '../models/contact.dart';
+import '../models/contact_details.dart';
 
 /// Ergebnis eines CSV-Imports: erfolgreich geparste Kontakte + Fehler je Zeile.
 class ContactCsvImportResult {
@@ -69,6 +70,14 @@ class ContactCsvImport {
     final iCustNo = col(['kundennummer', 'kundennr']);
     final iNotes = col(['notiz', 'notizen', 'bemerkung']);
     final iTags = col(['tags', 'schlagworte', 'schlagwörter']);
+    // Person/Firma-Split + Nummern (M11).
+    final iKind = col(['art']);
+    final iFirst = col(['vorname']);
+    final iLast = col(['nachname']);
+    final iCompany = col(['firmenname']);
+    final iDebitor = col(['debitor-nr.', 'debitoren-nr.', 'debitor', 'debitorennr']);
+    final iCreditor =
+        col(['kreditor-nr.', 'kreditoren-nr.', 'kreditor', 'kreditorennr']);
 
     for (var r = 1; r < records.length; r++) {
       final cells = records[r];
@@ -91,6 +100,12 @@ class ContactCsvImport {
           orgId: orgId,
           name: name,
           type: _type(at(iType)),
+          kind: _kind(at(iKind)),
+          firstName: _nullIfEmpty(at(iFirst)),
+          lastName: _nullIfEmpty(at(iLast)),
+          companyName: _nullIfEmpty(at(iCompany)),
+          debitorNumber: _nullIfEmpty(at(iDebitor)),
+          creditorNumber: _nullIfEmpty(at(iCreditor)),
           contactPerson: _nullIfEmpty(at(iPerson)),
           email: _nullIfEmpty(at(iEmail)),
           phone: _nullIfEmpty(at(iPhone)),
@@ -108,6 +123,16 @@ class ContactCsvImport {
     }
 
     return ContactCsvImportResult(contacts: contacts, errors: errors);
+  }
+
+  /// Ordnet einen „Art"-Text (Person/Firma) einem [ContactKind] zu. Default
+  /// [ContactKind.company] (analog Editor / Modell).
+  static ContactKind _kind(String? raw) {
+    final lower = raw?.trim().toLowerCase() ?? '';
+    if (lower == 'person' || lower == ContactKind.person.value) {
+      return ContactKind.person;
+    }
+    return ContactKind.company;
   }
 
   /// Ordnet einen Kategorie-Text einer [ContactType] zu (über Wert oder Label,

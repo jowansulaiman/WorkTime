@@ -1,4 +1,5 @@
 import '../models/contact.dart';
+import '../models/contact_organization.dart';
 
 /// Abstraktion ueber den Datenzugriff fuer Kontakte (Kunden, Lieferanten,
 /// Geschaeftspartner, Behoerden, …).
@@ -18,5 +19,18 @@ abstract interface class ContactRepository {
   Future<void> deleteContact({
     required String orgId,
     required String contactId,
+  });
+
+  // --- Kontakt-Organisationen (eigenständiges Adressbuch, M9) ---------------
+
+  Stream<List<ContactOrganization>> watchOrganizations(String orgId);
+
+  /// Speichert eine Organisation (Anlage oder Update). Bei neuen Organisationen
+  /// wird eine Dokument-Id vergeben.
+  Future<void> saveOrganization(ContactOrganization organization);
+
+  Future<void> deleteOrganization({
+    required String orgId,
+    required String organizationId,
   });
 }

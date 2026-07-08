@@ -56,5 +56,43 @@ service firebase.storage {
             )
           );
     }
+
+    // organizations/{orgId}/contacts/{contactId}/avatar.{ext} — Kontakt-Avatar.
+    //  - Lesen: jedes aktive Org-Mitglied (Avatar in der Kontakt-Detailseite).
+    //  - Schreiben: Admin ODER Schichtleitung (= canManageContacts), < 5 MB,
+    //    image/*. Kiosk-Gerätekonto NIE.
+    match /organizations/{orgId}/contacts/{contactId}/{fileName} {
+      function signedIn() {
+        return request.auth != null;
+      }
+      function callerDoc() {
+        return firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        );
+      }
+      function callerOrg() {
+        return callerDoc().data.orgId;
+      }
+      function callerRole() {
+        return callerDoc().data.role;
+      }
+      function sameActiveOrg() {
+        return signedIn() && callerOrg() == orgId && callerRole() != 'kiosk';
+      }
+      function canManageContacts() {
+        return sameActiveOrg()
+            && (callerRole() == 'admin' || callerRole() == 'teamlead');
+      }
+
+      allow read: if sameActiveOrg();
+      allow write: if canManageContacts()
+          && (
+            request.resource == null
+            || (
+              request.resource.size < 5 * 1024 * 1024
+              && request.resource.contentType.matches('image/.*')
+            )
+          );
+    }
   }
 }
