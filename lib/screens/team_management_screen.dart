@@ -116,6 +116,97 @@ Future<void> showShiftPreferenceSheet(
   );
 }
 
+/// Baut den Vertrag, den das Mitglieder-Konfigurations-Sheet speichert.
+///
+/// Existiert bereits ein Vertrag ([existing] != null), wird er via
+/// [EmploymentContract.copyWith] FORTGESCHRIEBEN: Nur die im Sheet editierbaren
+/// Felder werden gesetzt; alle übrigen Felder (insbesondere `monthlyGrossCents`,
+/// `validUntil`, `vacationDays`, `createdAt`) bleiben erhalten. Der frühere
+/// Konstruktor-Neubau hatte `monthlyGrossCents` und `validUntil` bei jedem
+/// Speichern still auf `null` gesetzt (Datenverlust-Blocker).
+///
+/// `weeklyHours` wird nur dann neu aus `dailyHours × 5` abgeleitet, wenn sich
+/// `dailyHours` gegenüber dem Vertrag geändert hat UND der bisherige
+/// Wochenwert exakt der alten 5-Tage-Ableitung entsprach — ein individuell
+/// gepflegter Wochenwert bleibt sonst unangetastet.
+@visibleForTesting
+EmploymentContract buildMemberContractForSave({
+  required EmploymentContract? existing,
+  required String orgId,
+  required String userId,
+  required String? label,
+  required EmploymentType type,
+  required SalaryKind salaryKind,
+  required DateTime validFrom,
+  required double dailyHours,
+  required double hourlyRate,
+  required String currency,
+  required int fallbackVacationDays,
+  required double? weeklyMaxHours,
+  required double? monthlyMaxHours,
+}) {
+  final isMinor = existing?.isMinor ?? false;
+  final isPregnant = existing?.isPregnant ?? false;
+  final maxDailyMinutes =
+      isMinor ? 480 : (isPregnant ? 510 : (existing?.maxDailyMinutes ?? 600));
+  final isMiniJob = type == EmploymentType.miniJob;
+
+  if (existing == null) {
+    return EmploymentContract(
+      orgId: orgId,
+      userId: userId,
+      label: label,
+      type: type,
+      salaryKind: salaryKind,
+      validFrom: validFrom,
+      weeklyHours: dailyHours * 5,
+      dailyHours: dailyHours,
+      hourlyRate: hourlyRate,
+      currency: currency,
+      vacationDays: fallbackVacationDays,
+      maxDailyMinutes: maxDailyMinutes,
+      monthlyIncomeLimitCents: isMiniJob ? 60300 : null,
+      weeklyMaxHours: weeklyMaxHours,
+      monthlyMaxHours: monthlyMaxHours,
+      isMinor: isMinor,
+      isPregnant: isPregnant,
+    );
+  }
+
+  final dailyHoursChanged = !_hoursEqual(dailyHours, existing.dailyHours);
+  final weeklyWasDerived =
+      _hoursEqual(existing.weeklyHours, existing.dailyHours * 5);
+  final weeklyHours = dailyHoursChanged && weeklyWasDerived
+      ? dailyHours * 5
+      : existing.weeklyHours;
+
+  return existing.copyWith(
+    orgId: orgId,
+    userId: userId,
+    // copyWith kennt kein clearLabel-Flag: ein geleertes Feld behält bewusst
+    // die bisherige Bezeichnung, statt sie still zu löschen.
+    label: label,
+    type: type,
+    salaryKind: salaryKind,
+    validFrom: validFrom,
+    weeklyHours: weeklyHours,
+    dailyHours: dailyHours,
+    hourlyRate: hourlyRate,
+    currency: currency,
+    maxDailyMinutes: maxDailyMinutes,
+    monthlyIncomeLimitCents:
+        isMiniJob ? (existing.monthlyIncomeLimitCents ?? 60300) : null,
+    clearMonthlyIncomeLimitCents: !isMiniJob,
+    weeklyMaxHours: weeklyMaxHours,
+    clearWeeklyMaxHours: weeklyMaxHours == null,
+    monthlyMaxHours: monthlyMaxHours,
+    clearMonthlyMaxHours: monthlyMaxHours == null,
+  );
+}
+
+/// Toleranter Stunden-Vergleich (Textfeld-Parsing erzeugt Gleitkommawerte).
+bool _hoursEqual(double a, double b) => (a - b).abs() < 0.001;
+
 class TeamManagementScreen extends StatefulWidget {
   const TeamManagementScreen({
     super.key,
@@ -2265,12 +2356,6 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
       return;
     }
 
-    final isMinor = widget.contract?.isMinor ?? false;
-    final isPregnant = widget.contract?.isPregnant ?? false;
-    final maxDailyMinutes = isMinor
-        ? 480
-        : (isPregnant ? 510 : (widget.contract?.maxDailyMinutes ?? 600));
-
     final siteAssignments = widget.sites
         .where((site) => _selectedSiteIds.contains(site.id))
         .map(
@@ -2300,8 +2385,8 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
             currency: _currency,
           ),
         ),
-        contract: EmploymentContract(
-          id: widget.contract?.id,
+        contract: buildMemberContractForSave(
+          existing: widget.contract,
           orgId: widget.member.orgId,
           userId: widget.member.uid,
           label: _contractLabelCtrl.text.trim().isEmpty
@@ -2310,18 +2395,12 @@ class _MemberEditorSheetState extends State<_MemberEditorSheet> {
           type: _employmentType,
           salaryKind: _salaryKind,
           validFrom: _validFrom,
-          weeklyHours: (double.tryParse(_hoursCtrl.text) ?? 8) * 5,
           dailyHours: double.tryParse(_hoursCtrl.text) ?? 8,
           hourlyRate: double.tryParse(_rateCtrl.text) ?? 0,
           currency: _currency,
-          vacationDays: widget.member.settings.vacationDays,
-          maxDailyMinutes: maxDailyMinutes,
-          monthlyIncomeLimitCents:
-              _employmentType == EmploymentType.miniJob ? 60300 : null,
+          fallbackVacationDays: widget.member.settings.vacationDays,
           weeklyMaxHours: _parseNullableHours(_weeklyMaxHoursCtrl.text),
           monthlyMaxHours: _parseNullableHours(_monthlyMaxHoursCtrl.text),
-          isMinor: isMinor,
-          isPregnant: isPregnant,
         ),
         assignments: siteAssignments,
       ),

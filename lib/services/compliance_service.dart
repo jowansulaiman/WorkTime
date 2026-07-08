@@ -59,7 +59,7 @@ class ComplianceService {
         const ComplianceViolation(
           code: 'site_required',
           severity: ComplianceSeverity.blocking,
-          message: 'Fuer geplante Schichten ist ein Standort Pflicht.',
+          message: 'Für geplante Schichten ist ein Standort Pflicht.',
         ),
       );
     }
@@ -70,7 +70,7 @@ class ComplianceService {
           code: 'site_assignment_missing',
           severity: ComplianceSeverity.blocking,
           message:
-              '${shift.employeeName} ist dem gewaehlten Standort nicht zugeordnet.',
+              '${shift.employeeName} ist dem gewählten Standort nicht zugeordnet.',
           relatedEntityIds: [
             shift.userId,
             if (shift.siteId != null) shift.siteId!

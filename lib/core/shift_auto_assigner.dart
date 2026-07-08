@@ -12,6 +12,8 @@ import '../models/shift_preference.dart';
 import '../models/sollzeit_profile.dart';
 import '../models/travel_time_rule.dart';
 import '../services/compliance_service.dart';
+import 'employment_contract_resolver.dart';
+import 'overtime_projection.dart';
 
 /// Grund, warum eine offene Schicht nicht automatisch besetzt werden konnte.
 enum UnassignableReason {
@@ -20,6 +22,12 @@ enum UnassignableReason {
   monthlyCap,
   weeklyCap,
   minijob,
+
+  /// Der Mitarbeiter ist zum Schichtdatum bereits ausgeschieden
+  /// (Austrittsdatum aus der Personalakte, siehe
+  /// [ShiftAutoAssigner.exitDateByUserId]) — harter Ausschluss wie Abwesenheit.
+  ausgeschieden,
+
   absence,
   doubleBooking,
   compliance,
@@ -45,6 +53,7 @@ class ShiftAssignmentProposal {
     required this.userName,
     required this.score,
     required this.reason,
+    this.overtimeMinutes = 0,
   });
 
   final String shiftId;
@@ -52,6 +61,13 @@ class ShiftAssignmentProposal {
   final String userName;
   final double score;
   final String reason;
+
+  /// **Geplante Überstunden** dieser Zuweisung in Minuten (E1): Anteil der
+  /// Schicht-Nettominuten über der Vertrags-Maximalstunde (Woche/Monat),
+  /// chronologisch projiziert über `overtime_projection.dart`. Nur im weichen
+  /// Cap-Modus (`enforceHourCapHard == false`) > 0; im harten Modus kommt
+  /// keine Zuweisung über die Grenze.
+  final int overtimeMinutes;
 }
 
 /// Eine offene Schicht, die nicht zugewiesen werden konnte (+ deutscher Grund).
@@ -143,6 +159,7 @@ class ShiftAutoAssigner {
     this.sollzeitByUserId = const {},
     this.preferencesByUserId = const {},
     this.preferenceWeight = 0,
+    this.exitDateByUserId = const {},
   });
 
   final List<Shift> openShifts;
@@ -176,10 +193,22 @@ class ShiftAutoAssigner {
   /// nudgen, aber Abdeckung/harte Regeln nie übersteuern.
   final double preferenceWeight;
 
+  /// Austrittsdatum je Nutzer (Stammakte, E5): Schichten, deren `startTime`
+  /// **nach** dem Tagesende des Austrittstags liegt, sind für diesen Nutzer
+  /// hart ausgeschlossen ([UnassignableReason.ausgeschieden]). Der Austrittstag
+  /// selbst zählt noch als beschäftigt. Leer = kein Einfluss.
+  final Map<String, DateTime> exitDateByUserId;
+
   static const double _weightMonthlyFairness = 1.0;
   static const double _weightWeeklyFairness = 0.5;
   static const double _primaryBonus = 0.1;
   static const double _softCapPenaltyWeight = 5.0;
+
+  /// Gewicht des Überstunden-Strafterms in [_userCost] (cap-aware Lokalsuche,
+  /// W2e): Minuten über Monats-/Wochen-Cap relativ zum Cap — damit Phase 3
+  /// Zuweisungen nicht grundlos über die Vertragsgrenze schiebt.
+  static const double _overtimeCostWeight = 3.0;
+
   static const double _hoursPerMonthFromWeek = 4.33;
 
   /// Max. Tiefe der Ejection-Chain (Schicht → verdränge Blocker → re-home …).
@@ -214,6 +243,16 @@ class ShiftAutoAssigner {
   /// stehender Mitarbeiter korrekt als „weit unter Soll" zählt.
   final Set<String> _horizonMonths = {};
   final Set<String> _horizonWeeks = {};
+
+  /// Repräsentatives Datum je Horizont-Bucket (Monatserster bzw. Montag) —
+  /// Stichtag der Vertragsauflösung für die Cap-Bewertung in [_userCost].
+  final Map<String, DateTime> _horizonMonthDates = {};
+  final Map<String, DateTime> _horizonWeekDates = {};
+
+  /// Cap-Minuten je `uid|bucketLabel` (null = kein Cap) — gecacht, weil
+  /// [_userCost] in der Lokalsuche sehr häufig aufgerufen wird.
+  final Map<String, double?> _monthlyCapCache = {};
+  final Map<String, double?> _weeklyCapCache = {};
   late final DateTime _refDate;
   late final List<AppUserProfile> _activeMembers;
 
@@ -255,8 +294,13 @@ class ShiftAutoAssigner {
     }
 
     for (final shift in planShifts) {
-      _horizonMonths.add(_monthLabel(shift.startTime));
-      _horizonWeeks.add(_weekLabel(shift.startTime));
+      final start = shift.startTime;
+      final monthLabel = _monthLabel(start);
+      final weekLabel = _weekLabel(start);
+      _horizonMonths.add(monthLabel);
+      _horizonWeeks.add(weekLabel);
+      _horizonMonthDates[monthLabel] ??= DateTime(start.year, start.month, 1);
+      _horizonWeekDates[weekLabel] ??= _mondayOf(start);
     }
 
     // Basis-Feasibility (gegen den Ausgangszustand, vor jeder Zuweisung) +
@@ -459,12 +503,15 @@ class ShiftAutoAssigner {
   // ===========================================================================
 
   void _balanceFairness() {
-    // Nur sinnvoll, wenn Zielzeiten ODER weiche Vorlieben existieren.
+    // Nur sinnvoll, wenn Zielzeiten, weiche Vorlieben ODER Vertrags-Caps
+    // existieren (Letztere speisen den Überstunden-Strafterm in [_userCost]).
     final hasTargets = _activeMembers
         .any((m) => _monthlyTarget(m.uid) > 0 || _weeklyTarget(m.uid) > 0);
     final hasPreferences =
         preferenceWeight != 0 && preferencesByUserId.isNotEmpty;
-    if (!hasTargets && !hasPreferences) return;
+    final hasCaps = contracts.any(
+        (c) => (c.monthlyMaxHours ?? 0) > 0 || (c.weeklyMaxHours ?? 0) > 0);
+    if (!hasTargets && !hasPreferences && !hasCaps) return;
 
     for (var round = 0; round < _maxFairnessRounds; round++) {
       _FairnessMove? best;
@@ -570,6 +617,18 @@ class ShiftAutoAssigner {
     final unassigned = <UnassignableShift>[...hardUnassignable];
     final warnings = <AssignmentWarning>[];
 
+    // Geplante Überstunden je Schicht (nur weicher Modus): chronologische,
+    // stabile Projektion über ALLE gezählten Schichten je Nutzer (bestehende +
+    // virtuell zugewiesene) — im harten Modus kommt niemand über die Grenze.
+    final overtimeByShiftId = settings.enforceHourCapHard
+        ? const <String, int>{}
+        : projectOvertimeByShiftId(
+            assignedShifts: [
+              for (final userShifts in _byUser.values) ...userShifts,
+            ],
+            contractOf: _activeContract,
+          );
+
     for (final shift in sortedShifts) {
       final id = shift.id!;
       final uid = _assignee[id];
@@ -580,6 +639,7 @@ class ShiftAutoAssigner {
         final plannedMonth = _monthMin[uid]?[monthKey] ?? 0;
         final plannedWeek = _weekMin[uid]?[weekKey] ?? 0;
         final assignment = _assignmentByUserSite['$uid|${shift.siteId}'];
+        final overtimeMinutes = overtimeByShiftId[id] ?? 0;
 
         assignments.add(ShiftAssignmentProposal(
           shiftId: id,
@@ -590,6 +650,7 @@ class ShiftAutoAssigner {
             assignment: assignment,
             projectedMonth: plannedMonth,
           ),
+          overtimeMinutes: overtimeMinutes,
         ));
 
         // Soft-Cap-Warnung (nur weicher Modus, finale Projektion).
@@ -611,6 +672,7 @@ class ShiftAutoAssigner {
                 projectedMonth: plannedMonth,
                 projectedWeek: plannedWeek,
                 contract: contract,
+                overtimeMinutes: overtimeMinutes,
               ),
             ));
           }
@@ -659,6 +721,18 @@ class ShiftAutoAssigner {
   /// günstige Checks zuerst, die teure Compliance zuletzt (Performance).
   UnassignableReason? _hardFailure(Shift shift, AppUserProfile member) {
     final uid = member.uid;
+
+    // 0. Austritt (Personalakte): Schichten nach dem Tagesende des
+    // Austrittstags sind hart ausgeschlossen (der Austrittstag selbst zählt
+    // noch als beschäftigt).
+    final exitDate = exitDateByUserId[uid];
+    if (exitDate != null) {
+      final endOfExitDay =
+          DateTime(exitDate.year, exitDate.month, exitDate.day, 23, 59, 59);
+      if (shift.startTime.isAfter(endOfExitDay)) {
+        return UnassignableReason.ausgeschieden;
+      }
+    }
 
     // 1. Standort-Berechtigung.
     final assignment = _assignmentByUserSite['$uid|${shift.siteId}'];
@@ -788,19 +862,25 @@ class ShiftAutoAssigner {
       score += preferenceWeight * _prefScore(uid, shift);
     }
 
+    // Weicher Cap-Modus: Überschreitung ist erlaubt, kostet aber Score —
+    // relativ zum **Cap** (nicht zum Fairness-Ziel; E4 entmengt beide).
     if (!settings.enforceHourCapHard) {
       final contract = _activeContract(uid, shift.startTime);
-      final exceedsMonthly = contract?.monthlyMaxHours != null &&
-          (plannedMonth + net) > contract!.monthlyMaxHours! * 60;
-      final exceedsWeekly = contract?.weeklyMaxHours != null &&
-          (plannedWeek + net) > contract!.weeklyMaxHours! * 60;
-      if (exceedsMonthly && monthlyTarget > 0) {
-        final overage = (plannedMonth + net) - monthlyTarget;
-        score -= _softCapPenaltyWeight * (overage / monthlyTarget);
+      final monthlyCap = contract?.monthlyMaxHours;
+      if (monthlyCap != null && monthlyCap > 0) {
+        final capMin = monthlyCap * 60;
+        final projected = plannedMonth + net;
+        if (projected > capMin) {
+          score -= _softCapPenaltyWeight * ((projected - capMin) / capMin);
+        }
       }
-      if (exceedsWeekly && weeklyTarget > 0) {
-        final overage = (plannedWeek + net) - weeklyTarget;
-        score -= _softCapPenaltyWeight * (overage / weeklyTarget);
+      final weeklyCap = contract?.weeklyMaxHours;
+      if (weeklyCap != null && weeklyCap > 0) {
+        final capMin = weeklyCap * 60;
+        final projected = plannedWeek + net;
+        if (projected > capMin) {
+          score -= _softCapPenaltyWeight * ((projected - capMin) / capMin);
+        }
       }
     }
 
@@ -831,8 +911,48 @@ class ShiftAutoAssigner {
         cost += _weightWeeklyFairness * d * d;
       }
     }
+
+    // Überstunden-Strafterm (W2e, cap-aware Lokalsuche): Minuten über dem
+    // Monats-/Wochen-Cap relativ zum Cap. Verhindert, dass die Fairness-Phase
+    // Zuweisungen grundlos über die Vertragsgrenze schiebt. Im harten Modus
+    // entstehen solche Zustände für offene Slots gar nicht erst (Feasibility);
+    // der Term ist dort ein No-op für mobile Slots und bleibt harmlos.
+    for (final label in _horizonMonths) {
+      final cap = _monthlyCapMinutes(uid, label);
+      if (cap == null) continue;
+      final mins = _monthMin[uid]?[label] ?? 0;
+      if (mins > cap) {
+        cost += _overtimeCostWeight * ((mins - cap) / cap);
+      }
+    }
+    for (final label in _horizonWeeks) {
+      final cap = _weeklyCapMinutes(uid, label);
+      if (cap == null) continue;
+      final mins = _weekMin[uid]?[label] ?? 0;
+      if (mins > cap) {
+        cost += _overtimeCostWeight * ((mins - cap) / cap);
+      }
+    }
     return cost;
   }
+
+  /// Monats-Cap in Minuten für [uid] im Horizont-Bucket [label] (null = kein
+  /// Cap) — Vertrag am Bucket-Stichtag, gecacht.
+  double? _monthlyCapMinutes(String uid, String label) =>
+      _monthlyCapCache.putIfAbsent('$uid|$label', () {
+        final hours =
+            _activeContract(uid, _horizonMonthDates[label]!)?.monthlyMaxHours;
+        return (hours == null || hours <= 0) ? null : hours * 60;
+      });
+
+  /// Wochen-Cap in Minuten für [uid] im Horizont-Bucket [label] (null = kein
+  /// Cap) — Vertrag am Bucket-Stichtag (Montag), gecacht.
+  double? _weeklyCapMinutes(String uid, String label) =>
+      _weeklyCapCache.putIfAbsent('$uid|$label', () {
+        final hours =
+            _activeContract(uid, _horizonWeekDates[label]!)?.weeklyMaxHours;
+        return (hours == null || hours <= 0) ? null : hours * 60;
+      });
 
   // ===========================================================================
   // Schicht-Vorlieben (weich)
@@ -950,13 +1070,11 @@ class ShiftAutoAssigner {
   double _weeklyTarget(String uid) =>
       _weeklyTargetCache[uid] ??= _computeWeeklyTarget(uid);
 
-  /// Monats-Zielminuten: `monthlyMaxHours` → Sollzeit-Monatssoll →
-  /// `weeklyHours × 4,33` (Plan §13.5). 0 = neutral.
+  /// Monats-Zielminuten — **Sollzeit-first** (E4): Sollzeit-Profil
+  /// (Monatssoll bzw. Wochensoll × 4,33) → Vertrags-`weeklyHours` × 4,33 →
+  /// erst zuletzt `monthlyMaxHours`. Caps sind Grenze, kein Ziel — der Planer
+  /// füllt Richtung Soll statt Richtung Maximum. 0 = neutral.
   double _computeMonthlyTarget(String uid) {
-    final contract = _activeContract(uid, _refDate);
-    if (contract?.monthlyMaxHours != null) {
-      return contract!.monthlyMaxHours! * 60;
-    }
     final sollzeit = sollzeitByUserId[uid];
     if (sollzeit != null) {
       if (sollzeit.isMonatsarbeitszeit &&
@@ -968,34 +1086,39 @@ class ShiftAutoAssigner {
         return sollzeit.wochensollMinutes * _hoursPerMonthFromWeek;
       }
     }
+    final contract = _activeContract(uid, _refDate);
     if (contract != null && contract.weeklyHours > 0) {
       return contract.weeklyHours * 60 * _hoursPerMonthFromWeek;
+    }
+    if (contract?.monthlyMaxHours != null) {
+      return contract!.monthlyMaxHours! * 60;
     }
     return 0;
   }
 
-  /// Wochen-Zielminuten: `weeklyMaxHours` → Sollzeit-Wochensoll → `weeklyHours`.
+  /// Wochen-Zielminuten — **Sollzeit-first** (E4): Sollzeit-Wochensoll →
+  /// Vertrags-`weeklyHours` → erst zuletzt `weeklyMaxHours`.
   double _computeWeeklyTarget(String uid) {
-    final contract = _activeContract(uid, _refDate);
-    if (contract?.weeklyMaxHours != null) {
-      return contract!.weeklyMaxHours! * 60;
-    }
     final sollzeit = sollzeitByUserId[uid];
     if (sollzeit != null && sollzeit.wochensollMinutes > 0) {
       return sollzeit.wochensollMinutes.toDouble();
     }
+    final contract = _activeContract(uid, _refDate);
     if (contract != null && contract.weeklyHours > 0) {
       return contract.weeklyHours * 60;
+    }
+    if (contract?.weeklyMaxHours != null) {
+      return contract!.weeklyMaxHours! * 60;
     }
     return 0;
   }
 
-  EmploymentContract? _activeContract(String userId, DateTime at) {
-    return contracts
-        .where((c) => c.userId == userId && c.isActiveOn(at))
-        .sorted((a, b) => b.validFrom.compareTo(a.validFrom))
-        .firstOrNull;
-  }
+  /// Am Stichtag gültiger Vertrag — mit **Fallback auf den jüngsten Vertrag**
+  /// des Nutzers (zentrale F1-Semantik aus [EmploymentContractResolver]): ein
+  /// abgelaufener Vertrag ist belastbarer als gar keiner; ohne Fallback
+  /// entfielen Caps/Minijob-Checks bei Vertragslücken still.
+  EmploymentContract? _activeContract(String userId, DateTime at) =>
+      EmploymentContractResolver.activeOn(contracts, userId, at);
 
   // ===========================================================================
   // Reason-/Text-Helfer
@@ -1011,6 +1134,7 @@ class ShiftAutoAssigner {
       UnassignableReason.monthlyCap,
       UnassignableReason.weeklyCap,
       UnassignableReason.minijob,
+      UnassignableReason.ausgeschieden,
       UnassignableReason.absence,
       UnassignableReason.preferenceBlock,
       UnassignableReason.doubleBooking,
@@ -1036,6 +1160,8 @@ class ShiftAutoAssigner {
         return 'Wochengrenze aller Kandidaten erreicht.';
       case UnassignableReason.minijob:
         return 'Minijob-Verdienstgrenze würde überschritten.';
+      case UnassignableReason.ausgeschieden:
+        return 'Mitarbeiter ist zum Schichtdatum ausgeschieden.';
       case UnassignableReason.absence:
         return 'Verfügbare Mitarbeiter sind abwesend (Urlaub/Krankheit).';
       case UnassignableReason.doubleBooking:
@@ -1068,6 +1194,7 @@ class ShiftAutoAssigner {
     required int projectedMonth,
     required int projectedWeek,
     required EmploymentContract? contract,
+    required int overtimeMinutes,
   }) {
     final parts = <String>[];
     if (exceedsMonthly && contract?.monthlyMaxHours != null) {
@@ -1078,7 +1205,21 @@ class ShiftAutoAssigner {
       parts.add(
           'Woche ${_h(projectedWeek)}/${_hHours(contract!.weeklyMaxHours!)} h');
     }
-    return '${member.displayName} über Grenze: ${parts.join(', ')}';
+    final detail = parts.join(', ');
+    if (overtimeMinutes > 0) {
+      return '${member.displayName} wird mit '
+          '${_formatOvertime(overtimeMinutes)} Überstunden geplant ($detail)';
+    }
+    // Diese Schicht selbst trägt (chronologisch) keine Überstunden, das
+    // Monats-/Wochenkonto liegt aber insgesamt über der Grenze.
+    return '${member.displayName} über Grenze: $detail';
+  }
+
+  /// Hübsche Überstunden-Dauer: unter 1 h in Minuten („45 Min."), sonst
+  /// de_DE-Dezimalstunden („1,5 Std.").
+  String _formatOvertime(int minutes) {
+    if (minutes < 60) return '$minutes Min.';
+    return '${_h(minutes)} Std.';
   }
 
   String _h(int minutes) =>
@@ -1104,10 +1245,12 @@ class ShiftAutoAssigner {
   /// ISO-Wochen-Bucket = Montag-Datum der Woche (deterministisch, ohne
   /// ISO-Wochennummern-Sonderfälle).
   String _weekLabel(DateTime date) {
-    final monday = DateTime(date.year, date.month, date.day)
-        .subtract(Duration(days: date.weekday - 1));
+    final monday = _mondayOf(date);
     return '${monday.year}-${monday.month}-${monday.day}';
   }
+
+  DateTime _mondayOf(DateTime date) => DateTime(date.year, date.month, date.day)
+      .subtract(Duration(days: date.weekday - 1));
 }
 
 /// Eine angenommene Fairness-Verbesserung (Verschiebung oder Tausch).

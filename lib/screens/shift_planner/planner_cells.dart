@@ -1,12 +1,30 @@
 // Teil von shift_planner_screen.dart (split-shift-planner-god-file, Strangler Schritt 2).
 //
-// Enthaelt die BuildContext-armen Leaf-Cell-Widgets des Schichtplan-Boards
+// Enthält die BuildContext-armen Leaf-Cell-Widgets des Schichtplan-Boards
 // (_PlannerBoardRowData, _PlannerDayHeaderCell, _PlannerBoardShiftCard,
 // _PlannerAbsencePill, _DashedRoundedBorderPainter) plus die reinen Farb-Helfer.
 // Als 'part' gehalten, damit die file-private Sichtbarkeit erhalten bleibt und
 // keine Imports dupliziert werden (die Library-Imports der Hauptdatei gelten).
 part of '../shift_planner_screen.dart';
 
+/// Gemeinsame Mindesthöhe der Board-Kopfzeile (Tages-Header + linke
+/// SCHICHT-Zelle). Die Kopfzeile wächst intrinsisch mit der Textskalierung
+/// (`IntrinsicHeight` in `_buildHeaderRow`) — die frühere feste Höhe 78
+/// erzeugte ab textScale 1.0 einen RenderFlex-Overflow (Plan W5, Befund
+/// „1-px-Overflow bewiesen").
+const double _plannerHeaderRowMinHeight = 78.0;
+
+/// Stunden-Format der Board-Pillen/Badges: ganzzahlig ohne Nachkommastelle,
+/// sonst eine Nachkommastelle mit de_DE-Komma („7,5").
+String _formatPlannerHours(double hours) {
+  final rounded = (hours * 10).round() / 10;
+  if (rounded == rounded.roundToDouble()) {
+    return rounded.round().toString();
+  }
+  return rounded.toStringAsFixed(1).replaceFirst('.', ',');
+}
+
+String _formatOvertimeHours(int minutes) => _formatPlannerHours(minutes / 60);
 
 class _PlannerBoardRowData {
   const _PlannerBoardRowData({
@@ -16,17 +34,23 @@ class _PlannerBoardRowData {
     this.memberId,
     this.location,
     this.subtitle,
-    this.dailyHours = 8,
+    this.targetHours,
+    this.weeklyMaxHours,
   });
 
-  factory _PlannerBoardRowData.employee(AppUserProfile member) {
+  factory _PlannerBoardRowData.employee(
+    AppUserProfile member, {
+    double? targetHours,
+    double? weeklyMaxHours,
+  }) {
     final title = member.displayName;
     return _PlannerBoardRowData(
       id: member.uid,
       title: title,
       memberId: member.uid,
       avatarLabel: title.characters.take(1).toString().toUpperCase(),
-      dailyHours: member.settings.dailyHours,
+      targetHours: targetHours,
+      weeklyMaxHours: weeklyMaxHours,
       subtitle: member.role.label,
     );
   }
@@ -34,6 +58,8 @@ class _PlannerBoardRowData {
   factory _PlannerBoardRowData.fallbackEmployee({
     required String userId,
     required String employeeName,
+    double? targetHours,
+    double? weeklyMaxHours,
   }) {
     final title = employeeName.trim().isEmpty ? 'Unbekannt' : employeeName;
     return _PlannerBoardRowData(
@@ -41,6 +67,8 @@ class _PlannerBoardRowData {
       title: title,
       memberId: userId,
       avatarLabel: title.characters.take(1).toString().toUpperCase(),
+      targetHours: targetHours,
+      weeklyMaxHours: weeklyMaxHours,
     );
   }
 
@@ -61,7 +89,14 @@ class _PlannerBoardRowData {
   final String? memberId;
   final String? location;
   final String? subtitle;
-  final double dailyHours;
+
+  /// Wochen-Sollstunden der Pille (Sollzeit-Profil → Vertrag → Settings, W5).
+  /// `null` bei Standort-Zeilen → neutrale Pille nur mit Ist.
+  final double? targetHours;
+
+  /// Vertragliche Wochen-Maximalstunden (`EmploymentContract.weeklyMaxHours`);
+  /// Ist darüber → „ÜS“-Badge. `null` = keine Grenze bekannt.
+  final double? weeklyMaxHours;
 
   bool matches(Shift shift) {
     if (memberId != null) {
@@ -75,13 +110,6 @@ class _PlannerBoardRowData {
     return effectiveShiftLocation == normalized;
   }
 
-  double targetHoursFor(List<DateTime> days) {
-    if (memberId == null) {
-      return 0;
-    }
-    final workDays = days.where((day) => day.weekday <= DateTime.friday).length;
-    return workDays * dailyHours;
-  }
 }
 
 class _PlannerDayHeaderCell extends StatelessWidget {
@@ -104,7 +132,11 @@ class _PlannerDayHeaderCell extends StatelessWidget {
     final appColors = theme.appColors;
     return Container(
       width: width,
-      height: 78,
+      // Intrinsisches Layout statt fester Höhe: die Kopfzeile wächst mit der
+      // Textskalierung (IntrinsicHeight in _buildHeaderRow), minHeight hält
+      // die bisherige Optik bei kleiner Schrift (Overflow-Fix W5).
+      constraints:
+          const BoxConstraints(minHeight: _plannerHeaderRowMinHeight),
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
       decoration: BoxDecoration(
         border: Border(
@@ -234,10 +266,9 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                       ),
                       child: Text(
                         '$sameBucketCount',
-                        style: TextStyle(
+                        style: theme.textTheme.labelSmall?.copyWith(
                           color: baseColor,
                           fontWeight: FontWeight.w700,
-                          fontSize: 10,
                         ),
                       ),
                     ),
@@ -304,10 +335,62 @@ class _PlannerBoardShiftCard extends StatelessWidget {
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
+              if (shift.hasPlannedOvertime) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: _PlannerOvertimeBadge(
+                    overtimeMinutes: shift.overtimeMinutes,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
       ),
+      ),
+    );
+  }
+}
+
+/// Kleines Überstunden-Badge („+X,Xh ÜS“) für Schichtkarten/Monats-Tiles:
+/// zeigt die am Shift persistierten **geplanten** Überstunden (E1) in
+/// `appColors.warning` mit erklärendem Tooltip. [compact] lässt den
+/// Stunden-Anteil weg (sehr enge Monats-Kacheln).
+class _PlannerOvertimeBadge extends StatelessWidget {
+  const _PlannerOvertimeBadge({
+    required this.overtimeMinutes,
+    this.compact = false,
+  });
+
+  final int overtimeMinutes;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final warning = theme.appColors.warning;
+    final hours = _formatOvertimeHours(overtimeMinutes);
+    return Tooltip(
+      message: 'Geplante Überstunden: $hours Std',
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 4 : 6,
+          vertical: compact ? 1 : 2,
+        ),
+        decoration: BoxDecoration(
+          color: warning.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          compact ? 'ÜS' : '+${hours}h ÜS',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: warning,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
       ),
     );
   }
@@ -459,6 +542,180 @@ class _DashedRoundedBorderPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _DashedRoundedBorderPainter oldDelegate) {
     return oldDelegate.color != color;
+  }
+}
+
+/// Schichtkarte der mobilen Tagesliste (Tag/Woche < 840 dp, E6): Avatar/
+/// Initiale, Name bzw. „Offene Schicht“, Zeitbereich, Standort, Status- und
+/// ÜS-Badge. Tap = bestehender Editor-Flow; freie Schichten tragen zusätzlich
+/// eine „Besetzen“-Affordanz (gleicher Tap-Flow).
+class _PlannerMobileShiftCard extends StatelessWidget {
+  const _PlannerMobileShiftCard({
+    required this.shift,
+    required this.onTap,
+  });
+
+  final Shift shift;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final baseColor = _resolveShiftColor(shift, theme);
+    final timeFmt = DateFormat('HH:mm', 'de_DE');
+    final isFree = shift.isUnassigned;
+    final name = isFree ? 'Offene Schicht' : shift.employeeName;
+    final initial = name.trim().isEmpty
+        ? '?'
+        : name.trim().characters.take(1).toString().toUpperCase();
+    final site = shift.effectiveSiteLabel?.trim().isNotEmpty == true
+        ? shift.effectiveSiteLabel!
+        : (shift.team?.trim().isNotEmpty == true
+            ? shift.team!
+            : 'Ohne Standort');
+    final statusTone = switch (shift.status) {
+      ShiftStatus.planned => AppStatusTone.info,
+      ShiftStatus.confirmed => AppStatusTone.success,
+      ShiftStatus.completed => AppStatusTone.neutral,
+      ShiftStatus.cancelled => AppStatusTone.error,
+    };
+
+    return Material(
+      color: colorScheme.surfaceContainerLowest,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: colorScheme.outlineVariant),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: baseColor.withValues(alpha: 0.16),
+                foregroundColor: baseColor,
+                child: isFree
+                    ? Icon(
+                        Icons.person_add_alt,
+                        size: 18,
+                        color: baseColor,
+                      )
+                    : Text(
+                        initial,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                        ),
+                        if (isFree) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.primaryContainer,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Besetzen',
+                                  style:
+                                      theme.textTheme.labelMedium?.copyWith(
+                                    color: colorScheme.onPrimaryContainer,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.chevron_right_rounded,
+                                  size: 16,
+                                  color: colorScheme.onPrimaryContainer,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      shift.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: baseColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${timeFmt.format(shift.startTime)} - '
+                      '${timeFmt.format(shift.endTime)} · '
+                      '${_formatPlannerHours(shift.workedHours)}h',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurface,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      site,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        AppStatusBadge(
+                          label: shift.status.label,
+                          tone: statusTone,
+                        ),
+                        if (shift.hasPlannedOvertime)
+                          _PlannerOvertimeBadge(
+                            overtimeMinutes: shift.overtimeMinutes,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

@@ -11,7 +11,7 @@ class OrgSettings {
   const OrgSettings({
     this.id,
     required this.orgId,
-    this.enforceHourCapHard = true,
+    this.enforceHourCapHard = false,
     this.defaultShiftMinutes = 480,
     this.defaultBreakMinutes = 30,
     this.defaultRequiredCount = 1,
@@ -24,9 +24,12 @@ class OrgSettings {
   final String? id;
   final String orgId;
 
-  /// `true` (Default) = Stundengrenzen (Woche/Monat) werden im Verteiler **hart**
-  /// durchgesetzt: Rest-Slots bleiben offen statt überschritten. `false` =
-  /// weich: Überschreitung erlaubt, Vorschau warnt + Score-Penalty.
+  /// `false` (Default) = Stundengrenzen (Woche/Monat) sind im Verteiler
+  /// **weich**: Mehrstunden werden als **geplante Überstunden** markiert
+  /// (Vorschau-Warnung, `overtimeMinutes` am Vorschlag, Score-Penalty).
+  /// `true` = hart: Rest-Slots bleiben offen statt überschritten.
+  /// Minijob-Verdienstgrenze + gesetzliche Compliance bleiben in beiden
+  /// Modi hart.
   final bool enforceHourCapHard;
 
   /// Ziel-Brutto-Schichtlänge (inkl. Pause) in Minuten, mit der der Generator
@@ -54,7 +57,7 @@ class OrgSettings {
     return OrgSettings(
       id: id,
       orgId: (map['orgId'] ?? '').toString(),
-      enforceHourCapHard: parse.toBool(map['enforceHourCapHard']) ?? true,
+      enforceHourCapHard: parse.toBool(map['enforceHourCapHard']) ?? false,
       defaultShiftMinutes: parse.toInt(map['defaultShiftMinutes']) ?? 480,
       defaultBreakMinutes: parse.toInt(map['defaultBreakMinutes']) ?? 30,
       defaultRequiredCount: parse.toInt(map['defaultRequiredCount']) ?? 1,
@@ -67,7 +70,7 @@ class OrgSettings {
     return OrgSettings(
       id: map['id']?.toString(),
       orgId: (map['org_id'] ?? '').toString(),
-      enforceHourCapHard: parse.toBool(map['enforce_hour_cap_hard']) ?? true,
+      enforceHourCapHard: parse.toBool(map['enforce_hour_cap_hard']) ?? false,
       defaultShiftMinutes: parse.toInt(map['default_shift_minutes']) ?? 480,
       defaultBreakMinutes: parse.toInt(map['default_break_minutes']) ?? 30,
       defaultRequiredCount: parse.toInt(map['default_required_count']) ?? 1,

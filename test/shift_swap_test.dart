@@ -438,11 +438,17 @@ void main() {
         () async {
       final provider = await bootProvider();
       // B arbeitet Mo 08–16, A's übergebene Schicht Mo 12–20 überschneidet sich
-      // beim Empfänger B -> Konflikt.
+      // beim Empfänger B -> Konflikt. A's Schicht trägt eine (für ANNA
+      // gerechnete) Überstunden-Projektion — skipCompliance persistiert sie
+      // unverändert (keine Neu-Projektion beim Seeden).
       await provider.saveShift(shiftFor('emp-b', 'Bert', mondayThisWeek(8)));
-      await provider.saveShift(shiftFor('emp-a', 'Anna', mondayThisWeek(12)));
+      await provider.saveShifts(
+        [shiftFor('emp-a', 'Anna', mondayThisWeek(12)).copyWith(overtimeMinutes: 90)],
+        skipCompliance: true,
+      );
       final shiftA =
           provider.shifts.firstWhere((shift) => shift.userId == 'emp-a');
+      expect(shiftA.overtimeMinutes, 90);
 
       await provider.updateSession(empA);
       await Future<void>.delayed(Duration.zero);
@@ -495,6 +501,10 @@ void main() {
       final reassigned =
           provider.shifts.firstWhere((shift) => shift.id == shiftA.id);
       expect(reassigned.userId, 'emp-b');
+      // Die für Anna gerechneten 90 Überstunden-Minuten dürfen NICHT auf Bert
+      // wandern: der Override-Pfad (skipCompliance) projiziert nicht neu —
+      // _buildSwappedShifts neutralisiert die Umbuchung daher auf 0.
+      expect(reassigned.overtimeMinutes, 0);
     });
 
     test('Gutschrift einlösen setzt Status auf settled', () async {

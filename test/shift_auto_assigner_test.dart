@@ -8,6 +8,7 @@ import 'package:worktime_app/models/employment_contract.dart';
 import 'package:worktime_app/models/org_settings.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/shift_preference.dart';
+import 'package:worktime_app/models/sollzeit_profile.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/services/compliance_service.dart';
 
@@ -23,7 +24,9 @@ void main() {
   final wednesday = monday.add(const Duration(days: 2));
   final nextMonday = monday.add(const Duration(days: 7));
 
-  final hardSettings = OrgSettings.defaults('org-1'); // enforceHourCapHard=true
+  // Org-Default ist seit E2 WEICH (Überstunden-Modus) — die Cap-Tests hier
+  // setzen die Härte deshalb explizit.
+  const hardSettings = OrgSettings(orgId: 'org-1', enforceHourCapHard: true);
   const softSettings = OrgSettings(orgId: 'org-1', enforceHourCapHard: false);
 
   AppUserProfile member(String uid,
@@ -163,6 +166,8 @@ void main() {
     OrgSettings? settings,
     Map<String, EmployeeShiftPreference> preferences = const {},
     double preferenceWeight = 0,
+    Map<String, SollzeitProfile> sollzeit = const {},
+    Map<String, DateTime> exitDates = const {},
   }) =>
       ShiftAutoAssigner(
         openShifts: open,
@@ -175,8 +180,10 @@ void main() {
         travelTimeRules: const [],
         complianceService: service,
         settings: settings ?? hardSettings,
+        sollzeitByUserId: sollzeit,
         preferencesByUserId: preferences,
         preferenceWeight: preferenceWeight,
+        exitDateByUserId: exitDates,
       ).assign();
 
   test('1. Happy Path: 2 Schichten, 2 Kandidaten → beide besetzt', () {
@@ -204,6 +211,8 @@ void main() {
     );
     expect(result.assignments, hasLength(1));
     expect(result.assignments.single.userId, 'u2');
+    // Harter Modus: niemand kommt über die Grenze → keine geplanten Überstunden.
+    expect(result.assignments.single.overtimeMinutes, 0);
   });
 
   test('2b. Monats-Cap hart: kein Kandidat übrig → unassigned mit Cap-Grund', () {
@@ -230,6 +239,10 @@ void main() {
     expect(result.assignments, hasLength(1));
     expect(result.unassigned, isEmpty);
     expect(result.warnings, isNotEmpty);
+    // Chronologische Zurechnung: die offene Montags-Schicht liegt VOR der
+    // bestehenden Dienstags-Schicht → sie selbst trägt keine Überstunden
+    // (das Konto kippt erst mit der späteren Schicht).
+    expect(result.assignments.single.overtimeMinutes, 0);
   });
 
   test('4. Wochen-Cap hart: gleiche Woche raus, andere Woche zuweisbar', () {
@@ -643,5 +656,145 @@ void main() {
       preferenceWeight: 0,
     );
     expect(result.unassigned.single.reason, UnassignableReason.preferenceBlock);
+  });
+
+  // --- Überstunden-Planung (W2: weich = Überstunden statt Blockade) ----------
+
+  test('27. Weicher Modus: Über-Cap-Zuweisung trägt overtimeMinutes > 0', () {
+    // u1 hat bereits 6h am Montag; die offene Mittwochs-Schicht liegt
+    // chronologisch DANACH und kippt das 6h-Monatskonto → volle 360 Min.
+    // Überstunden an der neuen Schicht.
+    final result = run(
+      open: [openShift('s1', start: wednesday.add(const Duration(hours: 8)))],
+      members: [member('u1')],
+      contracts: [contract('u1', monthlyMaxHours: 6)],
+      assignments: [assignment('u1')],
+      existing: [
+        assignedShift('e1', 'u1', start: monday.add(const Duration(hours: 8))),
+      ],
+      settings: softSettings,
+    );
+    expect(result.assignments, hasLength(1));
+    expect(result.unassigned, isEmpty);
+    expect(result.assignments.single.overtimeMinutes, 360);
+    expect(
+      result.warnings.single.message,
+      contains('Überstunden geplant'),
+    );
+  });
+
+  test('28. Harter Modus blockiert weiter (Über-Cap bleibt offen)', () {
+    final result = run(
+      open: [openShift('s1', start: wednesday.add(const Duration(hours: 8)))],
+      members: [member('u1')],
+      contracts: [contract('u1', monthlyMaxHours: 6)],
+      assignments: [assignment('u1')],
+      existing: [
+        assignedShift('e1', 'u1', start: monday.add(const Duration(hours: 8))),
+      ],
+      settings: hardSettings,
+    );
+    expect(result.assignments, isEmpty);
+    expect(result.unassigned.single.reason, UnassignableReason.monthlyCap);
+  });
+
+  test('29. Sollzeit-first (E4): Nutzer an der Sollzeit verliert gegen '
+      'Nutzer unter Soll — trotz riesigem monthlyMaxHours', () {
+    // u1: Sollzeit 20 h/Monat (bereits erreicht), Monats-Cap 250 h. Unter der
+    // ALTEN Zielkette (maxHours vor Sollzeit) wäre u1 „weit unter Ziel" und
+    // bekäme die Schicht; Sollzeit-first plant Richtung Soll → u2.
+    Shift tenHour(String id, String uid, DateTime day) => Shift(
+          id: id,
+          orgId: 'org-1',
+          userId: uid,
+          employeeName: uid,
+          title: 'Laden',
+          startTime: day.add(const Duration(hours: 8)),
+          endTime: day.add(const Duration(hours: 18)),
+          siteId: 'site-1',
+          siteName: 'Laden',
+        );
+    final result = run(
+      open: [openShift('s1', start: nextMonday.add(const Duration(hours: 8)))],
+      members: [member('u1'), member('u2')],
+      contracts: [
+        contract('u1', monthlyMaxHours: 250),
+        contract('u2'),
+      ],
+      assignments: [assignment('u1'), assignment('u2')],
+      existing: [
+        // Beide haben 20 h im Monat (Vorwoche) — nur die Sollzeit trennt sie.
+        tenHour('e1', 'u1', monday),
+        tenHour('e2', 'u1', tuesday),
+        tenHour('e3', 'u2', monday),
+        tenHour('e4', 'u2', tuesday),
+      ],
+      sollzeit: {
+        'u1': SollzeitProfile(
+          orgId: 'org-1',
+          userId: 'u1',
+          gueltigAb: DateTime(2020, 1, 1),
+          isMonatsarbeitszeit: true,
+          monatsarbeitszeitMinutes: 1200, // 20 h — bereits erreicht
+        ),
+      },
+      settings: softSettings,
+    );
+    expect(result.assignments.single.userId, 'u2');
+  });
+
+  test('30. Austrittsdatum: Schicht nach Austritt → ausgeschieden', () {
+    final result = run(
+      open: [openShift('s1', start: tuesday.add(const Duration(hours: 8)))],
+      members: [member('u1')],
+      contracts: [contract('u1')],
+      assignments: [assignment('u1')],
+      exitDates: {'u1': monday},
+    );
+    expect(result.assignments, isEmpty);
+    expect(result.unassigned.single.reason, UnassignableReason.ausgeschieden);
+    expect(
+      result.unassigned.single.message,
+      'Mitarbeiter ist zum Schichtdatum ausgeschieden.',
+    );
+  });
+
+  test('30b. Austrittstag selbst zählt noch als beschäftigt', () {
+    final result = run(
+      open: [openShift('s1', start: monday.add(const Duration(hours: 8)))],
+      members: [member('u1')],
+      contracts: [contract('u1')],
+      assignments: [assignment('u1')],
+      exitDates: {'u1': monday},
+    );
+    expect(result.assignments.single.userId, 'u1');
+    expect(result.unassigned, isEmpty);
+  });
+
+  test('31. Determinismus bleibt auch im weichen Überstunden-Modus erhalten', () {
+    AutoAssignmentResult once() => run(
+          open: [
+            openShift('s1', start: monday.add(const Duration(hours: 8))),
+            openShift('s2', start: wednesday.add(const Duration(hours: 8))),
+          ],
+          members: [member('u1'), member('u2')],
+          contracts: [
+            contract('u1', monthlyMaxHours: 6),
+            contract('u2', monthlyMaxHours: 6),
+          ],
+          assignments: [assignment('u1'), assignment('u2')],
+          settings: softSettings,
+        );
+    final a = once();
+    final b = once();
+    expect(a.assignments, hasLength(2));
+    expect(
+      a.assignments
+          .map((x) => '${x.shiftId}:${x.userId}:${x.overtimeMinutes}')
+          .toList(),
+      b.assignments
+          .map((x) => '${x.shiftId}:${x.userId}:${x.overtimeMinutes}')
+          .toList(),
+    );
   });
 }

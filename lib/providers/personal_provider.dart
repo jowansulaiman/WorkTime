@@ -807,6 +807,52 @@ class PersonalProvider extends ChangeNotifier {
     _journalPoster = poster;
   }
 
+  // --- Personal→Plan-Kopplung (E5) ------------------------------------------
+
+  /// Senke für Planungs-Referenzdaten (Sollzeit-Profile + Austrittsdaten der
+  /// Stammakte) in den lebenden ScheduleProvider — in `main.dart` verdrahtet
+  /// (Vorbild: `WorkProvider.updateScheduleProvider`). Best-effort und
+  /// fire-and-forget: der Aufruf wirft nie und löst kein `notifyListeners`
+  /// im Empfänger aus.
+  void Function({
+    List<SollzeitProfile>? sollzeitProfiles,
+    Map<String, DateTime>? exitDateByUserId,
+  })? _planningDataSink;
+
+  /// Setzt die Planungs-Senke und pusht sofort den aktuellen Stand (damit der
+  /// ScheduleProvider auch ohne weitere Personal-Änderung versorgt ist).
+  void setPlanningDataSink(
+    void Function({
+      List<SollzeitProfile>? sollzeitProfiles,
+      Map<String, DateTime>? exitDateByUserId,
+    }) sink,
+  ) {
+    _planningDataSink = sink;
+    _pushPlanningData();
+  }
+
+  /// Schiebt Sollzeit-Profile + `exitDate`-Map (Stammakte) fire-and-forget in
+  /// die Planungs-Senke. Wird nach JEDER Aktualisierung von
+  /// `_sollzeitProfiles`/`_employeeProfiles` aufgerufen (Streams, lokale
+  /// Mutator-Fallbacks, Session-Wechsel). Wirft nie.
+  void _pushPlanningData() {
+    final sink = _planningDataSink;
+    if (sink == null) return;
+    try {
+      sink(
+        sollzeitProfiles:
+            List<SollzeitProfile>.unmodifiable(_sollzeitProfiles),
+        exitDateByUserId: <String, DateTime>{
+          for (final profile in _employeeProfiles)
+            if (profile.exitDate != null && profile.userId.trim().isNotEmpty)
+              profile.userId: profile.exitDate!,
+        },
+      );
+    } catch (error) {
+      debugPrint('PersonalProvider: Planungs-Senke fehlgeschlagen: $error');
+    }
+  }
+
   Future<void> updateSession(
     AppUserProfile? user, {
     bool localStorageOnly = false,
@@ -827,6 +873,7 @@ class PersonalProvider extends ChangeNotifier {
 
     if (user == null) {
       _resetData();
+      _pushPlanningData();
       _safeNotify();
       return;
     }
@@ -835,6 +882,7 @@ class PersonalProvider extends ChangeNotifier {
       _startFirestoreSubscriptions(user.orgId);
     } else {
       await _loadLocalData();
+      _pushPlanningData();
       _safeNotify();
     }
   }
@@ -868,11 +916,21 @@ class PersonalProvider extends ChangeNotifier {
       // only (Steuerklasse etc. sieht der MA über seine Lohnabrechnung).
       final uid = _currentUser?.uid;
       if (uid != null) {
-        _sollzeitProfilesSubscription = _firestore
-            .watchSollzeitProfilesForUser(orgId: orgId, userId: uid)
-            .listen((items) {
+        // E5-Kopplung: Planer ohne Admin-Rolle (canManageShifts, z.B.
+        // Teamleads) brauchen die Sollzeit-Profile ORG-WEIT, damit die
+        // Auto-Planung/Board-Pillen mit Sollzeit-Zielen rechnen (firestore.rules
+        // erlauben canManageShifts-Read auf sollzeitProfiles). Alle anderen
+        // Streams (insb. employeeProfiles = Stammakte) bleiben self-scoped.
+        final sollzeitStream = (_currentUser?.canManageShifts ?? false)
+            ? _firestore.watchSollzeitProfiles(orgId)
+            : _firestore.watchSollzeitProfilesForUser(
+                orgId: orgId,
+                userId: uid,
+              );
+        _sollzeitProfilesSubscription = sollzeitStream.listen((items) {
           _sollzeitProfiles = items;
           _loading = false;
+          _pushPlanningData();
           _safeNotify();
         }, onError: _setError);
 
@@ -880,6 +938,7 @@ class PersonalProvider extends ChangeNotifier {
             .watchEmployeeProfileForUser(orgId: orgId, userId: uid)
             .listen((items) {
           _employeeProfiles = items;
+          _pushPlanningData();
           _safeNotify();
         }, onError: _setError);
 
@@ -932,12 +991,14 @@ class PersonalProvider extends ChangeNotifier {
     _employeeProfilesSubscription =
         _firestore.watchEmployeeProfiles(orgId).listen((items) {
       _employeeProfiles = items;
+      _pushPlanningData();
       _safeNotify();
     }, onError: _setError);
 
     _sollzeitProfilesSubscription =
         _firestore.watchSollzeitProfiles(orgId).listen((items) {
       _sollzeitProfiles = items;
+      _pushPlanningData();
       _safeNotify();
     }, onError: _setError);
 
@@ -1572,6 +1633,7 @@ class PersonalProvider extends ChangeNotifier {
     _upsertLocal(_employeeProfiles, prepared, (item) => item.id);
     _employeeProfiles = [..._employeeProfiles];
     await _persistEmployeeProfiles();
+    _pushPlanningData();
     _safeNotify();
     _audit?.call(
       action: isNew ? AuditAction.created : AuditAction.updated,
@@ -1602,6 +1664,7 @@ class PersonalProvider extends ChangeNotifier {
         .where((profile) => profile.userId != userId)
         .toList(growable: false);
     await _persistEmployeeProfiles();
+    _pushPlanningData();
     _safeNotify();
     _audit?.call(
       action: AuditAction.deleted,
@@ -1809,6 +1872,7 @@ class PersonalProvider extends ChangeNotifier {
     _upsertLocal(_sollzeitProfiles, withId, (item) => item.id);
     _sollzeitProfiles = [..._sollzeitProfiles];
     await _persistSollzeitProfiles();
+    _pushPlanningData();
     _safeNotify();
     _audit?.call(
       action: isNew ? AuditAction.created : AuditAction.updated,
@@ -1840,6 +1904,7 @@ class PersonalProvider extends ChangeNotifier {
         .where((profile) => profile.id != profileId)
         .toList(growable: false);
     await _persistSollzeitProfiles();
+    _pushPlanningData();
     _safeNotify();
     _audit?.call(
       action: AuditAction.deleted,

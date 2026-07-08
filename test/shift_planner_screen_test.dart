@@ -5,9 +5,14 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/compliance_rule_set.dart';
+import 'package:worktime_app/models/employee_site_assignment.dart';
+import 'package:worktime_app/models/employment_contract.dart';
 import 'package:worktime_app/models/shift.dart';
+import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
 import 'package:worktime_app/providers/schedule_provider.dart';
@@ -162,15 +167,46 @@ void main() {
       await tester.tap(find.byIcon(Icons.menu_rounded));
       await _settlePlanner(tester);
 
-      expect(find.text('Kalender-Menue'), findsOneWidget);
+      expect(find.text('Kalender-Menü'), findsOneWidget);
       expect(
         find.text(
-            'Mitarbeiter und Standorte fuer die Monatsansicht auswaehlen.'),
+            'Mitarbeiter und Standorte für die Monatsansicht auswählen.'),
         findsOneWidget,
       );
       expect(find.text('Anna'), findsWidgets);
       expect(find.text('MITARBEITER'), findsOneWidget);
       expect(find.text('STANDORTE'), findsOneWidget);
+
+      // Geplante Monatsstunden je Mitarbeiter neben der Filter-Checkbox:
+      // Anna hat eine 7,5h-Schicht im Monat, Soll-Fallback 8h×5×4,33.
+      expect(find.text('7,5h/173,2h'), findsOneWidget);
+      expect(find.text('0h/173,2h'), findsWidgets);
+    },
+  );
+
+  testWidgets(
+    'Monatsansicht: Sidebar zeigt geplante Stunden je Mitarbeiter',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-anna',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+        viewMode: ScheduleViewMode.month,
+        physicalSize: const Size(1600, 1200),
+      );
+
+      // Desktop-Sidebar: Anna 7,5h geplant, Soll-Fallback 8h×5×4,33 = 173,2h;
+      // Mitglieder ohne Schichten zeigen 0h.
+      expect(find.text('7,5h/173,2h'), findsOneWidget);
+      expect(find.text('0h/173,2h'), findsWidgets);
     },
   );
 
@@ -370,14 +406,14 @@ void main() {
       await tester.tap(tageTile);
       await _settlePlanner(tester);
 
-      expect(find.text('Tage waehlen'), findsOneWidget);
+      expect(find.text('Tage wählen'), findsOneWidget);
       expect(find.text('Mo'), findsWidgets);
-      expect(find.text('Uebernehmen'), findsOneWidget);
+      expect(find.text('Übernehmen'), findsOneWidget);
 
       // Wochentag waehlen + uebernehmen darf nicht werfen.
       await tester.tap(find.text('Mo').first);
       await _settlePlanner(tester);
-      await tester.tap(find.text('Uebernehmen'));
+      await tester.tap(find.text('Übernehmen'));
       await _settlePlanner(tester);
     },
   );
@@ -398,7 +434,122 @@ void main() {
       expect(find.text('Ben'), findsWidgets);
       // Die alte, lange Verfuegbarkeits-Darstellung ist entfernt.
       expect(find.text('Verfuegbar im gewaehlten Zeitraum'), findsNothing);
-      expect(find.text('Nicht verfuegbar'), findsNothing);
+      expect(find.text('Nicht verfügbar'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Editor ohne Standort: Inline-Hinweis statt Per-Person-Sperrgruenden (W6)',
+    (tester) async {
+      // Zwei Standorte -> keine automatische Vorbelegung, der Editor öffnet
+      // ohne gewählten Standort.
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        sites: const [
+          SiteDefinition(id: 'site-a', orgId: 'org-1', name: 'Laden A'),
+          SiteDefinition(id: 'site-b', orgId: 'org-1', name: 'Laden B'),
+        ],
+      );
+
+      await tester.tap(find.text('Neue Schicht'));
+      await _settlePlanner(tester);
+
+      // Inline-Hinweis am Standort-Dropdown statt "0 frei / alle gesperrt".
+      expect(
+        find.text('Standort wählen, um Verfügbarkeiten zu prüfen.'),
+        findsOneWidget,
+      );
+      // Neutrale Badges statt irreführender Zählung.
+      expect(find.text('– frei'), findsOneWidget);
+      expect(find.text('– gesperrt'), findsOneWidget);
+      expect(find.textContaining('0 frei'), findsNothing);
+      // Keine Per-Person-Sperrgründe, sondern neutraler Ungeprüft-Status.
+      expect(find.text('Nicht verfügbar'), findsNothing);
+      expect(
+        find.text('Verfügbarkeit ungeprüft – bitte Standort wählen'),
+        findsWidgets,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Editor zeigt Überstunden-Hinweis, Kandidat bleibt wählbar (W6/E3)',
+    (tester) async {
+      // Ein Standort -> automatische Vorbelegung; Anna hat ein Wochen-Maximum
+      // von 1h, die 8h-Draft-Schicht projiziert also geplante Überstunden.
+      final validFrom = DateTime(2020, 1, 1);
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        sites: const [
+          SiteDefinition(id: 'site-1', orgId: 'org-1', name: 'Berlin HQ'),
+        ],
+        contracts: [
+          EmploymentContract(
+            id: 'contract-anna',
+            orgId: 'org-1',
+            userId: 'employee-anna',
+            validFrom: validFrom,
+            weeklyMaxHours: 1,
+          ),
+        ],
+        siteAssignments: const [
+          EmployeeSiteAssignment(
+            id: 'assign-admin',
+            orgId: 'org-1',
+            userId: 'admin-1',
+            siteId: 'site-1',
+            siteName: 'Berlin HQ',
+          ),
+          EmployeeSiteAssignment(
+            id: 'assign-anna',
+            orgId: 'org-1',
+            userId: 'employee-anna',
+            siteId: 'site-1',
+            siteName: 'Berlin HQ',
+          ),
+          EmployeeSiteAssignment(
+            id: 'assign-ben',
+            orgId: 'org-1',
+            userId: 'employee-ben',
+            siteId: 'site-1',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+      );
+
+      await tester.tap(find.text('Neue Schicht'));
+      await _settlePlanner(tester);
+      // Verfügbarkeits-Load abwarten (async Fake-Firestore-Query).
+      await _settlePlanner(tester);
+
+      // Nicht-blockierende Überstunden-Zeile am Kandidaten-Tile (nur Anna).
+      final overtimeHint = find.textContaining('Über Vertragsmaximum:');
+      expect(overtimeHint, findsOneWidget);
+      expect(
+        find.textContaining('werden als Überstunden geplant'),
+        findsOneWidget,
+      );
+      // Kein Inline-Standort-Hinweis (Standort ist vorbelegt).
+      expect(
+        find.text('Standort wählen, um Verfügbarkeiten zu prüfen.'),
+        findsNothing,
+      );
+
+      // Kandidat bleibt trotz Überstunden WÄHLBAR (E3): Tipp auf das Tile
+      // toggelt die Auswahl (Checkbox-Anzahl ändert sich, kein Fehler).
+      final checkedBefore =
+          tester.widgetList(find.byIcon(Icons.check_box)).length;
+      await tester.ensureVisible(overtimeHint);
+      await _settlePlanner(tester);
+      await tester.tap(overtimeHint);
+      await _settlePlanner(tester);
+      final checkedAfter =
+          tester.widgetList(find.byIcon(Icons.check_box)).length;
+      expect(checkedAfter, isNot(checkedBefore));
       expect(tester.takeException(), isNull);
     },
   );
@@ -442,7 +593,7 @@ void main() {
       await tester.tap(tageTile);
       await _settlePlanner(tester);
       expect(tester.takeException(), isNull);
-      expect(find.text('Tage waehlen'), findsOneWidget);
+      expect(find.text('Tage wählen'), findsOneWidget);
     },
   );
 
@@ -573,15 +724,192 @@ void main() {
       expect(find.widgetWithText(FilledButton, 'Kopieren'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'Mobile Wochenansicht (390 dp): Tagesabschnitte statt Grid (W5/E6)',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-mobile',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+        viewMode: ScheduleViewMode.week,
+        physicalSize: const Size(390, 844),
+      );
+
+      expect(tester.takeException(), isNull);
+      // Kein Quer-Scroll-Grid: die Grid-Abschnittslabels fehlen.
+      expect(find.text('FREIE SCHICHTEN'), findsNothing);
+      expect(find.text('PLANMÄSSIGE SCHICHTEN'), findsNothing);
+      // Tagesabschnitt des heutigen Tages + Schichtkarte vorhanden.
+      final today = DateTime.now();
+      expect(
+        find.text(DateFormat('EEE, d. MMM', 'de_DE').format(today)),
+        findsOneWidget,
+      );
+      expect(find.text('Fruehschicht'), findsWidgets);
+      expect(find.text('Anna'), findsWidgets);
+      // Prominenter Veröffentlichen-Button im Kompakt-Modus (W5).
+      expect(
+        find.widgetWithText(FilledButton, 'Veröffentlichen'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'Stunden-Pille nutzt Vertrags-Wochenstunden als Soll (W5)',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-pille',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+        teamContracts: [
+          EmploymentContract(
+            id: 'contract-anna',
+            orgId: 'org-1',
+            userId: 'employee-anna',
+            validFrom: DateTime(2020, 1, 1),
+            weeklyHours: 30,
+          ),
+        ],
+        // Wochensoll gehört zur WOCHEN-Ansicht (die Tag-Ansicht zeigt die
+        // Pille bewusst neutral ohne Soll — eigener Test unten).
+        viewMode: ScheduleViewMode.week,
+      );
+
+      // Soll = contract.weeklyHours (30) statt settings.dailyHours×Werktage.
+      expect(find.textContaining('/30h'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Tag-Ansicht: Stunden-Pille neutral nur mit Ist, ohne Wochensoll (W5)',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-pille-tag',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+          ),
+        ],
+        teamContracts: [
+          EmploymentContract(
+            id: 'contract-anna',
+            orgId: 'org-1',
+            userId: 'employee-anna',
+            validFrom: DateTime(2020, 1, 1),
+            weeklyHours: 30,
+          ),
+        ],
+        viewMode: ScheduleViewMode.day,
+      );
+
+      // Tages-Ist gegen WOCHEN-Soll wäre falsch (8h/30h) — die Pille zeigt in
+      // der Tag-Ansicht nur das Ist („7,5h“, 8h minus 30 min Pause).
+      expect(find.text('7,5h'), findsWidgets);
+      expect(find.textContaining('/30h'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Schichtkarte zeigt ÜS-Badge bei geplanten Überstunden (W5/E1)',
+    (tester) async {
+      await _pumpAdminPlanner(
+        tester,
+        absences: const [],
+        shifts: const [
+          _SeededShift(
+            id: 'shift-ueberstunden',
+            userId: 'employee-anna',
+            employeeName: 'Anna',
+            title: 'Fruehschicht',
+            siteName: 'Berlin HQ',
+            overtimeMinutes: 150,
+          ),
+        ],
+      );
+
+      expect(find.text('+2,5h ÜS'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Wochenansicht ohne Overflow bei Textskalierung 1.0 und 1.3 (W5)',
+    (tester) async {
+      for (final scale in const [1.0, 1.3]) {
+        await _pumpAdminPlanner(
+          tester,
+          absences: const [
+            _SeededAbsence(
+              id: 'absence-scale',
+              userId: 'employee-anna',
+              employeeName: 'Anna',
+              type: 'vacation',
+              status: 'approved',
+            ),
+          ],
+          shifts: const [
+            _SeededShift(
+              id: 'shift-scale',
+              userId: 'employee-anna',
+              employeeName: 'Anna',
+              title: 'Fruehschicht',
+              siteName: 'Berlin HQ',
+            ),
+          ],
+          viewMode: ScheduleViewMode.week,
+          textScale: scale,
+        );
+
+        // Kein RenderFlex-Overflow — insbesondere nicht in der Board-
+        // Kopfzeile (frühere feste Höhe 78, „1-px-Overflow bewiesen").
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: 'Overflow bei Textskalierung $scale',
+        );
+      }
+    },
+  );
 }
 
 Future<_PlannerHarness> _pumpAdminPlanner(
   WidgetTester tester, {
   required List<_SeededAbsence> absences,
   List<_SeededShift> shifts = const [],
+  List<SiteDefinition> sites = const [],
+  List<EmploymentContract> contracts = const [],
+  List<EmploymentContract> teamContracts = const [],
+  List<EmployeeSiteAssignment> siteAssignments = const [],
   ScheduleViewMode viewMode = ScheduleViewMode.day,
   Size physicalSize = const Size(1600, 1200),
-  double textScale = 0.78,
+  // Reale Standard-Skalierung — die frühere 0.78 maskierte den 1-px-Overflow
+  // der Board-Kopfzeile (Plan W5, Befund „1-px-Overflow bewiesen").
+  double textScale = 1.0,
   ShiftPlanExportCallback? onShiftPlanExport,
 }) async {
   tester.view.devicePixelRatio = 1;
@@ -590,6 +918,9 @@ Future<_PlannerHarness> _pumpAdminPlanner(
     tester.view.resetDevicePixelRatio();
     tester.view.resetPhysicalSize();
   });
+  // Statischer UI-Komfort-Merker: darf nicht zwischen Tests leaken (er würde
+  // sonst den Standort im Editor unerwartet vorbelegen).
+  ScheduleProvider.lastUsedSiteId = null;
 
   const admin = AppUserProfile(
     uid: 'admin-1',
@@ -655,6 +986,14 @@ Future<_PlannerHarness> _pumpAdminPlanner(
     });
   }
 
+  final siteCollection = firestore
+      .collection('organizations')
+      .doc(admin.orgId)
+      .collection('sites');
+  for (final site in sites) {
+    await siteCollection.doc(site.id).set(site.toFirestoreMap());
+  }
+
   for (final shift in shifts) {
     await shiftCollection.doc(shift.id).set({
       'orgId': admin.orgId,
@@ -669,9 +1008,22 @@ Future<_PlannerHarness> _pumpAdminPlanner(
       'location': shift.siteName,
       'requiredQualificationIds': const <String>[],
       'status': shift.status.value,
+      'overtimeMinutes': shift.overtimeMinutes,
       'createdAt': Timestamp.fromDate(day),
       'updatedAt': Timestamp.fromDate(day),
     });
+  }
+
+  // Verträge für die Stunden-Pille (W5): TeamProvider streamt
+  // employmentContracts org-weit (admin) — hier direkt in Firestore seeden.
+  final contractCollection = firestore
+      .collection('organizations')
+      .doc(admin.orgId)
+      .collection('employmentContracts');
+  for (final contract in teamContracts) {
+    await contractCollection
+        .doc(contract.id ?? 'contract-${contract.userId}')
+        .set(contract.toFirestoreMap());
   }
 
   final authProvider = _TestAuthProvider(
@@ -687,6 +1039,16 @@ Future<_PlannerHarness> _pumpAdminPlanner(
 
   await teamProvider.updateSession(admin);
   await scheduleProvider.updateSession(admin);
+  if (contracts.isNotEmpty || siteAssignments.isNotEmpty) {
+    scheduleProvider.updateReferenceData(
+      members: const [admin, anna, ben],
+      contracts: contracts,
+      siteAssignments: siteAssignments,
+      ruleSets: [ComplianceRuleSet.defaultRetail(admin.orgId)],
+      travelTimeRules: const [],
+      sites: sites,
+    );
+  }
   scheduleProvider.setViewMode(viewMode);
   scheduleProvider.setVisibleDate(day);
 
@@ -761,6 +1123,7 @@ class _SeededShift {
     required this.title,
     required this.siteName,
     this.status = ShiftStatus.planned,
+    this.overtimeMinutes = 0,
   });
 
   final String id;
@@ -769,6 +1132,9 @@ class _SeededShift {
   final String title;
   final String siteName;
   final ShiftStatus status;
+
+  /// Geplante Überstunden (W1/E1) — für die ÜS-Badge-Tests.
+  final int overtimeMinutes;
 }
 
 class _PlannerHarness {

@@ -76,6 +76,7 @@ class Shift {
     this.swapRequestedByUid,
     this.swapStatus,
     this.status = ShiftStatus.planned,
+    this.overtimeMinutes = 0,
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
@@ -102,9 +103,16 @@ class Shift {
   final String? seriesId;
   final RecurrencePattern recurrencePattern;
   final ShiftStatus status;
+
+  /// Plan-Metadatum: zum Planungszeitpunkt über der Vertrags-Maximalstunde
+  /// liegender Anteil dieser Schicht in Minuten (geplante Überstunden).
+  /// Fließt NIE ins Zeitkonto-Ist (das läuft über WorkEntries).
+  final int overtimeMinutes;
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+
+  bool get hasPlannedOvertime => overtimeMinutes > 0;
 
   double get workedHours =>
       (endTime.difference(startTime).inMinutes - breakMinutes) / 60;
@@ -153,6 +161,7 @@ class Shift {
       recurrencePattern:
           RecurrencePatternX.fromValue(map['recurrence_pattern']?.toString()),
       status: ShiftStatusX.fromValue(map['status']?.toString()),
+      overtimeMinutes: parse.toInt(map['overtime_minutes']) ?? 0,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -187,6 +196,7 @@ class Shift {
       recurrencePattern:
           RecurrencePatternX.fromValue(map['recurrencePattern']?.toString()),
       status: ShiftStatusX.fromValue(map['status']?.toString()),
+      overtimeMinutes: parse.toInt(map['overtimeMinutes']) ?? 0,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -215,6 +225,7 @@ class Shift {
       'seriesId': seriesId,
       'recurrencePattern': recurrencePattern.value,
       'status': status.value,
+      'overtimeMinutes': overtimeMinutes,
       'createdByUid': createdByUid,
       if (createdAt != null) 'createdAt': Timestamp.fromDate(createdAt!),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -244,6 +255,7 @@ class Shift {
       'series_id': seriesId,
       'recurrence_pattern': recurrencePattern.value,
       'status': status.value,
+      'overtime_minutes': overtimeMinutes,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -280,6 +292,7 @@ class Shift {
     String? seriesId,
     RecurrencePattern? recurrencePattern,
     ShiftStatus? status,
+    int? overtimeMinutes,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -308,6 +321,7 @@ class Shift {
       seriesId: seriesId ?? this.seriesId,
       recurrencePattern: recurrencePattern ?? this.recurrencePattern,
       status: status ?? this.status,
+      overtimeMinutes: overtimeMinutes ?? this.overtimeMinutes,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

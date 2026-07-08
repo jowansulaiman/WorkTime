@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -10,6 +12,9 @@ import 'package:collection/collection.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/compliance_violation.dart';
+import '../models/employment_contract.dart';
+import '../models/sollzeit_profile.dart';
+import '../core/employment_contract_resolver.dart';
 import '../core/hex_color.dart';
 import '../core/shift_auto_assigner.dart';
 import '../models/shift.dart';
@@ -26,6 +31,7 @@ import '../routing/shell_tab.dart';
 import '../services/compliance_rejected_exception.dart';
 import '../services/export_service.dart';
 import '../theme/app_theme.dart';
+import '../ui/app_status.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/responsive_layout.dart';
 import 'notification_screen.dart';
@@ -133,7 +139,7 @@ class ShiftPlannerScreen extends StatelessWidget {
           child: Padding(
             padding: EdgeInsets.all(24),
             child: Text(
-              'Der Schichtplan ist fuer dieses Profil deaktiviert.',
+              'Der Schichtplan ist für dieses Profil deaktiviert.',
               textAlign: TextAlign.center,
             ),
           ),
@@ -245,9 +251,9 @@ class ShiftPlannerScreen extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 isTeamLead
-                    ? 'Schichten koordinieren, Konflikte pruefen und eigene Abwesenheiten an den Admin senden.'
+                    ? 'Schichten koordinieren, Konflikte prüfen und eigene Abwesenheiten an den Admin senden.'
                     : isAdmin
-                        ? 'Schichten anlegen, filtern, Konflikte pruefen und Abwesenheiten freigeben.'
+                        ? 'Schichten anlegen, filtern, Konflikte prüfen und Abwesenheiten freigeben.'
                         : 'Eigene Schichten einsehen und Abwesenheiten melden.',
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -300,7 +306,7 @@ class ShiftPlannerScreen extends StatelessWidget {
                               ),
                             ),
                             icon: const Icon(Icons.chevron_left),
-                            label: const Text('Zurueck'),
+                            label: const Text('Zurück'),
                           ),
                           Text(
                             rangeLabel,
@@ -723,12 +729,12 @@ class ShiftPlannerScreen extends StatelessWidget {
       rangeEnd: range.end,
       settings: settings,
     );
-    final existingOpen = schedule.shifts
-        .where((shift) =>
-            shift.isUnassigned &&
-            !shift.startTime.isBefore(range.start) &&
-            shift.startTime.isBefore(range.end))
-        .toList(growable: false);
+    // W3: offene Schichten UNGEFILTERT über den Provider sammeln — die
+    // Status-/Team-/Mitarbeiter-Filter der Board-Ansicht (`schedule.shifts`)
+    // dürfen der Auto-Verteilung keine offenen Schichten verstecken.
+    final existingOpen = schedule.openShiftsInRange(
+      DateTimeRange(start: range.start, end: range.end),
+    );
     final openShifts = [...generated, ...existingOpen];
 
     if (openShifts.isEmpty) {
@@ -762,7 +768,9 @@ class ShiftPlannerScreen extends StatelessWidget {
         .whenComplete(navigator.pop);
 
     if (!context.mounted) return;
-    final confirmed = await showModalBottomSheet<bool>(
+    // Rückgabe = abgewählte Zuweisungs-Schicht-IDs (Teilübernahme, W5);
+    // `null` = Abbrechen, leer = alles übernehmen.
+    final deselected = await showModalBottomSheet<Set<String>>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
@@ -774,22 +782,52 @@ class ShiftPlannerScreen extends StatelessWidget {
         enforceHourCapHard: settings.enforceHourCapHard,
       ),
     );
-    if (confirmed != true || !context.mounted) {
+    if (deselected == null || !context.mounted) {
       return;
+    }
+
+    // onlyShiftIds-Semantik (ScheduleProvider.applyAutoPlan): `null` = alle;
+    // sonst werden NUR Schichten mit enthaltener ID angewendet. Neue Slots
+    // ohne (oder mit abgewählter) Zuweisung zählen weiter zur Übernahme —
+    // abwählbar sind nur die Zuweisungen selbst; eine abgewählte Zuweisung
+    // eines neuen Slots legt den Slot unbesetzt an.
+    Set<String>? onlyShiftIds;
+    var appliedResult = result;
+    if (deselected.isNotEmpty) {
+      appliedResult = AutoAssignmentResult(
+        assignments: result.assignments
+            .where((proposal) => !deselected.contains(proposal.shiftId))
+            .toList(growable: false),
+        unassigned: result.unassigned,
+        warnings: result.warnings,
+      );
+      final assignedExistingIds = {
+        for (final proposal in appliedResult.assignments) proposal.shiftId,
+      };
+      onlyShiftIds = {
+        // Neue Slots immer anlegen (ggf. unbesetzt, weil Proposal gefiltert).
+        for (final shift in generated)
+          if (shift.id != null) shift.id!,
+        // Bestehende offene Schichten nur mit (gewählter) Zuweisung.
+        for (final shift in existingOpen)
+          if (shift.id != null && assignedExistingIds.contains(shift.id))
+            shift.id!,
+      };
     }
 
     try {
       await schedule.applyAutoPlan(
         generatedShifts: generated,
         existingOpenShifts: existingOpen,
-        result: result,
+        result: appliedResult,
+        onlyShiftIds: onlyShiftIds,
       );
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             '${generated.length} Schichten geplant, '
-            '${result.assignments.length} besetzt',
+            '${appliedResult.assignments.length} besetzt',
           ),
         ),
       );
@@ -1059,7 +1097,7 @@ class ShiftPlannerScreen extends StatelessWidget {
       }
       await _showShiftConflictDialog(context, error.issues);
     } on ComplianceRejectedException catch (error) {
-      // Serverseitige Compliance-Ablehnung: strukturierte Verstoesse anzeigen
+      // Serverseitige Compliance-Ablehnung: strukturierte Verstöße anzeigen
       // statt der nackten 'Bad state:'-Meldung (probleme #16).
       if (!context.mounted) {
         return;
@@ -1078,7 +1116,7 @@ class ShiftPlannerScreen extends StatelessWidget {
     }
   }
 
-  /// Entfernt das englische 'Bad state: '-Praefix, das `StateError.toString()`
+  /// Entfernt das englische 'Bad state: '-Präfix, das `StateError.toString()`
   /// voranstellt (probleme #16).
   String _cleanErrorText(Object error) =>
       error.toString().replaceFirst('Bad state: ', '');
@@ -1131,7 +1169,7 @@ class ShiftPlannerScreen extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Schliessen'),
+            child: const Text('Schließen'),
           ),
         ],
       ),
@@ -1155,7 +1193,7 @@ class ShiftPlannerScreen extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Schliessen'),
+            child: const Text('Schließen'),
           ),
         ],
       ),
@@ -1250,7 +1288,9 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
   static const _sideWidth = 154.0;
   static const _dayWidth = 176.0;
   static const _compactToolbarBreakpoint = 1040.0;
-  static const _compactMonthBreakpoint = 860.0;
+  // Kompakt-Breakpoint des Monats vereinheitlicht auf das app-weite
+  // Mobile-Fenster (E6: 860 → 840, `MobileBreakpoints.expandedWindow`).
+  static const _compactMonthBreakpoint = MobileBreakpoints.expandedWindow;
 
   _PlannerLayoutMode _layoutMode = _PlannerLayoutMode.employee;
   String? _selectedLocation;
@@ -1313,6 +1353,9 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     final viewportWidth = MediaQuery.sizeOf(context).width;
     final useCompactToolbar = viewportWidth < _compactToolbarBreakpoint;
     final useCompactMonthLayout = viewportWidth < _compactMonthBreakpoint;
+    // E6: unter 840 dp rendern Tag/Woche eine vertikale Tagesliste mit
+    // Schichtkarten statt des fixen Quer-Scroll-Grids (154 + Tage × 176 px).
+    final useMobileDayList = viewportWidth < MobileBreakpoints.expandedWindow;
     final screenPadding = useCompactToolbar
         ? MobileBreakpoints.screenPadding(context)
         : const EdgeInsets.symmetric(horizontal: 18);
@@ -1330,7 +1373,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         .toList(growable: false)
       ..sort((a, b) => a.startTime.compareTo(b.startTime));
     final rows = _layoutMode == _PlannerLayoutMode.employee
-        ? _buildEmployeeRows(plannedShifts, schedule, days)
+        ? _buildEmployeeRows(plannedShifts, schedule)
         : _buildLocationRows(plannedShifts);
     // Einmalige Vorgruppierung pro Zeile (plannedShifts ist bereits nach
     // Startzeit sortiert -> Buckets bleiben sortiert).
@@ -1437,6 +1480,12 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                               isCompact: useCompactMonthLayout,
                             ),
                           )
+                        else if (useMobileDayList)
+                          _buildMobileDayList(
+                            context,
+                            days: days,
+                            filteredShifts: filteredShifts,
+                          )
                         else
                           SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
@@ -1534,6 +1583,12 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     final colorScheme = theme.colorScheme;
     final appColors = theme.appColors;
     final compactPadding = MobileBreakpoints.screenPadding(context);
+    // E6: unter 840 dp rendern Tag/Woche die mobile Tagesliste (nur nach Tagen
+    // gruppiert) — der Layout-Umschalter „Mitarbeiter/Standort" wäre dort
+    // wirkungslos und wird ausgeblendet (Muster wie der Monats-Ausschluss).
+    // Die breite Toolbar (≥1040 dp) koexistiert nie mit der Mobilliste.
+    final useMobileDayList =
+        MediaQuery.sizeOf(context).width < MobileBreakpoints.expandedWindow;
 
     if (isCompact) {
       return Container(
@@ -1628,7 +1683,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                             _handleToolbarActionSelection(context, value),
                         itemBuilder: (context) => _buildPlannerActionMenuItems(
                           includeLayoutOptions:
-                              schedule.viewMode != ScheduleViewMode.month,
+                              schedule.viewMode != ScheduleViewMode.month &&
+                                  !useMobileDayList,
                           includePublishOptions: true,
                         ),
                         icon: const Icon(Icons.more_vert_rounded),
@@ -1673,7 +1729,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                             },
                           ),
                         ),
-                        if (schedule.viewMode != ScheduleViewMode.month) ...[
+                        if (schedule.viewMode != ScheduleViewMode.month &&
+                            !useMobileDayList) ...[
                           const SizedBox(width: 10),
                           PopupMenuButton<_PlannerLayoutMode>(
                             onSelected: (value) =>
@@ -1701,13 +1758,30 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                         IconButton.filledTonal(
                           onPressed: _clearAllFilters,
                           icon: const Icon(Icons.filter_alt_off_outlined),
-                          tooltip: 'Filter zuruecksetzen',
+                          tooltip: 'Filter zurücksetzen',
                           style: IconButton.styleFrom(
                             backgroundColor: colorScheme.surfaceContainerHigh,
                             foregroundColor: colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // W5: prominenter Veröffentlichen-Button auch im
+                  // Kompakt-Modus (vorher nur ⋮-Menüeintrag; der bleibt).
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () =>
+                          _handleToolbarActionSelection(context, 'publish'),
+                      icon: const Icon(Icons.campaign_rounded),
+                      label: const Text('Veröffentlichen'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: appColors.success,
+                        foregroundColor: appColors.onSuccess,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
                     ),
                   ),
                 ],
@@ -1845,7 +1919,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                         IconButton.filledTonal(
                           onPressed: _clearAllFilters,
                           icon: const Icon(Icons.filter_alt_off_outlined),
-                          tooltip: 'Filter zuruecksetzen',
+                          tooltip: 'Filter zurücksetzen',
                           style: IconButton.styleFrom(
                             backgroundColor: colorScheme.surfaceContainerHigh,
                             foregroundColor: colorScheme.onSurfaceVariant,
@@ -1958,7 +2032,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         const PopupMenuDivider(),
         const PopupMenuItem(
           value: 'publish',
-          child: Text('Veroeffentlichen'),
+          child: Text('Veröffentlichen'),
         ),
       ],
     ];
@@ -2010,6 +2084,13 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         .toList(growable: false)
       ..sort();
 
+    // Geplante Monatsstunden je Mitarbeiter (wie in der Desktop-Sidebar).
+    final schedule = context.read<ScheduleProvider>();
+    final visibleDate = schedule.visibleDate;
+    final plannedByUser = _monthPlannedHoursByUser(visibleDate);
+    final sollzeitByUser = schedule.activeSollzeitByUserId(visibleDate);
+    final memberContracts = context.read<TeamProvider>().contracts;
+
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -2036,7 +2117,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                       children: [
                         Expanded(
                           child: Text(
-                            'Kalender-Menue',
+                            'Kalender-Menü',
                             style: theme.textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.w700,
                             ),
@@ -2049,13 +2130,13 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                               _selectedMonthEmployeeIds = {};
                               _selectedMonthLocations = {};
                             }),
-                            child: const Text('Zuruecksetzen'),
+                            child: const Text('Zurücksetzen'),
                           ),
                       ],
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Mitarbeiter und Standorte fuer die Monatsansicht auswaehlen.',
+                      'Mitarbeiter und Standorte für die Monatsansicht auswählen.',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -2071,19 +2152,32 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                     ),
                     const SizedBox(height: 8),
                     for (final member in widget.members)
-                      _PlannerSidebarCheckbox(
-                        label: member.displayName,
-                        selected: _selectedMonthEmployeeIds.contains(
-                          member.uid,
-                        ),
-                        onChanged: (selected) => syncState(() {
-                          if (selected) {
-                            _selectedMonthEmployeeIds.add(member.uid);
-                          } else {
-                            _selectedMonthEmployeeIds.remove(member.uid);
-                          }
-                        }),
-                      ),
+                      Builder(builder: (context) {
+                        final badge = _monthHoursBadgeFor(
+                          userId: member.uid,
+                          fallbackDailyHours: member.settings.dailyHours,
+                          plannedByUser: plannedByUser,
+                          sollzeitByUser: sollzeitByUser,
+                          contracts: memberContracts,
+                          stichtag: visibleDate,
+                        );
+                        return _PlannerSidebarCheckbox(
+                          label: member.displayName,
+                          trailing: badge.label,
+                          trailingWarning: badge.warning,
+                          trailingTooltip: badge.tooltip,
+                          selected: _selectedMonthEmployeeIds.contains(
+                            member.uid,
+                          ),
+                          onChanged: (selected) => syncState(() {
+                            if (selected) {
+                              _selectedMonthEmployeeIds.add(member.uid);
+                            } else {
+                              _selectedMonthEmployeeIds.remove(member.uid);
+                            }
+                          }),
+                        );
+                      }),
                     const SizedBox(height: 18),
                     Text(
                       'STANDORTE',
@@ -2181,6 +2275,11 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         .toSet()
         .toList(growable: false)
       ..sort();
+
+    // Geplante Monatsstunden je Mitarbeiter neben den Filter-Checkboxen.
+    final plannedByUser = _monthPlannedHoursByUser(visibleDate);
+    final sollzeitByUser = schedule.activeSollzeitByUserId(visibleDate);
+    final memberContracts = context.read<TeamProvider>().contracts;
 
     return Container(
       decoration: BoxDecoration(
@@ -2341,19 +2440,32 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
             if (_sidebarEmployeesExpanded) ...[
               const SizedBox(height: 4),
               for (final member in widget.members)
-                _PlannerSidebarCheckbox(
-                  label: member.displayName,
-                  selected: _selectedMonthEmployeeIds.contains(member.uid),
-                  onChanged: (selected) {
-                    setState(() {
-                      if (selected) {
-                        _selectedMonthEmployeeIds.add(member.uid);
-                      } else {
-                        _selectedMonthEmployeeIds.remove(member.uid);
-                      }
-                    });
-                  },
-                ),
+                Builder(builder: (context) {
+                  final badge = _monthHoursBadgeFor(
+                    userId: member.uid,
+                    fallbackDailyHours: member.settings.dailyHours,
+                    plannedByUser: plannedByUser,
+                    sollzeitByUser: sollzeitByUser,
+                    contracts: memberContracts,
+                    stichtag: visibleDate,
+                  );
+                  return _PlannerSidebarCheckbox(
+                    label: member.displayName,
+                    trailing: badge.label,
+                    trailingWarning: badge.warning,
+                    trailingTooltip: badge.tooltip,
+                    selected: _selectedMonthEmployeeIds.contains(member.uid),
+                    onChanged: (selected) {
+                      setState(() {
+                        if (selected) {
+                          _selectedMonthEmployeeIds.add(member.uid);
+                        } else {
+                          _selectedMonthEmployeeIds.remove(member.uid);
+                        }
+                      });
+                    },
+                  );
+                }),
             ],
 
             const SizedBox(height: 12),
@@ -2759,7 +2871,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
           ),
           PopupMenuItem<_PlannerAbsenceFilter>(
             value: _PlannerAbsenceFilter.unavailable,
-            child: Text('Nicht verfuegbar anzeigen'),
+            child: Text('Nicht verfügbar anzeigen'),
           ),
         ],
         child: _filterPill(
@@ -2868,55 +2980,203 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     final theme = Theme.of(context);
     final borderColor = theme.colorScheme.outlineVariant;
     final accentColor = theme.appColors.info;
-    return Row(
-      children: [
-        Container(
-          width: _sideWidth,
-          height: 78,
-          padding: const EdgeInsets.only(left: 10, right: 14),
-          decoration: BoxDecoration(
-            border: Border(
-              right: BorderSide(color: borderColor),
-              bottom: BorderSide(color: borderColor),
+    // IntrinsicHeight statt fester Zellenhöhe 78: die Kopfzeile wächst mit
+    // der Textskalierung (Overflow-Fix W5, „1-px-Overflow bewiesen");
+    // _plannerHeaderRowMinHeight hält die bisherige Mindest-Optik.
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            width: _sideWidth,
+            constraints:
+                const BoxConstraints(minHeight: _plannerHeaderRowMinHeight),
+            padding: const EdgeInsets.only(left: 10, right: 14),
+            decoration: BoxDecoration(
+              border: Border(
+                right: BorderSide(color: borderColor),
+                bottom: BorderSide(color: borderColor),
+              ),
             ),
-          ),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () => widget.onOpenShiftEditor(),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.add_circle,
-                      size: 22,
-                      color: accentColor,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'SCHICHT',
-                      style: theme.textTheme.labelLarge?.copyWith(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => widget.onOpenShiftEditor(),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.add_circle,
+                        size: 22,
                         color: accentColor,
-                        fontWeight: FontWeight.w700,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'SCHICHT',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: accentColor,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-        for (final day in days)
-          _PlannerDayHeaderCell(
-            day: day,
-            width: _dayWidth,
-            noteCount: _dayAbsenceCount(day),
-            onTapNote: () => _showDayNotes(context, day),
-          ),
-      ],
+          for (final day in days)
+            _PlannerDayHeaderCell(
+              day: day,
+              width: _dayWidth,
+              noteCount: _dayAbsenceCount(day),
+              onTapNote: () => _showDayNotes(context, day),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// E6: vertikale Tagesliste für Tag/Woche unter 840 dp — pro Tag ein
+  /// Abschnitts-Header (Datum, Abwesenheits-/Anmerkungszähler, „+"-Button für
+  /// eine neue Schicht an diesem Tag) und darunter die Schichtkarten. Nutzt
+  /// die bereits gefilterten Board-Daten; das Desktop-Grid bleibt unverändert.
+  Widget _buildMobileDayList(
+    BuildContext context, {
+    required List<DateTime> days,
+    required List<Shift> filteredShifts,
+  }) {
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final dateFmt = DateFormat('EEE, d. MMM', 'de_DE');
+    final shiftsByDay = _groupShiftsByDay(filteredShifts);
+
+    List<Shift> sortedDayShifts(DateTime day) {
+      final shifts = [...?shiftsByDay[_dayBucketKey(day)]];
+      shifts.sort((a, b) {
+        final byStart = a.startTime.compareTo(b.startTime);
+        if (byStart != 0) {
+          return byStart;
+        }
+        if (a.isUnassigned != b.isUnassigned) {
+          return a.isUnassigned ? -1 : 1;
+        }
+        return a.employeeName.compareTo(b.employeeName);
+      });
+      return shifts;
+    }
+
+    final dayShiftLists = <DateTime, List<Shift>>{
+      for (final day in days) day: sortedDayShifts(day),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final day in days) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      dateFmt.format(day),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  if (_dayAbsenceCount(day) > 0) ...[
+                    const SizedBox(width: 8),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => _showDayNotes(context, day),
+                      // ≥48 dp Trefferfläche ohne sichtbare Vergrößerung: die
+                      // Pille bleibt optisch klein, der benachbarte IconButton
+                      // belegt bereits 48 dp Zeilenhöhe.
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          minHeight: 48,
+                          minWidth: 48,
+                        ),
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: appColors.info.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              _dayAbsenceCount(day) == 1
+                                  ? '1 Anmerkung'
+                                  : '${_dayAbsenceCount(day)} Anmerkungen',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: appColors.info,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 4),
+                  IconButton.filledTonal(
+                    onPressed: () => widget.onOpenShiftEditor(
+                      initialDate: day,
+                      initialLocation: _selectedLocation,
+                    ),
+                    icon: const Icon(Icons.add_rounded, size: 20),
+                    tooltip: 'Schicht an diesem Tag anlegen',
+                    style: IconButton.styleFrom(
+                      backgroundColor:
+                          theme.colorScheme.surfaceContainerHigh,
+                      foregroundColor: theme.colorScheme.primary,
+                      minimumSize: const Size(40, 40),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (dayShiftLists[day]!.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Keine Schichten geplant.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              )
+            else
+              for (final shift in dayShiftLists[day]!)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _PlannerMobileShiftCard(
+                    shift: shift,
+                    onTap: () => widget.onOpenShiftEditor(shift: shift),
+                  ),
+                ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -2957,9 +3217,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     required _PlannerBoardRowData row,
     required List<DateTime> days,
     required List<Shift> rowShifts,
-    List<DateTime>? summaryDays,
   }) {
-    // rowShifts ist bereits fuer diese Zeile vorgefiltert und nach Startzeit
+    // rowShifts ist bereits für diese Zeile vorgefiltert und nach Startzeit
     // sortiert; Tages-Buckets einmal bilden statt pro Tag neu zu filtern.
     final shiftsByDay = _groupShiftsByDay(rowShifts);
     return Row(
@@ -2969,7 +3228,6 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
           context,
           row,
           rowShifts,
-          summaryDays ?? days,
         ),
         for (final day in days)
           _buildDayCell(
@@ -2993,14 +3251,55 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     BuildContext context,
     _PlannerBoardRowData row,
     List<Shift> rowShifts,
-    List<DateTime> days,
   ) {
     final theme = Theme.of(context);
     final appColors = theme.appColors;
     final avatarColor = _plannerAvatarColor(theme, row);
     final actualHours =
         rowShifts.fold<double>(0, (sum, shift) => sum + shift.workedHours);
-    final targetHours = row.targetHoursFor(days);
+    final targetHours = row.targetHours;
+    final weeklyMaxHours = row.weeklyMaxHours;
+    // Stunden-Pille (W5): normal neutral; Ist > Soll → warning-Container mit
+    // Tooltip; Ist über Vertrags-Maximum → zusätzlich kompaktes „ÜS"-Badge.
+    // Standort-Zeilen (memberId == null): neutrale Pille nur mit Ist.
+    final overTarget = targetHours != null && actualHours > targetHours;
+    final overMax = row.memberId != null &&
+        weeklyMaxHours != null &&
+        actualHours > weeklyMaxHours;
+    final pillBackground = overTarget
+        ? appColors.warningContainer
+        : theme.colorScheme.surfaceContainerHigh;
+    final pillForeground = overTarget
+        ? appColors.onWarningContainer
+        : theme.colorScheme.onSurfaceVariant;
+    final pillLabel = targetHours == null
+        ? '${_formatPlannerHours(actualHours)}h'
+        : '${_formatPlannerHours(actualHours)}h/'
+            '${_formatPlannerHours(targetHours)}h';
+    Widget pill = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: pillBackground,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        pillLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: pillForeground,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+    if (overTarget) {
+      pill = Tooltip(
+        message: 'Geplante Stunden über dem Wochensoll '
+            '(${_formatPlannerHours(actualHours)} von '
+            '${_formatPlannerHours(targetHours)} Std)',
+        child: pill,
+      );
+    }
     final avatarForeground = ThemeData.estimateBrightnessForColor(
               avatarColor,
             ) ==
@@ -3052,24 +3351,35 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                   ),
                 ],
                 const SizedBox(height: 6),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: actualHours > targetHours
-                        ? theme.colorScheme.errorContainer
-                        : appColors.successContainer,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    '${actualHours.toStringAsFixed(0)}h/${targetHours.toStringAsFixed(0)}h',
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      color: actualHours > targetHours
-                          ? theme.colorScheme.onErrorContainer
-                          : appColors.onSuccessContainer,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
+                Row(
+                  children: [
+                    Flexible(child: pill),
+                    if (overMax) ...[
+                      const SizedBox(width: 4),
+                      Tooltip(
+                        message: 'Über Vertrags-Maximalstunden '
+                            '(${_formatPlannerHours(weeklyMaxHours)} Std/Woche)'
+                            ' — geplante Überstunden',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: appColors.warning.withValues(alpha: 0.16),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            'ÜS',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: appColors.warning,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -3455,7 +3765,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
                 const SizedBox(height: 10),
                 if (dayShifts.isEmpty)
                   Text(
-                    'Fuer diesen Tag sind aktuell keine Schichten hinterlegt.',
+                    'Für diesen Tag sind aktuell keine Schichten hinterlegt.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -3491,7 +3801,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Schliessen'),
+            child: const Text('Schließen'),
           ),
           FilledButton.icon(
             onPressed: () {
@@ -3536,10 +3846,111 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     }).toList(growable: false);
   }
 
+  /// Wochen-Sollstunden + Vertrags-Maximalstunden eines Mitglieds für die
+  /// Stunden-Pille (W5): aktives Sollzeit-Profil (Wochensumme Tagessoll) →
+  /// sonst `contract.weeklyHours` (gültiger Vertrag via
+  /// [EmploymentContractResolver]) → sonst `settings.dailyHours × 5`.
+  ({double targetHours, double? weeklyMaxHours}) _weeklyHoursMetaFor({
+    required String userId,
+    required double fallbackDailyHours,
+    required Map<String, SollzeitProfile> sollzeitByUser,
+    required List<EmploymentContract> contracts,
+    required DateTime stichtag,
+  }) {
+    final contract =
+        EmploymentContractResolver.activeOn(contracts, userId, stichtag);
+    final sollzeit = sollzeitByUser[userId];
+    final double targetHours;
+    if (sollzeit != null && sollzeit.wochensollMinutes > 0) {
+      targetHours = sollzeit.wochensollMinutes / 60;
+    } else if (contract != null && contract.weeklyHours > 0) {
+      targetHours = contract.weeklyHours;
+    } else {
+      targetHours = fallbackDailyHours * 5;
+    }
+    return (targetHours: targetHours, weeklyMaxHours: contract?.weeklyMaxHours);
+  }
+
+  /// Woche→Monat-Faktor der Stunden-Hochrechnung — gleiche Semantik wie der
+  /// Auto-Verteiler (ShiftAutoAssigner) und die Vertrags-Editoren.
+  static const double _weeksPerMonth = 4.33;
+
+  /// Geplante Stunden je Mitarbeiter im Monat von [visibleDate].
+  ///
+  /// Quelle sind die Toolbar-gefilterten [_AdminShiftPlannerBoard.visibleShifts]
+  /// (bewusst OHNE die Monats-Sidebar-Auswahl, damit das Abwählen eines
+  /// Mitarbeiters seine Stundensumme nicht auf 0 zieht); stornierte und
+  /// unbesetzte Schichten zählen nicht.
+  Map<String, double> _monthPlannedHoursByUser(DateTime visibleDate) {
+    final hours = <String, double>{};
+    for (final shift in widget.visibleShifts) {
+      if (shift.isUnassigned || shift.status == ShiftStatus.cancelled) {
+        continue;
+      }
+      if (shift.startTime.year != visibleDate.year ||
+          shift.startTime.month != visibleDate.month) {
+        continue;
+      }
+      hours.update(
+        shift.userId,
+        (value) => value + shift.workedHours,
+        ifAbsent: () => shift.workedHours,
+      );
+    }
+    return hours;
+  }
+
+  /// Stunden-Badge der Monats-Mitarbeiterliste: „Ist/Monatssoll“ mit
+  /// derselben Soll-Kette wie die Wochen-Pille (Sollzeit-Profil → Vertrag →
+  /// Fallback), plus Überstunden-Hinweis über dem Vertragsmaximum (E3/E4).
+  ({String label, String tooltip, bool warning}) _monthHoursBadgeFor({
+    required String userId,
+    required double fallbackDailyHours,
+    required Map<String, double> plannedByUser,
+    required Map<String, SollzeitProfile> sollzeitByUser,
+    required List<EmploymentContract> contracts,
+    required DateTime stichtag,
+  }) {
+    final contract =
+        EmploymentContractResolver.activeOn(contracts, userId, stichtag);
+    final sollzeit = sollzeitByUser[userId];
+    final double targetHours;
+    if (sollzeit != null &&
+        sollzeit.isMonatsarbeitszeit &&
+        (sollzeit.monatsarbeitszeitMinutes ?? 0) > 0) {
+      targetHours = sollzeit.monatsarbeitszeitMinutes! / 60;
+    } else if (sollzeit != null && sollzeit.wochensollMinutes > 0) {
+      targetHours = sollzeit.wochensollMinutes / 60 * _weeksPerMonth;
+    } else if (contract != null && contract.weeklyHours > 0) {
+      targetHours = contract.weeklyHours * _weeksPerMonth;
+    } else {
+      targetHours = fallbackDailyHours * 5 * _weeksPerMonth;
+    }
+    final actual = plannedByUser[userId] ?? 0;
+    final monthlyMax = contract?.monthlyMaxHours;
+    final overMax = monthlyMax != null && monthlyMax > 0 && actual > monthlyMax;
+    final label = '${_formatPlannerHours(actual)}h/'
+        '${_formatPlannerHours(targetHours)}h';
+    final tooltip = StringBuffer(
+      'Geplant: ${_formatPlannerHours(actual)} Std · '
+      'Monatssoll: ${_formatPlannerHours(targetHours)} Std',
+    );
+    if (overMax) {
+      tooltip.write(
+        ' · über Vertragsmaximum (${_formatPlannerHours(monthlyMax)} Std) — '
+        'Mehrstunden werden als Überstunden geplant',
+      );
+    }
+    return (
+      label: label,
+      tooltip: tooltip.toString(),
+      warning: overMax || actual > targetHours,
+    );
+  }
+
   List<_PlannerBoardRowData> _buildEmployeeRows(
     List<Shift> shifts,
     ScheduleProvider schedule,
-    List<DateTime> days,
   ) {
     final selectedTeam = widget.teams
         .where((team) => team.id == schedule.selectedTeamId)
@@ -3554,18 +3965,52 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
           members.where((member) => member.uid == schedule.selectedUserId);
     }
 
-    final rows = <String, _PlannerBoardRowData>{
-      for (final member in members)
-        member.uid: _PlannerBoardRowData.employee(member),
-    };
+    // Soll-Quellen der Stunden-Pille: Sollzeit-Profile (Personal→Plan-Senke,
+    // W3) + Verträge (TeamProvider = Stammdaten-Produzent) zum Stichtag.
+    final contracts = context.read<TeamProvider>().contracts;
+    final sollzeitByUser =
+        schedule.activeSollzeitByUserId(schedule.visibleDate);
+    final stichtag = schedule.visibleDate;
+    // In der TAG-Ansicht kein Wochensoll/-Maximum an die Pille paaren: das
+    // Tages-Ist gegen das WOCHEN-Soll zu vergleichen wäre falsch (Warnfarbe/
+    // ÜS-Badge feuerten nie bzw. irreführend). Ohne Soll rendert die Pille
+    // neutral nur das Ist („8h“); per-Schicht-ÜS-Badges bleiben unberührt.
+    final isDayView = schedule.viewMode == ScheduleViewMode.day;
+
+    final rows = <String, _PlannerBoardRowData>{};
+    for (final member in members) {
+      final meta = _weeklyHoursMetaFor(
+        userId: member.uid,
+        fallbackDailyHours: member.settings.dailyHours,
+        sollzeitByUser: sollzeitByUser,
+        contracts: contracts,
+        stichtag: stichtag,
+      );
+      rows[member.uid] = _PlannerBoardRowData.employee(
+        member,
+        targetHours: isDayView ? null : meta.targetHours,
+        weeklyMaxHours: isDayView ? null : meta.weeklyMaxHours,
+      );
+    }
 
     for (final shift in shifts) {
       rows.putIfAbsent(
         shift.userId,
-        () => _PlannerBoardRowData.fallbackEmployee(
-          userId: shift.userId,
-          employeeName: shift.employeeName,
-        ),
+        () {
+          final meta = _weeklyHoursMetaFor(
+            userId: shift.userId,
+            fallbackDailyHours: 8,
+            sollzeitByUser: sollzeitByUser,
+            contracts: contracts,
+            stichtag: stichtag,
+          );
+          return _PlannerBoardRowData.fallbackEmployee(
+            userId: shift.userId,
+            employeeName: shift.employeeName,
+            targetHours: isDayView ? null : meta.targetHours,
+            weeklyMaxHours: isDayView ? null : meta.weeklyMaxHours,
+          );
+        },
       );
     }
 
@@ -3598,7 +4043,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
     if (publishable.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('Keine veroefentlichbaren Schichten im Filter.')),
+            content: Text('Keine veröffentlichbaren Schichten im Filter.')),
       );
       return;
     }
@@ -3607,13 +4052,13 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
       if (!context.mounted) {
         return;
       }
-      // Server-seitig (onShiftWritten-Trigger) wird jede neu bestaetigte,
+      // Server-seitig (onShiftWritten-Trigger) wird jede neu bestätigte,
       // zugewiesene Schicht dem Mitarbeiter gemeldet (In-App + Push, pro Woche
       // gebuendelt) — daher die Benachrichtigung hier ehrlich ansagen.
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Schichtplan fuer ${publishable.length} Schichten veroeffentlicht. '
+            'Schichtplan für ${publishable.length} Schichten veröffentlicht. '
             'Zugewiesene Mitarbeiter werden benachrichtigt.',
           ),
         ),
@@ -3714,7 +4159,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         title: Text(DateFormat('EEEE, dd.MM.yyyy', 'de_DE').format(day)),
         content: dayAbsences.isEmpty
             ? const Text(
-                'Keine Anmerkungen oder Abwesenheiten fuer diesen Tag.')
+                'Keine Anmerkungen oder Abwesenheiten für diesen Tag.')
             : SizedBox(
                 width: 420,
                 child: Column(
@@ -3735,7 +4180,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Schliessen'),
+            child: const Text('Schließen'),
           ),
         ],
       ),
@@ -3894,7 +4339,7 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
       _PlannerAbsenceFilter.all => 'Alle',
       _PlannerAbsenceFilter.vacation => 'Urlaub',
       _PlannerAbsenceFilter.sickness => 'Krank',
-      _PlannerAbsenceFilter.unavailable => 'Nicht verfuegbar',
+      _PlannerAbsenceFilter.unavailable => 'Nicht verfügbar',
     };
   }
 
@@ -4565,16 +5010,28 @@ class _PlannerCompactMonthShiftTile extends StatelessWidget {
               color: baseColor.withValues(alpha: 0.14),
             ),
           ),
-          child: Text(
-            '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} $label',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: baseColor,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              height: 1.1,
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${DateFormat('HH:mm', 'de_DE').format(shift.startTime)} $label',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: baseColor,
+                    fontWeight: FontWeight.w700,
+                    height: 1.1,
+                  ),
+                ),
+              ),
+              if (shift.hasPlannedOvertime) ...[
+                const SizedBox(width: 3),
+                _PlannerOvertimeBadge(
+                  overtimeMinutes: shift.overtimeMinutes,
+                  compact: true,
+                ),
+              ],
+            ],
           ),
         ),
       ),
@@ -4645,6 +5102,13 @@ class _PlannerMonthShiftTile extends StatelessWidget {
                   ),
                 ),
               ),
+              if (shift.hasPlannedOvertime) ...[
+                const SizedBox(width: 4),
+                _PlannerOvertimeBadge(
+                  overtimeMinutes: shift.overtimeMinutes,
+                  compact: true,
+                ),
+              ],
               PopupMenuButton<String>(
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
@@ -5057,8 +5521,9 @@ class _PlannerSectionLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final borderColor = Theme.of(context).colorScheme.outlineVariant;
-    final accentColor = Theme.of(context).appColors.success;
+    final theme = Theme.of(context);
+    final borderColor = theme.colorScheme.outlineVariant;
+    final accentColor = theme.appColors.success;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
@@ -5069,7 +5534,7 @@ class _PlannerSectionLabel extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: TextStyle(
+        style: theme.textTheme.labelMedium?.copyWith(
           color: accentColor,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.7,
@@ -5098,7 +5563,7 @@ class _PlannerEmptyBoardState extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Text(
-            'Keine Schichten fuer die aktuelle Auswahl.',
+            'Keine Schichten für die aktuelle Auswahl.',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -5121,7 +5586,7 @@ class _PlannerQuickAddButton extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     // 48x48-Trefferfläche (Material-Mindestmaß) mit gut sichtbarem 40px-Kreis.
     return Tooltip(
-      message: 'Schicht hinzufuegen',
+      message: 'Schicht hinzufügen',
       child: InkWell(
         borderRadius: BorderRadius.circular(999),
         onTap: onTap,
@@ -5207,11 +5672,21 @@ class _PlannerSidebarCheckbox extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onChanged,
+    this.trailing,
+    this.trailingWarning = false,
+    this.trailingTooltip,
   });
 
   final String label;
   final bool selected;
   final ValueChanged<bool> onChanged;
+
+  /// Rechtsbündige Zusatzinfo (z. B. geplante Monatsstunden „7,5h/173,2h“).
+  final String? trailing;
+
+  /// Hebt [trailing] in der Warning-Rolle hervor (über Soll/Vertragsmaximum).
+  final bool trailingWarning;
+  final String? trailingTooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -5248,6 +5723,24 @@ class _PlannerSidebarCheckbox extends StatelessWidget {
                 ),
               ),
             ),
+            if (trailing != null) ...[
+              const SizedBox(width: 8),
+              Tooltip(
+                message: trailingTooltip ?? '',
+                child: Text(
+                  trailing!,
+                  maxLines: 1,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: trailingWarning
+                        ? theme.appColors.warning
+                        : colorScheme.onSurfaceVariant,
+                    fontWeight:
+                        trailingWarning ? FontWeight.w700 : FontWeight.w500,
+                    fontFeatures: kTabularFigures,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -5715,7 +6208,7 @@ List<String> _buildConflictDetails(ShiftConflictIssue issue) {
 
   for (final shift in issue.conflictingDraftShifts) {
     lines.add(
-      'Ueberschneidung mit weiterer neuer Schicht "${shift.title}" '
+      'Überschneidung mit weiterer neuer Schicht "${shift.title}" '
       '(${shift.employeeName}, ${dayFmt.format(shift.startTime)} '
       '${timeFmt.format(shift.startTime)} - ${timeFmt.format(shift.endTime)}'
       '${_formatLocationSuffix(shift.effectiveSiteLabel)}).',
@@ -5724,7 +6217,7 @@ List<String> _buildConflictDetails(ShiftConflictIssue issue) {
 
   for (final shift in issue.conflictingShifts) {
     lines.add(
-      'Ueberschneidung mit bestehender Schicht "${shift.title}" '
+      'Überschneidung mit bestehender Schicht "${shift.title}" '
       '(${shift.employeeName}, ${dayFmt.format(shift.startTime)} '
       '${timeFmt.format(shift.startTime)} - ${timeFmt.format(shift.endTime)}'
       '${_formatLocationSuffix(shift.effectiveSiteLabel)}).',
@@ -5870,10 +6363,14 @@ DateTime _shiftVisibleDate(
   }
 }
 
-/// Vorschau-Sheet der automatischen Schichtverteilung: zeigt zu erstellende
-/// Schichten, Zuweisungen, Warnungen und nicht zuweisbare Slots. Gibt `true`
-/// zurück, wenn der Nutzer „Übernehmen & speichern" wählt.
-class _AutoPlanPreviewSheet extends StatelessWidget {
+/// Vorschau-Sheet der automatischen Schichtverteilung (W5): virtualisiert
+/// (DraggableScrollableSheet + ListView.builder), Zuweisungen **pro
+/// Mitarbeiter gruppiert** (Kopfzeile mit geplanten Stunden + Überstunden-
+/// Summe) und einzeln abwählbar (**Teilübernahme**).
+///
+/// Rückgabe via `Navigator.pop`: `null` = Abbrechen; sonst die Menge der
+/// **abgewählten** Zuweisungs-Schicht-IDs (leer = alles übernehmen).
+class _AutoPlanPreviewSheet extends StatefulWidget {
   const _AutoPlanPreviewSheet({
     required this.generated,
     required this.existingOpen,
@@ -5887,14 +6384,24 @@ class _AutoPlanPreviewSheet extends StatelessWidget {
   final bool enforceHourCapHard;
 
   @override
+  State<_AutoPlanPreviewSheet> createState() => _AutoPlanPreviewSheetState();
+}
+
+class _AutoPlanPreviewSheetState extends State<_AutoPlanPreviewSheet> {
+  /// Abgewählte Zuweisungen (Schicht-IDs). Default: alles gewählt.
+  final Set<String> _deselected = {};
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final appColors = theme.appColors;
     final dateFmt = DateFormat('EEE dd.MM.', 'de_DE');
     final timeFmt = DateFormat('HH:mm', 'de_DE');
+    final result = widget.result;
+    final generated = widget.generated;
 
     final lookup = <String, Shift>{
-      for (final shift in [...generated, ...existingOpen])
+      for (final shift in [...generated, ...widget.existingOpen])
         if (shift.id != null) shift.id!: shift,
     };
 
@@ -5918,179 +6425,315 @@ class _AutoPlanPreviewSheet extends StatelessWidget {
       generatedBySite[key] = (generatedBySite[key] ?? 0) + 1;
     }
 
-    return SafeArea(
-      top: false,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Automatische Planung — Vorschau',
-              style: theme.textTheme.titleLarge
-                  ?.copyWith(fontWeight: FontWeight.bold),
+    // Gruppierung der Zuweisungen pro Mitarbeiter (stabil nach Name sortiert).
+    final assignmentsByUser = <String, List<ShiftAssignmentProposal>>{};
+    for (final assignment in result.assignments) {
+      (assignmentsByUser[assignment.userId] ??= []).add(assignment);
+    }
+    final userGroups = assignmentsByUser.values.toList(growable: false)
+      ..sort((a, b) => a.first.userName.compareTo(b.first.userName));
+
+    // Teilabwahl (Checkboxen) live in den Summen spiegeln: Kopf-Chips und
+    // Gruppen-Summen zählen nur die noch gewählten Zuweisungen (build läuft
+    // bei jedem Checkbox-setState ohnehin neu, kein zusätzlicher State nötig).
+    bool isSelected(ShiftAssignmentProposal assignment) =>
+        !_deselected.contains(assignment.shiftId);
+    final selectedAssignments =
+        result.assignments.where(isSelected).toList(growable: false);
+    final totalOvertimeMinutes = selectedAssignments.fold<int>(
+        0, (sum, assignment) => sum + assignment.overtimeMinutes);
+
+    // Flache Kind-Liste; das Layout bleibt über ListView.builder virtualisiert
+    // (nur sichtbare Einträge werden gelayoutet/gemalt).
+    final children = <Widget>[
+      Text(
+        'Automatische Planung — Vorschau',
+        style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+      ),
+      const SizedBox(height: 12),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _AutoPlanStat(
+            label: '${generated.length} neu',
+            color: appColors.info,
+            icon: Icons.add_circle_outline,
+          ),
+          _AutoPlanStat(
+            label: _deselected.isEmpty
+                ? '${selectedAssignments.length} besetzt'
+                : '${selectedAssignments.length} von '
+                    '${result.assignments.length} besetzt',
+            color: appColors.success,
+            icon: Icons.person_add_alt,
+          ),
+          _AutoPlanStat(
+            label: '${result.unassigned.length} offen',
+            color: appColors.warning,
+            icon: Icons.help_outline,
+          ),
+          if (totalOvertimeMinutes > 0)
+            _AutoPlanStat(
+              label:
+                  '${_formatOvertimeHours(totalOvertimeMinutes)} Std Überstunden geplant',
+              color: appColors.warning,
+              icon: Icons.more_time_rounded,
             ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _AutoPlanStat(
-                  label: '${generated.length} neu',
-                  color: appColors.info,
-                  icon: Icons.add_circle_outline,
+          if (result.warnings.isNotEmpty)
+            _AutoPlanStat(
+              label: '${result.warnings.length} Warnungen',
+              color: appColors.warning,
+              icon: Icons.warning_amber_rounded,
+            ),
+        ],
+      ),
+      if (!widget.enforceHourCapHard) ...[
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: appColors.warningContainer,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: appColors.onWarningContainer),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Stundengrenzen sind weich — Überschreitungen werden als '
+                  'geplante Überstunden markiert.',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: appColors.onWarningContainer),
                 ),
-                _AutoPlanStat(
-                  label: '${result.assignments.length} besetzt',
-                  color: appColors.success,
-                  icon: Icons.person_add_alt,
-                ),
-                _AutoPlanStat(
-                  label: '${result.unassigned.length} offen',
-                  color: appColors.warning,
-                  icon: Icons.help_outline,
-                ),
-                if (result.warnings.isNotEmpty)
-                  _AutoPlanStat(
-                    label: '${result.warnings.length} Warnungen',
-                    color: appColors.warning,
-                    icon: Icons.warning_amber_rounded,
+              ),
+            ],
+          ),
+        ),
+      ],
+      if (generatedBySite.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        _AutoPlanSectionHeader(
+          title: 'Neu zu erstellen',
+          count: generated.length,
+        ),
+        for (final entry in generatedBySite.entries)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Text('${entry.key}: ${entry.value} Schichten'),
+          ),
+      ],
+      if (result.assignments.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        _AutoPlanSectionHeader(
+          title: 'Zuweisungen',
+          count: result.assignments.length,
+        ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            'Abgewählte Zuweisungen werden nicht übernommen.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        for (final group in userGroups) ...[
+          _AutoPlanUserHeader(
+            userName: group.first.userName,
+            plannedHours: group.where(isSelected).fold<double>(
+              0,
+              (sum, assignment) =>
+                  sum + (lookup[assignment.shiftId]?.workedHours ?? 0),
+            ),
+            overtimeMinutes: group.where(isSelected).fold<int>(
+              0,
+              (sum, assignment) => sum + assignment.overtimeMinutes,
+            ),
+          ),
+          for (final assignment in group)
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: !_deselected.contains(assignment.shiftId),
+              onChanged: (checked) {
+                setState(() {
+                  if (checked == true) {
+                    _deselected.remove(assignment.shiftId);
+                  } else {
+                    _deselected.add(assignment.shiftId);
+                  }
+                });
+              },
+              title: Text(slotLabel(assignment.shiftId)),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    assignment.reason,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
-              ],
-            ),
-            if (!enforceHourCapHard) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: appColors.warningContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: appColors.onWarningContainer),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Stundengrenzen sind weich — Überschreitungen sind erlaubt.',
-                        style: theme.textTheme.bodyMedium
-                            ?.copyWith(color: appColors.onWarningContainer),
+                  if (assignment.overtimeMinutes > 0)
+                    Text(
+                      '+${_formatOvertimeHours(assignment.overtimeMinutes)}h '
+                      'Überstunden geplant',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: appColors.warning,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ],
-                ),
+                ],
               ),
-            ],
-            if (generatedBySite.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              _AutoPlanSectionHeader(
-                title: 'Neu zu erstellen',
-                count: generated.length,
-              ),
-              for (final entry in generatedBySite.entries)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text('${entry.key}: ${entry.value} Schichten'),
-                ),
-            ],
-            if (result.assignments.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              _AutoPlanSectionHeader(
-                title: 'Zuweisungen',
-                count: result.assignments.length,
-              ),
-              for (final assignment in result.assignments)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text.rich(
-                        TextSpan(children: [
-                          TextSpan(text: slotLabel(assignment.shiftId)),
-                          const TextSpan(text: '  →  '),
-                          TextSpan(
-                            text: assignment.userName,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                        ]),
-                      ),
-                      Text(
-                        assignment.reason,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-            if (result.warnings.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              _AutoPlanSectionHeader(
-                title: 'Warnungen',
-                count: result.warnings.length,
-                color: appColors.warning,
-              ),
-              for (final warning in result.warnings)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(Icons.warning_amber_rounded,
-                          size: 18, color: appColors.warning),
-                      const SizedBox(width: 8),
-                      Expanded(child: Text(warning.message)),
-                    ],
-                  ),
-                ),
-            ],
-            if (result.unassigned.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              _AutoPlanSectionHeader(
-                title: 'Nicht zuweisbar',
-                count: result.unassigned.length,
-                color: appColors.warning,
-              ),
-              for (final item in result.unassigned)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(slotLabel(item.shiftId)),
-                      Text(
-                        item.message,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: appColors.warning),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-            const SizedBox(height: 20),
-            Row(
+            ),
+        ],
+      ],
+      if (result.warnings.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        _AutoPlanSectionHeader(
+          title: 'Warnungen',
+          count: result.warnings.length,
+          color: appColors.warning,
+        ),
+        for (final warning in result.warnings)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.of(context).pop(false),
-                    child: const Text('Abbrechen'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.of(context).pop(true),
-                    icon: const Icon(Icons.save),
-                    label: const Text('Übernehmen & speichern'),
-                  ),
+                Icon(Icons.warning_amber_rounded,
+                    size: 18, color: appColors.warning),
+                const SizedBox(width: 8),
+                Expanded(child: Text(warning.message)),
+              ],
+            ),
+          ),
+      ],
+      if (result.unassigned.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        _AutoPlanSectionHeader(
+          title: 'Nicht zuweisbar',
+          count: result.unassigned.length,
+          color: appColors.warning,
+        ),
+        for (final item in result.unassigned)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(slotLabel(item.shiftId)),
+                Text(
+                  item.message,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: appColors.warning),
                 ),
               ],
+            ),
+          ),
+      ],
+    ];
+
+    return SafeArea(
+      top: false,
+      child: DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.8,
+        minChildSize: 0.45,
+        maxChildSize: 0.95,
+        builder: (context, scrollController) => Column(
+          children: [
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                itemCount: children.length,
+                itemBuilder: (context, index) => children[index],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Abbrechen'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () =>
+                          Navigator.of(context).pop(Set.of(_deselected)),
+                      icon: const Icon(Icons.save),
+                      label: const Text('Übernehmen & speichern'),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Mitarbeiter-Kopfzeile der gruppierten Auto-Plan-Vorschau: Name, geplante
+/// Stunden gesamt und Überstunden-Summe (in `appColors.warning`, wenn > 0).
+class _AutoPlanUserHeader extends StatelessWidget {
+  const _AutoPlanUserHeader({
+    required this.userName,
+    required this.plannedHours,
+    required this.overtimeMinutes,
+  });
+
+  final String userName;
+  final double plannedHours;
+  final int overtimeMinutes;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              userName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            '${_formatPlannerHours(plannedHours)} Std geplant',
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (overtimeMinutes > 0) ...[
+            const SizedBox(width: 8),
+            Text(
+              '+${_formatOvertimeHours(overtimeMinutes)}h ÜS',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: appColors.warning,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

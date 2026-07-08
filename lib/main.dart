@@ -565,9 +565,15 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
           create: (_) => PersonalProvider(
             firestoreService: firestoreService,
           ),
-          update: (_, auth, team, storage, audit, provider) {
+          update: (context, auth, team, storage, audit, provider) {
             provider ??= PersonalProvider(firestoreService: firestoreService);
             provider.setAuditSink(audit.log);
+            // Personal→Plan-Kopplung (E5): Sollzeit-Profile + Austrittsdaten
+            // der Stammakte in den lebenden (zuvor in der Kette gebauten)
+            // ScheduleProvider spiegeln — Setter ohne notifyListeners
+            // (Vorbild: WorkProvider.updateScheduleProvider-Verdrahtung).
+            provider.setPlanningDataSink(
+                context.read<ScheduleProvider>().updatePersonalReferenceData);
             final documentStorage = _resolveDocumentStorage();
             if (documentStorage != null) {
               provider.setDocumentStorage(documentStorage);

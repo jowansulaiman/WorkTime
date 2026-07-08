@@ -136,7 +136,10 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(provider.isClockedIn, isTrue);
 
-      await provider.clockOut(pauseMinuten: 0);
+      // Deterministisch am selben Kalendertag wie `kommen` ausstempeln —
+      // mit echter Wall-Clock würde needsClarification ab dem Folgetag
+      // greifen und der Status auf `klaerung` statt `completed` kippen.
+      await provider.clockOut(pauseMinuten: 0, at: DateTime(2026, 7, 5, 13));
       await Future<void>.delayed(Duration.zero);
 
       final col = firestore

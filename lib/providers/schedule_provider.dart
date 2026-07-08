@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show DateTimeRange;
 import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
 import '../core/compliance_rule_set_utils.dart';
+import '../core/employment_contract_resolver.dart';
+import '../core/overtime_projection.dart';
 import '../core/shift_auto_assigner.dart';
 import '../core/shift_slot_generator.dart';
 import '../models/absence_request.dart';
@@ -17,6 +20,7 @@ import '../models/employment_contract.dart';
 import '../models/shift_preference.dart';
 import '../models/org_settings.dart';
 import '../models/shift.dart';
+import '../models/sollzeit_profile.dart';
 import '../models/shift_swap_request.dart';
 import '../models/swap_credit.dart';
 import '../models/shift_template.dart';
@@ -81,12 +85,24 @@ class ShiftAssigneeAvailability {
     this.conflictingShifts = const [],
     this.blockingAbsences = const [],
     this.violations = const [],
+    this.capOverageMinutes = 0,
   });
 
   final AppUserProfile member;
   final List<Shift> conflictingShifts;
   final List<AbsenceRequest> blockingAbsences;
   final List<ComplianceViolation> violations;
+
+  /// Projizierte Minuten, um die die Draft-Schicht diesen Kandidaten über
+  /// seine Vertrags-Maximalstunden (Monat/Woche) heben würde — geplante
+  /// Überstunden-Vorschau für den Editor (E3, `overtime_projection.dart`).
+  /// 0 = kein Cap definiert oder innerhalb der Grenze.
+  ///
+  /// **Genauigkeitsgrenze:** Basis sind ausschließlich die ohnehin von
+  /// [ScheduleProvider.loadAssigneeAvailability] geladenen Schichten im
+  /// Verfügbarkeits-Fenster (volle Kalendermonate + Montags-Wochen der
+  /// Draft-Zeit, EINE org-weite Range-Query — keine zusätzliche Abfrage).
+  final int capOverageMinutes;
 
   List<ComplianceViolation> get blockingViolations => violations
       .where((violation) => violation.severity == ComplianceSeverity.blocking)
@@ -150,6 +166,15 @@ class ScheduleProvider extends ChangeNotifier {
   String? _selectedTeamId;
   String? _selectedTeamName;
   List<Shift> _shifts = [];
+
+  /// Roher, **ungefilterter** Schicht-Bestand des sichtbaren Bereichs — die
+  /// Quelle VOR dem Mitarbeiter-Filter (`_selectedUserId`), aus der [_shifts]
+  /// abgeleitet wird. Wird von der Subscription (Cloud/Hybrid) bzw.
+  /// [_applyLocalState] (Local/Hybrid) gepflegt — KEINE eigene Firestore-Query.
+  /// Idempotenz-Basis von [generatePlannedShifts] und [openShiftsInRange]
+  /// (W3-Bugfix Duplikat-Slots: das gefilterte [_shifts] versteckte vorhandene
+  /// Slots und ließ sie erneut generieren).
+  List<Shift> _allShiftsUnfiltered = [];
   List<ShiftTemplate> _shiftTemplates = [];
   List<AbsenceRequest> _absenceRequests = [];
   List<AbsenceRequest> _allAbsenceRequests = [];
@@ -176,6 +201,11 @@ class ScheduleProvider extends ChangeNotifier {
   List<EmploymentContract> _contracts = [];
   List<EmployeeSiteAssignment> _siteAssignments = [];
   List<EmployeeShiftPreference> _shiftPreferences = [];
+
+  // Personal→Plan-Kopplung (E5): vom PersonalProvider über die in main.dart
+  // verdrahtete Senke ([updatePersonalReferenceData]) gepusht.
+  List<SollzeitProfile> _sollzeitProfiles = [];
+  Map<String, DateTime> _exitDateByUserId = const {};
   List<SiteDefinition> _sites = [];
   List<ComplianceRuleSet> _ruleSets = [];
   List<TravelTimeRule> _travelTimeRules = [];
@@ -322,6 +352,30 @@ class ScheduleProvider extends ChangeNotifier {
     _shiftPreferences = shiftPreferences;
   }
 
+  /// Personal→Plan-Kopplung (E5): nimmt Sollzeit-Profile + Austrittsdaten der
+  /// Stammakte aus dem PersonalProvider entgegen (Senke wird in `main.dart`
+  /// via `PersonalProvider.setPlanningDataSink` verdrahtet). Setter OHNE
+  /// `notifyListeners` (Muster [updateReferenceData] — sonst Rebuild-Loops).
+  /// `null` = Teil unverändert lassen.
+  ///
+  /// BEKANNTE EINSCHRÄNKUNG: Sollzeit-Profile fließen auch in Nicht-Admin-
+  /// Planungs-Sessions (canManageShifts liest sollzeitProfiles org-weit);
+  /// `exitDateByUserId` stammt dagegen aus der admin/self-only-Stammakte
+  /// (`employeeProfiles`) und ist bei Teamlead-Planung leer — die
+  /// Austritts-Sperre wirkt dort nicht (dokumentiert in
+  /// plan/schichtplaner-verbesserung.md unter E5).
+  void updatePersonalReferenceData({
+    List<SollzeitProfile>? sollzeitProfiles,
+    Map<String, DateTime>? exitDateByUserId,
+  }) {
+    if (sollzeitProfiles != null) {
+      _sollzeitProfiles = sollzeitProfiles;
+    }
+    if (exitDateByUserId != null) {
+      _exitDateByUserId = exitDateByUserId;
+    }
+  }
+
   /// Standorte mit Öffnungszeiten/Bedarf (für die Auto-Schichtverteilung).
   List<SiteDefinition> get sites => List.unmodifiable(_sites);
 
@@ -362,6 +416,7 @@ class ScheduleProvider extends ChangeNotifier {
       _selectedTeamId = null;
       _selectedTeamName = null;
       _shifts = [];
+      _allShiftsUnfiltered = [];
       _shiftTemplates = [];
       _absenceRequests = [];
       _allAbsenceRequests = [];
@@ -380,6 +435,8 @@ class ScheduleProvider extends ChangeNotifier {
       _contracts = [];
       _siteAssignments = [];
       _shiftPreferences = [];
+      _sollzeitProfiles = [];
+      _exitDateByUserId = const {};
       _ruleSets = [];
       _travelTimeRules = [];
       await _shiftsSubscription?.cancel();
@@ -524,45 +581,62 @@ class ScheduleProvider extends ChangeNotifier {
             )
             .toList(growable: false);
 
+    // Occurrences EINMAL expandieren + stabile Doc-IDs vergeben (idempotente
+    // Callable-Retries, no-idempotency-key) — gemeinsame Basis für die
+    // Validierung, die Überstunden-Projektion (E1/E3) und beide Storage-Pfade.
+    final expandedOccurrences = preparedShifts
+        .expand(
+          (shift) => _firestoreService.buildShiftOccurrences(
+            shift.copyWith(createdByUid: currentUser.uid),
+            recurrencePattern: recurrencePattern,
+            recurrenceEndDate: recurrenceEndDate,
+          ),
+        )
+        .map((occurrence) =>
+            occurrence.copyWith(id: occurrence.id ?? _nextLocalId('shift')))
+        .toList(growable: false);
+
     // skipCompliance = bewusster Chef-Override (Schichttausch): weder die
     // clientseitige Vorprüfung werfen noch (unten) die validierende Callable
-    // nutzen — der Direkt-Write umgeht die serverseitige Compliance.
+    // nutzen — der Direkt-Write umgeht die serverseitige Compliance. Auf diesem
+    // Pfad wird auch KEINE Überstunden-Projektion gerechnet (kein geladener
+    // Kontext) — vorhandene overtimeMinutes bleiben unverändert. Umgebuchte
+    // Swap-Kopien setzen den Wert daher schon in _buildSwappedShifts auf 0
+    // (sonst würden fremd-attribuierte Überstunden mit persistiert).
+    var occurrences = expandedOccurrences;
     if (!skipCompliance) {
+      final contextByShiftId = <String, List<Shift>>{};
       final conflictIssues = await validateShifts(
-        preparedShifts,
-        recurrencePattern: recurrencePattern,
-        recurrenceEndDate: recurrenceEndDate,
+        expandedOccurrences,
+        onShiftContext: (shift, contextShifts) {
+          final id = shift.id;
+          if (id != null && id.isNotEmpty) {
+            contextByShiftId[id] = contextShifts;
+          }
+        },
       );
       if (conflictIssues.isNotEmpty) {
         throw ShiftConflictException(conflictIssues);
       }
+      // E3: Planung ÜBER die Vertrags-Maximalstunden blockiert NICHT
+      // (Chef-Entscheidung) — die Überschreitung wird als geplante Überstunden
+      // (`Shift.overtimeMinutes`) persistiert und in Board/Editor ausgewiesen.
+      // Eine Warn-Rückmeldung über `ShiftConflictIssue` ist bewusst NICHT
+      // möglich: saveShifts wirft bei JEDEM zurückgegebenen Issue — das wäre
+      // eine Blockade. Daher nur markieren.
+      occurrences = _withProjectedOvertime(expandedOccurrences, contextByShiftId);
     }
 
-    // created vs updated VOR dem Vergeben neuer ids ableiten: sind alle
-    // Eingabe-Schichten neu (keine id), ist es eine Neuanlage – sonst (auch bei
-    // gemischtem Batch) als Änderung protokollieren.
+    // created vs updated anhand der EINGABE-Schichten ableiten (vor der
+    // ID-Vergabe der Occurrences): sind alle neu (keine id), ist es eine
+    // Neuanlage – sonst (auch bei gemischtem Batch) eine Änderung.
     final allNew =
         preparedShifts.every((shift) => shift.id == null || shift.id!.isEmpty);
     final auditAction = allNew ? AuditAction.created : AuditAction.updated;
 
     if (usesLocalStorage) {
-      var occurrenceCount = 0;
-      String? lastShiftId;
-      for (final shift in preparedShifts) {
-        final occurrences = _firestoreService.buildShiftOccurrences(
-          shift.copyWith(createdByUid: currentUser.uid),
-          recurrencePattern: recurrencePattern,
-          recurrenceEndDate: recurrenceEndDate,
-        );
-
-        for (final occurrence in occurrences) {
-          final stored = occurrence.copyWith(
-            id: occurrence.id ?? _nextLocalId('shift'),
-          );
-          _upsertLocalShift(stored);
-          occurrenceCount++;
-          lastShiftId = stored.id;
-        }
+      for (final stored in occurrences) {
+        _upsertLocalShift(stored);
       }
 
       await _persistLocalShifts();
@@ -571,28 +645,14 @@ class ScheduleProvider extends ChangeNotifier {
       _audit?.call(
         action: auditAction,
         entityType: 'Schicht',
-        entityId: occurrenceCount == 1 ? lastShiftId : null,
-        summary: occurrenceCount == 1
+        entityId: occurrences.length == 1 ? occurrences.first.id : null,
+        summary: occurrences.length == 1
             ? '1 Schicht gespeichert'
-            : '$occurrenceCount Schichten gespeichert',
+            : '${occurrences.length} Schichten gespeichert',
       );
       return;
     }
 
-    final occurrences = preparedShifts
-        .expand(
-          (shift) => _firestoreService.buildShiftOccurrences(
-            shift.copyWith(createdByUid: currentUser.uid),
-            recurrencePattern: recurrencePattern,
-            recurrenceEndDate: recurrenceEndDate,
-          ),
-        )
-        // Jede Occurrence bekommt schon hier eine stabile Doc-ID, damit der
-        // Callable-Pfad idempotent ist (no-idempotency-key); bei id == null
-        // wuerde der Server sonst inhaltsbasiert hashen.
-        .map((occurrence) =>
-            occurrence.copyWith(id: occurrence.id ?? _nextLocalId('shift')))
-        .toList(growable: false);
     try {
       if (skipCompliance) {
         await _firestoreService.saveShiftBatchDirect(occurrences);
@@ -608,11 +668,7 @@ class ScheduleProvider extends ChangeNotifier {
         rethrow;
       }
       for (final occurrence in occurrences) {
-        _upsertLocalShift(
-          occurrence.copyWith(
-            id: occurrence.id ?? _nextLocalId('shift'),
-          ),
-        );
+        _upsertLocalShift(occurrence);
       }
       await _persistLocalShifts();
       _applyLocalState();
@@ -637,6 +693,60 @@ class ScheduleProvider extends ChangeNotifier {
     );
   }
 
+  /// Projiziert **geplante Überstunden** (E1/E3) auf die zugewiesenen
+  /// Schichten eines Save-Batches, bevor sie persistiert werden: der Anteil
+  /// der Netto-Minuten über den Vertrags-Maximalstunden (Monat/Woche) wird via
+  /// `overtime_projection.dart` chronologisch berechnet — ausschließlich aus
+  /// dem bereits für die Validierung geladenen Monats-Kontext
+  /// ([validateShifts] `onShiftContext`, KEINE zusätzliche Query). Unbesetzte
+  /// Schichten werden auf 0 zurückgesetzt, stornierte unverändert gelassen.
+  List<Shift> _withProjectedOvertime(
+    List<Shift> occurrences,
+    Map<String, List<Shift>> contextByShiftId,
+  ) {
+    final batchIds = <String>{
+      for (final occurrence in occurrences)
+        if (occurrence.id != null && occurrence.id!.isNotEmpty) occurrence.id!,
+    };
+    return occurrences.map((shift) {
+      if (shift.status == ShiftStatus.cancelled) {
+        return shift;
+      }
+      if (shift.isUnassigned) {
+        return shift.overtimeMinutes == 0
+            ? shift
+            : shift.copyWith(overtimeMinutes: 0);
+      }
+      final context = contextByShiftId[shift.id] ?? const <Shift>[];
+      final userShifts = <Shift>[
+        // Bestehender Bestand des Nutzers — ohne stornierte und ohne
+        // Alt-Versionen von Schichten, die dieser Batch gerade überschreibt.
+        ...context.where((s) =>
+            s.userId == shift.userId &&
+            s.status != ShiftStatus.cancelled &&
+            (s.id == null || !batchIds.contains(s.id))),
+        // Übrige Draft-Schichten desselben Nutzers aus diesem Batch.
+        ...occurrences.where((s) =>
+            !identical(s, shift) &&
+            s.userId == shift.userId &&
+            s.status != ShiftStatus.cancelled),
+      ];
+      final contract = EmploymentContractResolver.activeOn(
+        _contracts,
+        shift.userId,
+        shift.startTime,
+      );
+      final minutes = plannedOvertimeMinutes(
+        shift: shift,
+        userShifts: userShifts,
+        contract: contract,
+      );
+      return shift.overtimeMinutes == minutes
+          ? shift
+          : shift.copyWith(overtimeMinutes: minutes);
+    }).toList(growable: false);
+  }
+
   // --- Automatische Schichtverteilung (Phase A Generierung + Phase B Besetzung) ---
 
   /// **Phase A:** Generiert unbesetzte Schicht-Slots aus den Standort-
@@ -651,11 +761,13 @@ class ScheduleProvider extends ChangeNotifier {
     if (currentUser == null || !currentUser.canManageShifts) {
       return const [];
     }
-    final existingInRange = _shifts
-        .where((shift) =>
-            !shift.startTime.isBefore(rangeStart) &&
-            shift.startTime.isBefore(rangeEnd))
-        .toList(growable: false);
+    // W3-Bugfix Duplikat-Slots: Idempotenz-Basis ist der UNGEFILTERTE Bestand
+    // — das nach Mitarbeiter gefilterte `_shifts` versteckte bei aktivem
+    // Filter vorhandene (v. a. unbesetzte) Slots und ließ sie erneut
+    // generieren. Keine zusätzliche Query: lokaler Voll-Cache + roher
+    // Subscription-Bestand.
+    final existingInRange =
+        _unfilteredShiftsInRange(currentUser.orgId, rangeStart, rangeEnd);
     return ShiftSlotGenerator(
       sites: _sites,
       rangeStart: rangeStart,
@@ -666,6 +778,54 @@ class ScheduleProvider extends ChangeNotifier {
       seriesId: newSeriesId(),
       shiftIdFactory: () => _nextLocalId('shift'),
     ).generate();
+  }
+
+  /// Ungefilterter Schicht-Bestand für `[start, end)` aus **bereits
+  /// vorhandenen** Daten (KEINE neue Firestore-Query): vollständiger lokaler
+  /// Cache (`_localShifts`, Local/Hybrid) vereinigt mit dem rohen
+  /// Subscription-Bestand ([_allShiftsUnfiltered], Cloud/Hybrid — deckt das
+  /// sichtbare Fenster ab), dedupliziert nach id, sortiert nach Start.
+  List<Shift> _unfilteredShiftsInRange(
+    String orgId,
+    DateTime start,
+    DateTime end,
+  ) {
+    bool inRange(Shift shift) =>
+        shift.orgId == orgId &&
+        !shift.startTime.isBefore(start) &&
+        shift.startTime.isBefore(end);
+
+    final byId = <String, Shift>{};
+    final anonymous = <Shift>[];
+    for (final shift in [
+      ..._localShifts.where(inRange),
+      ..._allShiftsUnfiltered.where(inRange),
+    ]) {
+      final id = shift.id;
+      if (id == null || id.isEmpty) {
+        anonymous.add(shift);
+      } else {
+        byId[id] = shift;
+      }
+    }
+    return [...byId.values, ...anonymous]
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+  }
+
+  /// Offene (unbesetzte, nicht stornierte) Schichten in [range] — bewusst
+  /// **ungefiltert**: die Status-/Team-/Mitarbeiter-Filter der Board-Ansicht
+  /// greifen hier NICHT (W3-Bugfix Status-/Teamfilter — sonst versteckt ein
+  /// aktiver Filter offene Schichten vor der Auto-Verteilung, Phase B). Nutzt
+  /// nur bereits geladene Daten (keine neue Query).
+  List<Shift> openShiftsInRange(DateTimeRange range) {
+    final currentUser = _currentUser;
+    if (currentUser == null) {
+      return const [];
+    }
+    return _unfilteredShiftsInRange(currentUser.orgId, range.start, range.end)
+        .where((shift) =>
+            shift.isUnassigned && shift.status != ShiftStatus.cancelled)
+        .toList(growable: false);
   }
 
   /// **Phase B:** Verteilt unbesetzte Schichten ([openShifts] = Phase-A-Ergebnis
@@ -690,17 +850,21 @@ class ScheduleProvider extends ChangeNotifier {
     }
     final orgId = currentUser.orgId;
 
-    // Sammelbereich = voller Monat, erweitert um die ISO-Wochen der offenen
-    // Schichten (decken Wochen ab, die über die Monatsgrenze ragen).
+    // Sammelbereich = volle Kalendermonate des Planungsmonats UND aller
+    // offenen Schichten (W3-Bugfix Monatsgrenzen: der Folgemonat wurde vorher
+    // nur wochenweise erfasst → Monats-Cap/Minijob unterzählten dort still),
+    // zusätzlich die ISO-Wochenfenster der offenen Schichten (Wochen, die
+    // über eine Monatsgrenze ragen).
     var gatherStart = DateTime(month.year, month.month, 1);
     var gatherEnd = DateTime(month.year, month.month + 1, 1);
     for (final shift in openShifts) {
-      final day = DateTime(
-        shift.startTime.year,
-        shift.startTime.month,
-        shift.startTime.day,
-      );
-      final weekStart = day.subtract(Duration(days: shift.startTime.weekday - 1));
+      final start = shift.startTime;
+      final monthStart = DateTime(start.year, start.month, 1);
+      final monthEnd = DateTime(start.year, start.month + 1, 1);
+      if (monthStart.isBefore(gatherStart)) gatherStart = monthStart;
+      if (monthEnd.isAfter(gatherEnd)) gatherEnd = monthEnd;
+      final day = DateTime(start.year, start.month, start.day);
+      final weekStart = day.subtract(Duration(days: start.weekday - 1));
       final weekEnd = weekStart.add(const Duration(days: 7));
       if (weekStart.isBefore(gatherStart)) gatherStart = weekStart;
       if (weekEnd.isAfter(gatherEnd)) gatherEnd = weekEnd;
@@ -729,7 +893,62 @@ class ScheduleProvider extends ChangeNotifier {
       settings: settings,
       preferencesByUserId: preferencesByUserId,
       preferenceWeight: _autoPlanPreferenceWeight,
+      // Personal→Plan-Kopplung (E5): Sollzeit als Fairness-Ziel (E4) +
+      // Austrittsdaten als harter Ausschluss — vom PersonalProvider gepusht.
+      sollzeitByUserId: _activeSollzeitByUserId(month),
+      exitDateByUserId: _exitDateByUserId,
     ).assign();
+  }
+
+  /// Öffentliche Sicht auf [_activeSollzeitByUserId] für die Board-UI (W5:
+  /// Stunden-Pille speist ihr Wochensoll zuerst aus dem aktiven
+  /// Sollzeit-Profil). Reine Projektion der per
+  /// [updatePersonalReferenceData] gepushten Profile — keine Query.
+  Map<String, SollzeitProfile> activeSollzeitByUserId(DateTime month) =>
+      _activeSollzeitByUserId(month);
+
+  /// Zum Planungsmonat aktives Sollzeit-Profil je Nutzer — spiegelt die
+  /// gültig-ab-Auswahllogik von `PersonalProvider.activeSollzeitFor` (jüngstes
+  /// Profil mit `gueltigAb <= Stichtag`; deterministischer Tie-Break:
+  /// `gueltigAb` desc → `updatedAt` desc → `id` desc) lokal über die per
+  /// [updatePersonalReferenceData] gepushten Profile. Stichtag = Monatsletzter
+  /// des Planungsmonats (ein im Monat wirksam werdendes Profil zählt bereits).
+  Map<String, SollzeitProfile> _activeSollzeitByUserId(DateTime month) {
+    if (_sollzeitProfiles.isEmpty) {
+      return const {};
+    }
+    final stichtag = DateTime(month.year, month.month + 1, 0);
+    final byUser = <String, List<SollzeitProfile>>{};
+    for (final profile in _sollzeitProfiles) {
+      if (profile.userId.trim().isEmpty) continue;
+      (byUser[profile.userId] ??= <SollzeitProfile>[]).add(profile);
+    }
+    final result = <String, SollzeitProfile>{};
+    for (final entry in byUser.entries) {
+      final profiles = entry.value
+        ..sort((a, b) {
+          final byDate = b.gueltigAb.compareTo(a.gueltigAb);
+          if (byDate != 0) return byDate;
+          final aUpdated = a.updatedAt;
+          final bUpdated = b.updatedAt;
+          if (aUpdated != null && bUpdated != null) {
+            final byUpdated = bUpdated.compareTo(aUpdated);
+            if (byUpdated != 0) return byUpdated;
+          } else if (aUpdated != null) {
+            return -1;
+          } else if (bUpdated != null) {
+            return 1;
+          }
+          return (b.id ?? '').compareTo(a.id ?? '');
+        });
+      for (final profile in profiles) {
+        if (profile.isEffectiveOn(stichtag)) {
+          result[entry.key] = profile;
+          break;
+        }
+      }
+    }
+    return result;
   }
 
   /// Gewicht der weichen Schicht-Vorlieben (prefer/avoid) im Verteiler-Score.
@@ -746,8 +965,12 @@ class ScheduleProvider extends ChangeNotifier {
     DateTime start,
     DateTime end,
   ) async {
+    // W3-Bugfix: stornierte Schichten zählen NICHT zum Stundenkonto
+    // (Caps/Minijob/Doppelbelegung) — sonst blockiert eine abgesagte Schicht
+    // weiterhin die Neuvergabe.
     bool inRange(Shift s) =>
         !s.isUnassigned &&
+        s.status != ShiftStatus.cancelled &&
         s.orgId == orgId &&
         !s.startTime.isBefore(start) &&
         s.startTime.isBefore(end);
@@ -761,7 +984,8 @@ class ScheduleProvider extends ChangeNotifier {
         start: start,
         end: end,
       );
-      final assigned = fetched.where((s) => !s.isUnassigned);
+      final assigned = fetched.where(
+          (s) => !s.isUnassigned && s.status != ShiftStatus.cancelled);
       if (!usesHybridStorage) {
         return assigned.toList(growable: false);
       }
@@ -778,10 +1002,15 @@ class ScheduleProvider extends ChangeNotifier {
       }
       return [...byId.values, ...anonymous];
     } catch (_) {
-      // Fail-safe: in-memory (vollständiger lokaler Cache + sichtbarer Bereich).
+      // Fail-safe: in-memory (vollständiger lokaler Cache + roher, UNGEFILTERTER
+      // Subscription-Bestand des sichtbaren Bereichs — nicht das nach
+      // Mitarbeiter gefilterte `_shifts`, W3-Duplikat-Slot-Fix).
       final byId = <String, Shift>{};
       final anonymous = <Shift>[];
-      for (final shift in [..._localShifts.where(inRange), ..._shifts.where(inRange)]) {
+      for (final shift in [
+        ..._localShifts.where(inRange),
+        ..._allShiftsUnfiltered.where(inRange),
+      ]) {
         final id = shift.id;
         if (id == null || id.isEmpty) {
           anonymous.add(shift);
@@ -849,10 +1078,16 @@ class ScheduleProvider extends ChangeNotifier {
   /// eine Zuweisung bekommen haben. Delegiert an [saveShifts] (Batch ≤50,
   /// Storage-Modi, Compliance-Re-Validierung, Exceptions). Erbt das
   /// Mutator-Muster (hybrid-Fallback/cloud-rethrow).
+  ///
+  /// [onlyShiftIds] = **Teilübernahme** (Vorschau-Sheet, W5): nur die
+  /// Proposals/neuen Slots mit diesen Schicht-IDs anwenden; `null` = alle wie
+  /// bisher. Geplante Überstunden der Zuweisung ([ShiftAssignmentProposal.
+  /// overtimeMinutes], E1) werden am Shift persistiert.
   Future<void> applyAutoPlan({
     required List<Shift> generatedShifts,
     required List<Shift> existingOpenShifts,
     required AutoAssignmentResult result,
+    Set<String>? onlyShiftIds,
   }) async {
     final currentUser = _currentUser;
     if (currentUser == null || !currentUser.canManageShifts) {
@@ -861,11 +1096,16 @@ class ScheduleProvider extends ChangeNotifier {
     final proposalByShiftId = <String, ShiftAssignmentProposal>{
       for (final proposal in result.assignments) proposal.shiftId: proposal,
     };
+    bool included(String? id) =>
+        onlyShiftIds == null || (id != null && onlyShiftIds.contains(id));
 
     final finalShifts = <Shift>[];
     // Neu generierte Schichten: zuweisen wenn möglich, sonst unbesetzt anlegen
     // (sichtbarer Bedarf bleibt erhalten — Plan §13.4).
+    var appliedGeneratedCount = 0;
     for (final shift in generatedShifts) {
+      if (!included(shift.id)) continue;
+      appliedGeneratedCount++;
       final proposal =
           shift.id == null ? null : proposalByShiftId[shift.id!];
       finalShifts.add(proposal == null
@@ -873,6 +1113,7 @@ class ScheduleProvider extends ChangeNotifier {
           : shift.copyWith(
               userId: proposal.userId,
               employeeName: proposal.userName,
+              overtimeMinutes: proposal.overtimeMinutes,
             ));
     }
     // Bereits vorhandene offene Schichten: NUR (erneut) speichern, wenn jetzt
@@ -880,10 +1121,11 @@ class ScheduleProvider extends ChangeNotifier {
     for (final shift in existingOpenShifts) {
       final proposal =
           shift.id == null ? null : proposalByShiftId[shift.id!];
-      if (proposal == null) continue;
+      if (proposal == null || !included(shift.id)) continue;
       finalShifts.add(shift.copyWith(
         userId: proposal.userId,
         employeeName: proposal.userName,
+        overtimeMinutes: proposal.overtimeMinutes,
       ));
     }
 
@@ -904,7 +1146,7 @@ class ScheduleProvider extends ChangeNotifier {
       entityType: 'Schicht',
       entityId: null,
       summary:
-          '${generatedShifts.length} Schichten generiert, $assignedCount automatisch besetzt',
+          '$appliedGeneratedCount Schichten generiert, $assignedCount automatisch besetzt',
     );
   }
 
@@ -971,10 +1213,16 @@ class ScheduleProvider extends ChangeNotifier {
     );
   }
 
+  /// [onShiftContext] (optional): meldet je expandierter Schicht die für die
+  /// Validierung geladenen Kontext-Schichten des Zugewiesenen (Verfügbarkeits-
+  /// Fenster = volle Kalendermonate + Wochen, s. [_buildShiftAvailabilityWindow])
+  /// — damit [saveShifts] die Überstunden-Projektion OHNE zweite Query rechnen
+  /// kann. Für unbesetzte Schichten wird eine leere Liste gemeldet.
   Future<List<ShiftConflictIssue>> validateShifts(
     List<Shift> shifts, {
     RecurrencePattern recurrencePattern = RecurrencePattern.none,
     DateTime? recurrenceEndDate,
+    void Function(Shift shift, List<Shift> contextShifts)? onShiftContext,
   }) async {
     final currentUser = _currentUser;
     if (currentUser == null || !currentUser.canManageShifts || shifts.isEmpty) {
@@ -991,6 +1239,14 @@ class ScheduleProvider extends ChangeNotifier {
         )
         .toList(growable: false);
     final issues = <ShiftConflictIssue>[];
+    // Cloud-Kontext-Reads pro (userId, Fenster) deduplizieren: seit W3 lädt
+    // jede Schicht ein volles Kalendermonats-Fenster — im selben Batch fallen
+    // damit viele identische Queries an (N statt 1 pro Monat/Nutzer). Die
+    // Caches leben nur für diesen einen Aufruf (der persistierte Bestand
+    // ändert sich währenddessen nicht → verhaltensgleich); der Local-Zweig
+    // filtert nur in-memory und braucht keinen Cache.
+    final shiftCtxCache = <String, List<Shift>>{};
+    final absenceCtxCache = <String, List<AbsenceRequest>>{};
     for (var i = 0; i < expandedShifts.length; i++) {
       final shift = expandedShifts[i];
       final hasAssignee = !shift.isUnassigned;
@@ -998,6 +1254,9 @@ class ScheduleProvider extends ChangeNotifier {
         shift.startTime,
         shift.endTime,
       );
+      final cacheKey = '${shift.orgId}|${shift.userId}|'
+          '${queryWindow.start.toIso8601String()}|'
+          '${queryWindow.end.toIso8601String()}';
       final contextualShifts = !hasAssignee
           ? const <Shift>[]
           : usesLocalStorage
@@ -1007,12 +1266,14 @@ class ScheduleProvider extends ChangeNotifier {
                       !candidate.startTime.isBefore(queryWindow.start) &&
                       candidate.startTime.isBefore(queryWindow.end);
                 }).toList(growable: false)
-              : await _firestoreService.getShiftsInRange(
-                  orgId: shift.orgId,
-                  start: queryWindow.start,
-                  end: queryWindow.end,
-                  userId: shift.userId,
-                );
+              : shiftCtxCache[cacheKey] ??
+                  (shiftCtxCache[cacheKey] =
+                      await _firestoreService.getShiftsInRange(
+                    orgId: shift.orgId,
+                    start: queryWindow.start,
+                    end: queryWindow.end,
+                    userId: shift.userId,
+                  ));
       final approvedAbsences = !hasAssignee
           ? const <AbsenceRequest>[]
           : usesLocalStorage
@@ -1022,12 +1283,15 @@ class ScheduleProvider extends ChangeNotifier {
                       request.status == AbsenceStatus.approved &&
                       request.overlaps(queryWindow.start, queryWindow.end);
                 }).toList(growable: false)
-              : await _firestoreService.getApprovedAbsencesInRange(
-                  orgId: shift.orgId,
-                  start: queryWindow.start,
-                  end: queryWindow.end,
-                  userId: shift.userId,
-                );
+              : absenceCtxCache[cacheKey] ??
+                  (absenceCtxCache[cacheKey] =
+                      await _firestoreService.getApprovedAbsencesInRange(
+                    orgId: shift.orgId,
+                    start: queryWindow.start,
+                    end: queryWindow.end,
+                    userId: shift.userId,
+                  ));
+      onShiftContext?.call(shift, contextualShifts);
       final conflictingShifts = contextualShifts
           .where((candidate) =>
               candidate.id != shift.id && candidate.overlaps(shift))
@@ -1161,11 +1425,31 @@ class ScheduleProvider extends ChangeNotifier {
         travelTimeRules: _travelTimeRules,
         members: _orgMembers.isEmpty ? members : _orgMembers,
       );
+      // Geplante Überstunden-Vorschau (E3): projizierte Minuten der
+      // Draft-Schicht über den Vertrags-Maximalstunden dieses Kandidaten —
+      // aus den ohnehin geladenen [candidateShifts] (Fenster = volle
+      // Kalendermonate + Wochen der Draft-Zeit), keine zusätzliche Query.
+      // Die Alt-Version einer bearbeiteten Schicht ([excludeShiftId]) wird in
+      // `plannedOvertimeMinutes` über die gleiche id dedupliziert.
+      final capOverageMinutes = plannedOvertimeMinutes(
+        shift: draftShift,
+        userShifts: candidateShifts
+            .where((shift) =>
+                shift.userId == member.uid &&
+                shift.status != ShiftStatus.cancelled)
+            .toList(growable: false),
+        contract: EmploymentContractResolver.activeOn(
+          _contracts,
+          member.uid,
+          startTime,
+        ),
+      );
       return ShiftAssigneeAvailability(
         member: member,
         conflictingShifts: conflicts,
         blockingAbsences: absences,
         violations: violations,
+        capOverageMinutes: capOverageMinutes,
       );
     }).toList(growable: false)
       ..sort((a, b) {
@@ -2550,9 +2834,15 @@ class ScheduleProvider extends ChangeNotifier {
     final requesterName =
         _memberName(request.requesterUid) ?? request.requesterName;
 
+    // Überstunden-Projektion neutralisieren: der Wert wurde für den BISHERIGEN
+    // Inhaber gerechnet und würde beim Chef-Override (skipCompliance, keine
+    // Neu-Projektion) sonst fälschlich dem neuen Inhaber zugeschrieben. Auf dem
+    // Nicht-Override-Pfad ersetzt _withProjectedOvertime die 0 ohnehin durch
+    // die frische Projektion für den neuen Nutzer.
     final newRequesterShift = requesterShift.copyWith(
       userId: request.targetUid,
       employeeName: targetName,
+      overtimeMinutes: 0,
     );
 
     if (request.isGiveAway || request.targetShiftId == null) {
@@ -2566,6 +2856,7 @@ class ScheduleProvider extends ChangeNotifier {
     final newTargetShift = targetShift.copyWith(
       userId: request.requesterUid,
       employeeName: requesterName,
+      overtimeMinutes: 0,
     );
     return [newRequesterShift, newTargetShift];
   }
@@ -2980,6 +3271,12 @@ class ScheduleProvider extends ChangeNotifier {
     final range = _currentRange();
     final filterUserId =
         currentUser.canManageShifts ? _selectedUserId : currentUser.uid;
+    // Manager abonnieren das Fenster UNGEFILTERT (org-weit) und filtern den
+    // Mitarbeiter clientseitig — so bleibt der Roh-Bestand
+    // ([_allShiftsUnfiltered]) auch bei aktivem Filter vollständig
+    // (W3-Duplikat-Slot-Fix), weiterhin EINE Subscription (keine zusätzliche
+    // Query). Mitarbeiter behalten den serverseitigen self-Filter.
+    final queryUserId = currentUser.canManageShifts ? null : currentUser.uid;
     final canLoadShifts =
         currentUser.canViewSchedule || currentUser.canManageShifts;
     if (canLoadShifts) {
@@ -2988,24 +3285,29 @@ class ScheduleProvider extends ChangeNotifier {
         orgId: currentUser.orgId,
         start: range.start,
         end: range.end,
-        userId: filterUserId,
+        userId: queryUserId,
       )
           .listen((items) {
-        final visible = _withoutTombstoned(
+        final unfiltered = _withoutTombstoned(
           items,
           (shift) => shift.id,
           _deletedShiftIds,
         ).toList(growable: false);
-        _shifts = visible;
+        _allShiftsUnfiltered = unfiltered;
+        _shifts = (filterUserId == null || filterUserId.isEmpty)
+            ? unfiltered
+            : unfiltered
+                .where((shift) => shift.userId == filterUserId)
+                .toList(growable: false);
         _loading = false;
         _errorMessage = null;
         if (usesHybridStorage) {
           unawaited(
             _storeHybridShiftSnapshot(
-              visible,
+              unfiltered,
               start: range.start,
               end: range.end,
-              filterUserId: filterUserId,
+              filterUserId: queryUserId,
             ),
           );
         }
@@ -3013,6 +3315,7 @@ class ScheduleProvider extends ChangeNotifier {
       }, onError: (Object error) {
         _errorMessage = 'Fehler beim Laden der Schichten: $error';
         _shifts = [];
+        _allShiftsUnfiltered = [];
         _loading = false;
         _safeNotify();
       });
@@ -3239,6 +3542,7 @@ class ScheduleProvider extends ChangeNotifier {
     final currentUser = _currentUser;
     if (currentUser == null) {
       _shifts = [];
+      _allShiftsUnfiltered = [];
       _shiftTemplates = [];
       _absenceRequests = [];
       _allAbsenceRequests = [];
@@ -3254,17 +3558,22 @@ class ScheduleProvider extends ChangeNotifier {
     final canLoadShifts =
         currentUser.canViewSchedule || currentUser.canManageShifts;
 
-    _shifts = !canLoadShifts
+    // Roh-Bestand VOR dem Mitarbeiter-Filter separat halten
+    // (W3-Duplikat-Slot-Fix) — `_shifts` bleibt die gefilterte Sicht.
+    _allShiftsUnfiltered = !canLoadShifts
         ? const <Shift>[]
-        : _localShifts.where((shift) {
+        : (_localShifts.where((shift) {
             final sameOrg = shift.orgId == currentUser.orgId;
-            final sameUser =
-                filterUserId == null || shift.userId == filterUserId;
             final inRange = !shift.startTime.isBefore(range.start) &&
                 shift.startTime.isBefore(range.end);
-            return sameOrg && sameUser && inRange;
+            return sameOrg && inRange;
           }).toList()
-      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+          ..sort((a, b) => a.startTime.compareTo(b.startTime)));
+    _shifts = filterUserId == null
+        ? _allShiftsUnfiltered
+        : _allShiftsUnfiltered
+            .where((shift) => shift.userId == filterUserId)
+            .toList(growable: false);
 
     _shiftTemplates = !currentUser.canManageShifts
         ? <ShiftTemplate>[]
@@ -3757,20 +4066,38 @@ class ScheduleProvider extends ChangeNotifier {
     }
   }
 
+  /// Abfrage-Fenster für Verfügbarkeits-/Validierungs-Kontext einer Schicht.
+  ///
+  /// Historisch nur Schichttag ± 1 Tag (Ruhezeit-Nachbarn). Für die
+  /// Überstunden-Projektion (E1/E3) und korrekte Monats-Checks (Minijob) auf
+  /// die **vollen Kalendermonate** von Start/Ende sowie deren Montags-Wochen
+  /// ausgeweitet — es bleibt EINE Range-Query, nur breiter (keine neue
+  /// Pflicht-Query im Hot-Path).
   ({DateTime start, DateTime end}) _buildShiftAvailabilityWindow(
     DateTime startTime,
     DateTime endTime,
   ) {
-    final start = DateTime(
+    var start = DateTime(
       startTime.year,
       startTime.month,
       startTime.day,
     ).subtract(const Duration(days: 1));
-    final end = DateTime(
+    var end = DateTime(
       endTime.year,
       endTime.month,
       endTime.day + 1,
     );
+    final monthStart = DateTime(startTime.year, startTime.month, 1);
+    final monthEnd = DateTime(endTime.year, endTime.month + 1, 1);
+    if (monthStart.isBefore(start)) start = monthStart;
+    if (monthEnd.isAfter(end)) end = monthEnd;
+    final weekStart = DateTime(startTime.year, startTime.month, startTime.day)
+        .subtract(Duration(days: startTime.weekday - 1));
+    final weekEnd = DateTime(endTime.year, endTime.month, endTime.day)
+        .subtract(Duration(days: endTime.weekday - 1))
+        .add(const Duration(days: 7));
+    if (weekStart.isBefore(start)) start = weekStart;
+    if (weekEnd.isAfter(end)) end = weekEnd;
     return (start: start, end: end);
   }
 

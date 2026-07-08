@@ -5,7 +5,7 @@
 // _ShiftEditorSheet (StatefulWidget) samt State sowie die
 // _AdditionalShiftAssignmentCard. Als 'part' gehalten, damit der
 // Navigator.push/pop-Vertrag (Future<_ShiftEditorResult?>) und die gesamte
-// file-private Kopplung zur Hauptdatei unveraendert erhalten bleiben und keine
+// file-private Kopplung zur Hauptdatei unverändert erhalten bleiben und keine
 // Imports dupliziert werden.
 part of '../shift_planner_screen.dart';
 
@@ -14,6 +14,24 @@ part of '../shift_planner_screen.dart';
 /// Fan-out (Tage × Mitarbeiter) ≤ 50, läuft das Speichern als EIN atomarer
 /// Server-Call → kein Teil-Write-Risiko bei einer Compliance-Ablehnung.
 const int _kMaxShiftsPerSave = 50;
+
+/// Feld-Validator für Pause-Eingaben (W6): nicht-numerische Eingaben fielen
+/// bisher still auf 0 Minuten zurück — jetzt gibt es einen Inline-Fehlertext.
+/// Leer ist erlaubt (= keine Pause), Komma und Punkt werden akzeptiert.
+String? _validateBreakMinutesInput(String? value) {
+  final text = (value ?? '').trim();
+  if (text.isEmpty) {
+    return null;
+  }
+  final parsed = double.tryParse(text.replaceAll(',', '.'));
+  if (parsed == null) {
+    return 'Bitte die Pause als Zahl in Minuten angeben.';
+  }
+  if (parsed < 0) {
+    return 'Die Pause darf nicht negativ sein.';
+  }
+  return null;
+}
 
 class _ShiftEditorResult {
   const _ShiftEditorResult({
@@ -52,7 +70,7 @@ class _ShiftTemplatePickerSheet extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Schichtvorlage auswaehlen',
+              'Schichtvorlage auswählen',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
@@ -337,13 +355,13 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Tage waehlen',
+                'Tage wählen',
                 style: theme.textTheme.titleLarge
                     ?.copyWith(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 4),
               Text(
-                'Wochentage im Zeitraum hinzufuegen oder einzelne Tage im '
+                'Wochentage im Zeitraum hinzufügen oder einzelne Tage im '
                 'Kalender antippen.',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
@@ -401,8 +419,8 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
                   icon: const Icon(Icons.playlist_add),
                   label: Text(
                     _weekdays.isEmpty
-                        ? 'Alle Tage im Zeitraum hinzufuegen'
-                        : 'Wochentage im Zeitraum hinzufuegen',
+                        ? 'Alle Tage im Zeitraum hinzufügen'
+                        : 'Wochentage im Zeitraum hinzufügen',
                   ),
                 ),
               ),
@@ -418,8 +436,8 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
                   Expanded(
                     child: Text(
                       _days.length == 1
-                          ? '1 Tag ausgewaehlt'
-                          : '${_days.length} Tage ausgewaehlt',
+                          ? '1 Tag ausgewählt'
+                          : '${_days.length} Tage ausgewählt',
                       style: theme.textTheme.titleSmall,
                     ),
                   ),
@@ -427,7 +445,7 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
                     onPressed: _days.isEmpty
                         ? null
                         : () => setState(_days.clear),
-                    child: const Text('Zuruecksetzen'),
+                    child: const Text('Zurücksetzen'),
                   ),
                 ],
               ),
@@ -438,7 +456,7 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
                   onPressed: _days.isEmpty
                       ? null
                       : () => Navigator.of(context).pop(_days),
-                  child: const Text('Uebernehmen'),
+                  child: const Text('Übernehmen'),
                 ),
               ),
             ],
@@ -473,7 +491,7 @@ class _MultiDayPickerSheetState extends State<_MultiDayPickerSheet> {
                 DateTime(_visibleMonth.year, _visibleMonth.month + 1);
           }),
           icon: const Icon(Icons.chevron_right),
-          tooltip: 'Naechster Monat',
+          tooltip: 'Nächster Monat',
         ),
       ],
     );
@@ -638,7 +656,7 @@ class _CopyShiftSheetState extends State<_CopyShiftSheet> {
               ),
               const SizedBox(height: 4),
               Text(
-                '"${widget.source.title}" auf gewaehlte Mitarbeiter und Tage '
+                '"${widget.source.title}" auf gewählte Mitarbeiter und Tage '
                 'kopieren.',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
@@ -778,6 +796,10 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
   List<ShiftAssigneeAvailability> _assigneeAvailability = const [];
   int _availabilityRequestId = 0;
   bool _loadingAvailability = false;
+  // Entprellter Verfügbarkeits-Reload für Text-Eingaben (Pause-Feld): pro
+  // Tastendruck würde sonst eine org-weite Range-Query laufen (W6).
+  // Picker-Änderungen (Datum/Zeit/Standort) refreshen weiterhin sofort.
+  Timer? _availabilityDebounce;
   late bool _saveAsUnassigned;
   String? _selectedSiteId;
   String? _selectedTemplateId;
@@ -786,7 +808,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
   List<_AdditionalShiftAssignmentDraft> _additionalAssignments = const [];
   int _nextAdditionalAssignmentDraftId = 0;
   bool _validating = false;
-  // Aufgeklappte Sperrgruende je Mitarbeiter (kompakte Liste: Details on demand).
+  // Aufgeklappte Sperrgründe je Mitarbeiter (kompakte Liste: Details on demand).
   final Set<String> _expandedMemberIds = <String>{};
   // Lange Teams: erst gekappt, dann auf Wunsch komplett zeigen.
   bool _showAllMembers = false;
@@ -864,6 +886,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
 
   @override
   void dispose() {
+    _availabilityDebounce?.cancel();
     _titleCtrl.removeListener(_clearConflictPreview);
     _teamCtrl.removeListener(_clearConflictPreview);
     _locationCtrl.removeListener(_clearConflictPreview);
@@ -966,7 +989,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Fixierter Kopf: Titel + Schliessen.
+            // Fixierter Kopf: Titel + Schließen.
             Padding(
               padding: EdgeInsets.fromLTRB(pagePad, spacing.sm, spacing.sm, 0),
               child: Row(
@@ -980,7 +1003,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                     ),
                   ),
                   IconButton(
-                    tooltip: 'Schliessen',
+                    tooltip: 'Schließen',
                     onPressed: () => Navigator.of(context).maybePop(),
                     icon: const Icon(Icons.close),
                   ),
@@ -1170,7 +1193,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       builder: (_) => AlertDialog(
         title: const Text('Schichtvorlage löschen?'),
         content: Text(
-          'Die Vorlage "${template.name}" wird unwiderruflich geloescht.',
+          'Die Vorlage "${template.name}" wird unwiderruflich gelöscht.',
         ),
         actions: [
           TextButton(
@@ -1199,7 +1222,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Schichtvorlage geloescht.'),
+          content: Text('Schichtvorlage gelöscht.'),
         ),
       );
     } catch (error) {
@@ -1208,7 +1231,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Vorlage konnte nicht geloescht werden: $error'),
+          content: Text('Vorlage konnte nicht gelöscht werden: $error'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1302,7 +1325,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
   String _selectedDaysSummary() {
     final sorted = _selectedDays.toList()..sort();
     if (sorted.isEmpty) {
-      return 'Tag waehlen';
+      return 'Tag wählen';
     }
     if (sorted.length == 1) {
       return DateFormat('EEE, dd.MM.yyyy', 'de_DE').format(sorted.first);
@@ -1384,7 +1407,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       setState(() => _validating = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Konfliktpruefung fehlgeschlagen: $error'),
+          content: Text('Konfliktprüfung fehlgeschlagen: $error'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1465,7 +1488,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       setState(() => _validating = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Konfliktpruefung fehlgeschlagen: $error'),
+          content: Text('Konfliktprüfung fehlgeschlagen: $error'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1507,7 +1530,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     if (days.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Bitte mindestens einen Tag auswaehlen.'),
+          content: const Text('Bitte mindestens einen Tag auswählen.'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1522,7 +1545,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     if (selectedSite == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Bitte einen Standort auswaehlen.'),
+          content: const Text('Bitte einen Standort auswählen.'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1619,7 +1642,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Bitte fuer Zusatzbesetzung ${index + 1} einen Mitarbeiter auswaehlen.',
+              'Bitte für Zusatzbesetzung ${index + 1} einen Mitarbeiter auswählen.',
             ),
             backgroundColor: Theme.of(context).colorScheme.error,
           ),
@@ -1633,7 +1656,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Mitarbeiter fuer Zusatzbesetzung ${index + 1} wurde nicht gefunden.',
+              'Mitarbeiter für Zusatzbesetzung ${index + 1} wurde nicht gefunden.',
             ),
             backgroundColor: Theme.of(context).colorScheme.error,
           ),
@@ -1848,7 +1871,22 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     );
   }
 
+  /// Entprellter Verfügbarkeits-Reload für Text-Eingaben (400 ms): erst wenn
+  /// der Nutzer kurz aufhört zu tippen, läuft die org-weite Abfrage.
+  void _scheduleAvailabilityRefresh() {
+    _availabilityDebounce?.cancel();
+    _availabilityDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) {
+        return;
+      }
+      _refreshAssigneeAvailability();
+    });
+  }
+
   Future<void> _refreshAssigneeAvailability() async {
+    // Ein sofortiger Refresh (Picker) macht einen noch ausstehenden
+    // entprellten Reload überflüssig.
+    _availabilityDebounce?.cancel();
     if (_saveAsUnassigned) {
       setState(() {
         _loadingAvailability = false;
@@ -1857,6 +1895,17 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       return;
     }
     final requestId = ++_availabilityRequestId;
+    // Ohne gewählten Standort keine Verfügbarkeits-Prüfung: die
+    // site_required-Compliance würde sonst ALLE Kandidaten sperren
+    // („0 frei / alle gesperrt"). Stattdessen neutral rendern; der
+    // Inline-Hinweis am Standort-Dropdown erklärt den Zustand (W6).
+    if (_selectedSiteId == null) {
+      setState(() {
+        _loadingAvailability = false;
+        _assigneeAvailability = const [];
+      });
+      return;
+    }
     final startTime = _selectedStartDateTime;
     final endTime = _selectedEndDateTime;
 
@@ -1897,11 +1946,11 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       setState(() {
         _loadingAvailability = false;
         _assigneeAvailability = availability;
-        _selectedUserIds.removeWhere(
-          (userId) => availability.any(
-            (entry) => entry.member.uid == userId && !entry.isAvailable,
-          ),
-        );
+        // Bewusst KEINE Still-Entfernung inzwischen gesperrter, bereits
+        // gewählter Mitarbeiter (W6): die Auswahl bleibt bestehen, das Tile
+        // wird als „Blockiert" markiert und beim Speichern fängt
+        // [ScheduleProvider.validateShifts] den Konflikt über die
+        // Konfliktkarte ab (Overlap/Abwesenheit/Compliance).
       });
     } catch (error) {
       if (!mounted || requestId != _availabilityRequestId) {
@@ -1911,7 +1960,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content:
-              Text('Verfuegbarkeiten konnten nicht geladen werden: $error'),
+              Text('Verfügbarkeiten konnten nicht geladen werden: $error'),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -1927,12 +1976,45 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     return double.tryParse(normalized) ?? 0;
   }
 
+  /// Projizierte Überstunden ([ShiftAssigneeAvailability.capOverageMinutes])
+  /// als „+X,Xh" (deutsches Dezimalkomma).
+  String _formatOvertimeHours(int minutes) =>
+      '+${(minutes / 60).toStringAsFixed(1).replaceAll('.', ',')}h';
+
+  /// Nicht-blockierende Überstunden-Zeile (E3): manuelle Planung darf immer
+  /// über das Vertragsmaximum, wird aber sichtbar als geplante Überstunden
+  /// ausgewiesen — im Mitarbeiter-Tile und im Bearbeiten-Modus.
+  Widget _buildOvertimeHintLine(BuildContext context, int overageMinutes) {
+    final theme = Theme.of(context);
+    final warning = theme.appColors.warning;
+    final spacing = context.spacing;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.trending_up, size: 14, color: warning),
+        SizedBox(width: spacing.xs),
+        Flexible(
+          child: Text(
+            'Über Vertragsmaximum: ${_formatOvertimeHours(overageMinutes)} '
+            'werden als Überstunden geplant',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: warning,
+              fontWeight: FontWeight.w600,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+
   // ---------------------------------------------------------------------------
-  // Abschnitts-Builder fuer den modernisierten Schicht-Editor (klare Abschnitte:
+  // Abschnitts-Builder für den modernisierten Schicht-Editor (klare Abschnitte:
   // Eckdaten -> Besetzung -> Details, kompakte Vorlagen-Leiste, fixierter
   // Speichern-Button). Reine Layout-Umstrukturierung; die Formular-/Speicher-
   // Logik (Controller, _setDirty, Validierung, _buildProposedShifts) bleibt
-  // unveraendert.
+  // unverändert.
   // ---------------------------------------------------------------------------
 
   Widget _buildTemplateBar(
@@ -2088,7 +2170,12 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                 labelText: 'Pause in Minuten',
                 prefixIcon: Icon(Icons.coffee_outlined),
               ),
-              onChanged: (_) => _setDirty(() {}, refreshAvailability: true),
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+              validator: _validateBreakMinutesInput,
+              onChanged: (_) {
+                _setDirty(() {});
+                _scheduleAvailabilityRefresh();
+              },
             ),
             SizedBox(height: spacing.md),
             const _EditorNoticeCard(
@@ -2112,8 +2199,12 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                       labelText: 'Pause (Min.)',
                       prefixIcon: Icon(Icons.coffee_outlined),
                     ),
-                    onChanged: (_) =>
-                        _setDirty(() {}, refreshAvailability: true),
+                    autovalidateMode: AutovalidateMode.onUserInteraction,
+                    validator: _validateBreakMinutesInput,
+                    onChanged: (_) {
+                      _setDirty(() {});
+                      _scheduleAvailabilityRefresh();
+                    },
                   ),
                 ),
                 SizedBox(width: spacing.sm),
@@ -2153,6 +2244,50 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                 ),
               ],
             ),
+          // Standort-Pflicht-UX (W6): ohne Standort würde die
+          // site_required-Compliance alle Kandidaten sperren — statt
+          // irreführender Per-Person-Sperrgründe erklärt dieser Inline-Hinweis
+          // den Zustand direkt am Dropdown.
+          if (sites.isNotEmpty && _selectedSiteId == null) ...[
+            SizedBox(height: spacing.sm),
+            _buildSiteRequiredNotice(context),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Inline-Hinweis am Standort-Dropdown (errorContainer-Ton), solange kein
+  /// Standort gewählt ist.
+  Widget _buildSiteRequiredNotice(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(spacing.sm + spacing.xs),
+      decoration: BoxDecoration(
+        color: colorScheme.errorContainer.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(context.radii.md),
+        border: Border.all(color: colorScheme.error.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.location_on_outlined,
+            size: 18,
+            color: colorScheme.error,
+          ),
+          SizedBox(width: spacing.sm),
+          Expanded(
+            child: Text(
+              'Standort wählen, um Verfügbarkeiten zu prüfen.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onErrorContainer,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -2176,7 +2311,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       title: 'Besetzung',
       icon: Icons.groups_outlined,
       trailing: (!_saveAsUnassigned && !isEdit && widget.members.isNotEmpty)
-          ? _EditorCountBadge(label: '${_selectedUserIds.length} ausgewaehlt')
+          ? _EditorCountBadge(label: '${_selectedUserIds.length} ausgewählt')
           : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2250,7 +2385,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                       availability.isAvailable ||
                               availability.member.uid == selectedUserId
                           ? availability.member.displayName
-                          : '${availability.member.displayName} · nicht verfuegbar',
+                          : '${availability.member.displayName} · nicht verfügbar',
                     ),
                   ),
               ],
@@ -2269,8 +2404,19 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               SizedBox(height: spacing.md),
               _buildBlockingNotice(context, selectedAvailability),
             ],
-          ] else
+            // Überstunden-Hinweis (E3, nicht-blockierend) im Bearbeiten-Modus.
+            if (selectedAvailability != null &&
+                selectedAvailability.capOverageMinutes > 0) ...[
+              SizedBox(height: spacing.sm),
+              _buildOvertimeHintLine(
+                context,
+                selectedAvailability.capOverageMinutes,
+              ),
+            ],
+          ] else ...[
             _buildMemberPicker(context, availableMembers, unavailableMembers),
+            ..._buildFanOutSummary(context),
+          ],
           if (showAdditional) ..._buildAdditionalAssignments(context),
         ],
       ),
@@ -2295,14 +2441,17 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
       );
     }
 
-    // Eine kompakte, scannbare Liste: frei (auswaehlbar) zuerst, dann gesperrt
-    // (Sperrgruende nur auf Tipp). Lange Teams werden gekappt -> kein endloses
-    // Scrollen mehr durch die frueheren Verfuegbarkeits-Grosskarten.
+    // Eine kompakte, scannbare Liste: frei (auswählbar) zuerst, dann gesperrt
+    // (Sperrgründe nur auf Tipp). Lange Teams werden gekappt -> kein endloses
+    // Scrollen mehr durch die früheren Verfügbarkeits-Großkarten.
     final ordered = [...availableMembers, ...unavailableMembers];
     const cap = 8;
     final showAll = _showAllMembers || ordered.length <= cap;
     final visible = showAll ? ordered : ordered.take(cap).toList();
     final hidden = ordered.length - visible.length;
+    // Ohne Standort ist die Verfügbarkeit ungeprüft (W6): neutrale Badges
+    // („– frei / – gesperrt") statt irreführender „0 frei"-Zählung.
+    final availabilityUnchecked = _selectedSiteId == null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2315,19 +2464,24 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                 runSpacing: spacing.xs,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  _EditorCountBadge(
-                    label: '${availableMembers.length} frei',
-                    tone: _EditorBadgeTone.success,
-                  ),
-                  if (unavailableMembers.isNotEmpty)
+                  if (availabilityUnchecked) ...[
+                    const _EditorCountBadge(label: '– frei'),
+                    const _EditorCountBadge(label: '– gesperrt'),
+                  ] else ...[
                     _EditorCountBadge(
-                      label: '${unavailableMembers.length} gesperrt',
-                      tone: _EditorBadgeTone.warning,
+                      label: '${availableMembers.length} frei',
+                      tone: _EditorBadgeTone.success,
                     ),
+                    if (unavailableMembers.isNotEmpty)
+                      _EditorCountBadge(
+                        label: '${unavailableMembers.length} gesperrt',
+                        tone: _EditorBadgeTone.warning,
+                      ),
+                  ],
                 ],
               ),
             ),
-            if (availableMembers.isNotEmpty)
+            if (availableMembers.isNotEmpty && !availabilityUnchecked)
               TextButton.icon(
                 onPressed: () => _setDirty(
                   () => _selectedUserIds = availableMembers
@@ -2349,7 +2503,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         SizedBox(height: spacing.sm + spacing.xs),
         if (availableMembers.isEmpty && !_loadingAvailability) ...[
           Text(
-            'Aktuell kein freier Mitarbeiter im gewaehlten Zeitfenster. Passe Zeiten, Standort oder Qualifikationen an – oder speichere die Schicht als freie Schicht.',
+            'Aktuell kein freier Mitarbeiter im gewählten Zeitfenster. Passe Zeiten, Standort oder Qualifikationen an – oder speichere die Schicht als freie Schicht.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: colorScheme.onSurfaceVariant),
           ),
@@ -2379,10 +2533,60 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     );
   }
 
+  /// Live-Fan-out-Anzeige (W6): „Tage × Personen = N/50" im Besetzungs-
+  /// Abschnitt, damit die Speichern-Obergrenze ([_kMaxShiftsPerSave]) nicht
+  /// erst beim Speichern überrascht. Über der Grenze in Fehlerfarbe (das harte
+  /// Cap beim Speichern existiert unverändert).
+  List<Widget> _buildFanOutSummary(BuildContext context) {
+    final dayCount = _selectedDays.length;
+    final personCount = _selectedUserIds.length;
+    final additionalCount = _additionalAssignments.length;
+    final total = dayCount * personCount + additionalCount;
+    if (total <= 1) {
+      return const [];
+    }
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    final overCap = total > _kMaxShiftsPerSave;
+    final dayLabel = dayCount == 1 ? 'Tag' : 'Tage';
+    final personLabel = personCount == 1 ? 'Person' : 'Personen';
+    final additionalSuffix =
+        additionalCount > 0 ? ' + $additionalCount Zusatz' : '';
+    return [
+      SizedBox(height: spacing.sm),
+      Row(
+        children: [
+          Icon(
+            overCap ? Icons.error_outline : Icons.functions,
+            size: 16,
+            color: overCap
+                ? theme.colorScheme.error
+                : theme.colorScheme.onSurfaceVariant,
+          ),
+          SizedBox(width: spacing.xs),
+          Flexible(
+            child: Text(
+              '$dayCount $dayLabel × $personCount $personLabel'
+              '$additionalSuffix = $total/$_kMaxShiftsPerSave Schichten',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: overCap
+                    ? theme.colorScheme.error
+                    : theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+
   /// Eine schlanke Mitarbeiter-Zeile: farbiger Status (frei/Warnung/gesperrt),
   /// Name + einzeiliger Grund. Frei = antippbar (Auswahl), gesperrt = antippbar
-  /// (Sperrgruende ein-/ausklappen). Ersetzt die fruehere Verfuegbarkeits-
-  /// Grosskarte und haelt den Besetzungs-Abschnitt kurz.
+  /// (Sperrgründe ein-/ausklappen). Ersetzt die frühere Verfügbarkeits-
+  /// Großkarte und hält den Besetzungs-Abschnitt kurz.
   Widget _buildMemberTile(BuildContext context, ShiftAssigneeAvailability av) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -2390,24 +2594,39 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     final spacing = context.spacing;
     final radius = BorderRadius.circular(context.radii.md);
 
+    // Ohne Standort ist die Verfügbarkeit ungeprüft (W6): Tile neutral
+    // rendern, keine irreführenden Per-Person-Sperrgründe anzeigen.
+    final availabilityUnchecked = _selectedSiteId == null;
     final isAvailable = av.isAvailable;
     final reasons = isAvailable
         ? const <_AvailabilityReason>[]
         : _buildAssigneeAvailabilityReasons(av);
     final hasBlocking =
         reasons.any((reason) => reason.tone == _AvailabilityReasonTone.blocking);
-    final statusColor = isAvailable
-        ? appColors.success
-        : (hasBlocking ? colorScheme.error : appColors.warning);
+    final statusColor = availabilityUnchecked
+        ? colorScheme.onSurfaceVariant
+        : isAvailable
+            ? appColors.success
+            : (hasBlocking ? colorScheme.error : appColors.warning);
     final selected = _selectedUserIds.contains(av.member.uid);
     final expanded = _expandedMemberIds.contains(av.member.uid);
-    final summary = isAvailable
-        ? 'Verfuegbar'
-        : (reasons.isEmpty ? 'Nicht verfuegbar' : reasons.first.message);
-    final extra = reasons.length > 1 ? reasons.length - 1 : 0;
-    final statusIcon = isAvailable
-        ? Icons.check_circle
-        : (hasBlocking ? Icons.block : Icons.warning_amber_rounded);
+    // Blockiert + weiterhin ausgewählt (keine Still-Entfernung, W6): der
+    // Konflikt wird beim Speichern über die Konfliktkarte gemeldet.
+    final blockedButSelected = !isAvailable && selected;
+    final summary = availabilityUnchecked
+        ? 'Verfügbarkeit ungeprüft – bitte Standort wählen'
+        : blockedButSelected
+            ? 'Blockiert – Konflikt wird beim Speichern geprüft'
+            : isAvailable
+                ? 'Verfügbar'
+                : (reasons.isEmpty ? 'Nicht verfügbar' : reasons.first.message);
+    final extra =
+        blockedButSelected ? reasons.length : (reasons.length > 1 ? reasons.length - 1 : 0);
+    final statusIcon = availabilityUnchecked
+        ? Icons.help_outline
+        : isAvailable
+            ? Icons.check_circle
+            : (hasBlocking ? Icons.block : Icons.warning_amber_rounded);
 
     return Container(
       margin: EdgeInsets.only(bottom: spacing.sm),
@@ -2418,7 +2637,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
             : colorScheme.surfaceContainerLow,
         border: Border.all(
           color: selected
-              ? colorScheme.primary
+              ? (blockedButSelected ? colorScheme.error : colorScheme.primary)
               : colorScheme.outlineVariant.withValues(alpha: 0.7),
           width: selected ? 1.5 : 1,
         ),
@@ -2500,6 +2719,17 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                             ],
                           ],
                         ),
+                        // Nicht-blockierender Überstunden-Hinweis (E3): der
+                        // Kandidat bleibt wählbar, die geplante Überschreitung
+                        // des Vertragsmaximums wird nur sichtbar gemacht.
+                        if (!availabilityUnchecked &&
+                            av.capOverageMinutes > 0) ...[
+                          SizedBox(height: spacing.xxs),
+                          _buildOvertimeHintLine(
+                            context,
+                            av.capOverageMinutes,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -2511,6 +2741,16 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                           : Icons.check_box_outline_blank,
                       color:
                           selected ? colorScheme.primary : colorScheme.outline,
+                    )
+                  else if (blockedButSelected)
+                    // Auswahl bleibt trotz Sperre erhalten (W6): explizit
+                    // abwählbar, ohne das Aufklappen der Gründe zu verlieren.
+                    IconButton(
+                      tooltip: 'Auswahl entfernen',
+                      onPressed: () => _setDirty(
+                        () => _selectedUserIds.remove(av.member.uid),
+                      ),
+                      icon: Icon(Icons.check_box, color: colorScheme.error),
                     )
                   else
                     Icon(
@@ -2546,7 +2786,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
   }
 
   /// Kompakte Sperrgrund-Zeilen (Icon + Text), genutzt im aufgeklappten Tile und
-  /// im Bearbeiten-Modus-Hinweis. [textColor] fuer getoente Hintergruende.
+  /// im Bearbeiten-Modus-Hinweis. [textColor] für getönte Hintergründe.
   List<Widget> _buildReasonLines(
     BuildContext context,
     List<_AvailabilityReason> reasons, {
@@ -2582,8 +2822,8 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
     ];
   }
 
-  /// Kompakter Sperr-Hinweis fuer den Bearbeiten-Modus (ausgewaehlter
-  /// Mitarbeiter nicht verfuegbar) – schlanke getoente Box statt Grosskarte.
+  /// Kompakter Sperr-Hinweis für den Bearbeiten-Modus (ausgewählter
+  /// Mitarbeiter nicht verfügbar) – schlanke getönte Box statt Großkarte.
   Widget _buildBlockingNotice(
     BuildContext context,
     ShiftAssigneeAvailability availability,
@@ -2623,7 +2863,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               SizedBox(width: spacing.sm),
               Expanded(
                 child: Text(
-                  'Ausgewaehlter Mitarbeiter ist nicht verfuegbar',
+                  'Ausgewählter Mitarbeiter ist nicht verfügbar',
                   style: theme.textTheme.labelLarge?.copyWith(
                     color: foreground,
                     fontWeight: FontWeight.w700,
@@ -2661,13 +2901,13 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
           FilledButton.tonalIcon(
             onPressed: _addAdditionalAssignment,
             icon: const Icon(Icons.person_add_alt_1_outlined),
-            label: const Text('Person hinzufuegen'),
+            label: const Text('Person hinzufügen'),
           ),
         ],
       ),
       SizedBox(height: spacing.sm + spacing.xxs),
       Text(
-        'Titel, Standort, Arbeitsbereich, Qualifikationen, Notiz, Status und Farbe werden vom Hauptblock uebernommen. Fuer jede Zusatzbesetzung kannst du einen eigenen Mitarbeiter und eigene Zeiten definieren. Konflikte werden beim Speichern gemeinsam geprueft.',
+        'Titel, Standort, Arbeitsbereich, Qualifikationen, Notiz, Status und Farbe werden vom Hauptblock übernommen. Für jede Zusatzbesetzung kannst du einen eigenen Mitarbeiter und eigene Zeiten definieren. Konflikte werden beim Speichern gemeinsam geprüft.',
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),
@@ -2678,7 +2918,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
           icon: Icons.schedule_send_outlined,
           title: 'Keine Zusatzbesetzung angelegt',
           message:
-              'Nutze weitere Besetzungen, wenn dieselbe Schicht von mehreren Personen in unterschiedlichen Zeitfenstern uebernommen wird, zum Beispiel 08:00 - 10:00 und 10:00 - 13:00.',
+              'Nutze weitere Besetzungen, wenn dieselbe Schicht von mehreren Personen in unterschiedlichen Zeitfenstern übernommen wird, zum Beispiel 08:00 - 10:00 und 10:00 - 13:00.',
           tone: _EditorNoticeTone.info,
         )
       else
@@ -2778,7 +3018,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               !isEdit) ...[
             SizedBox(height: spacing.sm),
             Text(
-              'Teammitglieder werden automatisch uebernommen. Belegte Mitarbeiter werden darunter separat mit Konfliktgrund angezeigt.',
+              'Teammitglieder werden automatisch übernommen. Belegte Mitarbeiter werden darunter separat mit Konfliktgrund angezeigt.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -2956,7 +3196,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
             ),
             SizedBox(height: spacing.sm),
             Text(
-              'Die betroffenen Schichten werden unten aufgelistet. Passe Zeiten, Mitarbeiter oder Abwesenheiten an und pruefe erneut.',
+              'Die betroffenen Schichten werden unten aufgelistet. Passe Zeiten, Mitarbeiter oder Abwesenheiten an und prüfe erneut.',
               style: TextStyle(color: colorScheme.onErrorContainer),
             ),
             SizedBox(height: spacing.md - spacing.xs),
@@ -2970,7 +3210,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
                 onPressed: _validating ? null : _saveSkippingConflicts,
                 icon: const Icon(Icons.playlist_add_check),
                 label: const Text(
-                  'Betroffene ueberspringen und Rest speichern',
+                  'Betroffene überspringen und Rest speichern',
                 ),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: colorScheme.onErrorContainer,
@@ -3003,8 +3243,8 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
         ),
       ),
       // top:false -> nur der untere Sicherheitsabstand (Home-Indicator); der
-      // Tastatur-Inset traegt bereits das aeussere Padding(viewInsets) am
-      // Aufrufer, daher hier kein Doppelzaehlen.
+      // Tastatur-Inset trägt bereits das äußere Padding(viewInsets) am
+      // Aufrufer, daher hier kein Doppelzählen.
       child: SafeArea(
         top: false,
         child: FilledButton.icon(
@@ -3018,7 +3258,7 @@ class _ShiftEditorSheetState extends State<_ShiftEditorSheet> {
               : const Icon(Icons.save),
           label: Text(
             _validating
-                ? 'Pruefe Konflikte...'
+                ? 'Prüfe Konflikte...'
                 : (isEdit ? 'Aktualisieren' : 'Speichern'),
           ),
           style: FilledButton.styleFrom(
@@ -3149,6 +3389,8 @@ class _AdditionalShiftAssignmentCard extends StatelessWidget {
               labelText: 'Pause in Minuten',
               prefixIcon: Icon(Icons.coffee_outlined),
             ),
+            autovalidateMode: AutovalidateMode.onUserInteraction,
+            validator: _validateBreakMinutesInput,
             onChanged: onBreakChanged,
           ),
         ],
@@ -3159,7 +3401,7 @@ class _AdditionalShiftAssignmentCard extends StatelessWidget {
 
 /// Tokenisierte Abschnittskarte des Schicht-Editors (klare Abschnitte:
 /// Eckdaten/Besetzung/Details). Kopf mit Icon + fettem Titel + optionaler
-/// Aktion rechts ([trailing]) auf Basis einer [Card]; Abstaende/Groessen aus
+/// Aktion rechts ([trailing]) auf Basis einer [Card]; Abstände/Größen aus
 /// den Design-Tokens.
 class _EditorSection extends StatelessWidget {
   const _EditorSection({
@@ -3213,8 +3455,8 @@ class _EditorSection extends StatelessWidget {
   }
 }
 
-/// Antippbares Feld im Eingabefeld-Look (Rahmen + Label + Wert), z. B. fuer
-/// Datum/Tage und Beginn/Ende. Modernisiert die fruehere [ListTile]-Variante
+/// Antippbares Feld im Eingabefeld-Look (Rahmen + Label + Wert), z. B. für
+/// Datum/Tage und Beginn/Ende. Modernisiert die frühere [ListTile]-Variante
 /// und erlaubt eine kompakte Nebeneinander-Anordnung (Beginn|Ende). [showChevron]
 /// blendet den Pfeil aus, wenn das Feld in einer Zeile mehrfach steht.
 class _PickerField extends StatelessWidget {

@@ -61,6 +61,115 @@ void main() {
       expect(restored.location, 'Koeln');
       expect(restored.requiredQualificationIds, ['cashier']);
     });
+
+    test('round-trips overtimeMinutes through local map (toMap/fromMap)', () {
+      final shift = Shift(
+        id: 'shift-ot',
+        orgId: 'org-1',
+        userId: 'user-1',
+        employeeName: 'Anna',
+        title: 'Spätdienst',
+        startTime: DateTime(2026, 4, 1, 14),
+        endTime: DateTime(2026, 4, 1, 22),
+        overtimeMinutes: 90,
+      );
+
+      final map = shift.toMap();
+      expect(map['overtime_minutes'], 90);
+
+      final restored = Shift.fromMap(map);
+      expect(restored.overtimeMinutes, 90);
+      expect(restored.hasPlannedOvertime, isTrue);
+    });
+
+    test('round-trips overtimeMinutes through Firestore map', () {
+      final shift = Shift(
+        id: 'shift-ot-fs',
+        orgId: 'org-1',
+        userId: 'user-1',
+        employeeName: 'Anna',
+        title: 'Spätdienst',
+        startTime: DateTime(2026, 4, 1, 14),
+        endTime: DateTime(2026, 4, 1, 22),
+        overtimeMinutes: 45,
+      );
+
+      final map = shift.toFirestoreMap();
+      expect(map['overtimeMinutes'], 45);
+
+      final restored = Shift.fromFirestore('shift-ot-fs', map);
+      expect(restored.overtimeMinutes, 45);
+      expect(restored.hasPlannedOvertime, isTrue);
+    });
+
+    test('defaults overtimeMinutes to 0 when key is missing (both formats)',
+        () {
+      final localMap = <String, dynamic>{
+        'id': 'shift-legacy',
+        'org_id': 'org-1',
+        'user_id': 'user-1',
+        'employee_name': 'Anna',
+        'title': 'Frühdienst',
+        'start_time': DateTime(2026, 4, 1, 8).toIso8601String(),
+        'end_time': DateTime(2026, 4, 1, 16).toIso8601String(),
+      };
+      final fromLocal = Shift.fromMap(localMap);
+      expect(fromLocal.overtimeMinutes, 0);
+      expect(fromLocal.hasPlannedOvertime, isFalse);
+
+      final firestoreMap = <String, dynamic>{
+        'orgId': 'org-1',
+        'userId': 'user-1',
+        'employeeName': 'Anna',
+        'title': 'Frühdienst',
+        'startTime': DateTime(2026, 4, 1, 8).toIso8601String(),
+        'endTime': DateTime(2026, 4, 1, 16).toIso8601String(),
+      };
+      final fromCloud = Shift.fromFirestore('shift-legacy', firestoreMap);
+      expect(fromCloud.overtimeMinutes, 0);
+      expect(fromCloud.hasPlannedOvertime, isFalse);
+    });
+
+    test('parses tolerant overtimeMinutes values (num/String)', () {
+      final asDouble = Shift.fromFirestore('s1', <String, dynamic>{
+        'orgId': 'org-1',
+        'userId': 'user-1',
+        'employeeName': 'Anna',
+        'title': 'Dienst',
+        'startTime': DateTime(2026, 4, 1, 8).toIso8601String(),
+        'endTime': DateTime(2026, 4, 1, 16).toIso8601String(),
+        'overtimeMinutes': 30.0,
+      });
+      expect(asDouble.overtimeMinutes, 30);
+
+      final asString = Shift.fromMap(<String, dynamic>{
+        'id': 's2',
+        'org_id': 'org-1',
+        'user_id': 'user-1',
+        'employee_name': 'Anna',
+        'title': 'Dienst',
+        'start_time': DateTime(2026, 4, 1, 8).toIso8601String(),
+        'end_time': DateTime(2026, 4, 1, 16).toIso8601String(),
+        'overtime_minutes': '25',
+      });
+      expect(asString.overtimeMinutes, 25);
+    });
+
+    test('copyWith keeps and overrides overtimeMinutes', () {
+      final shift = Shift(
+        orgId: 'org-1',
+        userId: 'user-1',
+        employeeName: 'Anna',
+        title: 'Dienst',
+        startTime: DateTime(2026, 4, 1, 8),
+        endTime: DateTime(2026, 4, 1, 16),
+        overtimeMinutes: 60,
+      );
+
+      expect(shift.copyWith(title: 'Neu').overtimeMinutes, 60);
+      expect(shift.copyWith(overtimeMinutes: 0).overtimeMinutes, 0);
+      expect(shift.copyWith(overtimeMinutes: 120).overtimeMinutes, 120);
+    });
   });
 
   group('AbsenceRequest', () {

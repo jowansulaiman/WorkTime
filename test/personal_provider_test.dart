@@ -578,6 +578,62 @@ void main() {
       expect(sz.montagMinutes, 480);
     });
 
+    test(
+        'E5: Teamlead (canManageShifts) streamt Sollzeit-Profile org-weit, '
+        'Mitarbeiter nur das eigene', () async {
+      final collection = firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('sollzeitProfiles');
+      await collection.doc('sz-emp-1').set(SollzeitProfile(
+            id: 'sz-emp-1',
+            orgId: 'org-1',
+            userId: 'emp-1',
+            gueltigAb: DateTime(2026, 1, 1),
+            montagMinutes: 480,
+          ).toFirestoreMap());
+      await collection.doc('sz-emp-2').set(SollzeitProfile(
+            id: 'sz-emp-2',
+            orgId: 'org-1',
+            userId: 'emp-2',
+            gueltigAb: DateTime(2026, 1, 1),
+            dienstagMinutes: 360,
+          ).toFirestoreMap());
+
+      // Teamlead (Nicht-Admin mit canManageShifts): org-weiter Stream, damit
+      // die Schichtplanung mit den Sollzeit-Zielen ALLER Mitarbeiter rechnet.
+      const teamlead = AppUserProfile(
+        uid: 'lead-1',
+        orgId: 'org-1',
+        email: 'lea@example.com',
+        role: UserRole.teamlead,
+        isActive: true,
+        settings: UserSettings(name: 'Lea'),
+      );
+      final leadProvider = PersonalProvider(firestoreService: service);
+      addTearDown(leadProvider.dispose);
+      await leadProvider.updateSession(teamlead);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(teamlead.isAdmin, isFalse);
+      expect(teamlead.canManageShifts, isTrue);
+      expect(
+        leadProvider.sollzeitProfiles.map((p) => p.userId).toSet(),
+        {'emp-1', 'emp-2'},
+      );
+
+      // Regulärer Mitarbeiter bleibt self-scoped (nur das eigene Profil).
+      final employeeProvider = PersonalProvider(firestoreService: service);
+      addTearDown(employeeProvider.dispose);
+      await employeeProvider.updateSession(_employee);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        employeeProvider.sollzeitProfiles.map((p) => p.userId).toSet(),
+        {'emp-1'},
+      );
+    });
+
     test('streamt Lohn-Konfiguration aus Firestore', () async {
       await firestore
           .collection('organizations')
@@ -1685,6 +1741,75 @@ void main() {
       expect(cost.grossCents, 310000);
       expect(cost.employerTotalCents, 62000);
       expect(cost.isEstimate, isFalse);
+    });
+  });
+
+  group('PersonalProvider Planungs-Senke (W3/E5 Personal→Schedule)', () {
+    test('setPlanningDataSink pusht sofort und nach saveSollzeitProfile/'
+        'saveEmployeeProfile (Local-Modus)', () async {
+      final provider = PersonalProvider(
+          firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      final sollzeitCalls = <List<SollzeitProfile>?>[];
+      final exitCalls = <Map<String, DateTime>?>[];
+      provider.setPlanningDataSink(({
+        List<SollzeitProfile>? sollzeitProfiles,
+        Map<String, DateTime>? exitDateByUserId,
+      }) {
+        sollzeitCalls.add(sollzeitProfiles);
+        exitCalls.add(exitDateByUserId);
+      });
+
+      // Sofort-Push beim Verdrahten (leerer Ausgangsstand).
+      expect(sollzeitCalls, hasLength(1));
+      expect(sollzeitCalls.single, isEmpty);
+      expect(exitCalls.single, isEmpty);
+
+      await provider.saveSollzeitProfile(SollzeitProfile(
+        orgId: 'org-1',
+        userId: 'emp-1',
+        gueltigAb: DateTime(2026, 1, 1),
+        montagMinutes: 480,
+      ));
+      expect(sollzeitCalls, hasLength(2));
+      expect(sollzeitCalls.last, hasLength(1));
+      expect(sollzeitCalls.last!.single.userId, 'emp-1');
+      expect(sollzeitCalls.last!.single.montagMinutes, 480);
+
+      // Stammakte mit Austrittsdatum → Senke bekommt die exitDate-Map.
+      await provider.saveEmployeeProfile(EmployeeProfile(
+        orgId: 'org-1',
+        userId: 'emp-1',
+        exitDate: DateTime(2026, 9, 30),
+      ));
+      expect(exitCalls.last, {'emp-1': DateTime(2026, 9, 30)});
+      // Sollzeit-Stand bleibt dabei erhalten (voller Push, kein Delta).
+      expect(sollzeitCalls.last, hasLength(1));
+    });
+
+    test('Senke wirft nie in den Provider zurück (fire-and-forget)', () async {
+      final provider = PersonalProvider(
+          firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+
+      provider.setPlanningDataSink(({
+        List<SollzeitProfile>? sollzeitProfiles,
+        Map<String, DateTime>? exitDateByUserId,
+      }) {
+        throw StateError('Empfänger kaputt');
+      });
+
+      // Mutator darf trotz werfender Senke normal durchlaufen.
+      await provider.saveSollzeitProfile(SollzeitProfile(
+        orgId: 'org-1',
+        userId: 'emp-1',
+        gueltigAb: DateTime(2026, 1, 1),
+        montagMinutes: 300,
+      ));
+      expect(provider.sollzeitProfilesForUser('emp-1'), hasLength(1));
     });
   });
 }
