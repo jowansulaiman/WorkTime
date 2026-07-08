@@ -17,8 +17,10 @@ abstract class KioskClockService {
   /// Ist der Mitarbeiter aktuell eingestempelt?
   Future<bool> isClockedIn(AppUserProfile employee, {String? sid});
 
-  /// Kommen. Liefert den neuen Zustand (`true` = eingestempelt). [shiftId]
-  /// verknüpft den Stempel mit der heutigen geplanten Schicht (ZV-2.1).
+  /// Kommen. Liefert den neuen Zustand (`true` = eingestempelt). Die
+  /// Schichtbindung (ZV-2.1) löst im Echtbetrieb der Server aus dem
+  /// Session-Mitarbeiter auf; [shiftId] ist ein optionaler Vorrang-Override
+  /// (Dev-Pfad bindet nur einen explizit übergebenen [shiftId]).
   Future<bool> clockIn(
     AppUserProfile employee, {
     String? sid,
@@ -170,39 +172,18 @@ class ServerKioskClockService implements KioskClockService {
     String? siteName,
     String? shiftId,
   }) async {
-    // Fehlt eine explizite Schicht, die heutige bestätigte Schicht des
-    // Session-Mitarbeiters auflösen (ZV-2.1) — best-effort, ein Fehler darf das
-    // Stempeln NICHT verhindern.
-    final resolved = shiftId ?? await _resolveTodaysShiftId(employee);
+    // Schichtbindung (ZV-2.1) löst der SERVER via Session-Mitarbeiter auf
+    // (kioskClockPunch, Admin SDK): das bewusst niedrig-privilegierte
+    // Geräte-Konto darf `shifts` nicht lesen — ein Client-Read scheiterte still
+    // und band die Schicht nie. Ein explizit übergebener [shiftId] behält
+    // Vorrang (Server nutzt ihn dann statt selbst aufzulösen).
     return _firestore.kioskClockPunch(
       sid: sid!,
       direction: 'in',
       siteId: siteId,
       siteName: siteName,
-      shiftId: resolved,
+      shiftId: shiftId,
     );
-  }
-
-  /// Die heute laufende/anstehende Schicht des Mitarbeiters (id), sonst null.
-  Future<String?> _resolveTodaysShiftId(AppUserProfile employee) async {
-    try {
-      final now = DateTime.now();
-      final dayStart = DateTime(now.year, now.month, now.day);
-      final dayEnd = dayStart.add(const Duration(days: 1));
-      final shifts = await _firestore.getShiftsInRange(
-        orgId: employee.orgId,
-        start: dayStart,
-        end: dayEnd,
-        userId: employee.uid,
-      );
-      if (shifts.isEmpty) return null;
-      // Die Schicht wählen, deren Beginn dem Stempelzeitpunkt am nächsten liegt.
-      shifts.sort((a, b) => (a.startTime.difference(now).inMinutes.abs())
-          .compareTo(b.startTime.difference(now).inMinutes.abs()));
-      return shifts.first.id;
-    } catch (_) {
-      return null;
-    }
   }
 
   @override

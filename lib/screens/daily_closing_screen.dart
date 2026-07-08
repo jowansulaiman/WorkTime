@@ -497,6 +497,14 @@ class _CashStateCard extends StatelessWidget {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               ),
+              if (letzte.thirdParty.isNotEmpty)
+                Text(
+                  'davon getrennt Fremdgeld: '
+                  '${Money.formatCents(letzte.thirdPartyTotalCents)} '
+                  '(Treuhand, kein Umsatz)',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
             ],
           ] else
             Row(
@@ -674,6 +682,30 @@ class _ClosingCard extends StatelessWidget {
                     : theme.colorScheme.error,
                 fontWeight: FontWeight.w600,
               ),
+            ),
+          ],
+          // Dritte Hand / Fremdgelder — getrennt von Umsatz/Kassendifferenz
+          // (Treuhand, kein Umsatz). Fließt bewusst NICHT in die Differenz oben.
+          if (festgeschrieben && cashClosing!.thirdParty.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Dritte Hand / Fremdgelder (Treuhand, kein Umsatz)',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 2),
+            for (final t in cashClosing!.thirdParty)
+              Text(
+                '${t.typeName}: ${Money.formatCents(t.amountCents)}',
+                style: theme.textTheme.bodySmall,
+              ),
+            Text(
+              'Fremdgeld gesamt: '
+              '${Money.formatCents(cashClosing!.thirdPartyTotalCents)}',
+              style:
+                  theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
             ),
           ],
           if (isAdmin) ...[

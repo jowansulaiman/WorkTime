@@ -12,6 +12,7 @@ const push = require("./push_notifications");
 const monatsLock = require("./monats_lock");
 const oktoposStats = require("./oktopos_stats");
 const {parseThirdPartyAmounts} = require("./third_party_cash");
+const kioskShift = require("./kiosk_shift");
 const passwordCrypto = require("./password_crypto");
 const passwordAccess = require("./password_access");
 
@@ -1497,12 +1498,12 @@ async function requireKioskSession(caller, sid) {
 // die Session, nicht ueber self/admin. `direction` = "in" (offene Session
 // anlegen) | "out" (offene Session schliessen).
 //
-// HINWEIS (emulator-pending): die volle WorkEntry-/ArbZG-Generierung wie im
-// Client-`ClockService`/`upsertWorkEntry` ist hier bewusst NOCH NICHT gebaut —
-// diese Funktion persistiert die Praesenz (Kommen/Gehen) revisionssicher mit
-// `source:'kiosk'` + `sessionId`; die Umwandlung in einen abrechnungsrelevanten
-// WorkEntry (inkl. Pausen nach ArbZG, Compliance-Spiegel) ist der verbleibende,
-// auf dem Emulator zu verifizierende Schritt (Kopplung #2).
+// HINWEIS (emulator-pending): diese Funktion persistiert die Praesenz
+// (Kommen/Gehen) revisionssicher mit `source:'kiosk'` + `sessionId` UND erzeugt
+// beim Ausstempeln einen abrechnungsrelevanten WorkEntry(submitted) inkl.
+// ArbZG-Pflichtpause (siehe unten, direction === "out"). Der Compliance-Spiegel
+// (Kopplung #2) und der Feld-Shape sind vor Produktiv-Deploy noch einmal gegen
+// den Firestore-Emulator zu verifizieren (Kommen → Gehen → WorkEntry → Freigabe).
 // ArbZG-Pflichtpause (Brutto-Minuten) — 1:1 zu ClockService.requiredBreakMinutes
 // (30 min ab >6 h, 45 min ab >9 h). Compliance-Spiegel (CLAUDE.md Kopplung #2).
 function kioskRequiredBreakMinutes(grossMinutes) {
@@ -1518,6 +1519,40 @@ async function findOpenClockEntry(orgId, employeeId) {
     .limit(1)
     .get();
   return snap.empty ? null : snap.docs[0];
+}
+
+// Kiosk-Schichtbindung (ZV-2.1): löst die zum Stempelzeitpunkt passendste
+// geplante Schicht des SESSION-Mitarbeiters auf — server-seitig via Admin SDK,
+// weil das niedrig-privilegierte Geräte-Konto `shifts` nicht lesen darf (ein
+// Client-Read scheiterte still). Best-effort: ein Fehler darf das Stempeln NIE
+// verhindern (→ null). Query gegen Index shifts(userId, startTime); die Nähe-
+// Auswahl ist der pure Helfer kioskShift.pickClosestShiftId (node-testbar).
+async function resolveTodaysShiftId(orgId, employeeId) {
+  try {
+    const nowMs = Date.now();
+    const from = Timestamp.fromMillis(nowMs - kioskShift.SHIFT_MATCH_WINDOW_MS);
+    const to = Timestamp.fromMillis(nowMs + kioskShift.SHIFT_MATCH_WINDOW_MS);
+    const snap = await organizationCollection(orgId, "shifts")
+      .where("userId", "==", employeeId)
+      .where("startTime", ">=", from)
+      .where("startTime", "<", to)
+      .orderBy("startTime")
+      .get();
+    if (snap.empty) return null;
+    const candidates = snap.docs.map((doc) => ({
+      id: doc.id,
+      startMs: doc.data()?.startTime?.toMillis?.() ?? null,
+    }));
+    return kioskShift.pickClosestShiftId(candidates, nowMs);
+  } catch (error) {
+    logger.warn("kiosk_shift_resolve_failed", {
+      event: "kiosk_shift_resolve_failed",
+      orgId,
+      employeeId,
+      message: error && error.message,
+    });
+    return null;
+  }
 }
 
 exports.kioskClockPunch = callable(
@@ -1546,6 +1581,12 @@ exports.kioskClockPunch = callable(
       if (existing) {
         return {clockedIn: true, clockEntryId: existing.id};
       }
+      // Schichtbindung (ZV-2.1): der Server löst die geplante Schicht des
+      // Session-Mitarbeiters AUTHORITATIV auf (Admin SDK) — das Geräte-Konto
+      // darf `shifts` nicht lesen. Ein explizit übergebener shiftId behält
+      // Vorrang (Übergabe aus einem berechtigten Pfad); sonst server-seitig.
+      const shiftId = stringOrNull(request.data?.shiftId) ||
+        await resolveTodaysShiftId(orgId, employeeId);
       // PA-4.1: deterministische `{userId}-open`-ID + create() (schlaegt bei
       // Existenz ATOMAR fehl) — das fruehere read-then-write-Race ist damit zu.
       // Spiegel: FirestoreService.clockInOpen (App) + firestore.rules.
@@ -1556,10 +1597,10 @@ exports.kioskClockPunch = callable(
           userId: employeeId,
           siteId: stringOrNull(request.data?.siteId),
           siteName: stringOrNull(request.data?.siteName),
-          // Geplante Schicht des Session-Mitarbeiters (ZV-2.1) — vom Client als
-          // Vorschlag mitgeliefert; die WorkEntry-Erzeugung erbt sie als
+          // Geplante Schicht des Session-Mitarbeiters (ZV-2.1) — server-seitig
+          // aufgelöst; die WorkEntry-Erzeugung erbt sie beim Ausstempeln als
           // sourceShiftId (Schicht-Completion-Hook).
-          shiftId: stringOrNull(request.data?.shiftId),
+          shiftId,
           kommen: FieldValue.serverTimestamp(),
           gehen: null,
           pauseMinuten: 0,

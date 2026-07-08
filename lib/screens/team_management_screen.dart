@@ -2686,8 +2686,12 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     _descriptionCtrl =
         TextEditingController(text: widget.site?.description ?? '');
     _hydrateSchedule();
-    for (final t in widget.site?.thirdPartyCashTypes ??
-        const <ThirdPartyCashType>[]) {
+    // In sortOrder-Reihenfolge hydratisieren, damit der positionsbasierte
+    // sortOrder beim Speichern (order++) die Reihenfolge erhält.
+    final sortedTypes = [
+      ...widget.site?.thirdPartyCashTypes ?? const <ThirdPartyCashType>[],
+    ]..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    for (final t in sortedTypes) {
       _thirdPartyRows.add(_ThirdPartyTypeRow.fromType(t));
     }
   }
@@ -3259,8 +3263,13 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
       result.add(ThirdPartyCashType(
         id: unique,
         name: name,
-        enabled: true,
+        // v1: hint/enabled sind im Minimal-Editor nicht editierbar, werden aber
+        // erhalten — sonst würde eine ausgeblendete Art (enabled:false) still
+        // reaktiviert bzw. ein hinterlegter Hinweis verloren gehen (beide
+        // wertet das Zähl-Sheet aus).
+        enabled: row.enabled,
         required: row.required,
+        hint: row.hint,
         sortOrder: order++,
       ));
     }
@@ -3295,18 +3304,34 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
 
 /// Editor-Zeile einer Fremdgeld-Art im Filial-Editor (§8.5).
 class _ThirdPartyTypeRow {
-  _ThirdPartyTypeRow({this.id, String name = '', this.required = false})
-      : nameCtrl = TextEditingController(text: name);
+  _ThirdPartyTypeRow({
+    this.id,
+    String name = '',
+    this.required = false,
+    this.enabled = true,
+    this.hint,
+  }) : nameCtrl = TextEditingController(text: name);
 
   factory _ThirdPartyTypeRow.empty() => _ThirdPartyTypeRow();
 
   factory _ThirdPartyTypeRow.fromType(ThirdPartyCashType t) =>
-      _ThirdPartyTypeRow(id: t.id, name: t.name, required: t.required);
+      _ThirdPartyTypeRow(
+        id: t.id,
+        name: t.name,
+        required: t.required,
+        enabled: t.enabled,
+        hint: t.hint,
+      );
 
   /// Stabile ID der bestehenden Art (null = neu → slug beim Speichern).
   final String? id;
   final TextEditingController nameCtrl;
   bool required;
+
+  /// Im Minimal-Editor (v1) nicht editierbar, aber beim Speichern erhalten
+  /// (Round-Trip-Treue — beide Felder wertet das Zähl-Sheet aus).
+  final bool enabled;
+  final String? hint;
 
   void dispose() => nameCtrl.dispose();
 }

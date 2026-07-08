@@ -5,9 +5,11 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/cash_closing.dart';
 import 'package:worktime_app/models/finance_models.dart';
 import 'package:worktime_app/models/pos_receipt.dart';
 import 'package:worktime_app/models/site_definition.dart';
+import 'package:worktime_app/models/third_party_cash.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
 import 'package:worktime_app/providers/finance_provider.dart';
@@ -289,6 +291,52 @@ void main() {
         .where((e) => e.id == 'pos-diff-${today()}-site-1');
     expect(diffEntry, hasLength(1));
     expect(diffEntry.single.amountCents, 100); // Fehlbetrag 1,00 € → Kosten
+  });
+
+  testWidgets(
+      'Festgeschriebener Abschluss zeigt Fremdgeld getrennt (Punkt 3a)',
+      (tester) async {
+    final s = await seed(tester, admin, withReceiptToday: true);
+    // Abschluss mit Fremdgeld direkt vorseedern (deterministische Doc-ID).
+    final closing = CashClosing(
+      orgId: 'org-1',
+      siteId: 'site-1',
+      businessDay: today(),
+      revenueGrossCents: 1190,
+      cashCountedCents: 25000,
+      cashExpectedCents: 25000,
+      cashDifferenceCents: 0,
+      thirdParty: const [
+        ThirdPartyAmount(typeId: 'lotto', typeName: 'Lotto', amountCents: 5000),
+      ],
+      closedByUid: 'owner-1',
+    );
+    await tester.runAsync(() async {
+      await s.fs
+          .collection('organizations')
+          .doc('org-1')
+          .collection('cashClosings')
+          .doc(CashClosing.docId(today(), 'site-1'))
+          .set(closing.toFirestoreMap());
+    });
+
+    await pump(tester,
+        profile: admin,
+        inventory: s.inventory,
+        finance: s.finance,
+        service: FirestoreService(firestore: s.fs));
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    });
+    await tester.pumpAndSettle();
+
+    // Getrennter Fremdgeld-Block ist sichtbar …
+    expect(find.textContaining('Dritte Hand / Fremdgelder'), findsOneWidget);
+    expect(find.textContaining('Lotto: 50,00'), findsOneWidget);
+    expect(find.textContaining('Fremdgeld gesamt: 50,00'), findsOneWidget);
+    // … und die Kassendifferenz bleibt davon unberührt (kein Umsatz-Mix).
+    expect(find.textContaining('Kassendifferenz (gezählt − Soll): 0,00'),
+        findsOneWidget);
   });
 
   testWidgets('Teamleitung: darf zählen, aber nicht abschließen/buchen',
