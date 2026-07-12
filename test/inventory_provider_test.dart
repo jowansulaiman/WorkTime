@@ -180,6 +180,48 @@ class _OfflineInventoryRepository implements InventoryRepository {
       );
 
   @override
+  Future<int> setProductStock({
+    required String orgId,
+    required String productId,
+    required int newStock,
+    StockMovementType type = StockMovementType.stocktake,
+    String? reason,
+    String? createdByUid,
+    String? clientMutationId,
+  }) =>
+      _delegate.setProductStock(
+        orgId: orgId,
+        productId: productId,
+        newStock: newStock,
+        type: type,
+        reason: reason,
+        createdByUid: createdByUid,
+        clientMutationId: clientMutationId,
+      );
+
+  @override
+  Future<void> transferProductStock({
+    required String orgId,
+    required String fromProductId,
+    required String toProductId,
+    required int quantity,
+    String? fromReason,
+    String? toReason,
+    String? createdByUid,
+    String? clientMutationId,
+  }) =>
+      _delegate.transferProductStock(
+        orgId: orgId,
+        fromProductId: fromProductId,
+        toProductId: toProductId,
+        quantity: quantity,
+        fromReason: fromReason,
+        toReason: toReason,
+        createdByUid: createdByUid,
+        clientMutationId: clientMutationId,
+      );
+
+  @override
   Future<void> setFridgeStock({
     required String orgId,
     required String productId,
@@ -303,6 +345,18 @@ class _StreamErrorInventoryRepository extends _OfflineInventoryRepository {
   Stream<List<Supplier>> watchSuppliers(String orgId) =>
       Stream<List<Supplier>>.error(
         StateError('Lieferanten-Stream fehlgeschlagen'),
+      );
+}
+
+/// #48: Nur der Bestellkorb-Stream schlaegt fehl — die uebrige Warenwirtschaft
+/// darf davon nicht in den globalen Fehlerzustand gerissen werden.
+class _OrderCartStreamErrorRepository extends _OfflineInventoryRepository {
+  _OrderCartStreamErrorRepository(super.firestore);
+
+  @override
+  Stream<List<SiteOrderList>> watchOrderCarts(String orgId) =>
+      Stream<List<SiteOrderList>>.error(
+        StateError('orderCarts-Stream fehlgeschlagen'),
       );
 }
 
@@ -986,6 +1040,211 @@ void main() {
         contains('Lieferanten-Stream fehlgeschlagen'),
       );
       expect(notified, isTrue);
+    });
+
+    test(
+        'saveProduct ueberschreibt currentStock eines bestehenden Artikels '
+        'nicht (H8 Lost-Update)', () async {
+      final provider = InventoryProvider(
+        firestoreService: firestoreService,
+        inventoryRepository: FirestoreInventoryRepository(firestore: firestore),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(user, localStorageOnly: false);
+
+      // Neuanlage: Anfangsbestand MUSS persistiert werden.
+      await provider.saveProduct(const Product(
+        id: 'p-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Tabak Börse',
+        name: 'Pueblo',
+        unit: 'Stück',
+        currentStock: 10,
+        purchasePriceCents: 200,
+      ));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final productDoc =
+          firestore.collection('organizations').doc('org-1').collection('products');
+      expect((await productDoc.doc('p-1').get()).data()!['currentStock'], 10);
+
+      // Paralleler Verkauf (POS/Server): Bestand sinkt auf 9.
+      await productDoc.doc('p-1').update({'currentStock': 9});
+
+      // Manager speichert mit eingefrorenem UI-Stand (currentStock 10, neuer
+      // Preis): der Serverbestand darf NICHT auf 10 zurueckspringen.
+      await provider.saveProduct(const Product(
+        id: 'p-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Tabak Börse',
+        name: 'Pueblo',
+        unit: 'Stück',
+        currentStock: 10,
+        purchasePriceCents: 250,
+      ));
+      await Future<void>.delayed(Duration.zero);
+
+      final data = (await productDoc.doc('p-1').get()).data()!;
+      expect(data['currentStock'], 9,
+          reason: 'die parallel verkaufte Einheit darf nicht als '
+              'Phantombestand wiederauferstehen');
+      expect(data['purchasePriceCents'], 250,
+          reason: 'die eigentliche Aenderung (Preis) muss ankommen');
+    });
+
+    test(
+        'recordStocktake landet auf dem GEZAEHLTEN Wert, auch wenn das '
+        'UI-Objekt veraltet ist (H9)', () async {
+      final provider = InventoryProvider(
+        firestoreService: firestoreService,
+        inventoryRepository: FirestoreInventoryRepository(firestore: firestore),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(user, localStorageOnly: false);
+
+      await provider.saveProduct(const Product(
+        id: 'p-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Tabak Börse',
+        name: 'Pueblo',
+        unit: 'Stück',
+        currentStock: 10,
+      ));
+      await Future<void>.delayed(Duration.zero);
+
+      final productDoc =
+          firestore.collection('organizations').doc('org-1').collection('products');
+      // Paralleler Abgang: Server ist bei 9, das UI-Objekt kennt noch 10.
+      await productDoc.doc('p-1').update({'currentStock': 9});
+
+      const staleUiProduct = Product(
+        id: 'p-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Tabak Börse',
+        name: 'Pueblo',
+        unit: 'Stück',
+        currentStock: 10,
+      );
+      await provider.recordStocktake(
+        product: staleUiProduct,
+        countedStock: 7,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect((await productDoc.doc('p-1').get()).data()!['currentStock'], 7,
+          reason: 'Inventur muss ABSOLUT auf den gezaehlten Wert setzen '
+              '(alte Delta-Rechnung landete bei 6)');
+
+      final movements = await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('stockMovements')
+          .get();
+      final stocktake = movements.docs
+          .map((doc) => doc.data())
+          .where((data) => data['type'] == 'stocktake')
+          .toList();
+      expect(stocktake, hasLength(1));
+      expect(stocktake.single['quantityDelta'], -2,
+          reason: 'Delta muss aus dem frischen Serverstand (9 -> 7) stammen');
+      expect(stocktake.single['balanceAfter'], 7);
+    });
+
+    test(
+        'transferStock bucht Quelle+Ziel atomar; unzureichender Bestand '
+        'bucht NICHTS (H10)', () async {
+      final provider = InventoryProvider(
+        firestoreService: firestoreService,
+        inventoryRepository: FirestoreInventoryRepository(firestore: firestore),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(user, localStorageOnly: false);
+
+      const source = Product(
+        id: 'p-quelle',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Strichmaennchen',
+        name: 'Pueblo',
+        unit: 'Stück',
+        currentStock: 5,
+      );
+      const target = Product(
+        id: 'p-ziel',
+        orgId: 'org-1',
+        siteId: 'site-2',
+        siteName: 'Tabak Börse',
+        name: 'Pueblo',
+        unit: 'Stück',
+        currentStock: 1,
+      );
+      await provider.saveProduct(source);
+      await provider.saveProduct(target);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final error = await provider.transferStock(
+        from: source,
+        to: target,
+        quantity: 2,
+      );
+      expect(error, isNull);
+
+      final products =
+          firestore.collection('organizations').doc('org-1').collection('products');
+      expect((await products.doc('p-quelle').get()).data()!['currentStock'], 3);
+      expect((await products.doc('p-ziel').get()).data()!['currentStock'], 3);
+
+      final movements = await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('stockMovements')
+          .get();
+      final transfers = movements.docs
+          .map((doc) => doc.data())
+          .where((data) => data['type'] == 'transfer')
+          .toList();
+      expect(transfers, hasLength(2),
+          reason: 'Abgang UND Zugang muessen als Bewegung protokolliert sein');
+
+      // Fehlerfall: das (veraltete) UI-Objekt kennt noch Bestand 5, der Server
+      // steht nach der ersten Umlagerung bei 3 -> der Client-Vorabcheck laesst
+      // Menge 4 durch, die TRANSAKTION muss ablehnen und darf NICHTS buchen
+      // (vorher konnte die Quelle belastet bleiben, wenn das Ziel scheiterte).
+      final tooMuch = await provider.transferStock(
+        from: source,
+        to: target,
+        quantity: 4,
+      );
+      expect(tooMuch, isNotNull);
+      expect(tooMuch, contains('uebersteigt'));
+      expect((await products.doc('p-quelle').get()).data()!['currentStock'], 3,
+          reason: 'fehlgeschlagene Umlagerung darf die Quelle nicht belasten');
+      expect((await products.doc('p-ziel').get()).data()!['currentStock'], 3);
+    });
+
+    test(
+        'Bestellkorb-Stream-Fehler setzt nur orderListsLoadFailed, nicht die '
+        'globale errorMessage (#48)', () async {
+      final provider = InventoryProvider(
+        firestoreService: firestoreService,
+        inventoryRepository: _OrderCartStreamErrorRepository(firestore),
+      );
+
+      await provider.updateSession(user, localStorageOnly: false);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.orderListsLoadFailed, isTrue,
+          reason: 'Korb-UI muss den Ladefehler erkennen koennen');
+      expect(provider.errorMessage, isNull,
+          reason: 'ein Korb-Teilausfall darf nicht die gesamte '
+              'Warenwirtschaft als fehlerhaft markieren');
     });
   });
 }

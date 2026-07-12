@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../models/absence_request.dart';
 import '../models/ad_media.dart';
@@ -1823,6 +1824,43 @@ class DatabaseService {
     );
   }
 
+  // Pending-Sync-IDs: lokal (im Hybrid-Fallback) geschriebene, noch nicht in
+  // die Cloud propagierte Dokumente. Der Hybrid-Merge darf solche Eintraege
+  // nie durch einen Cloud-Snapshot ueberschreiben — der Wall-Clock-Vergleich
+  // (Client- vs. Server-Uhr) ist bei Clock-Skew nicht verlaesslich (#22).
+
+  static String _pendingSyncKey(String collectionKey, LocalStorageScope? scope) {
+    return '${_resolveCollectionKey(collectionKey, scope)}.__pending_sync';
+  }
+
+  static Future<Set<String>> loadPendingSyncIds(
+    String collectionKey, {
+    LocalStorageScope? scope,
+  }) async {
+    final prefs = await _prefs;
+    if (scope != null) {
+      await _ensureScopedStorageInitialized(prefs, scope);
+    }
+    final raw = prefs.getStringList(_pendingSyncKey(collectionKey, scope)) ??
+        const <String>[];
+    return raw.toSet();
+  }
+
+  static Future<void> savePendingSyncIds(
+    String collectionKey,
+    Set<String> ids, {
+    LocalStorageScope? scope,
+  }) async {
+    final prefs = await _prefs;
+    if (scope != null) {
+      await _ensureScopedStorageInitialized(prefs, scope);
+    }
+    await prefs.setStringList(
+      _pendingSyncKey(collectionKey, scope),
+      ids.toList(growable: false),
+    );
+  }
+
   static Future<List<T>> _loadCollection<T>({
     required String key,
     required T Function(Map<String, dynamic> map) fromMap,
@@ -2116,7 +2154,14 @@ class DatabaseService {
     LocalStorageScope scope,
   ) {
     final normalizedOrgId = orgId.trim();
-    return normalizedOrgId.isEmpty || normalizedOrgId == scope.normalizedOrgId;
+    // Legacy-Altdaten ohne orgId (pre-v2) gehoeren genau EINER Org — der
+    // Default-Org — und nicht jedem Scope, der auf demselben Geraet
+    // initialisiert wird. Sonst duplizieren sich Altdaten beim Login eines
+    // Nutzers einer anderen Org in deren lokalen Scope (Mandanten-Leak, #33).
+    if (normalizedOrgId.isEmpty) {
+      return scope.normalizedOrgId == AppConfig.defaultOrganizationId;
+    }
+    return normalizedOrgId == scope.normalizedOrgId;
   }
 
   static bool _hasOrgScopedData(

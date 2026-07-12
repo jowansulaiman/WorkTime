@@ -127,6 +127,26 @@ test("computeDailyStats: COGS mit Netto-EK, unbewertete Zeile senkt Abdeckung", 
   assert.strictEqual(out[0].cogsCoveredGrossCents, 600); // 2 x 300
 });
 
+test("computeDailyStats: Refund senkt COGS auch bei positiver Rohmenge (M8)", () => {
+  const ek = new Map([["a", 100]]);
+  const out = stats.computeDailyStats([
+    receipt({
+      grossCents: 900,
+      lines: [{productId: "a", quantity: 3, unitPriceCents: 300}],
+    }),
+    receipt({
+      type: "refund",
+      grossCents: -300,
+      // OktoPOS liefert die Erstattungsmenge i.d.R. POSITIV.
+      lines: [{productId: "a", quantity: 1, unitPriceCents: 300}],
+    }),
+  ], ek);
+  assert.strictEqual(out[0].cogsCents, 200,
+    "3x Verkauf (300) minus 1x Erstattung (100) = 200 — frueher stieg der " +
+    "Wareneinsatz bei Refunds faelschlich auf 400");
+  assert.strictEqual(out[0].cogsCoveredGrossCents, 600); // 900 - 300
+});
+
 test("computeDailyStats: kein bewertbarer Posten -> cogsCents null", () => {
   const out = stats.computeDailyStats([
     receipt({grossCents: 100, lines: [{productId: "x", quantity: 1, unitPriceCents: 100}]}),

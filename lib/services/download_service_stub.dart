@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui';
 
 // Echter Stub: wird nur ausgewählt, wenn weder dart:io (Mobile/Desktop) noch
 // dart:html (Web) verfügbar ist. Auf den unterstützten Flutter-Plattformen
@@ -10,6 +11,7 @@ Future<void> downloadFileBytes({
   required Uint8List bytes,
   required String fileName,
   required String mimeType,
+  Rect? sharePositionOrigin,
 }) {
   throw UnsupportedError(
     'Datei-Download wird auf dieser Plattform nicht unterstützt.',
@@ -19,6 +21,7 @@ Future<void> downloadFileBytes({
 Future<void> downloadPdfBytes({
   required Uint8List bytes,
   required String fileName,
+  Rect? sharePositionOrigin,
 }) {
   throw UnsupportedError(
     'PDF-Download wird auf dieser Plattform nicht unterstützt.',

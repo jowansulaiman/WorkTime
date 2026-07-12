@@ -231,6 +231,24 @@ service cloud.firestore {
               == settingsValue(right, 'vacationDays');
     }
 
+    // K6/H2 (Sicherheits-Audit 2026-07): Lohn-/Urlaubswerte des CREATE-Payloads
+    // muessen denen der Einladung entsprechen. Fehlende Werte fallen auf die
+    // UserSettings-Defaults (hourlyRate 0, vacationDays 30) zurueck, damit
+    // Legacy-Invites ohne settings-Map weiter provisionieren koennen — ein
+    // selbst gesetzter abweichender Lohnwert wird aber verweigert.
+    function settingsPayrollValueOrDefault(data, field, fallback) {
+      return settingsValue(data, field) == null
+          ? fallback
+          : settingsValue(data, field);
+    }
+
+    function settingsPayrollMatchesInvite(userData, inviteData) {
+      return settingsPayrollValueOrDefault(userData, 'hourlyRate', 0)
+              == settingsPayrollValueOrDefault(inviteData, 'hourlyRate', 0)
+          && settingsPayrollValueOrDefault(userData, 'vacationDays', 30)
+              == settingsPayrollValueOrDefault(inviteData, 'vacationDays', 30);
+    }
+
     function workRuleValueFromData(data, field, fallback) {
       return 'workRuleSettings' in data
           && data.workRuleSettings != null
@@ -494,8 +512,11 @@ service cloud.firestore {
       return 'main-org';
     }
 
+    // M5/GB: Normalisierung IDENTISCH zum Client (_inviteDocId: trim+lower+
+    // '/'->'_') und zu den Functions halten — Auth-Token-E-Mails tragen keine
+    // Randleerzeichen, daher reicht lower()+replace hier als SSoT-Angleichung.
     function inviteIdForCurrentUser() {
-      return request.auth.token.email.lower();
+      return request.auth.token.email.lower().replace('/', '_');
     }
 
     function ownInvitePath() {
@@ -528,12 +549,20 @@ service cloud.firestore {
           && dataOrgId(request.resource.data) == dataOrgId(ownInvite().data)
           && normalizedRoleValue(request.resource.data.role)
               == normalizedRoleValue(ownInvite().data.role)
-          && (
-            !('permissions' in ownInvite().data)
-            || permissionsEquivalent(
-              request.resource.data,
-              ownInvite().data,
-            )
+          // K5/H1 (Sicherheits-Audit 2026-07): permissions IMMER gegen die
+          // Einladung pruefen — permissionsEquivalent faellt bei fehlender
+          // permissions-Map ueber die Rollen-Defaults zurueck. Der fruehere
+          // Kurzschluss (!('permissions' in invite) || ...) erlaubte bei
+          // Legacy-Invites ohne permissions-Feld beliebige Selbst-Eskalation.
+          && permissionsEquivalent(
+            request.resource.data,
+            ownInvite().data,
+          )
+          // K6/H2: Lohn-/Urlaubsfelder beim initialen Create ans Invite pinnen
+          // (der update-Pfad hat settingsPayrollFieldsUnchanged bereits).
+          && settingsPayrollMatchesInvite(
+            request.resource.data,
+            ownInvite().data,
           );
 
       allow update: if isActiveUser()
@@ -587,13 +616,22 @@ service cloud.firestore {
     }
 
     match /userInvites/{inviteId} {
-      allow get: if isAdmin()
+      // H1/M2 (Sicherheits-Audit 2026-07): Admin-Zugriff auf die EIGENE Org
+      // begrenzen — Einladungen tragen PII (E-Mail, Rolle, Org). Der
+      // Self-Zweig (eigene Invite-Doc-ID) bleibt fuer die Provisionierung.
+      // list stuetzt sich auf die org-gepinnte Client-Query
+      // (watchInvites: where orgId == eigene Org).
+      allow get: if (
+            isAdmin()
+            && dataOrgId(resource.data) == currentOrgId()
+          )
           || (
             signedIn()
             && inviteId == inviteIdForCurrentUser()
           );
 
-      allow list: if isAdmin();
+      allow list: if isAdmin()
+          && dataOrgId(resource.data) == currentOrgId();
 
       allow create: if isAdmin()
           && dataOrgId(request.resource.data) == currentOrgId();
@@ -630,15 +668,24 @@ service cloud.firestore {
 
     match /organizations/{orgId} {
       allow read: if sameOrg(orgId);
-      allow create, update: if isAdmin() && request.resource.data.name is string;
+      // K2 (Sicherheits-Audit 2026-07): Admin-Writes an die EIGENE Org binden —
+      // ohne sameOrg konnte ein Admin von Org A fremde Org-Docs anlegen/aendern.
+      // Der Lazy-Bootstrap (_ensureOrganization) schreibt immer die eigene Org
+      // und schluckt permission-denied best-effort.
+      allow create, update: if isAdmin()
+          && sameOrg(orgId)
+          && request.resource.data.name is string;
       allow delete: if false;
 
       // Remote-Config / Feature-Flags + Mindest-Build-Nummer
       // (no-feature-flags-force-update): von allen Org-Mitgliedern lesbar,
       // nur durch Admins pflegbar.
+      // K1 (Sicherheits-Audit 2026-07): sameOrg(orgId) ist PFLICHT — ohne die
+      // Bindung konnte ein Admin von Org A config/oktoposSync, appFlags oder
+      // orgSettings FREMDER Orgs schreiben (Mandanten-Bruch, SSRF-Koppelung).
       match /config/{configId} {
         allow read: if sameOrg(orgId);
-        allow write: if isAdmin();
+        allow write: if isAdmin() && sameOrg(orgId);
       }
 
       // Push-Inbox (Plan push-benachrichtigungen-plan.md). Ein Doc je

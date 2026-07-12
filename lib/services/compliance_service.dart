@@ -42,9 +42,7 @@ class ComplianceService {
       siteId: shift.siteId,
       contract: contract,
     );
-    final durationMinutes =
-        shift.endTime.difference(shift.startTime).inMinutes -
-            shift.breakMinutes.round();
+    final durationMinutes = _shiftWorkedMinutes(shift);
     final sameUserExisting = existingShifts
         .where((candidate) =>
             candidate.userId == shift.userId && candidate.id != shift.id)
@@ -426,8 +424,7 @@ class ComplianceService {
       );
     }
 
-    final workedMinutes = entry.endTime.difference(entry.startTime).inMinutes -
-        entry.breakMinutes.round();
+    final workedMinutes = _entryWorkedMinutes(entry);
     final requiredBreakMinutes = _requiredBreakMinutes(
       workedMinutes: workedMinutes,
       ruleSet: ruleSet,
@@ -983,15 +980,24 @@ class ComplianceService {
   /// `workedMinutesFromShift` in functions/index.js. Vorher wurde über
   /// `workedHours.round() * 60` auf volle Stunden gerundet (7,5h→480 statt 450),
   /// was Client- und Server-Grenzwertentscheidungen auseinanderlaufen ließ.
-  int _shiftWorkedMinutes(Shift shift) =>
-      shift.endTime.difference(shift.startTime).inMinutes -
-      shift.breakMinutes.round();
+  /// Formel in beiden Spiegeln identisch: Brutto-Minuten runden, Pause separat
+  /// runden, dann subtrahieren und auf >= 0 klemmen — sonst driftet der Wert
+  /// bei fraktionalen breakMinutes/Sekundenanteilen um 1 Minute (Kopplung #2).
+  int _shiftWorkedMinutes(Shift shift) {
+    final gross =
+        (shift.endTime.difference(shift.startTime).inSeconds / 60).round();
+    final net = gross - shift.breakMinutes.round();
+    return net < 0 ? 0 : net;
+  }
 
   /// Minutengenaue Netto-Arbeitszeit eines Zeiteintrags — Pendant zu
   /// [_shiftWorkedMinutes] für den Work-Entry-Pfad.
-  int _entryWorkedMinutes(WorkEntry entry) =>
-      entry.endTime.difference(entry.startTime).inMinutes -
-      entry.breakMinutes.round();
+  int _entryWorkedMinutes(WorkEntry entry) {
+    final gross =
+        (entry.endTime.difference(entry.startTime).inSeconds / 60).round();
+    final net = gross - entry.breakMinutes.round();
+    return net < 0 ? 0 : net;
+  }
 
   /// Entfernt doppelte Verletzungen (gleiche code+severity+message) und
   /// spiegelt damit `dedupeViolations` in functions/index.js. Mehrfach
@@ -1026,6 +1032,12 @@ class ComplianceService {
     return !_isSameDay(earlierStart, earlierEnd);
   }
 
+  /// Gesetzliches Nachtfenster fuer Jugend- (JArbSchG § 14: 20:00–06:00) und
+  /// Mutterschutz (MuSchG § 5: ab 20:00). Bewusst hartkodiert und UNABHAENGIG
+  /// vom konfigurierbaren `ruleSet.nightWindowStart/EndMinutes` (23:00–06:00,
+  /// allgemeine Nachtarbeits-Definition nach ArbZG): die Schutzfenster sind
+  /// gesetzliche Minima und duerfen per Org-Konfiguration nicht gelockert
+  /// werden. Spiegel: `overlapsNightWindow` in functions/index.js.
   bool _overlapsNightWindow({
     required DateTime start,
     required DateTime end,

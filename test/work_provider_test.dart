@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -68,6 +69,16 @@ class _DeleteFailingFirestoreService extends FirestoreService {
     required String orgId,
     required String entryId,
   }) async =>
+      throw Exception('offline');
+}
+
+/// Wirft beim Speichern von Zeiteintraegen (Callable UND Direkt-Write
+/// gescheitert), um den hybriden Pending-Sync-Schutz (#22) zu testen.
+class _SaveEntryFailingFirestoreService extends FirestoreService {
+  _SaveEntryFailingFirestoreService({required super.firestore});
+
+  @override
+  Future<void> saveWorkEntry(WorkEntry entry) async =>
       throw Exception('offline');
 }
 
@@ -728,6 +739,78 @@ void main() {
       );
       expect(persistedEntries, hasLength(1));
       expect(persistedEntries.single.siteName, 'Berlin');
+    });
+
+    test(
+        'hybrid: Cloud-Snapshot mit neuerem updatedAt ueberschreibt einen '
+        'nicht synchronisierten lokalen Eintrag nicht (#22 Clock-Skew)', () async {
+      final provider = WorkProvider(
+        firestoreService: _SaveEntryFailingFirestoreService(
+          firestore: firestore,
+        ),
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(user, hybridStorageEnabled: true);
+      provider.updateReferenceData(
+        sites: const [],
+        contracts: const [],
+        siteAssignments: const [
+          EmployeeSiteAssignment(
+            id: 'assign-1',
+            orgId: 'org-1',
+            userId: 'employee-1',
+            siteId: 'site-1',
+            siteName: 'Berlin',
+            isPrimary: true,
+          ),
+        ],
+        ruleSets: [ComplianceRuleSet.defaultRetail('org-1')],
+        travelTimeRules: const <TravelTimeRule>[],
+      );
+      await seedCurrentShift();
+
+      final now = DateTime.now();
+      final localEntry = WorkEntry(
+        id: 'entry-skew',
+        orgId: user.orgId,
+        userId: user.uid,
+        date: now,
+        startTime: now.subtract(const Duration(minutes: 30)),
+        endTime: now.subtract(const Duration(minutes: 5)),
+        breakMinutes: 0,
+        siteId: 'site-1',
+        siteName: 'Berlin',
+        note: 'lokal',
+        sourceShiftId: 'shift-1',
+      );
+      // Cloud-Write schlaegt fehl -> lokaler Hybrid-Fallback (pending).
+      await provider.addEntry(localEntry);
+      expect(provider.entries.single.note, 'lokal');
+
+      // Veralteten Cloud-Stand derselben ID einspielen, dessen serverseitiges
+      // updatedAt (Server-Uhr) NEUER ist als der lokale Client-Stempel —
+      // exakt das Clock-Skew-Szenario, das lokale Edits verlieren liess.
+      final staleCloudMap = localEntry
+          .copyWith(note: 'veralteter Cloud-Stand')
+          .toFirestoreMap()
+        ..['updatedAt'] =
+            Timestamp.fromDate(DateTime.now().add(const Duration(hours: 1)));
+      await firestore
+          .collection('organizations')
+          .doc(user.orgId)
+          .collection('workEntries')
+          .doc('entry-skew')
+          .set(staleCloudMap);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.entries.single.note, 'lokal',
+          reason: 'pending lokale Version darf nicht vom Cloud-Snapshot '
+              'ueberschrieben werden (Clock-Skew)');
+      final persisted = await DatabaseService.loadLocalEntries(
+        scope: LocalStorageScope.fromUser(user),
+      );
+      expect(persisted.single.note, 'lokal');
     });
 
     test(

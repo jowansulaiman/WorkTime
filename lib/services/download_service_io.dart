@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -18,6 +19,7 @@ Future<void> downloadFileBytes({
   required Uint8List bytes,
   required String fileName,
   required String mimeType,
+  Rect? sharePositionOrigin,
 }) async {
   final directory = await getTemporaryDirectory();
   final safeName = _sanitizeFileName(fileName);
@@ -26,17 +28,39 @@ Future<void> downloadFileBytes({
   await Share.shareXFiles(
     [XFile(file.path, mimeType: mimeType, name: fileName)],
     subject: fileName,
+    // #37: iPad/macOS zeigen das Share-Sheet als Popover und brauchen einen
+    // Anker. Ohne Angabe des auslösenden Buttons: Bildschirmmitte als
+    // definierter Fallback statt undefinierter Default-Position.
+    sharePositionOrigin: sharePositionOrigin ?? _screenCenterRect(),
   );
 }
 
 Future<void> downloadPdfBytes({
   required Uint8List bytes,
   required String fileName,
+  Rect? sharePositionOrigin,
 }) {
   return downloadFileBytes(
     bytes: bytes,
     fileName: fileName,
     mimeType: 'application/pdf',
+    sharePositionOrigin: sharePositionOrigin,
+  );
+}
+
+/// Zentrierter 1x1-Anker aus der Hauptansicht — Popover-Fallback ohne
+/// Widget-Kontext (iPad/macOS).
+Rect _screenCenterRect() {
+  final views = PlatformDispatcher.instance.views;
+  if (views.isEmpty) {
+    return const Rect.fromLTWH(0, 0, 1, 1);
+  }
+  final view = views.first;
+  final size = view.physicalSize / view.devicePixelRatio;
+  return Rect.fromCenter(
+    center: Offset(size.width / 2, size.height / 2),
+    width: 1,
+    height: 1,
   );
 }
 

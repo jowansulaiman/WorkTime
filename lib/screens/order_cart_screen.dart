@@ -621,12 +621,20 @@ class OrderCartTab extends StatelessWidget {
         ),
         Expanded(
           child: items.isEmpty
-              ? const EmptyState(
-                  icon: Icons.shopping_cart_outlined,
-                  message:
-                      'Der Bestellkorb ist leer. Lege Artikel über „Artikel" '
-                      'hinein oder lade die Standard-Wochenliste.',
-                )
+              // #48: Stream-Fehler nicht als leeren Korb fehlinterpretieren.
+              ? inventory.orderListsLoadFailed
+                  ? const EmptyState(
+                      icon: Icons.cloud_off_outlined,
+                      message:
+                          'Der Bestellkorb konnte nicht geladen werden. '
+                          'Bitte später erneut versuchen.',
+                    )
+                  : const EmptyState(
+                      icon: Icons.shopping_cart_outlined,
+                      message:
+                          'Der Bestellkorb ist leer. Lege Artikel über „Artikel" '
+                          'hinein oder lade die Standard-Wochenliste.',
+                    )
               : ListView(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 120),
                   children: [

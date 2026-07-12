@@ -303,7 +303,11 @@ class _MonthReportScreenState extends State<MonthReportScreen> {
     setState(() => _exporting = true);
     try {
       await ExportService.exportMonthlyReport(
-        entries: entriesToExport,
+        // M7/GB (E3, strenge Zaehlung): ins offizielle PDF gehen NUR
+        // genehmigte Zeiten — der Screen summiert bereits via countsAsIst,
+        // der Export bekam aber die ungefilterte Liste und ueberzeichnete
+        // damit Stunden/Lohn um submitted/draft/rejected-Eintraege.
+        entries: entriesToExport.where(countsAsIst).toList(growable: false),
         settings: work.reportSettings,
         year: work.selectedMonth.year,
         month: work.selectedMonth.month,

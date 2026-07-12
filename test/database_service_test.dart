@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:worktime_app/models/order_cart.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_entry.dart';
@@ -152,6 +153,100 @@ void main() {
       expect(firstShifts.single.id, 'legacy-shift-1');
       expect(secondEntries.single.id, 'legacy-entry-2');
       expect(secondShifts.single.id, 'legacy-shift-2');
+    });
+
+    test(
+        'Legacy-Eintrag ohne orgId wandert nur in die Default-Org, '
+        'nicht in fremde Org-Scopes (#33)', () async {
+      // AppConfig.defaultOrganizationId ist im Test-Build 'main-org'.
+      const defaultScope =
+          LocalStorageScope(orgId: 'main-org', userId: 'user-1');
+      const foreignScope =
+          LocalStorageScope(orgId: 'org-fremd', userId: 'user-2');
+
+      await DatabaseService.saveLocalEntries([
+        WorkEntry(
+          id: 'legacy-no-org',
+          orgId: '',
+          userId: 'user-1',
+          date: DateTime(2026, 4, 3),
+          startTime: DateTime(2026, 4, 3, 8),
+          endTime: DateTime(2026, 4, 3, 16),
+          breakMinutes: 30,
+          siteId: 'site-1',
+          siteName: 'Berlin',
+        ),
+      ]);
+
+      final defaultEntries =
+          await DatabaseService.loadLocalEntries(scope: defaultScope);
+      final foreignEntries =
+          await DatabaseService.loadLocalEntries(scope: foreignScope);
+
+      expect(defaultEntries.map((entry) => entry.id), contains('legacy-no-org'),
+          reason: 'Altdaten ohne orgId gehoeren in die Default-Org');
+      expect(foreignEntries, isEmpty,
+          reason:
+              'Altdaten ohne orgId duerfen nicht in fremde Orgs duplizieren');
+    });
+
+    test(
+        'teilt Bestellkorb/Wochenliste innerhalb der Org, isoliert zwischen '
+        'Orgs (#34)', () async {
+      const org1UserA = LocalStorageScope(orgId: 'org-1', userId: 'user-1');
+      const org1UserB = LocalStorageScope(orgId: 'org-1', userId: 'user-2');
+      const org2User = LocalStorageScope(orgId: 'org-2', userId: 'user-3');
+
+      const cart = SiteOrderList(
+        id: 'site-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Strichmaennchen',
+        items: [
+          OrderListItem(
+            productId: 'prod-1',
+            name: 'Pueblo Tabak',
+            quantity: 3,
+          ),
+        ],
+      );
+      const weekly = SiteOrderList(
+        id: 'site-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Strichmaennchen',
+        kind: OrderListKind.weeklyTemplate,
+        items: [
+          OrderListItem(
+            productId: 'prod-2',
+            name: 'Feuerzeuge',
+            quantity: 10,
+          ),
+        ],
+      );
+
+      await DatabaseService.saveLocalOrderCarts([cart], scope: org1UserA);
+      await DatabaseService.saveLocalWeeklyOrderLists(
+        [weekly],
+        scope: org1UserA,
+      );
+
+      // Zweiter Nutzer DERSELBEN Org sieht den geteilten Korb (Designziel
+      // geteilter Wochen-Bestellkorb, org-skopiert statt user-skopiert).
+      final sharedCarts =
+          await DatabaseService.loadLocalOrderCarts(scope: org1UserB);
+      final sharedWeekly =
+          await DatabaseService.loadLocalWeeklyOrderLists(scope: org1UserB);
+      expect(sharedCarts.single.items.single.name, 'Pueblo Tabak');
+      expect(sharedWeekly.single.items.single.name, 'Feuerzeuge');
+
+      // Nutzer einer ANDEREN Org sieht nichts (Mandanten-Isolation).
+      final foreignCarts =
+          await DatabaseService.loadLocalOrderCarts(scope: org2User);
+      final foreignWeekly =
+          await DatabaseService.loadLocalWeeklyOrderLists(scope: org2User);
+      expect(foreignCarts, isEmpty);
+      expect(foreignWeekly, isEmpty);
     });
 
     test('clears only legacy work settings and keeps app settings', () async {

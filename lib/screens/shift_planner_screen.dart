@@ -1348,6 +1348,10 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
 
   @override
   Widget build(BuildContext context) {
+    // #54: Abwesenheits-Buckets des letzten Builds verwerfen — Daten/Filter
+    // koennen sich geaendert haben; innerhalb EINES Builds fuellt sich der
+    // Cache dann einmal pro Tag statt pro Zelle (O(Zeilen×Tage×Abwesenheiten)).
+    _dayAbsenceCache.clear();
     final schedule = context.watch<ScheduleProvider>();
     final theme = Theme.of(context);
     final viewportWidth = MediaQuery.sizeOf(context).width;
@@ -4375,11 +4379,22 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
       ..sort(_plannerAbsenceRequestSort);
   }
 
+  /// #54: einmal pro Build und Tag gefiltert+sortiert (Analogon zum
+  /// Schicht-Bucketing `_groupShiftsByRow`/`_groupShiftsByDay`); wird am
+  /// Anfang von [build] geleert. Ohne Cache lief Filter+Sort pro Board-ZELLE.
+  final Map<String, List<AbsenceRequest>> _dayAbsenceCache =
+      <String, List<AbsenceRequest>>{};
+
   List<AbsenceRequest> _dayAbsences(DateTime day) {
+    final key = _dayBucketKey(day);
+    final cached = _dayAbsenceCache[key];
+    if (cached != null) {
+      return cached;
+    }
     final schedule = context.read<ScheduleProvider>();
     final dayStart = DateTime(day.year, day.month, day.day);
     final dayEnd = dayStart.add(const Duration(days: 1));
-    return widget.visibleAbsenceRequests
+    final result = widget.visibleAbsenceRequests
         .where(
           (request) =>
               _matchesAbsenceFilters(request, schedule) &&
@@ -4387,6 +4402,8 @@ class _AdminShiftPlannerBoardState extends State<_AdminShiftPlannerBoard> {
         )
         .toList(growable: false)
       ..sort(_plannerAbsenceRequestSort);
+    _dayAbsenceCache[key] = result;
+    return result;
   }
 
   List<AbsenceRequest> _rowAbsencesForDay(

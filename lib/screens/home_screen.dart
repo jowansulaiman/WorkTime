@@ -134,14 +134,42 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     // Desktop-/Web-Tastatur-Shortcuts (no-desktop-keyboard-shortcuts):
-    // Strg/Ctrl + 1..9 springt direkt auf die n-te Rail-Destination.
-    final shortcutBindings = <ShortcutActivator, VoidCallback>{
-      for (var i = 0;
-          i < railDestinations.length && i < _navDigitKeys.length;
-          i++)
-        SingleActivator(_navDigitKeys[i], control: true): () =>
-            _handleDestinationTap(i, destinations: railDestinations),
-    };
+    // Strg/Ctrl + 1..9 springt auf das n-te Ziel der SICHTBAREN Navigation.
+    // #57: layoutabhaengig — Rail nutzt railDestinations (ohne Profil),
+    // die Bottom-Nav ihre tatsaechlich sichtbaren Ziele (V1 inkl. Profil,
+    // V2 die feste 5er-Leiste). Die Breakpoint-Logik entspricht der im
+    // LayoutBuilder unten (dessen Constraints sind hier die Bildschirmgroesse).
+    final screenSize = MediaQuery.sizeOf(context);
+    final useRailForShortcuts =
+        MobileBreakpoints.useNavigationRail(screenSize.width) &&
+            screenSize.height >= MobileBreakpoints.mediumWindow;
+    final Map<ShortcutActivator, VoidCallback> shortcutBindings;
+    if (useRailForShortcuts) {
+      shortcutBindings = <ShortcutActivator, VoidCallback>{
+        for (var i = 0;
+            i < railDestinations.length && i < _navDigitKeys.length;
+            i++)
+          SingleActivator(_navDigitKeys[i], control: true): () =>
+              _handleDestinationTap(i, destinations: railDestinations),
+      };
+    } else if (useV2) {
+      final navEntries = _v2BottomNavEntries(currentUser);
+      shortcutBindings = <ShortcutActivator, VoidCallback>{
+        for (var i = 0;
+            i < navEntries.length && i < _navDigitKeys.length;
+            i++)
+          SingleActivator(_navDigitKeys[i], control: true): () =>
+              _handleBottomNavTap(navEntries[i]),
+      };
+    } else {
+      shortcutBindings = <ShortcutActivator, VoidCallback>{
+        for (var i = 0;
+            i < destinations.length && i < _navDigitKeys.length;
+            i++)
+          SingleActivator(_navDigitKeys[i], control: true): () =>
+              _handleDestinationTap(i, destinations: destinations),
+      };
+    }
 
     return CallbackShortcuts(
       bindings: shortcutBindings,
@@ -152,7 +180,13 @@ class _HomeScreenState extends State<HomeScreen> {
             if (didPop) {
               return;
             }
-            _navigateBackInShell();
+            // #58: Enthaelt die Historie keine gueltige Rueck-Destination mehr
+            // (z.B. nach Permission-Reduktion), den bereits konsumierten
+            // System-Pop nachholen, statt den ersten Zurueck-Druck zu
+            // verschlucken. Auf dem Web uebernimmt die Browser-Historie.
+            if (!_navigateBackInShell()) {
+              SystemNavigator.pop();
+            }
           },
           child: LayoutBuilder(
             builder: (context, constraints) {

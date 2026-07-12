@@ -1160,8 +1160,8 @@ class _ComplianceTab extends StatelessWidget {
                     '${(ruleSet.nightWindowStartMinutes ~/ 60).toString().padLeft(2, '0')}:${(ruleSet.nightWindowStartMinutes % 60).toString().padLeft(2, '0')} - '
                     '${(ruleSet.nightWindowEndMinutes ~/ 60).toString().padLeft(2, '0')}:${(ruleSet.nightWindowEndMinutes % 60).toString().padLeft(2, '0')} Uhr',
                 subtitle: ruleSet.warnForwardRotation
-                    ? 'Vorwaertsrotation wird gewarnt'
-                    : 'Kein Vorwaertsrotations-Hinweis',
+                    ? 'Vorwaertsrotation wird gewarnt. Jugend-/Mutterschutz nutzen fest das gesetzliche Fenster 20:00-06:00.'
+                    : 'Jugend-/Mutterschutz nutzen fest das gesetzliche Fenster 20:00-06:00.',
                 color: colorScheme.outline,
               ),
             ],

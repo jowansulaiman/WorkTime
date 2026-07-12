@@ -138,11 +138,17 @@ function computeDailyStats(receipts, ekNettoById) {
       if (pid == null || qty === 0) continue;
       const ekNetto = ekMap.get(pid);
       if (ekNetto == null) continue;
+      // M8/GB (Spiegel-Kopplung zu dailyStatsFromReceipts in
+      // lib/core/kasse_report.dart): Erstattungen SENKEN den Wareneinsatz.
+      // OktoPOS liefert die Refund-Menge i.d.R. positiv -> Richtung haengt am
+      // Beleg-Typ, nicht am Rohvorzeichen (das gleiche gilt fuer den
+      // gedeckten Brutto-Anteil).
+      const signedQty = type === "refund" ? -Math.abs(qty) : qty;
       a.anyCogs = true;
-      a.cogs += qty * ekNetto;
+      a.cogs += signedQty * ekNetto;
       const unit = line.unitPriceCents == null
         ? null : line.unitPriceCents - (line.discountCents || 0);
-      if (unit != null && unit >= 0) a.cogsCoveredGross += qty * unit;
+      if (unit != null && unit >= 0) a.cogsCoveredGross += signedQty * unit;
     }
   }
 

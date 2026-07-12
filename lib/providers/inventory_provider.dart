@@ -97,6 +97,10 @@ class InventoryProvider extends ChangeNotifier {
   List<CustomerOrder> _customerOrders = [];
   List<SiteOrderList> _orderCarts = [];
   List<SiteOrderList> _weeklyLists = [];
+  // #48: eigener Fehlerzustand der Bestelllisten-Streams (Korb/Wochenliste),
+  // damit ein Teil-Ausfall nicht die globale _errorMessage einfaerbt und die
+  // UI "leer" nicht mit "konnte nicht geladen werden" verwechselt.
+  bool _orderListsLoadFailed = false;
   List<FridgeRefillList> _fridgeLists = [];
   List<ScanEvent> _scanEvents = [];
 
@@ -194,6 +198,10 @@ class InventoryProvider extends ChangeNotifier {
   List<FridgeRefillList> get fridgeRefillLists => _fridgeLists;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
+
+  /// #48: true, wenn der Bestellkorb-/Wochenlisten-Stream fehlgeschlagen ist.
+  /// Die Korb-UI zeigt dann einen Ladefehler statt eines leeren Korbs.
+  bool get orderListsLoadFailed => _orderListsLoadFailed;
 
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get _usesFirestore => !usesLocalStorage;
@@ -853,6 +861,7 @@ class InventoryProvider extends ChangeNotifier {
     _customerOrders = [];
     _orderCarts = [];
     _weeklyLists = [];
+    _orderListsLoadFailed = false;
     _fridgeLists = [];
     _scanEvents = [];
     _scanEventsLoaded = false;
@@ -907,17 +916,30 @@ class InventoryProvider extends ChangeNotifier {
       _safeNotify();
     }, onError: _setError);
 
+    // #48: Bestelllisten-Stream-Fehler NICHT auf die globale _errorMessage
+    // legen — ein Teil-Ausfall des Korbs wuerde sonst die gesamte
+    // Warenwirtschaft als fehlerhaft einfaerben. Stattdessen per-Stream-Flag,
+    // damit die Korb-UI "konnte nicht geladen werden" statt "Korb leer" zeigt.
     _orderCartsSubscription =
         _inventory.watchOrderCarts(orgId).listen((items) {
       _orderCarts = items;
+      _orderListsLoadFailed = false;
       _safeNotify();
-    }, onError: _setError);
+    }, onError: (Object error) {
+      AppLogger.warning('orderCarts-Stream fehlgeschlagen', error: error);
+      _orderListsLoadFailed = true;
+      _safeNotify();
+    });
 
     _weeklyListsSubscription =
         _inventory.watchWeeklyOrderLists(orgId).listen((items) {
       _weeklyLists = items;
       _safeNotify();
-    }, onError: _setError);
+    }, onError: (Object error) {
+      AppLogger.warning('weeklyOrderLists-Stream fehlgeschlagen', error: error);
+      _orderListsLoadFailed = true;
+      _safeNotify();
+    });
 
     _fridgeListsSubscription =
         _inventory.watchFridgeRefillLists(orgId).listen((items) {
@@ -1057,6 +1079,15 @@ class InventoryProvider extends ChangeNotifier {
     prepared = prepared.copyWith(
       fridgeStock: productById(prepared.id)?.fridgeStock ?? 0,
     );
+    // H8 (Sicherheits-Audit 2026-07): dasselbe gilt fuer currentStock — der
+    // Editor friert den Wert beim Oeffnen ein, waehrend Verkaeufe/Inventuren
+    // parallel buchen. Fuer BESTEHENDE Artikel den frischen Stand re-injizieren
+    // (lokaler Modus/Spiegel); cloud-seitig entfernt das Repo das Feld beim
+    // Update zusaetzlich aus dem Merge. Anfangsbestand neuer Artikel bleibt.
+    final storedProduct = productById(prepared.id);
+    if (storedProduct != null) {
+      prepared = prepared.copyWith(currentStock: storedProduct.currentStock);
+    }
     // Harte Barcode-Eindeutigkeit je Laden: ein Barcode darf im selben Laden
     // nur an EINEM Artikel haengen (inkl. deaktivierter — die blockieren sonst
     // die Reaktivierung). Geprueft wird nur bei Neuanlage oder geaendertem
@@ -2449,19 +2480,64 @@ class InventoryProvider extends ChangeNotifier {
   }
 
   /// Setzt den Bestand per Inventur auf [countedStock] und bucht die Differenz.
+  ///
+  /// H9 (Sicherheits-Audit 2026-07): Das Delta wird NIE aus dem uebergebenen
+  /// (potenziell veralteten) UI-Objekt berechnet. Cloud-Pfad: absolut setzende
+  /// Transaktion ([InventoryRepository.setProductStock], Delta aus dem frischen
+  /// Serverstand). Lokal/Hybrid-Fallback: Delta gegen den frischen
+  /// In-Memory-Stand.
   Future<void> recordStocktake({
     required Product product,
     required int countedStock,
   }) async {
-    final delta = countedStock - product.currentStock;
-    if (delta == 0 || product.id == null) {
+    final orgId = _orgId;
+    final productId = product.id;
+    if (orgId == null || productId == null) {
       return;
     }
-    await adjustStock(
-      productId: product.id!,
+    final productName = productById(productId)?.name ?? product.name;
+    final summary =
+        'Inventur „$productName": Bestand auf $countedStock gesetzt';
+    final mutationId = _uuid.v4();
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'recordStocktake',
+          () => _inventory.setProductStock(
+            orgId: orgId,
+            productId: productId,
+            newStock: countedStock,
+            reason: 'Inventur',
+            createdByUid: _currentUser?.uid,
+            clientMutationId: mutationId,
+          ),
+        )) {
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Bestand',
+        entityId: productId,
+        summary: summary,
+      );
+      return;
+    }
+    final fresh = productById(productId) ?? product;
+    final delta = countedStock - fresh.currentStock;
+    if (delta == 0) {
+      return;
+    }
+    _applyLocalStockChange(
+      productId: productId,
       delta: delta,
       type: StockMovementType.stocktake,
       reason: 'Inventur',
+    );
+    await _persistProducts();
+    await _persistMovements();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Bestand',
+      entityId: productId,
+      summary: summary,
     );
   }
 
@@ -2589,10 +2665,45 @@ class InventoryProvider extends ChangeNotifier {
     }
     final toLabel = to.siteName ?? 'Ziel';
     final fromLabel = from.siteName ?? 'Quelle';
-    // Die Umlagerung sind zwei getrennte (je atomare) Buchungen. Im cloud-only-
-    // Modus kann adjustStock rethrowen -> dann darf der bereits gebuchte Abgang
-    // an der Quelle nicht verloren gehen: bei Fehler am Ziel kompensieren wir
-    // die Quellbuchung wieder (best-effort) und melden den Fehler.
+    // H10 (Sicherheits-Audit 2026-07/GB): Cloud-Pfad bucht Quelle+Ziel+beide
+    // Bewegungen in EINER Transaktion (transferProductStock) — Bestand kann
+    // nicht mehr verschwinden, wenn die Ziel-Buchung scheitert. Lokal (und im
+    // Hybrid-Fallback) bleibt die sequenzielle In-Memory-Buchung.
+    final orgId = _orgId;
+    if (_usesFirestore && orgId != null) {
+      try {
+        await _inventory.transferProductStock(
+          orgId: orgId,
+          fromProductId: from.id!,
+          toProductId: to.id!,
+          quantity: quantity,
+          fromReason: 'Umlagerung nach $toLabel',
+          toReason: 'Umlagerung von $fromLabel',
+          createdByUid: _currentUser?.uid,
+          clientMutationId: _uuid.v4(),
+        );
+        _audit?.call(
+          action: AuditAction.updated,
+          entityType: 'Bestand',
+          entityId: from.id,
+          summary:
+              'Umlagerung „${from.name}": $quantity ${from.unit} von $fromLabel nach $toLabel',
+        );
+        return null;
+      } catch (error) {
+        if (!usesHybridStorage) {
+          return error is StateError
+              ? error.message
+              : 'Umlagerung fehlgeschlagen (nichts gebucht).';
+        }
+        AppLogger.warning(
+          'Inventory: transferStock offline – lokaler Fallback aktiv',
+          error: error,
+        );
+        // Hybrid: unten sequenziell lokal buchen (adjustStock faellt selbst
+        // lokal zurueck).
+      }
+    }
     try {
       await adjustStock(
         productId: from.id!,

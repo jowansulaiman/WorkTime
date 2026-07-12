@@ -178,6 +178,33 @@ abstract interface class InventoryRepository {
     String? clientMutationId,
   });
 
+  /// H9 (Inventur): setzt den Bestand ABSOLUT auf [newStock] und bucht die
+  /// Differenz zum frischen Serverstand als Bewegung — das Delta entsteht in
+  /// der Transaktion, nie aus einem potenziell veralteten UI-Stand.
+  Future<int> setProductStock({
+    required String orgId,
+    required String productId,
+    required int newStock,
+    StockMovementType type = StockMovementType.stocktake,
+    String? reason,
+    String? createdByUid,
+    String? clientMutationId,
+  });
+
+  /// H10 (Umlagerung): bucht Abgang an der Quelle und Zugang am Ziel in EINER
+  /// Transaktion (inkl. beider Bewegungs-Docs) — Bestand kann nicht mehr durch
+  /// eine fehlgeschlagene Ziel-Buchung "verschwinden".
+  Future<void> transferProductStock({
+    required String orgId,
+    required String fromProductId,
+    required String toProductId,
+    required int quantity,
+    String? fromReason,
+    String? toReason,
+    String? createdByUid,
+    String? clientMutationId,
+  });
+
   /// Setzt den Kühlschrank-Ist-Stand [fridgeStock] eines Artikels (absolut) und
   /// protokolliert eine `fridgeRefill`-Bewegung über [refilledQty]. Ändert den
   /// Gesamtbestand (`currentStock`) NICHT — reine Umlagerung Lager→Kühlschrank.

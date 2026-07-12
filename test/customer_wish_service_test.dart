@@ -81,6 +81,25 @@ void main() {
     expect(wishes.single.handledByUid, 'mitarbeiter-1');
   });
 
+  test('updateCustomerWishStatus schreibt notes und stempelt handledAt (#69)',
+      () async {
+    final id = await service.submitCustomerWish(buildWish());
+
+    await service.updateCustomerWishStatus(
+      orgId: 'main-org',
+      wishId: id,
+      status: CustomerWishStatus.seen,
+      handledByUid: 'mitarbeiter-1',
+      notes: 'liegt bereit',
+    );
+
+    final wishes = await service.watchCustomerWishes('main-org').first;
+    expect(wishes.single.notes, 'liegt bereit');
+    expect(wishes.single.handledAt, isNotNull,
+        reason: 'handledAt (serverTimestamp) muss gesetzt und über '
+            'fromFirestore lesbar sein');
+  });
+
   test('updateCustomerWishContact verknüpft und löst die Verknüpfung',
       () async {
     final id = await service.submitCustomerWish(buildWish());

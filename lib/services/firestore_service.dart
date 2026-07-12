@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:collection/collection.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:uuid/uuid.dart';
 
 import '../core/app_config.dart';
@@ -2567,9 +2568,16 @@ class FirestoreService {
         clientMutationId: clientMutationId,
       );
 
+  /// M4/N9 (Defense-in-Depth): Bootstrap-Admins sind reiner Dev-Komfort —
+  /// im Release-Build ist der Selbst-Provisionierungs-Pfad code-seitig hart
+  /// aus, selbst wenn APP_BOOTSTRAP_ADMIN_EMAILS gesetzt sein sollte (die
+  /// Rules bremsen ihn zusaetzlich).
+  static bool get _bootstrapAdminsEnabled => !kReleaseMode;
+
   Future<bool> hasPendingAccessForEmail(String email) async {
     final normalized = email.trim().toLowerCase();
-    if (AppConfig.bootstrapAdminEmailList.contains(normalized)) {
+    if (_bootstrapAdminsEnabled &&
+        AppConfig.bootstrapAdminEmailList.contains(normalized)) {
       return true;
     }
 
@@ -2636,7 +2644,8 @@ class FirestoreService {
       return profile;
     }
 
-    if (AppConfig.bootstrapAdminEmailList.contains(emailLower)) {
+    if (_bootstrapAdminsEnabled &&
+        AppConfig.bootstrapAdminEmailList.contains(emailLower)) {
       final profile = AppUserProfile(
         uid: user.uid,
         orgId: AppConfig.defaultOrganizationId,

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/app_logger.dart';
 import '../core/error_reporter.dart';
 import '../core/retry.dart';
 import '../models/cash_closing.dart';
@@ -356,6 +357,15 @@ class FirestoreInventoryRepository implements InventoryRepository {
       ...product.copyWith(id: docRef.id).toFirestoreMap(),
       if (product.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }..remove('fridgeStock');
+    // H8 (Sicherheits-Audit 2026-07): currentStock unterliegt denselben
+    // nebenlaeufigen Buchungen (adjustProductStock/receive/POS-Pull) — ein
+    // Manager-Edit mit eingefrorenem UI-Stand darf den Serverwert nicht
+    // zuruecksetzen. Kriterium ist die DOC-Existenz (nicht die id), damit
+    // syncLocalStateToCloud (lokale Artikel MIT id, noch ohne Cloud-Doc) den
+    // Anfangsbestand weiterhin mitbringt.
+    if (product.id != null && (await docRef.get()).exists) {
+      data.remove('currentStock');
+    }
     await docRef.set(data, SetOptions(merge: true));
     return docRef.id;
   }
@@ -376,10 +386,24 @@ class FirestoreInventoryRepository implements InventoryRepository {
   @override
   Stream<List<ProductBatch>> watchProductBatches(String orgId) {
     return _productBatchCollection(orgId).orderBy('expiryDay').snapshots().map(
-          (snapshot) => snapshot.docs
-              .map((doc) => ProductBatch.fromFirestore(doc.id, doc.data()))
-              .toList(growable: false),
-        );
+      (snapshot) {
+        final batches = <ProductBatch>[];
+        for (final doc in snapshot.docs) {
+          try {
+            batches.add(ProductBatch.fromFirestore(doc.id, doc.data()));
+          } on FormatException catch (error) {
+            // M6: Charge ohne lesbares MHD ueberspringen statt (frueher) als
+            // 2000-01-01 zu fuehren — das erzeugte Dauer-Falschwarnungen.
+            AppLogger.warning(
+              'ProductBatch uebersprungen (kein lesbares MHD)',
+              error: error,
+              fields: {'doc': doc.id},
+            );
+          }
+        }
+        return List<ProductBatch>.unmodifiable(batches);
+      },
+    );
   }
 
   @override
@@ -501,6 +525,157 @@ class FirestoreInventoryRepository implements InventoryRepository {
       });
 
       return newStock;
+    });
+  }
+
+  @override
+  Future<int> setProductStock({
+    required String orgId,
+    required String productId,
+    required int newStock,
+    StockMovementType type = StockMovementType.stocktake,
+    String? reason,
+    String? createdByUid,
+    String? clientMutationId,
+  }) async {
+    final productRef = _productCollection(orgId).doc(productId);
+    final movementRef = clientMutationId == null
+        ? _stockMovementCollection(orgId).doc()
+        : _stockMovementCollection(orgId).doc(clientMutationId);
+
+    // H9 (Sicherheits-Audit 2026-07, Inventur): ABSOLUT setzen statt ein im
+    // Provider aus potenziell veraltetem UI-Stand berechnetes Delta zu
+    // addieren — das Delta wird IN der Transaktion aus dem frischen
+    // Serverstand abgeleitet, damit die Inventur immer auf dem gezaehlten
+    // Wert landet (UI 10 / Server 9 / gezaehlt 7 -> 7, nicht 6).
+    return _firestore.runTransaction<int>((transaction) async {
+      final snapshot = await transaction.get(productRef);
+      if (!snapshot.exists) {
+        throw StateError('Artikel wurde nicht gefunden.');
+      }
+      final product = Product.fromFirestore(snapshot.id, snapshot.data()!);
+
+      if (clientMutationId != null) {
+        final existing = await transaction.get(movementRef);
+        if (existing.exists) {
+          return product.currentStock;
+        }
+      }
+
+      final delta = newStock - product.currentStock;
+      if (delta == 0) {
+        return product.currentStock;
+      }
+
+      transaction.set(productRef, {
+        'currentStock': newStock,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      transaction.set(movementRef, {
+        ...StockMovement(
+          orgId: orgId,
+          siteId: product.siteId,
+          productId: productId,
+          productName: product.name,
+          type: type,
+          quantityDelta: delta,
+          balanceAfter: newStock,
+          reason: reason,
+          createdByUid: createdByUid,
+        ).toFirestoreMap(),
+      });
+
+      return newStock;
+    });
+  }
+
+  @override
+  Future<void> transferProductStock({
+    required String orgId,
+    required String fromProductId,
+    required String toProductId,
+    required int quantity,
+    String? fromReason,
+    String? toReason,
+    String? createdByUid,
+    String? clientMutationId,
+  }) async {
+    if (quantity <= 0) {
+      throw StateError('Menge muss groesser als 0 sein.');
+    }
+    final fromRef = _productCollection(orgId).doc(fromProductId);
+    final toRef = _productCollection(orgId).doc(toProductId);
+    final movements = _stockMovementCollection(orgId);
+    final outRef = clientMutationId == null
+        ? movements.doc()
+        : movements.doc('$clientMutationId-out');
+    final inRef = clientMutationId == null
+        ? movements.doc()
+        : movements.doc('$clientMutationId-in');
+
+    // H10 (Sicherheits-Audit 2026-07/GB): Abgang, Zugang und beide
+    // Bewegungs-Docs in EINER Transaktion — vorher waren es zwei getrennte
+    // Buchungen mit best-effort-Kompensation, bei der Bestand verschwinden
+    // konnte, wenn die Ziel-Buchung scheiterte.
+    await _firestore.runTransaction<void>((transaction) async {
+      final fromSnap = await transaction.get(fromRef);
+      final toSnap = await transaction.get(toRef);
+      if (!fromSnap.exists || !toSnap.exists) {
+        throw StateError('Artikel wurde nicht gefunden.');
+      }
+      if (clientMutationId != null) {
+        final existing = await transaction.get(outRef);
+        if (existing.exists) {
+          return;
+        }
+      }
+      final fromProduct = Product.fromFirestore(fromSnap.id, fromSnap.data()!);
+      final toProduct = Product.fromFirestore(toSnap.id, toSnap.data()!);
+      if (fromProduct.currentStock < quantity) {
+        throw StateError(
+          'Menge ($quantity) uebersteigt den Bestand der Quelle '
+          '(${fromProduct.currentStock}).',
+        );
+      }
+      final fromStock = fromProduct.currentStock - quantity;
+      final toStock = toProduct.currentStock + quantity;
+
+      transaction.set(fromRef, {
+        'currentStock': fromStock,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      transaction.set(toRef, {
+        'currentStock': toStock,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      transaction.set(outRef, {
+        ...StockMovement(
+          orgId: orgId,
+          siteId: fromProduct.siteId,
+          productId: fromProductId,
+          productName: fromProduct.name,
+          type: StockMovementType.transfer,
+          quantityDelta: -quantity,
+          balanceAfter: fromStock,
+          reason: fromReason,
+          createdByUid: createdByUid,
+        ).toFirestoreMap(),
+      });
+      transaction.set(inRef, {
+        ...StockMovement(
+          orgId: orgId,
+          siteId: toProduct.siteId,
+          productId: toProductId,
+          productName: toProduct.name,
+          type: StockMovementType.transfer,
+          quantityDelta: quantity,
+          balanceAfter: toStock,
+          reason: toReason,
+          createdByUid: createdByUid,
+        ).toFirestoreMap(),
+      });
     });
   }
 

@@ -354,7 +354,9 @@ class FinanceProvider extends ChangeNotifier {
 
   // --- Buchungsjournal -----------------------------------------------------
 
-  Future<void> saveJournalEntry(JournalEntry entry) async {
+  /// H11: `true`, wenn die Buchung im autoritativen Speicher liegt (Cloud
+  /// bzw. reiner local-Modus); `false` beim hybriden Offline-Fallback.
+  Future<bool> saveJournalEntry(JournalEntry entry) async {
     _assertAdmin();
     final orgId = _requireOrg();
     final isNew = entry.id == null || entry.id!.isEmpty;
@@ -365,7 +367,7 @@ class FinanceProvider extends ChangeNotifier {
     final summary =
         '${prepared.description}: ${_euro(prepared.amountCents)} € '
         '(${costCenterById(prepared.costCenterId)?.name ?? 'Kostenstelle'})';
-    await _persist<JournalEntry>(
+    return _persist<JournalEntry>(
       label: 'saveJournalEntry',
       cloud: () => _firestore.saveJournalEntry(prepared),
       localList: () => _journalEntries,
@@ -530,18 +532,23 @@ class FinanceProvider extends ChangeNotifier {
   /// übersprungen + geloggt. Liefert die Anzahl gebuchter Zeilen.
   ///
   /// **Richtwert** (Steuerberater prüft; Kassendaten Swagger-unverifiziert).
-  Future<int> postDailyClosing(
+  /// H11: `cloudComplete` ist nur `true`, wenn ALLE Journalzeilen im
+  /// autoritativen Speicher gelandet sind — landete auch nur eine Zeile im
+  /// hybriden Offline-Fallback, darf der Kassenabschluss NICHT cloud-seitig
+  /// als `bookedToFinance` markiert werden (sonst gilt er als gebucht,
+  /// obwohl das Journal nur lokal auf diesem Geraet existiert).
+  Future<({int entries, bool cloudComplete})> postDailyClosing(
     DailyClosing closing, {
     required Map<int, String> revenueCostTypeIdByRate,
   }) async {
-    if (!isAdmin || _orgId == null) return 0;
+    if (!isAdmin || _orgId == null) return (entries: 0, cloudComplete: false);
     final costCenter = _resolveSiteCostCenter(closing.siteId);
     if (costCenter?.id == null) {
       AppLogger.warning(
         'Tagesabschluss übersprungen: keine eindeutige Kostenstelle für '
         'Standort ${closing.siteId}.',
       );
-      return 0;
+      return (entries: 0, cloudComplete: false);
     }
     final entries = buildDailyClosingEntries(
       closing,
@@ -550,10 +557,12 @@ class FinanceProvider extends ChangeNotifier {
       revenueCostTypeIdByRate: revenueCostTypeIdByRate,
       createdByUid: _currentUser?.uid,
     );
+    var cloudComplete = true;
     for (final entry in entries) {
-      await saveJournalEntry(entry);
+      final persisted = await saveJournalEntry(entry);
+      cloudComplete = cloudComplete && persisted;
     }
-    return entries.length;
+    return (entries: entries.length, cloudComplete: cloudComplete);
   }
 
   /// **Kassen-Modul M6 — Kassendifferenz buchen** (Plan §8a). Bucht die
@@ -723,7 +732,12 @@ class FinanceProvider extends ChangeNotifier {
 
   /// Gemeinsamer Save-Pfad: Cloud versuchen (mit Hybrid-Fallback), sonst lokal
   /// upserten + persistieren; in beiden Fällen Audit protokollieren.
-  Future<void> _persist<T>({
+  /// Liefert `true`, wenn der Write im fuer den Modus AUTORITATIVEN Speicher
+  /// gelandet ist (Cloud-Write ok ODER reiner local-Modus). `false` nur beim
+  /// hybriden Offline-Fallback (Cloud beabsichtigt, aber nur lokal gespiegelt)
+  /// — H11: Aufrufer wie der Tagesabschluss duerfen dann NICHT cloud-seitig
+  /// "gebucht" markieren.
+  Future<bool> _persist<T>({
     required String label,
     required Future<void> Function() cloud,
     required List<T> Function() localList,
@@ -735,7 +749,7 @@ class FinanceProvider extends ChangeNotifier {
   }) async {
     if (_usesFirestore && await _tryFirestore(label, cloud)) {
       audit();
-      return;
+      return true;
     }
     final withId = assignId();
     final list = [...localList()];
@@ -749,6 +763,7 @@ class FinanceProvider extends ChangeNotifier {
     await persist();
     _safeNotify();
     audit();
+    return !_usesFirestore;
   }
 
   Future<void> _persistDelete({

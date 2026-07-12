@@ -125,6 +125,21 @@ class ProductBatch {
 
   String get expiryDay => dayKey(expiryDate);
 
+  /// M6/GB: `expiryDate` ist load-bearing (wie `WorkEntry.date`) — ein
+  /// fehlendes/kaputtes MHD faellt NICHT mehr still auf 2000-01-01 zurueck
+  /// (das erzeugte Dauer-„ueberfaellig"-Warnungen und verdeckte echte
+  /// MHD-Probleme), sondern wirft [FormatException]. Die Lesepfade
+  /// (Repo-Stream, DatabaseService._loadCollection) ueberspringen solche
+  /// Datensaetze protokolliert.
+  static DateTime _requireExpiry(DateTime? parsed, String source) {
+    if (parsed == null) {
+      throw FormatException(
+        'ProductBatch ohne lesbares expiryDate ($source)',
+      );
+    }
+    return normalizeDay(parsed);
+  }
+
   factory ProductBatch.fromFirestore(String id, Map<String, dynamic> map) {
     return ProductBatch(
       id: id,
@@ -132,8 +147,9 @@ class ProductBatch {
       siteId: (map['siteId'] ?? '').toString(),
       productId: (map['productId'] ?? '').toString(),
       productName: map['productName'] as String?,
-      expiryDate: normalizeDay(
-        FirestoreDateParser.readDate(map['expiryDate']) ?? DateTime(2000, 1, 1),
+      expiryDate: _requireExpiry(
+        FirestoreDateParser.readDate(map['expiryDate']),
+        'firestore/$id',
       ),
       quantity: parse.toInt(map['quantity']) ?? 0,
       note: map['note'] as String?,
@@ -153,9 +169,9 @@ class ProductBatch {
       siteId: (map['site_id'] ?? '').toString(),
       productId: (map['product_id'] ?? '').toString(),
       productName: map['product_name'] as String?,
-      expiryDate: normalizeDay(
-        FirestoreDateParser.readLocalDate(map['expiry_date']) ??
-            DateTime(2000, 1, 1),
+      expiryDate: _requireExpiry(
+        FirestoreDateParser.readLocalDate(map['expiry_date']),
+        'lokal/${map['id'] ?? '?'}',
       ),
       quantity: parse.toInt(map['quantity']) ?? 0,
       note: map['note'] as String?,

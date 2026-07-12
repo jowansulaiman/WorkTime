@@ -240,8 +240,9 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     }
     setState(() => _booking = true);
     try {
-      final n = await finance.postDailyClosing(closing,
+      final posting = await finance.postDailyClosing(closing,
           revenueCostTypeIdByRate: mapping);
+      final n = posting.entries;
       final cashClosing = _closingFor(closing.businessDay);
       // Kassendifferenz (M6, §8a) gleich mitbuchen — Fehlbetrag → Kosten,
       // Überschuss → Gutschrift, idempotent. SEPARAT gekapselt wie
@@ -263,7 +264,21 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
       // Teamleitung liest cashClosings, nicht das admin-only Journal. Der
       // Markierungs-Schritt ist SEPARAT gekapselt: schlägt nur er fehl, ist
       // die Journal-Buchung dennoch erfolgt — keine „fehlgeschlagen"-Meldung.
-      if (n > 0 && cashClosing?.id != null && !cashClosing!.bookedToFinance) {
+      // H11: NUR markieren, wenn das Journal wirklich im autoritativen
+      // Speicher liegt — landete es im hybriden Offline-Fallback nur lokal,
+      // gaelte der Abschluss sonst cloud-weit als gebucht, obwohl die
+      // Buchung nirgends fuer Buchhaltung/DATEV sichtbar ist.
+      if (!posting.cloudComplete && n > 0 && mounted) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text(
+                'Journal offline nur lokal gespeichert — der Abschluss wird '
+                'erst nach erfolgreicher Synchronisierung als gebucht '
+                'markiert.')));
+      }
+      if (posting.cloudComplete &&
+          n > 0 &&
+          cashClosing?.id != null &&
+          !cashClosing!.bookedToFinance) {
         try {
           await inventory.markClosingBooked(closingId: cashClosing.id!);
         } catch (_) {

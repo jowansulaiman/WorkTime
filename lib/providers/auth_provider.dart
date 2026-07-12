@@ -340,8 +340,31 @@ class AuthProvider extends ChangeNotifier {
     }
 
     try {
-      final ensuredProfile =
-          await _firestoreService.ensureProfileForSignedInUser(user);
+      // M3/GB (Sicherheits-Audit 2026-07): transiente Firestore-/Netzfehler
+      // duerfen einen gueltigen Login nicht sofort abmelden — kurzer Retry
+      // mit Backoff. Nur endgueltige Fehler (permission-denied, fehlendes
+      // Invite als StateError, ...) fallen in den signOut-Pfad darunter.
+      AppUserProfile ensuredProfile;
+      var attempt = 0;
+      for (;;) {
+        try {
+          ensuredProfile =
+              await _firestoreService.ensureProfileForSignedInUser(user);
+          break;
+        } catch (error) {
+          attempt += 1;
+          if (!_isTransientProfileError(error) || attempt >= 3) {
+            rethrow;
+          }
+          AppLogger.warning(
+            'ensureProfileForSignedInUser transient fehlgeschlagen – '
+            'Retry $attempt',
+            error: error,
+          );
+          await Future<void>.delayed(Duration(milliseconds: 400 * attempt));
+          if (executionId != _authChangeExecutionId) return;
+        }
+      }
       if (executionId != _authChangeExecutionId) return;
 
       _profile = ensuredProfile;
@@ -373,6 +396,23 @@ class AuthProvider extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  /// M3: retrybare Infrastruktur-Fehlercodes — bei ihnen bleibt die Session
+  /// bestehen und der Profil-Load wird wiederholt, statt den Nutzer abzumelden.
+  bool _isTransientProfileError(Object error) {
+    if (error is FirebaseException) {
+      return const {
+        'unavailable',
+        'deadline-exceeded',
+        'aborted',
+        'cancelled',
+        'internal',
+        'resource-exhausted',
+        'network-request-failed',
+      }.contains(error.code);
+    }
+    return false;
   }
 
   String _mapError(Object error) {

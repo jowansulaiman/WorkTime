@@ -129,6 +129,11 @@ class WorkProvider extends ChangeNotifier {
   // Lokal geloeschte Eintrags-IDs (Tombstones), die ein Wieder-Einspielen aus
   // der Cloud unterdruecken, bis die Loeschung propagiert wurde.
   Set<String> _deletedEntryIds = <String>{};
+  // #22: IDs von Eintraegen, die im Hybrid-Fallback nur lokal geschrieben
+  // wurden. Solange sie nicht erfolgreich in die Cloud propagiert sind, darf
+  // der Hybrid-Merge sie nie durch einen Cloud-Snapshot ueberschreiben —
+  // der updatedAt-Vergleich (Client- vs. Server-Uhr) traegt bei Clock-Skew nicht.
+  Set<String> _pendingEntryIds = <String>{};
   List<SiteDefinition> _sites = [];
   List<AppUserProfile> _members = [];
   List<EmploymentContract> _contracts = [];
@@ -650,6 +655,7 @@ class WorkProvider extends ChangeNotifier {
       await _firestoreService.saveWorkEntry(
         preparedEntry,
       );
+      await _clearEntriesPendingSync([preparedEntry.id]);
     } on ComplianceRejectedException {
       // Bewusste serverseitige Compliance-Ablehnung – nie lokal überschreiben,
       // auch nicht im Hybrid-Modus. Nur transiente Infrastrukturfehler fallen
@@ -660,6 +666,7 @@ class WorkProvider extends ChangeNotifier {
         rethrow;
       }
       _upsertLocalEntry(preparedEntry);
+      await _markEntriesPendingSync([preparedEntry.id]);
       await _persistLocalEntries();
       _applyLocalState();
       _safeNotify();
@@ -796,6 +803,7 @@ class WorkProvider extends ChangeNotifier {
     }
     try {
       await _firestoreService.saveWorkEntry(updated);
+      await _clearEntriesPendingSync([updated.id]);
     } on ComplianceRejectedException {
       rethrow;
     } catch (error) {
@@ -803,6 +811,7 @@ class WorkProvider extends ChangeNotifier {
         rethrow;
       }
       _upsertLocalEntry(updated);
+      await _markEntriesPendingSync([updated.id]);
       await _persistLocalEntries();
       _applyLocalState();
       _safeNotify();
@@ -874,6 +883,7 @@ class WorkProvider extends ChangeNotifier {
 
     try {
       await _firestoreService.saveWorkEntryBatch(preparedEntries);
+      await _clearEntriesPendingSync(preparedEntries.map((entry) => entry.id));
     } on ComplianceRejectedException {
       // Bewusste serverseitige Compliance-Ablehnung – nie lokal überschreiben.
       rethrow;
@@ -884,6 +894,7 @@ class WorkProvider extends ChangeNotifier {
       for (final entry in preparedEntries) {
         _upsertLocalEntry(entry);
       }
+      await _markEntriesPendingSync(preparedEntries.map((entry) => entry.id));
       await _persistLocalEntries();
       _applyLocalState();
       _safeNotify();
@@ -1160,11 +1171,20 @@ class WorkProvider extends ChangeNotifier {
       return;
     }
 
+    // #22: lokal vorgemerkte (noch nicht synchronisierte) Eintraege bewahren —
+    // der Cloud-Snapshot darf sie nicht verdraengen.
+    final pendingLocalEntries = _localEntries.where((entry) {
+      final id = entry.id?.trim();
+      return id != null && id.isNotEmpty && _pendingEntryIds.contains(id);
+    }).toList(growable: false);
     _localEntries = [
-      ..._withoutTombstonedEntries(
-        await _firestoreService.getAllWorkEntries(
-          orgId: currentUser.orgId,
-          userId: currentUser.uid,
+      ...pendingLocalEntries,
+      ..._withoutPendingEntries(
+        _withoutTombstonedEntries(
+          await _firestoreService.getAllWorkEntries(
+            orgId: currentUser.orgId,
+            userId: currentUser.uid,
+          ),
         ),
       ),
     ];
@@ -1213,6 +1233,8 @@ class WorkProvider extends ChangeNotifier {
     if (entries.isNotEmpty) {
       try {
         await _firestoreService.saveWorkEntryBatch(entries);
+        // #22: erfolgreich propagiert -> Pending-Markierung aufloesen.
+        await _clearEntriesPendingSync(entries.map((entry) => entry.id));
       } catch (error) {
         AppLogger.warning('syncLocalStateToCloud(work): Eintraege konnten nicht '
             'geschrieben werden: $error');
@@ -2058,6 +2080,10 @@ class WorkProvider extends ChangeNotifier {
       DatabaseService.workEntriesCollection,
       scope: scope,
     );
+    _pendingEntryIds = await DatabaseService.loadPendingSyncIds(
+      DatabaseService.workEntriesCollection,
+      scope: scope,
+    );
     if (overrideUserSettings) {
       final localSettings =
           await DatabaseService.loadLocalUserSettings(scope: scope);
@@ -2176,7 +2202,7 @@ class WorkProvider extends ChangeNotifier {
       ...unaffectedEntries,
       ..._mergeByKey(
         scopedLocalEntries,
-        _withoutTombstonedEntries(items),
+        _withoutPendingEntries(_withoutTombstonedEntries(items)),
         (entry) => entry.id?.trim().isNotEmpty == true
             ? 'id:${entry.id}'
             : 'entry:${entry.userId}:${entry.startTime.toIso8601String()}:${entry.endTime.toIso8601String()}',
@@ -2241,9 +2267,60 @@ class WorkProvider extends ChangeNotifier {
 
   Future<void> _recordEntryTombstone(String id) async {
     _deletedEntryIds.add(id);
+    // Ein geloeschter Eintrag ist nicht mehr sync-pflichtig.
+    await _clearEntriesPendingSync([id]);
     await DatabaseService.saveTombstones(
       DatabaseService.workEntriesCollection,
       _deletedEntryIds,
+      scope: _localScope,
+    );
+  }
+
+  /// #22: Filtert Cloud-Eintraege heraus, deren lokaler Stand noch nicht
+  /// synchronisiert ist (Hybrid-Fallback) – die lokale Version gewinnt dann
+  /// unabhaengig vom updatedAt-Vergleich (Clock-Skew-sicher).
+  Iterable<WorkEntry> _withoutPendingEntries(Iterable<WorkEntry> entries) {
+    if (_pendingEntryIds.isEmpty) {
+      return entries;
+    }
+    return entries.where((entry) {
+      final id = entry.id?.trim();
+      return id == null || id.isEmpty || !_pendingEntryIds.contains(id);
+    });
+  }
+
+  Future<void> _markEntriesPendingSync(Iterable<String?> ids) async {
+    var changed = false;
+    for (final id in ids) {
+      final trimmed = id?.trim();
+      if (trimmed != null && trimmed.isNotEmpty) {
+        changed = _pendingEntryIds.add(trimmed) || changed;
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    await DatabaseService.savePendingSyncIds(
+      DatabaseService.workEntriesCollection,
+      _pendingEntryIds,
+      scope: _localScope,
+    );
+  }
+
+  Future<void> _clearEntriesPendingSync(Iterable<String?> ids) async {
+    var changed = false;
+    for (final id in ids) {
+      final trimmed = id?.trim();
+      if (trimmed != null && trimmed.isNotEmpty) {
+        changed = _pendingEntryIds.remove(trimmed) || changed;
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    await DatabaseService.savePendingSyncIds(
+      DatabaseService.workEntriesCollection,
+      _pendingEntryIds,
       scope: _localScope,
     );
   }

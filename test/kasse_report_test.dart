@@ -397,6 +397,28 @@ void main() {
       expect(s.cogsCoveredGrossCents, 600); // 2×300
     });
 
+    test('Refund senkt COGS auch bei positiver Rohmenge (M8, JS-Spiegel)', () {
+      final stats = dailyStatsFromReceipts(
+        [
+          receipt(day: '2026-06-30', grossCents: 900, lines: const [
+            PosReceiptLine(productId: 'a', quantity: 3, unitPriceCents: 300),
+          ]),
+          // OktoPOS liefert die Erstattungsmenge i.d.R. POSITIV.
+          receipt(day: '2026-06-30', type: 'refund', grossCents: -300,
+              lines: const [
+                PosReceiptLine(productId: 'a', quantity: 1, unitPriceCents: 300),
+              ]),
+        ],
+        [product(id: 'a', ek: 100)],
+        purchasePricesIncludeVat: false,
+      );
+      final s = stats.single;
+      expect(s.cogsCents, 200,
+          reason: '3x Verkauf (300) minus 1x Erstattung (100) — frueher stieg '
+              'der Wareneinsatz bei Refunds faelschlich auf 400');
+      expect(s.cogsCoveredGrossCents, 600); // 900 - 300
+    });
+
     test('Brutto-Schalter normalisiert EK über taxRatePercent', () {
       final stats = dailyStatsFromReceipts(
         [

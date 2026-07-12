@@ -402,7 +402,13 @@ class _GlobalSearchPaletteState extends State<GlobalSearchPalette> {
     // Treffer für Screenreader (VoiceOver/TalkBack) ansagen.
     final item = _flat[_selected];
     final detail = (item.detail ?? '').isNotEmpty ? ', ${item.detail}' : '';
-    SemanticsService.announce('${item.label}$detail', TextDirection.ltr);
+    // N3: announce ist deprecated (Multi-Window-inkompatibel) -> View-gebundene
+    // sendAnnouncement-Variante.
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      '${item.label}$detail',
+      TextDirection.ltr,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = _selected >= 0 && _selected < _itemKeys.length
           ? _itemKeys[_selected].currentContext

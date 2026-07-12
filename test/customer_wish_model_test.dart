@@ -141,6 +141,49 @@ void main() {
       expect(restored.contactId, 'kontakt-7');
     });
 
+    test(
+        'toFirestoreMap/fromFirestore (camelCase) trippt ALLE Felder rund — '
+        'auch die Bearbeitungs-Felder (#69)', () {
+      final wish = CustomerWish(
+        id: 'w1',
+        orgId: 'main-org',
+        referenceCode: 'K7Q-9X2',
+        storeName: 'Strichmännchen',
+        category: CustomerWishCategory.magazine,
+        wishText: 'Spiegel Ausgabe 26',
+        quantity: 3,
+        desiredDate: DateTime(2026, 7, 1, 12),
+        customerName: 'Max Muster',
+        customerContact: 'max@example.com',
+        contactId: 'kontakt-7',
+        status: CustomerWishStatus.seen,
+        source: CustomerWish.publicWebSource,
+        notes: 'liegt bereit',
+        handledByUid: 'admin-1',
+        handledAt: DateTime(2026, 7, 2, 9, 30),
+      );
+
+      final restored =
+          CustomerWish.fromFirestore('w1', wish.toFirestoreMap());
+
+      expect(restored.referenceCode, 'K7Q-9X2');
+      expect(restored.storeName, 'Strichmännchen');
+      expect(restored.category, CustomerWishCategory.magazine);
+      expect(restored.wishText, 'Spiegel Ausgabe 26');
+      expect(restored.quantity, 3);
+      expect(restored.desiredDate, DateTime(2026, 7, 1, 12));
+      expect(restored.customerName, 'Max Muster');
+      expect(restored.customerContact, 'max@example.com');
+      expect(restored.contactId, 'kontakt-7');
+      expect(restored.status, CustomerWishStatus.seen);
+      expect(restored.source, CustomerWish.publicWebSource);
+      // Bearbeitungs-Felder: watchCustomerWishes liest über fromFirestore —
+      // gehen diese Keys/Parser verloren, verschwinden Notiz/Bearbeiter still.
+      expect(restored.notes, 'liegt bereit');
+      expect(restored.handledByUid, 'admin-1');
+      expect(restored.handledAt, DateTime(2026, 7, 2, 9, 30));
+    });
+
     test('clearContactId löst die Verknüpfung in copyWith', () {
       const wish = CustomerWish(
         orgId: 'main-org',

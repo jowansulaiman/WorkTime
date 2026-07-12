@@ -27,10 +27,21 @@ class AppConfig {
     defaultValue: 'Strichmännchen,Tabak Börse',
   );
 
-  static List<String> get publicStoreNameList => publicStoreNames
+  static List<String> get publicStoreNameList =>
+      parseStoreNames(publicStoreNames);
+
+  /// Parst die CSV-Ladenliste aus `APP_PUBLIC_STORES`: trimmen, leere Eintraege
+  /// verwerfen und auf 120 Zeichen kappen — die firestore.rules erlauben fuer
+  /// `storeName` maximal 120 Zeichen; ein laengerer konfigurierter Name wuerde
+  /// jede oeffentliche Wunsch-/Feedback-Abgabe fuer diesen Laden mit
+  /// permission-denied scheitern lassen (#51). Statisch, damit die Logik ohne
+  /// dart-define testbar ist (#73).
+  static List<String> parseStoreNames(String raw) => raw
       .split(',')
       .map((value) => value.trim())
       .where((value) => value.isNotEmpty)
+      .map((value) =>
+          value.length > 120 ? value.substring(0, 120).trimRight() : value)
       .toList(growable: false);
 
   static const String bootstrapAdminEmails = String.fromEnvironment(

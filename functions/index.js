@@ -6,7 +6,7 @@ const {onCall, HttpsError} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {onDocumentCreated, onDocumentWritten} =
   require("firebase-functions/v2/firestore");
-const {defineSecret} = require("firebase-functions/params");
+const {defineSecret, defineString} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const push = require("./push_notifications");
 const monatsLock = require("./monats_lock");
@@ -22,7 +22,7 @@ admin.initializeApp();
 const db = admin.firestore();
 // firebase-admin v13: FieldValue/Timestamp NICHT mehr zuverlaessig ueber den
 // Namespace `admin.firestore.FieldValue` (kann undefined sein) -> Subpath-Import.
-const {FieldValue, Timestamp} = require("firebase-admin/firestore");
+const {FieldValue, FieldPath, Timestamp} = require("firebase-admin/firestore");
 const REGION = "europe-west3";
 
 // OktoPOS-Kassen-API-Schluessel (HTTP-Header X-API-KEY). Ein Secret — NIE im
@@ -31,6 +31,14 @@ const REGION = "europe-west3";
 // {"<siteId>": "<key>"} fuer einen Key je Standort/Division. Setzen via:
 //   firebase functions:secrets:set OKTOPOS_API_KEYS
 const OKTOPOS_API_KEYS = defineSecret("OKTOPOS_API_KEYS");
+// K4/GB (SSRF-Schutz): exakte Host-Allowlist fuer die OktoPOS-baseUrl
+// (kommagetrennt, z.B. "kasse.example.de,kasse2.example.de"). Die baseUrl kommt
+// aus dem admin-schreibbaren config/oktoposSync — OHNE Allowlist koennte eine
+// manipulierte baseUrl den X-API-KEY an einen fremden HTTPS-Server exfiltrieren.
+// Leer = OktoPOS-Aufrufe verweigern (fail-closed; beim Cutover setzen).
+const OKTOPOS_ALLOWED_HOSTS = defineString("OKTOPOS_ALLOWED_HOSTS", {
+  default: "",
+});
 
 // Mindestversion des Callable-Payload-Vertrags (no-api-contract-versioning).
 // Wird sie erhoeht, lehnt der Server zu alte Clients mit APP_UPDATE_REQUIRED ab.
@@ -1056,7 +1064,10 @@ exports.upsertShiftBatch = callable("upsertShiftBatch", {region: REGION}, async 
     );
   }
 
-  const shifts = rawShifts.map((item, index) => parseShift(item, index, orgId));
+  const shifts = enforceShiftOrg(
+    rawShifts.map((item, index) => parseShift(item, index, orgId)),
+    orgId,
+  );
   const issues = await validateShiftBatch({orgId, shifts});
   if (issues.some((issue) => issue.violations.some(isBlockingViolation))) {
     throw new HttpsError(
@@ -1068,6 +1079,7 @@ exports.upsertShiftBatch = callable("upsertShiftBatch", {region: REGION}, async 
 
   const savedIds = await writeShiftBatch({
     callerUid: caller.uid,
+    orgId,
     shifts,
   });
   return {savedIds, issues};
@@ -1093,9 +1105,10 @@ exports.publishShiftBatch = callable("publishShiftBatch", {region: REGION}, asyn
     );
   }
 
-  const shifts = rawShifts
-    .map((item, index) => parseShift(item, index, orgId))
-    .map((shift) => ({...shift, status}));
+  const shifts = enforceShiftOrg(
+    rawShifts.map((item, index) => parseShift(item, index, orgId)),
+    orgId,
+  ).map((shift) => ({...shift, status}));
   const issues = await validateShiftBatch({orgId, shifts});
   if (issues.some((issue) => issue.violations.some(isBlockingViolation))) {
     throw new HttpsError(
@@ -1107,6 +1120,7 @@ exports.publishShiftBatch = callable("publishShiftBatch", {region: REGION}, asyn
 
   const savedIds = await writeShiftBatch({
     callerUid: caller.uid,
+    orgId,
     shifts,
   });
   return {savedIds, issues};
@@ -1938,7 +1952,12 @@ exports.kioskClockPunch = callable(
       await organizationCollection(orgId, "workEntries").add({
         orgId,
         userId: employeeId,
-        date: data.kommen ?? gehenTs,
+        // M9/GB: auf Berliner Mittagszeit normalisiert (Dart-Spiegel:
+        // WorkEntry.date = lokale 12:00) — der rohe Stempel-Zeitpunkt konnte
+        // Tages-/Monatsauswertungen falsch gruppieren.
+        date: Timestamp.fromDate(
+          berlinNoonDate((data.kommen ?? gehenTs).toDate()),
+        ),
         startTime: data.kommen ?? gehenTs,
         endTime: gehenTs,
         breakMinutes: pause,
@@ -2005,6 +2024,19 @@ exports.kioskSaveCashCount = callable(
       ? Math.trunc(rawCr) : null;
     const siteId = stringOrNull(request.data?.siteId) ||
       stringOrNull(session.siteId);
+    // M10/GB: die (client-gelieferte) siteId gegen die Standorte der Org
+    // validieren — sonst laesst sich eine Kassenzaehlung einer beliebigen/
+    // unbekannten Site zuordnen (Fehlattribution im Kassenbericht).
+    if (siteId) {
+      const siteSnap =
+        await organizationCollection(orgId, "sites").doc(siteId).get();
+      if (!siteSnap.exists) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Unbekannter Standort fuer die Kassenzaehlung.",
+        );
+      }
+    }
 
     // Dritte-Hand-/Fremdgeld-Beträge (§8.7): streng OPTIONAL (alte Clients
     // senden den Key nicht), server-validiert, am Kiosk BLIND (expectedCents
@@ -2762,8 +2794,19 @@ async function validateShiftBatch({orgId, shifts}) {
     .filter((issue) => issue.violations.length > 0);
 }
 
-async function writeShiftBatch({callerUid, shifts}) {
-  const collection = organizationCollection(shifts[0].orgId, "shifts");
+// K3 (Sicherheits-Audit 2026-07): erzwingt die gegen den Caller geprüfte Org
+// auf JEDER Schicht — parseShift wuerde sonst ein client-geliefertes org_id
+// uebernehmen und der Admin-SDK-Write (umgeht Rules) landete in einer FREMDEN
+// Org. Muster wie im Work-Entry-Pfad (assertSameOrg je Zeile).
+function enforceShiftOrg(shifts, orgId) {
+  return shifts.map((shift) => ({...shift, orgId}));
+}
+
+// K3: orgId kommt explizit vom Callable (gegen den Caller geprueft) — NIE aus
+// shifts[0].orgId ableiten, sonst entscheidet ein manipulierter Payload ueber
+// die Ziel-Org des Admin-SDK-Writes.
+async function writeShiftBatch({callerUid, orgId, shifts}) {
+  const collection = organizationCollection(orgId || shifts[0].orgId, "shifts");
   const refs = shifts.map((shift, index) =>
     collection.doc(shift.id || buildShiftDocumentId(shift, index)),
   );
@@ -3459,6 +3502,14 @@ function singleRestGapViolations({
   siteAssignments,
   contract,
 }) {
+  // Split-Shift-Guard (Kopplung #2, Audit-H7): Der Dart-Spiegel prueft
+  // _shouldEnforceRestGap auch im SCHICHT-Pfad (compliance_service.dart:721) —
+  // ohne den Guard hier blockte der Server legitime geteilte Dienste
+  // (08-12 + 14-18), die die Client-Vorschau gruen zeigte. Fuer den
+  // Work-Entry-Pfad (prueft vor dem Aufruf) ist der Guard idempotent.
+  if (!shouldEnforceRestGap(earlier.startTime, earlier.endTime, later.startTime)) {
+    return [];
+  }
   const violations = [];
   const gapMinutes = Math.round((later.startTime - earlier.endTime) / 60000);
   const earlierSiteId = effectiveSiteId(earlier, siteAssignments);
@@ -3733,15 +3784,18 @@ function shiftBucket(startTime) {
   return 2;
 }
 
+// Formel in beiden Spiegeln identisch (compliance_service.dart _shiftWorkedMinutes/
+// _entryWorkedMinutes): Brutto-Minuten runden, Pause separat runden, dann
+// subtrahieren und auf >= 0 klemmen — sonst driftet der Wert bei fraktionalen
+// breakMinutes/Sekundenanteilen um 1 Minute (Kopplung #2).
 function workedMinutesFromShift(shift) {
-  return Math.round((shift.endTime - shift.startTime) / 60000 - Number(shift.breakMinutes || 0));
+  const gross = Math.round((shift.endTime - shift.startTime) / 60000);
+  return Math.max(0, gross - Math.round(Number(shift.breakMinutes || 0)));
 }
 
 function workedMinutesFromEntry(entry) {
-  return Math.max(
-    0,
-    Math.round((entry.endTime - entry.startTime) / 60000 - Number(entry.breakMinutes || 0)),
-  );
+  const gross = Math.round((entry.endTime - entry.startTime) / 60000);
+  return Math.max(0, gross - Math.round(Number(entry.breakMinutes || 0)));
 }
 
 function correctionReasonRequired(existingRaw, nextEntry) {
@@ -4317,6 +4371,37 @@ function normalizeDate(value) {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12);
 }
 
+// M9/GB: WorkEntry.date ist im Dart-Client auf LOKALE Mittagszeit normalisiert
+// (12:00, Europe/Berlin). Der Kiosk-Server-Pfad schrieb den rohen
+// Stempel-Zeitpunkt — Nachtschichten/Zeitzonen konnten dadurch im falschen
+// Kalendertag/Monat landen. Cloud Functions laufen in UTC, daher wird der
+// Berliner Kalendertag ueber Intl bestimmt und 12:00 Berlin DST-korrekt
+// (10:00Z im Sommer, 11:00Z im Winter) ermittelt. Pur & node-testbar.
+function berlinNoonDate(value) {
+  const day = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Berlin",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(value); // "YYYY-MM-DD"
+  for (const utcHour of [10, 11]) {
+    const candidate =
+      new Date(`${day}T${String(utcHour).padStart(2, "0")}:00:00Z`);
+    // parseInt statt Number: de-DE formatiert "12 Uhr" (Suffix).
+    const berlinHour = parseInt(new Intl.DateTimeFormat("de-DE", {
+      timeZone: "Europe/Berlin", hour: "2-digit", hour12: false,
+    }).format(candidate), 10);
+    if (berlinHour === 12) {
+      return candidate;
+    }
+  }
+  return new Date(`${day}T11:00:00Z`);
+}
+
+// Gesetzliches Nachtfenster fuer Jugend- (JArbSchG § 14: 20:00–06:00) und
+// Mutterschutz (MuSchG § 5: ab 20:00). Bewusst hartkodiert und UNABHAENGIG vom
+// konfigurierbaren ruleSet.nightWindowStart/EndMinutes (allgemeine
+// Nachtarbeits-Definition nach ArbZG): gesetzliche Minima sind per
+// Org-Konfiguration nicht lockerbar. Spiegel: _overlapsNightWindow in
+// lib/services/compliance_service.dart.
 function overlapsNightWindow(startTime, endTime) {
   return startTime.getHours() < 6 ||
     endTime.getHours() >= 20 ||
@@ -4458,7 +4543,7 @@ function toNullableDate(value) {
 //  - Bestandsbewegungen werden via Admin SDK geschrieben (umgeht die
 //    Client-Rules). Die Rules erlauben Clients KEINE source=='oktopos'
 //    -> keine gefaelschte Kassen-Provenienz vom Client.
-//  - Idempotent: deterministische Doc-ID je (Kasse, Beleg, Position) ->
+//  - Idempotent: deterministische Doc-ID je (Standort, Beleg, Position) ->
 //    erneuter Lauf bucht NICHT doppelt (Transaktion + Existenz-Check).
 //  - Nur LESEN aus OktoPOS; kein Schreibpfad in die Kasse.
 //  - TLS-Pflicht: baseUrl muss https sein (Key nie im Klartext).
@@ -4529,9 +4614,30 @@ exports.oktoposNightlySync = onSchedule(
     memory: "256MiB",
   },
   async () => {
-    const orgsSnap = await db.collection("organizations").limit(50).get();
-    for (const orgDoc of orgsSnap.docs) {
-      const orgId = orgDoc.id;
+    // H7/GB: ueber ALLE Organisationen paginieren — das fruehere harte
+    // limit(50) haette ab Org 51 still keinen naechtlichen Sync mehr gefahren.
+    const orgIds = [];
+    let orgCursor = null;
+    for (;;) {
+      let query = db.collection("organizations")
+        .orderBy(FieldPath.documentId())
+        .limit(200);
+      if (orgCursor != null) {
+        query = query.startAfter(orgCursor);
+      }
+      const orgsSnap = await query.get();
+      if (orgsSnap.empty) {
+        break;
+      }
+      for (const orgDoc of orgsSnap.docs) {
+        orgIds.push(orgDoc.id);
+      }
+      orgCursor = orgsSnap.docs[orgsSnap.docs.length - 1].id;
+      if (orgsSnap.docs.length < 200) {
+        break;
+      }
+    }
+    for (const orgId of orgIds) {
       let config;
       try {
         config = await loadOktoposConfig(orgId);
@@ -4657,6 +4763,9 @@ function assertAdmin(caller) {
 }
 
 // Key-Aufloesung: JSON {"<siteId>":"<key>"} ODER einzelner Key-String.
+// H2 (Sicherheits-Audit 2026-07): KEIN `*`/`default`-Fallback mehr — der
+// lieferte jeder beliebigen (auch fremden/unbekannten) siteId einen echten
+// Key. In der JSON-Form muss jeder Standort explizit eingetragen sein.
 function resolveOktoposApiKey(apiKeysRaw, siteId) {
   const raw = stringOrEmpty(apiKeysRaw).trim();
   if (!raw) {
@@ -4675,11 +4784,12 @@ function resolveOktoposApiKey(apiKeysRaw, siteId) {
         "OKTOPOS_API_KEYS ist kein gueltiges JSON.",
       );
     }
-    const key = parsed?.[siteId] || parsed?.["*"] || parsed?.default;
+    const key = parsed?.[siteId];
     if (!stringOrNull(key)) {
       throw new HttpsError(
         "failed-precondition",
-        `Kein OktoPOS-API-Key fuer Standort ${siteId} in OKTOPOS_API_KEYS.`,
+        `Kein OktoPOS-API-Key fuer Standort ${siteId} in OKTOPOS_API_KEYS ` +
+          "(jeder Standort braucht einen expliziten Eintrag).",
       );
     }
     return String(key).trim();
@@ -4692,13 +4802,11 @@ async function runOktoposSync({
   fromOverride = null, untilOverride = null, dryRun = false,
   fn = "runOktoposSync", requestId = null,
 }) {
-  const baseUrl = stringOrEmpty(config.baseUrl).trim().replace(/\/+$/, "");
-  // TLS-Pflicht: der API-Key darf nie im Klartext ueber http gehen.
-  if (!baseUrl.toLowerCase().startsWith("https://")) {
-    throw new HttpsError(
-      "failed-precondition", "OktoPOS baseUrl muss https sein.",
-    );
-  }
+  // K4: zentrale baseUrl-Pruefung (https + Host-Allowlist gegen SSRF/
+  // Key-Exfiltration); H2: siteId muss in der Org-Config existieren, BEVOR
+  // ein Key aufgeloest wird.
+  const baseUrl = resolveOktoposBaseUrl(config);
+  assertOktoposSiteConfigured(config, siteId);
   const apiKey = resolveOktoposApiKey(apiKeysRaw, siteId);
   const siteConfig = isPlainObject(config.sites?.[siteId])
     ? config.sites[siteId]
@@ -4754,6 +4862,7 @@ async function runOktoposSync({
     unmatchedLineItems: 0,
     unmatchedSamples: [],
     statsDaysWritten: 0,
+    truncated: false,
     dryRun,
   };
 
@@ -4767,10 +4876,20 @@ async function runOktoposSync({
     });
     result.pages += 1;
     let pageLastPage = page;
+    let sawLastPageField = false;
+    let pageTransactionCount = 0;
     const pending = [];
     const pendingReceipts = [];
     for (const wrapper of wrappers) {
-      pageLastPage = Math.max(pageLastPage, asInteger(wrapper.lastPage, page));
+      // H4: `lastPage` nur werten, wenn die API es wirklich liefert — der
+      // fruehere Fallback auf `page` beendete die Schleife sonst still nach
+      // der ersten Seite.
+      const rawLastPage = asInteger(wrapper.lastPage, 0);
+      if (rawLastPage > 0) {
+        sawLastPageField = true;
+        pageLastPage = Math.max(pageLastPage, rawLastPage);
+      }
+      pageTransactionCount += asArray(wrapper.transactions).length;
       for (const tx of asArray(wrapper.transactions)) {
         result.processedTransactions += 1;
         const training = tx?.training === true;
@@ -4828,7 +4947,7 @@ async function runOktoposSync({
         }
         if (!dryRun) {
           pendingReceipts.push({
-            receiptId: buildOktoposReceiptId(cashRegisterId, siteId, ref),
+            receiptId: buildOktoposReceiptId(siteId, ref),
             referenceNumber: ref,
             type: type || null,
             training,
@@ -4857,7 +4976,9 @@ async function runOktoposSync({
         if (!isRevenue) {
           continue;
         }
+        let lineIndex = -1;
         for (const item of asArray(tx?.items)) {
+          lineIndex += 1;
           const quantity = Math.abs(asInteger(item?.quantity, 0));
           if (quantity <= 0) {
             continue;
@@ -4882,7 +5003,7 @@ async function runOktoposSync({
           }
           pending.push({
             movementId: buildOktoposMovementId(
-              cashRegisterId, ref, asInteger(item?.id, 0),
+              siteId, ref, oktoposLineDiscriminator(item, lineIndex),
             ),
             productId: product.id,
             productName: product.name,
@@ -4912,12 +5033,35 @@ async function runOktoposSync({
         }
       }
     }
+    // H4: liefert die API kein lastPage, weiterblaettern solange volle Seiten
+    // kommen — sonst blieben alle Folgeseiten dauerhaft ungelesen.
+    if (!sawLastPageField && pageTransactionCount >= pageSize) {
+      pageLastPage = Math.max(pageLastPage, page + 1);
+      logger.warn("oktopos_pagination_field_missing", {
+        event: "oktopos_pagination_field_missing",
+        fn, requestId, orgId, siteId, page,
+      });
+    }
     lastPage = pageLastPage;
     page += 1;
   } while (page <= lastPage && page <= OKTOPOS_MAX_PAGES);
 
-  // Cursor fortschreiben (nicht im dryRun).
-  if (!dryRun && maxBusinessDay) {
+  // H5: Endete die Schleife am Seiten-Cap, obwohl weitere Seiten gemeldet
+  // waren, duerfen die ungelesenen Transaktionen NICHT durch einen
+  // fortgeschriebenen Cursor dauerhaft verloren gehen -> Cursor stehen lassen
+  // (der naechste Lauf zieht idempotent nach) + deutlich loggen.
+  if (page <= lastPage) {
+    result.truncated = true;
+    logger.error("oktopos_pages_cap_reached", {
+      event: "oktopos_pages_cap_reached",
+      fn, requestId, orgId, siteId,
+      maxPages: OKTOPOS_MAX_PAGES,
+      reportedLastPage: lastPage,
+    });
+  }
+
+  // Cursor fortschreiben (nicht im dryRun, nicht bei Cap-Abbruch).
+  if (!dryRun && maxBusinessDay && !result.truncated) {
     await organizationCollection(orgId, "config")
       .doc(OKTOPOS_SYNC_CONFIG_ID)
       .set({
@@ -5446,31 +5590,51 @@ function daysAgo(base, days) {
   return new Date(base.getTime() - days * 24 * 60 * 60 * 1000);
 }
 
-function buildOktoposMovementId(cashRegisterId, referenceNumber, lineId) {
+// H6 (Sicherheits-Audit 2026-07): Idempotenz-Scope ist die STABILE siteId —
+// frueher steckte die (nachtraeglich aenderbare) cashRegisterId in den IDs;
+// ein Konfig-Wechsel gab denselben Belegen neue Doc-IDs und der 3-Tage-
+// Lookback buchte Bestand doppelt. referenceNumber ist je Kasse eindeutig;
+// pro Standort ist genau eine Kassen-Nr. konfiguriert -> siteId-Scope reicht.
+function oktoposSiteScope(siteId) {
+  return stringOrEmpty(siteId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) ||
+    "all";
+}
+
+// H3: Zeilen-Diskriminator fuer Bewegungs-IDs. Fehlt `item.id` (oder ist 0),
+// kollabierten frueher ALLE Zeilen eines Belegs auf dieselbe movementId und
+// der Dedup verwarf alle bis auf die erste -> Bestand zu hoch. Fallback ist
+// der Positions-Index innerhalb des Belegs.
+function oktoposLineDiscriminator(item, index) {
+  const id = Number(item?.id);
+  if (Number.isFinite(id) && Math.trunc(id) !== 0) {
+    return String(Math.trunc(id));
+  }
+  return `i${index}`;
+}
+
+function buildOktoposMovementId(siteId, referenceNumber, lineDiscriminator) {
   const raw = stringOrEmpty(referenceNumber);
   // safeRef ist verlustbehaftet (Sonderzeichen -> "_"), daher wie bei
   // buildOktoposReceiptId einen kollisionsfreien Hash der ROH-Belegnummer
   // anhaengen: gleiche Rohnummer = gleiche ID (idempotent), verschiedene
   // Rohnummern = verschiedene IDs (kein Doppel-/Fehlbuchen beim Re-Pull).
   const safeRef = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
-  const cr = cashRegisterId == null ? "all" : String(cashRegisterId);
-  return `oktopos-${cr}-${safeRef}-${stableHash([raw]).slice(0, 12)}-${lineId}`;
+  const scope = oktoposSiteScope(siteId);
+  return `oktopos-${scope}-${safeRef}-${stableHash([raw]).slice(0, 12)}-` +
+    `${lineDiscriminator}`;
 }
 
-// Doc-ID eines posReceipts (P0). `referenceNumber` ist nur JE KASSE eindeutig
-// -> mit Kassen-Nr. (oder, falls keine gesetzt, Standort) qualifizieren, sonst
-// Cross-Store-Kollision. Deterministisch = Idempotenz beim Re-Pull (set(merge)).
-// Der lesbare `safeRef` ersetzt Sonderzeichen verlustbehaftet (zwei
-// verschiedene Belegnummern könnten gleich normalisieren) -> ein
-// kollisionsfreier Hash der ROH-Belegnummer wird angehängt; gleiche Rohnummer
-// = gleiche ID (idempotent), verschiedene Rohnummern = verschiedene IDs.
-function buildOktoposReceiptId(cashRegisterId, siteId, referenceNumber) {
+// Doc-ID eines posReceipts (P0). Mit dem STABILEN Standort qualifiziert (H6,
+// s.o.), sonst Cross-Store-Kollision. Deterministisch = Idempotenz beim
+// Re-Pull (set(merge)). Der lesbare `safeRef` ersetzt Sonderzeichen
+// verlustbehaftet (zwei verschiedene Belegnummern könnten gleich
+// normalisieren) -> ein kollisionsfreier Hash der ROH-Belegnummer wird
+// angehängt; gleiche Rohnummer = gleiche ID, verschiedene = verschiedene IDs.
+function buildOktoposReceiptId(siteId, referenceNumber) {
   const raw = stringOrEmpty(referenceNumber);
   const safeRef = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
-  const scope = cashRegisterId == null
-    ? stringOrEmpty(siteId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || "all"
-    : String(cashRegisterId);
-  return `${scope}-${safeRef}-${stableHash([raw]).slice(0, 12)}`;
+  return `${oktoposSiteScope(siteId)}-${safeRef}-` +
+    `${stableHash([raw]).slice(0, 12)}`;
 }
 
 // OktoPOS-Geldbetraege kommen je nach Endpoint als Zahl, String ("1,23"/"1.23")
@@ -5568,6 +5732,8 @@ exports.getOktoposLookups = callable(
 
     const config = await loadOktoposConfig(orgId);
     const baseUrl = resolveOktoposBaseUrl(config);
+    // H2: siteId gegen die Org-Config validieren, BEVOR ein Key aufgeloest wird.
+    assertOktoposSiteConfigured(config, siteId);
     const apiKey = resolveOktoposApiKey(OKTOPOS_API_KEYS.value(), siteId);
 
     const [units, channels] = await Promise.all([
@@ -5600,6 +5766,8 @@ exports.pushOktoposArticles = callable(
 
     const config = await loadOktoposConfig(orgId);
     const baseUrl = resolveOktoposBaseUrl(config);
+    // H2: siteId gegen die Org-Config validieren, BEVOR ein Key aufgeloest wird.
+    assertOktoposSiteConfigured(config, siteId);
     const apiKey = resolveOktoposApiKey(OKTOPOS_API_KEYS.value(), siteId);
 
     const push = isPlainObject(config.push) ? config.push : {};
@@ -5695,7 +5863,73 @@ function resolveOktoposBaseUrl(config) {
   if (!baseUrl.toLowerCase().startsWith("https://")) {
     throw new HttpsError("failed-precondition", "OktoPOS baseUrl muss https sein.");
   }
+  // K4 (Sicherheits-Audit 2026-07): Host gegen die Allowlist pruefen — die
+  // baseUrl ist admin-schreibbare Config; ohne Pruefung ginge der X-API-KEY an
+  // jeden beliebigen HTTPS-Host (Secret-Exfiltration/SSRF).
+  assertOktoposHostAllowed(baseUrl, OKTOPOS_ALLOWED_HOSTS.value());
   return baseUrl;
+}
+
+// Pur & node-testbar: wirft, wenn der baseUrl-Host nicht exakt auf der
+// kommagetrennten Allowlist steht oder eine private/link-local/Loopback-Adresse
+// ist. Leere Allowlist = fail-closed (Betreiber muss OKTOPOS_ALLOWED_HOSTS
+// beim Cutover setzen).
+function assertOktoposHostAllowed(baseUrl, allowedHostsRaw) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch (error) {
+    throw new HttpsError(
+      "failed-precondition", "OktoPOS baseUrl ist keine gueltige URL.",
+    );
+  }
+  const host = parsedUrl.hostname.toLowerCase();
+  const isPrivateHost = host === "localhost" ||
+    host === "::1" ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+  if (isPrivateHost) {
+    throw new HttpsError(
+      "failed-precondition",
+      "OktoPOS baseUrl darf nicht auf private/lokale Adressen zeigen.",
+    );
+  }
+  const allowed = stringOrEmpty(allowedHostsRaw)
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0);
+  if (allowed.length === 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "OKTOPOS_ALLOWED_HOSTS ist nicht konfiguriert. Beim Deploy die " +
+        "erlaubten Kassen-Hosts setzen (kommagetrennt), sonst bleiben " +
+        "OktoPOS-Aufrufe gesperrt.",
+    );
+  }
+  if (!allowed.includes(host)) {
+    throw new HttpsError(
+      "failed-precondition",
+      `OktoPOS-Host ${host} steht nicht auf der Allowlist ` +
+        "(OKTOPOS_ALLOWED_HOSTS).",
+    );
+  }
+}
+
+// H2 (Sicherheits-Audit 2026-07): siteId kommt aus dem Request — vor jeder
+// Key-Aufloesung/jedem Kassen-Call pruefen, dass der Standort in der
+// OktoPOS-Config DIESER Org existiert (kein Sync/Push fuer fremde oder
+// unbekannte Sites).
+function assertOktoposSiteConfigured(config, siteId) {
+  if (!isPlainObject(config?.sites) || !isPlainObject(config.sites[siteId])) {
+    throw new HttpsError(
+      "failed-precondition",
+      `Standort ${siteId} ist in config/oktoposSync nicht konfiguriert ` +
+        "(sites-Eintrag fehlt).",
+    );
+  }
 }
 
 function normalizeTokenList(list) {
@@ -5898,6 +6132,8 @@ exports.pushOktoposCustomers = callable(
 
     const config = await loadOktoposConfig(orgId);
     const baseUrl = resolveOktoposBaseUrl(config);
+    // H2: siteId gegen die Org-Config validieren, BEVOR ein Key aufgeloest wird.
+    assertOktoposSiteConfigured(config, siteId);
     const apiKey = resolveOktoposApiKey(OKTOPOS_API_KEYS.value(), siteId);
     const groupName = stringOrNull(config.customerGroupName) || "Stammkunde";
 
@@ -6101,4 +6337,13 @@ exports._testables = {
   resolveWorkEntryApproval,
   isReviewer,
   accountDeletion,
+  enforceShiftOrg,
+  singleRestGapViolations,
+  shouldEnforceRestGap,
+  assertOktoposHostAllowed,
+  resolveOktoposApiKey,
+  buildOktoposMovementId,
+  buildOktoposReceiptId,
+  oktoposLineDiscriminator,
+  berlinNoonDate,
 };

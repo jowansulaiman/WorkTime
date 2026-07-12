@@ -2229,14 +2229,15 @@ Future<bool?> _confirmPunchClockOvertime(
   );
 }
 
+// Legacy-V1-Zeiterfassungs-Tab: seit dem Zeit-Hub (ZeitwirtschaftHubScreen an
+// ShellTab.time) nicht mehr instanziiert; der frueher durchgereichte
+// onNavigateBack-Parameter ist entfernt (N3, unused_element_parameter).
 class _TimeTrackingTab extends StatefulWidget {
   const _TimeTrackingTab({
     required this.canNavigateBack,
-    this.onNavigateBack,
   });
 
   final bool canNavigateBack;
-  final VoidCallback? onNavigateBack;
 
   @override
   State<_TimeTrackingTab> createState() => _TimeTrackingTabState();
@@ -2321,21 +2322,18 @@ class _TimeTrackingTabState extends State<_TimeTrackingTab> {
                         constraints: const BoxConstraints(maxWidth: 1100),
                         child: CustomScrollView(
                           slivers: [
-                            SliverToBoxAdapter(
+                            const SliverToBoxAdapter(
                               child: Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                                padding: EdgeInsets.fromLTRB(16, 16, 16, 0),
                                 child: SectionHeader(
                                   title: 'Zeiterfassung',
                                   subtitle:
                                       'Monatsansicht, Kalendertage und Eintragsdetails fuer deine Arbeitszeiten.',
-                                  breadcrumbs: const [
+                                  breadcrumbs: [
                                     BreadcrumbItem(label: 'Zeit'),
                                     BreadcrumbItem(label: 'Zeiterfassung'),
                                   ],
-                                  onBack: widget.canNavigateBack
-                                      ? widget.onNavigateBack
-                                      : null,
+                                  onBack: null,
                                 ),
                               ),
                             ),

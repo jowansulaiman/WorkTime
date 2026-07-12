@@ -27,13 +27,24 @@ service firebase.storage {
       function callerRole() {
         return callerDoc().data.role;
       }
+      // M2/GB (Sicherheits-Audit 2026-07): deaktivierte Konten behalten ihr
+      // Auth-Token bis zum Ablauf — ohne isActive-Check koennte ein
+      // entlassener Admin weiter Dokumente lesen/schreiben. Tolerant wie
+      // isTruthy in firestore.rules (bool/String/Zahl).
+      function callerActive() {
+        return callerDoc().data.isActive == true
+            || callerDoc().data.isActive == 'true'
+            || callerDoc().data.isActive == 1;
+      }
       function isAdmin() {
         return signedIn()
+            && callerActive()
             && callerRole() == 'admin'
             && callerOrg() == orgId;
       }
       function isSelfVisible() {
         return signedIn()
+            && callerActive()
             && request.auth.uid == userId
             && callerOrg() == orgId
             && callerRole() != 'kiosk'
@@ -76,8 +87,17 @@ service firebase.storage {
       function callerRole() {
         return callerDoc().data.role;
       }
+      // M2/GB: siehe employee-documents — isActive ist Pflicht.
+      function callerActive() {
+        return callerDoc().data.isActive == true
+            || callerDoc().data.isActive == 'true'
+            || callerDoc().data.isActive == 1;
+      }
       function sameActiveOrg() {
-        return signedIn() && callerOrg() == orgId && callerRole() != 'kiosk';
+        return signedIn()
+            && callerActive()
+            && callerOrg() == orgId
+            && callerRole() != 'kiosk';
       }
       function canManageContacts() {
         return sameActiveOrg()
@@ -118,8 +138,15 @@ service firebase.storage {
       function callerRole() {
         return callerDoc().data.role;
       }
+      // M2/GB: siehe employee-documents — isActive ist Pflicht.
+      function callerActive() {
+        return callerDoc().data.isActive == true
+            || callerDoc().data.isActive == 'true'
+            || callerDoc().data.isActive == 1;
+      }
       function isAdmin() {
         return signedIn()
+            && callerActive()
             && callerRole() == 'admin'
             && callerOrg() == orgId;
       }

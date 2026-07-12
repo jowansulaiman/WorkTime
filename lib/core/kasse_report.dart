@@ -375,11 +375,17 @@ List<PosDailyStat> dailyStatsFromReceipts(
       if (pid == null || line.quantity == 0) continue;
       final ekNetto = ekNettoById[pid];
       if (ekNetto == null) continue;
+      // M8/GB (Spiegel-Kopplung zu computeDailyStats in
+      // functions/oktopos_stats.js): Erstattungen SENKEN den Wareneinsatz.
+      // OktoPOS liefert die Refund-Menge i.d.R. positiv -> Richtung haengt am
+      // Beleg-Typ, nicht am Rohvorzeichen.
+      final signedQty =
+          type == 'refund' ? -line.quantity.abs() : line.quantity;
       a.anyCogs = true;
-      a.cogs += line.quantity * ekNetto;
+      a.cogs += signedQty * ekNetto;
       final unit = line.realizedUnitPriceCents;
       if (unit != null && unit >= 0) {
-        a.cogsCoveredGross += line.quantity * unit;
+        a.cogsCoveredGross += signedQty * unit;
       }
     }
   }

@@ -133,6 +133,107 @@ void main() {
       );
     });
 
+    test(
+        'rundet Brutto und Pause getrennt (Spiegel-Formel) an der '
+        'daily_limit-Grenze', () {
+      // Brutto 631,5 Min (rund 632) - Pause 30,5 (rund 31) = 601 > 600.
+      // Die alte Dart-Formel (inMinutes trunkiert) ergab 600 und liess die
+      // Verletzung durch, waehrend der JS-Spiegel sie meldete.
+      final overLimit = Shift(
+        orgId: 'org-1',
+        userId: 'employee-1',
+        employeeName: 'Anna',
+        title: 'Langdienst',
+        startTime: DateTime(2026, 4, 6, 8),
+        endTime: DateTime(2026, 4, 6, 18, 31, 30),
+        breakMinutes: 30.5,
+        siteId: 'site-1',
+        siteName: 'Berlin',
+        location: 'Berlin',
+      );
+
+      final overViolations = service.validateShift(
+        shift: overLimit,
+        existingShifts: const [],
+        draftShifts: [overLimit],
+        absences: const [],
+        contracts: [contractFor('employee-1')],
+        siteAssignments: [assignmentFor('employee-1', 'site-1', 'Berlin')],
+        ruleSets: [defaultRuleSet],
+        travelTimeRules: const [],
+        members: [employee('employee-1', 'Anna')],
+      );
+
+      expect(overViolations.map((item) => item.code), contains('daily_limit'));
+
+      // Brutto exakt 631 Min - 31 = 600: genau an der Grenze, keine Verletzung.
+      final atLimit = overLimit.copyWith(
+        endTime: DateTime(2026, 4, 6, 18, 31),
+      );
+
+      final atLimitViolations = service.validateShift(
+        shift: atLimit,
+        existingShifts: const [],
+        draftShifts: [atLimit],
+        absences: const [],
+        contracts: [contractFor('employee-1')],
+        siteAssignments: [assignmentFor('employee-1', 'site-1', 'Berlin')],
+        ruleSets: [defaultRuleSet],
+        travelTimeRules: const [],
+        members: [employee('employee-1', 'Anna')],
+      );
+
+      expect(
+        atLimitViolations.map((item) => item.code),
+        isNot(contains('daily_limit')),
+      );
+    });
+
+    test('klemmt Netto-Arbeitszeit auf null statt negativ (Pause > Dauer)', () {
+      // Kurzschicht mit ueberlanger Pause: alte Formel ergab -30 Minuten und
+      // druecke damit die Tagessumme unter die Grenze, obwohl die zweite
+      // Schicht allein schon 605 Minuten hat.
+      final shortShift = Shift(
+        id: 'shift-a',
+        orgId: 'org-1',
+        userId: 'employee-1',
+        employeeName: 'Anna',
+        title: 'Kurzdienst',
+        startTime: DateTime(2026, 4, 6, 8),
+        endTime: DateTime(2026, 4, 6, 8, 30),
+        breakMinutes: 60,
+        siteId: 'site-1',
+        siteName: 'Berlin',
+        location: 'Berlin',
+      );
+      final longShift = Shift(
+        id: 'shift-b',
+        orgId: 'org-1',
+        userId: 'employee-1',
+        employeeName: 'Anna',
+        title: 'Langdienst',
+        startTime: DateTime(2026, 4, 6, 9),
+        endTime: DateTime(2026, 4, 6, 19, 5),
+        siteId: 'site-1',
+        siteName: 'Berlin',
+        location: 'Berlin',
+      );
+
+      final violations = service.validateShift(
+        shift: shortShift,
+        existingShifts: [longShift],
+        draftShifts: [shortShift],
+        absences: const [],
+        contracts: [contractFor('employee-1')],
+        siteAssignments: [assignmentFor('employee-1', 'site-1', 'Berlin')],
+        ruleSets: [defaultRuleSet],
+        travelTimeRules: const [],
+        members: [employee('employee-1', 'Anna')],
+      );
+
+      expect(violations.map((item) => item.code), contains('daily_limit'));
+    });
+
     test('keeps the >9h break rule active when only >6h is disabled', () {
       final shift = Shift(
         orgId: 'org-1',

@@ -47,6 +47,22 @@ void main() {
       expect(restored.status, BatchStatus.active);
     });
 
+    test('fehlendes/kaputtes MHD wirft FormatException statt 2000-01-01 (M6)',
+        () {
+      // Frueher fiel ein unlesbares expiryDate still auf 2000-01-01 zurueck —
+      // die Charge erschien dauerhaft als extrem ueberfaellig und verdeckte
+      // echte MHD-Warnungen. Jetzt ist das Feld load-bearing; die Lesepfade
+      // ueberspringen solche Datensaetze protokolliert.
+      final broken = batch.toMap()..remove('expiry_date');
+      expect(() => ProductBatch.fromMap(broken), throwsFormatException);
+
+      final brokenFs = batch.toFirestoreMap()..['expiryDate'] = 'quatsch';
+      expect(
+        () => ProductBatch.fromFirestore('b-1', brokenFs),
+        throwsFormatException,
+      );
+    });
+
     test('BatchStatus.value / fromValue mit Default-Branch', () {
       expect(BatchStatus.active.value, 'active');
       expect(BatchStatus.soldOut.value, 'sold_out');
