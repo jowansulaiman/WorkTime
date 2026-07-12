@@ -44,6 +44,7 @@ import '../widgets/info_chip.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/section_card.dart';
 import '../widgets/section_header.dart';
+import '../widgets/theme_mode_button.dart';
 import '../widgets/dashboard_action_items_card.dart';
 import 'entry_form_screen.dart';
 import 'contacts_screen.dart';
@@ -181,11 +182,21 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         // Offline-Banner (Anf. 13): blendet sich nur bei
                         // fehlender Verbindung ein, rebuildet nur bei Wechsel.
+                        // Im lokalen Modus NICHT zeigen: dort sagt bereits das
+                        // Speichermodus-Banner ("Lokaler Modus aktiv"), dass
+                        // nichts synchronisiert wird — ein zweites Offline-Band
+                        // wäre redundant und sogar falsch ("später
+                        // synchronisiert" gilt im local-Modus nie). Kurzschluss
+                        // vor context.select: die Konnektivitäts-Abhängigkeit
+                        // wird nur außerhalb des local-Modus registriert (ein
+                        // Storage-Wechsel rebuildet die Shell und verdrahtet sie
+                        // dann).
                         AppOfflineBanner(
-                          offline: context
-                              .select<ConnectivityStatusProvider, bool>(
-                            (c) => c.isOffline,
-                          ),
+                          offline: storageLocation !=
+                                  DataStorageLocation.local &&
+                              context.select<ConnectivityStatusProvider, bool>(
+                                (c) => c.isOffline,
+                              ),
                         ),
                       ],
                     ),
@@ -255,6 +266,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onOpenMenu: () =>
                                     _scaffoldKey.currentState?.openEndDrawer(),
                                 onSearch: () => showGlobalSearch(context),
+                                // Hell/Dunkel liegt bewusst nur unter „Profil",
+                                // nicht mehr in der Navigations-Rail.
                                 user: currentUser,
                                 expandedLabels: expandedRailLabels,
                               )
@@ -1249,6 +1262,8 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
         ),
       ),
       actions: [
+        // Der Hell/Dunkel-Umschalter ist bewusst nicht mehr in der App-Leiste,
+        // sondern nur noch unter „Profil" versteckt (und im Einstellungs-Hub).
         // Globale Suche (Anf. 24/25): 1-Tap-Sprung zu Bereich/Datensatz.
         IconButton(
           tooltip: 'Suchen',
@@ -2928,6 +2943,14 @@ class _ShopHubTab extends StatelessWidget {
                           'Beschwerden, Vorschlaege und Lob von der Webseite',
                       onTap: () => context.push(AppRoutes.feedbackInbox),
                     ),
+                  if (isAdmin && AppConfig.signageEnabled)
+                    _QuickActionCard(
+                      icon: Icons.slideshow_outlined,
+                      title: 'Displays & Werbung',
+                      subtitle:
+                          'Werbung auf den Laden-Fernsehern zentral verwalten',
+                      onTap: () => context.push(AppRoutes.signage),
+                    ),
                   if (isAdmin)
                     _QuickActionCard(
                       icon: Icons.history_outlined,
@@ -2994,12 +3017,26 @@ class _ProfileHubTab extends StatelessWidget {
               vertical: 16,
             ),
             children: [
-              SectionHeader(
-                title: 'Profil',
-                subtitle:
-                    'Persoenliche Daten, Arbeitszeit-Einstellungen und Auswertungen an einem Ort.',
-                breadcrumbs: const [BreadcrumbItem(label: 'Profil')],
-                onBack: canNavigateBack ? onNavigateBack : null,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: SectionHeader(
+                      title: 'Profil',
+                      subtitle:
+                          'Persoenliche Daten, Arbeitszeit-Einstellungen und Auswertungen an einem Ort.',
+                      breadcrumbs: const [BreadcrumbItem(label: 'Profil')],
+                      onBack: canNavigateBack ? onNavigateBack : null,
+                    ),
+                  ),
+                  // Hell/Dunkel schnell umschaltbar, ohne in die Einstellungen
+                  // zu wechseln. Bewusst nur hier unter „Profil" versteckt —
+                  // nicht mehr in der globalen App-Leiste/Navigations-Rail.
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: ThemeModeButton(),
+                  ),
+                ],
               ),
               const SizedBox(height: 20),
               Card(

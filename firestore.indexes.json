@@ -1,6 +1,20 @@
 {
   "indexes": [
     {
+      "collectionGroup": "priceHistory",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "orgId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "changedByUid",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "productBatches",
       "queryScope": "COLLECTION",
       "fields": [

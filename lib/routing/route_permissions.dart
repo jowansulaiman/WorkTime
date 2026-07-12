@@ -73,6 +73,12 @@ abstract final class RoutePermissions {
       case AppRoutes.customerWishes:
       case AppRoutes.orderAnalytics:
         return p?.canViewInventory ?? false;
+      // Geführter Inventur-Modus: bucht Bestand (recordStocktake) -> nur wer
+      // den Bestand verwalten darf (Admin + Schichtleitung), enger als das
+      // Ansehen der Warenwirtschaft (canViewInventory == isActive). Spiegelt
+      // das Screen-interne Gate (leerer Zustand mit Hinweis).
+      case AppRoutes.inventur:
+        return p?.canManageInventory ?? false;
       // Tagesabschluss/Kasse (P2.0 / Kassen-Modul M3): einsehen + zählen dürfen
       // Admin UND Teamleitung (deckungsgleich mit den posReceipts-Rules).
       // Abschließen/Buchen bleibt per Button-Gate im Screen admin-only.
@@ -96,6 +102,14 @@ abstract final class RoutePermissions {
       // -> admin-only, gleiche Begründung wie bestandInsights/sortiment.
       case AppRoutes.kassenbericht:
         return p?.isAdmin ?? false;
+      // Werbe-Displays (Digital Signage): zentrale Verwaltung der Store-TVs
+      // (Werbebilder hochladen, Playlists, öffentliche Player-URLs) -> admin-only
+      // UND nur bei aktivem Feature-Flag (sonst könnte ein Admin per Deep-Link in
+      // den Bereich, obwohl die Hub-Kachel aus ist — analog /passwoerter).
+      // Server-seitig in firestore.rules gespiegelt (isAdmin auf signageDisplays/
+      // adMedia/publicDisplays).
+      case AppRoutes.signage:
+        return (p?.isAdmin ?? false) && AppConfig.signageEnabled;
       // Passwortmanager (§11): jeder aktive Nutzer sieht eigene + freigegebene
       // Einträge; die zentrale Verwaltung ist im Screen gegatet. Nur bei
       // aktivem Feature (Blaze/KMS) erreichbar.

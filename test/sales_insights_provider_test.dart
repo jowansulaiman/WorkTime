@@ -21,6 +21,14 @@ class _FakeInventory extends InventoryProvider {
 
   bool failVelocities = false;
 
+  /// Wenn gesetzt, liefert die Velocity fensterabhängig unterschiedliche
+  /// Ergebnisse: nur das LANGE Fenster (>= 60 Tage) enthält den Ladenhüter —
+  /// so lässt sich prüfen, dass die Ladenhüter-Liste wirklich über das
+  /// Dead-Stock-Fenster beurteilt wird (nicht über das kurze Velocity-Fenster).
+  bool windowAwareVelocities = false;
+
+  final requestedVelocityWindows = <int>[];
+
   @override
   Future<List<ProductVelocity>> computeSiteVelocities({
     required String siteId,
@@ -29,6 +37,31 @@ class _FakeInventory extends InventoryProvider {
     DateTime? asOf,
   }) async {
     if (failVelocities) throw Exception('boom');
+    requestedVelocityWindows.add(windowDays);
+    if (windowAwareVelocities) {
+      if (windowDays >= 60) {
+        return [
+          ProductVelocity(
+            productId: 'dead-60-$siteId',
+            siteId: siteId,
+            soldUnits: 0, // Ladenhüter über das lange Fenster
+            windowDays: windowDays,
+            currentStock: 10,
+            purchasePriceCents: 100,
+          ),
+        ];
+      }
+      return [
+        ProductVelocity(
+          productId: 'fast-28-$siteId',
+          siteId: siteId,
+          soldUnits: 20, // im kurzen Fenster verkauft sich alles
+          windowDays: windowDays,
+          currentStock: 10,
+          purchasePriceCents: 100,
+        ),
+      ];
+    }
     return [
       ProductVelocity(
         productId: 'p-$siteId',
@@ -111,6 +144,23 @@ void main() {
 
     // Es dürfen NICHT site-1-Ladenhüter unter site-2 erscheinen.
     expect(insights.deadStock, isEmpty);
+  });
+
+  test('Ladenhüter werden über das Dead-Stock-Fenster (60 Tage) beurteilt, '
+      'nicht über das kurze Velocity-Fenster', () async {
+    final inv = _FakeInventory()..windowAwareVelocities = true;
+    final insights = SalesInsightsProvider()..bind(inv, admin);
+
+    await insights.load(siteId: 'site-1'); // Defaults: 28 / 60 Tage
+
+    // Beide Fenster wurden geladen …
+    expect(inv.requestedVelocityWindows, containsAll([28, 60]));
+    // … die Velocity-Sektion basiert auf dem kurzen Fenster …
+    expect(insights.velocities.single.productId, 'fast-28-site-1');
+    // … aber die Ladenhüter-Aussage kommt aus dem 60-Tage-Fenster (dort ist
+    // der Artikel unverkauft — im 28-Tage-Read-Model wäre er keiner).
+    expect(insights.deadStock.single.productId, 'dead-60-site-1');
+    expect(insights.tiedUpDeadCapitalCents, 10 * 100);
   });
 
   test('Refresh DESSELBEN Standorts hält bei Fehler den letzten Stand', () async {

@@ -19,7 +19,9 @@ import '../models/employee_profile.dart';
 import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../models/product.dart';
+import '../models/purchase_order.dart';
 import '../models/shift.dart';
+import '../models/supplier.dart';
 import '../models/work_entry.dart';
 import '../models/user_settings.dart';
 
@@ -547,6 +549,184 @@ class PdfService {
               }),
             ],
           ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  /// Lieferanten-Bestellung als PDF-Dokument zum Versand an den Lieferanten:
+  /// Kopf (Laden/Org, Bestellnummer, Datum, Status), Lieferant (Name,
+  /// Kundennummer), Positionstabelle (Artikel, Artikelnr., Menge, Einheit)
+  /// und optionale Notiz. **Bewusst OHNE EK-Preise** — das Dokument geht an
+  /// Externe; der Lieferant braucht nur Artikel und Mengen.
+  static Future<Uint8List> generatePurchaseOrderDocument({
+    required PurchaseOrder order,
+    Supplier? supplier,
+    String? orgName,
+  }) async {
+    final fonts = await _loadFonts();
+    final pdf = pw.Document(theme: fonts);
+    final dateFmt = DateFormat('dd.MM.yyyy', 'de_DE');
+
+    const primary = PdfColor.fromInt(0xFF13161B); // AllTec-Anthrazit
+    const accent = PdfColor.fromInt(0xFF9B7839); // AllTec-Gold
+    const lightBg = PdfColor.fromInt(0xFFF5F7FA);
+    const headerStyle = pw.TextStyle(fontSize: 9, color: PdfColors.white);
+    const cellStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);
+    const labelStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey600);
+    final valueStyle = pw.TextStyle(
+        fontSize: 10, fontWeight: pw.FontWeight.bold, color: primary);
+
+    final number = order.orderNumber?.trim() ?? '';
+    final orderDate = order.orderedAt ?? order.createdAt ?? DateTime.now();
+    final sender = [
+      if (orgName?.trim().isNotEmpty ?? false) orgName!.trim(),
+      if (order.siteName?.trim().isNotEmpty ?? false) order.siteName!.trim(),
+    ].join(' · ');
+    final customerNumber = supplier?.customerNumber?.trim() ?? '';
+    final notes = order.notes?.trim() ?? '';
+
+    pw.Widget infoRow(String label, String value) => pw.Padding(
+          padding: const pw.EdgeInsets.symmetric(vertical: 2),
+          child: pw.Row(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.SizedBox(
+                width: 110,
+                child: pw.Text(label, style: labelStyle),
+              ),
+              pw.Expanded(child: pw.Text(value, style: valueStyle)),
+            ],
+          ),
+        );
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(28),
+        header: (context) => _buildSimpleListHeader(
+          title: number.isEmpty ? 'Bestellung' : 'Bestellung $number',
+          subtitle: sender.isEmpty ? 'Warenwirtschaft' : sender,
+          primary: primary,
+          accent: accent,
+        ),
+        footer: (context) =>
+            _buildFooter(context, primary, label: 'Bestellung'),
+        build: (context) => [
+          pw.Container(
+            width: double.infinity,
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: lightBg,
+              borderRadius: pw.BorderRadius.circular(8),
+              border: pw.Border.all(color: accent, width: 0.8),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                infoRow(
+                  'Lieferant',
+                  order.supplierName ?? supplier?.name ?? '–',
+                ),
+                if (customerNumber.isNotEmpty)
+                  infoRow('Kundennummer', customerNumber),
+                infoRow('Datum', dateFmt.format(orderDate)),
+                infoRow('Status', order.status.label),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 16),
+          if (order.items.isEmpty)
+            pw.Text(
+              'Keine Positionen.',
+              style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey600),
+            )
+          else
+            pw.Table(
+              columnWidths: {
+                0: const pw.FixedColumnWidth(30),
+                1: const pw.FlexColumnWidth(2.4),
+                2: const pw.FlexColumnWidth(1.2),
+                3: const pw.FixedColumnWidth(52),
+                4: const pw.FixedColumnWidth(62),
+              },
+              border: const pw.TableBorder(
+                horizontalInside:
+                    pw.BorderSide(color: PdfColors.grey200, width: 0.5),
+              ),
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: primary),
+                  children: [
+                    'Pos.',
+                    'Artikel',
+                    'Artikelnr.',
+                    'Menge',
+                    'Einheit',
+                  ]
+                      .map((h) => pw.Padding(
+                            padding: const pw.EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 8),
+                            child: pw.Text(h, style: headerStyle),
+                          ))
+                      .toList(),
+                ),
+                ...order.items.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final item = entry.value;
+                  final bg = i.isEven ? PdfColors.white : lightBg;
+                  final sku = item.sku?.trim() ?? '';
+                  return pw.TableRow(
+                    decoration: pw.BoxDecoration(color: bg),
+                    children: [
+                      _cell('${i + 1}', cellStyle),
+                      _cell(item.name, cellStyle),
+                      _cell(sku.isEmpty ? '–' : sku, cellStyle),
+                      _cell('${item.quantityOrdered}', cellStyle),
+                      _cell(item.unit, cellStyle),
+                    ],
+                  );
+                }),
+              ],
+            ),
+          pw.SizedBox(height: 10),
+          pw.Text(
+            'Positionen: ${order.itemCount} · '
+            'Gesamtmenge: ${order.totalQuantityOrdered}',
+            style: pw.TextStyle(
+              fontSize: 10,
+              fontWeight: pw.FontWeight.bold,
+              color: primary,
+            ),
+          ),
+          if (notes.isNotEmpty) ...[
+            pw.SizedBox(height: 14),
+            pw.Container(
+              width: double.infinity,
+              padding: const pw.EdgeInsets.all(12),
+              decoration: pw.BoxDecoration(
+                color: lightBg,
+                borderRadius: pw.BorderRadius.circular(8),
+              ),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(
+                    'Notiz',
+                    style: pw.TextStyle(
+                      fontSize: 10,
+                      fontWeight: pw.FontWeight.bold,
+                      color: primary,
+                    ),
+                  ),
+                  pw.SizedBox(height: 4),
+                  pw.Text(notes, style: cellStyle),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

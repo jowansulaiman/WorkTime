@@ -18,6 +18,7 @@ void main() {
     String? externalPosId,
     String name = 'Artikel',
     int? purchasePriceCents,
+    bool isNewProduct = false,
   }) {
     final product = Product(
       id: id,
@@ -36,6 +37,7 @@ void main() {
       windowDays: windowDays,
       currentStock: currentStock,
       purchasePriceCents: purchasePriceCents,
+      isNewProduct: isNewProduct,
     );
     return (product: product, velocity: velocity);
   }
@@ -74,6 +76,16 @@ void main() {
         barcode: '111');
     final b = item('b', siteId: 'site-2', currentStock: 1, soldUnits: 56,
         barcode: '222');
+    expect(run([a, b]), isEmpty);
+  });
+
+  test('neuer Artikel (zu neu für Aussage) ⇒ keine Umlagerungs-Quelle', () {
+    // Frisch angelegt, noch kein Verkauf — darf NICHT als Ladenhüter
+    // weggelagert werden.
+    final a = item('a', siteId: 'site-1', currentStock: 50, soldUnits: 0,
+        barcode: '111', isNewProduct: true);
+    final b = item('b', siteId: 'site-2', currentStock: 1, soldUnits: 56,
+        barcode: '111');
     expect(run([a, b]), isEmpty);
   });
 

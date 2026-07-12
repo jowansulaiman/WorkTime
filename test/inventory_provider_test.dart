@@ -11,6 +11,7 @@ import 'package:worktime_app/models/pos_daily_stat.dart';
 import 'package:worktime_app/models/pos_receipt.dart';
 import 'package:worktime_app/models/price_history_entry.dart';
 import 'package:worktime_app/models/product.dart';
+import 'package:worktime_app/models/scan_event.dart';
 import 'package:worktime_app/models/product_batch.dart';
 import 'package:worktime_app/models/purchase_order.dart';
 import 'package:worktime_app/models/stock_movement.dart';
@@ -33,7 +34,7 @@ class _OfflineInventoryRepository implements InventoryRepository {
   final InventoryRepository _delegate;
 
   @override
-  Future<void> saveProduct(Product product) async {
+  Future<String> saveProduct(Product product) async {
     throw Exception('offline');
   }
 
@@ -199,6 +200,13 @@ class _OfflineInventoryRepository implements InventoryRepository {
   @override
   Future<void> addPriceHistory(PriceHistoryEntry entry) =>
       _delegate.addPriceHistory(entry);
+
+  @override
+  Future<void> addScanEvent(ScanEvent event) => _delegate.addScanEvent(event);
+
+  @override
+  Future<List<ScanEvent>> fetchScanEvents(String orgId, {int limit = 500}) =>
+      _delegate.fetchScanEvents(orgId, limit: limit);
 
   @override
   Future<List<PriceHistoryEntry>> fetchPriceHistory({
@@ -780,6 +788,178 @@ void main() {
       expect(provider.errorMessage, isNotNull);
       expect(notified, isTrue,
           reason: 'die UI muss ueber den Fehler benachrichtigt werden');
+    });
+  });
+
+  group('InventoryProvider – Umlagerung/Bewegungen/Bestellnummern (lokal)', () {
+    test('lokale Bestellnummern kollidieren nach einer Löschung nicht',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+
+      PurchaseOrder newOrder() => const PurchaseOrder(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            supplierId: 'sup-1',
+            supplierName: 'Tabak Nord',
+          );
+
+      final firstId = await provider.savePurchaseOrder(newOrder());
+      await provider.savePurchaseOrder(newOrder());
+      final numbersBefore =
+          provider.purchaseOrders.map((o) => o.orderNumber).toSet();
+      expect(numbersBefore, hasLength(2));
+
+      // Erste Bestellung löschen -> die Listenlänge sinkt; die nächste Nummer
+      // darf trotzdem NICHT mit einer bestehenden kollidieren (max+1 statt
+      // Listenlänge+1).
+      await provider.deletePurchaseOrder(firstId);
+      await provider.savePurchaseOrder(newOrder());
+
+      final numbers =
+          provider.purchaseOrders.map((o) => o.orderNumber).whereType<String>();
+      expect(numbers.toSet().length, numbers.length,
+          reason: 'Bestellnummern müssen eindeutig bleiben');
+    });
+
+    test('movementsForProduct liefert nur Bewegungen des Artikels', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Cola',
+        currentStock: 10,
+      ));
+      await provider.saveProduct(const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Fanta',
+        currentStock: 10,
+      ));
+      final cola = provider.products.firstWhere((p) => p.name == 'Cola');
+      final fanta = provider.products.firstWhere((p) => p.name == 'Fanta');
+      await provider.adjustStock(productId: cola.id!, delta: 3);
+      await provider.adjustStock(productId: fanta.id!, delta: -2);
+      await provider.adjustStock(productId: cola.id!, delta: -1);
+
+      final movements = await provider.movementsForProduct(cola.id!);
+      expect(movements, hasLength(2));
+      expect(movements.every((m) => m.productId == cola.id), isTrue);
+      // Neueste zuerst.
+      expect(movements.first.quantityDelta, -1);
+      expect(movements.last.quantityDelta, 3);
+    });
+
+    test(
+        'transferStockToSite legt den Zielartikel automatisch an und bucht '
+        'die Umlagerung', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        siteName: 'Strichmännchen',
+        name: 'Feuerzeug',
+        barcode: '4001234',
+        category: 'Zubehör',
+        sellingPriceCents: 199,
+        currentStock: 10,
+        minStock: 2,
+      ));
+      final source = provider.products.single;
+
+      final error = await provider.transferStockToSite(
+        from: source,
+        toSiteId: 'site-2',
+        toSiteName: 'Tabak Börse',
+        quantity: 4,
+      );
+
+      expect(error, isNull);
+      final created = provider.products
+          .firstWhere((p) => p.siteId == 'site-2' && p.name == 'Feuerzeug');
+      // Stammdaten übernommen, Bestand = umgelagerte Menge.
+      expect(created.barcode, '4001234');
+      expect(created.category, 'Zubehör');
+      expect(created.sellingPriceCents, 199);
+      expect(created.minStock, 2);
+      expect(created.currentStock, 4);
+      expect(
+        provider.products.firstWhere((p) => p.id == source.id).currentStock,
+        6,
+      );
+      // Gepaarte transfer-Bewegungen (Abgang Quelle, Zugang Ziel).
+      final transfers = provider.recentMovements
+          .where((m) => m.type == StockMovementType.transfer)
+          .toList();
+      expect(transfers, hasLength(2));
+    });
+
+    test(
+        'transferStockToSite nutzt einen vorhandenen Zielartikel '
+        '(Barcode-Match) statt ein Duplikat anzulegen', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Feuerzeug',
+        barcode: '4001234',
+        currentStock: 10,
+      ));
+      await provider.saveProduct(const Product(
+        orgId: 'org-1',
+        siteId: 'site-2',
+        name: 'Feuerzeug rot', // anderer Name, gleicher Barcode
+        barcode: '4001234',
+        currentStock: 1,
+      ));
+      final source =
+          provider.products.firstWhere((p) => p.siteId == 'site-1');
+
+      final error = await provider.transferStockToSite(
+        from: source,
+        toSiteId: 'site-2',
+        quantity: 2,
+      );
+
+      expect(error, isNull);
+      expect(
+        provider.products.where((p) => p.siteId == 'site-2'),
+        hasLength(1),
+        reason: 'kein Duplikat am Zielstandort',
+      );
+      expect(
+        provider.products
+            .firstWhere((p) => p.siteId == 'site-2')
+            .currentStock,
+        3,
+      );
+    });
+
+    test('transferStockToSite validiert Menge gegen den Quellbestand',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Feuerzeug',
+        currentStock: 3,
+      ));
+      final source = provider.products.single;
+
+      final error = await provider.transferStockToSite(
+        from: source,
+        toSiteId: 'site-2',
+        quantity: 5,
+      );
+
+      expect(error, isNotNull);
+      expect(provider.products, hasLength(1),
+          reason: 'bei Fehler darf kein Zielartikel entstehen');
+      expect(provider.products.single.currentStock, 3);
     });
   });
 

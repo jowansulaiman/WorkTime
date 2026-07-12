@@ -15,6 +15,7 @@ const {parseThirdPartyAmounts} = require("./third_party_cash");
 const kioskShift = require("./kiosk_shift");
 const passwordCrypto = require("./password_crypto");
 const passwordAccess = require("./password_access");
+const accountDeletion = require("./account_deletion");
 
 admin.initializeApp();
 
@@ -1374,6 +1375,254 @@ exports.resetKioskPin = callable("resetKioskPin", {region: REGION},
     });
     return {ok: true};
   });
+
+// === Kontolöschung (Plan plan/account-loeschung.md) ========================
+// deleteUserAccount: löscht ein Konto KOMPLETT. Self-Löschung (caller == target)
+// ODER Admin-Fremdlöschung. `users/{uid}` ist per Rules client-unlöschbar ->
+// nur dieser Admin-SDK-Pfad (umgeht Rules) darf löschen. Reauth ist ein reines
+// Client-Gate; admin.auth().deleteUser braucht KEIN recent-login.
+exports.deleteUserAccount = callable("deleteUserAccount", {region: REGION},
+  async (request, ctx) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request);
+    // Step-up: irreversible Löschung verlangt eine kürzlich bestätigte Identität
+    // (Client erzwingt Reauth; hier server-seitig verankert).
+    assertRecentAuth(request);
+    const targetUid = stringOrNull(request.data?.userId) || caller.uid;
+    const isSelf = targetUid === caller.uid;
+    if (!isSelf && !caller.isAdmin) {
+      throw new HttpsError(
+        "permission-denied",
+        "Nur Administratoren dürfen fremde Konten löschen.",
+      );
+    }
+
+    const targetSnap = await db.collection("users").doc(targetUid).get();
+    if (!targetSnap.exists) {
+      throw new HttpsError("not-found", "Das Zielkonto wurde nicht gefunden.");
+    }
+    const targetData = targetSnap.data() || {};
+    const targetOrg = stringFromEither(targetData, "orgId", "org_id");
+    // Mandantengrenze (spiegelt firestore.rules sameOrg).
+    assertSameOrg(caller, targetOrg);
+    const targetRole = normalizeRole(targetData.role);
+    const targetEmail = stringOrEmpty(
+      valueFromEither(targetData, "email", "email"),
+    );
+
+    // Letzter-Admin-Schutz: die Organisation darf nicht ohne aktiven Admin
+    // zurückbleiben (das users-Doc trägt die orgId; ohne Admin wäre sie verwaist).
+    if (targetRole === "admin") {
+      const adminsSnap = await db.collection("users")
+        .where("orgId", "==", targetOrg)
+        .where("role", "==", "admin")
+        .get();
+      const otherActiveAdmins = adminsSnap.docs.filter((doc) =>
+        doc.id !== targetUid &&
+        isTruthy(valueFromEither(doc.data(), "isActive", "is_active")));
+      if (otherActiveAdmins.length === 0) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Das ist der letzte aktive Administrator der Organisation und kann " +
+          "nicht gelöscht werden. Ernenne zuerst einen anderen Administrator.",
+        );
+      }
+    }
+
+    const sentinel = accountDeletion.anonSentinel(targetUid);
+    const counts = await runAccountDeletion({
+      orgId: targetOrg, uid: targetUid, sentinel, requestId: ctx.requestId,
+    });
+
+    // Firebase-Auth-Nutzer entfernen (Admin SDK, kein Reauth nötig).
+    try {
+      await admin.auth().deleteUser(targetUid);
+    } catch (error) {
+      if (error?.code !== "auth/user-not-found") {
+        logger.error("account_delete_auth_failed", {
+          requestId: ctx.requestId, code: error?.code,
+        });
+        throw new HttpsError(
+          "internal",
+          "Der Anmelde-Zugang konnte nicht gelöscht werden.",
+        );
+      }
+    }
+
+    // userInvites (E-Mail-basiert) entfernen -> sonst sperrt der Bootstrap den
+    // nächsten Login mit demselben Auth-Konto (StateError „keine Einladung").
+    if (targetEmail) {
+      await db.collection("userInvites")
+        .doc(accountDeletion.inviteDocId(targetEmail))
+        .delete()
+        .catch(() => {});
+    }
+
+    await writeAudit({
+      orgId: targetOrg, action: "deleted", entityType: "Benutzerkonto",
+      entityId: targetUid,
+      summary: isSelf
+        ? "Eigenes Konto endgültig gelöscht"
+        : "Benutzerkonto endgültig gelöscht (Daten anonymisiert)",
+      actorUid: caller.uid, requestId: ctx.requestId,
+    });
+    return {ok: true, hardDeleted: counts.hardDeleted,
+      anonymized: counts.anonymized};
+  });
+
+// Löscht/aktualisiert alle Treffer einer Query in Blöcken (Firestore-Batch-Limit
+// 500). Re-queriert nach jedem Commit: gelöschte Docs fallen aus dem Filter,
+// anonymisierte (Link-Feld != uid danach) ebenso -> die Schleife terminiert.
+async function forEachQueryChunk(query, apply) {
+  const CHUNK = 300;
+  let processed = 0;
+  for (let guard = 0; guard < 100000; guard++) {
+    const snap = await query.limit(CHUNK).get();
+    if (snap.empty) {
+      break;
+    }
+    const batch = db.batch();
+    let ops = 0;
+    for (const doc of snap.docs) {
+      if (apply(batch, doc)) {
+        ops++;
+      }
+    }
+    if (ops > 0) {
+      await batch.commit();
+    }
+    processed += ops;
+    // Voller Chunk ohne Änderung => nächste Query liefert dieselben Docs
+    // (Endlosschleife). Und ein Teil-Chunk bedeutet ohnehin „alles gesehen".
+    if (snap.size < CHUNK || ops === 0) {
+      break;
+    }
+  }
+  return processed;
+}
+
+// Server-seitiges Step-up für irreversible Aktionen: verlangt eine kürzlich
+// bestätigte Identität (Reauth ODER frischer Login). Der Client erzwingt die
+// Reauth im UI-Gate; hier server-seitig verankert, damit ein bloß gültiges
+// (evtl. entwendetes/unbeaufsichtigtes) Token allein nicht genügt. `auth_time`
+// (Sekunden) steckt im ID-Token; Client-Reauth erneuert das Token.
+function assertRecentAuth(request, maxAgeSeconds = 600) {
+  const authTime = Number(request.auth?.token?.auth_time);
+  if (!Number.isFinite(authTime) ||
+      (Date.now() / 1000) - authTime > maxAgeSeconds) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Bitte bestätige aus Sicherheitsgründen deine Identität erneut und " +
+      "wiederhole die Löschung.",
+    );
+  }
+}
+
+// Führt die eigentliche Daten-Löschung/-Anonymisierung gemäß der Klassifikation
+// aus account_deletion.js aus (Admin SDK, umgeht Rules).
+async function runAccountDeletion({orgId, uid, sentinel, requestId}) {
+  const org = (name) => organizationCollection(orgId, name);
+  const counts = {hardDeleted: 0, anonymized: 0};
+
+  // A) Doc-ID == uid direkt löschen.
+  for (const name of accountDeletion.DOC_ID_DELETE) {
+    await org(name).doc(uid).delete().catch(() => {});
+    counts.hardDeleted++;
+  }
+
+  // A) Feld-basiert hart löschen.
+  for (const {collection, field} of accountDeletion.FIELD_DELETE) {
+    counts.hardDeleted += await forEachQueryChunk(
+      org(collection).where(field, "==", uid),
+      (batch, doc) => {
+        batch.delete(doc.ref);
+        return true;
+      },
+    );
+  }
+
+  // B) Anonymisieren (Link-Felder -> Marker), Doc bleibt erhalten.
+  for (const {collection, fields} of accountDeletion.ANONYMIZE) {
+    for (const field of fields) {
+      counts.anonymized += await forEachQueryChunk(
+        org(collection).where(field, "==", uid),
+        (batch, doc) => {
+          const update = accountDeletion.computeAnonymizeUpdate(
+            doc.data(), uid, sentinel, fields);
+          if (Object.keys(update).length === 0) {
+            return false;
+          }
+          batch.update(doc.ref, update);
+          return true;
+        },
+      );
+    }
+  }
+
+  // B') Anonymisieren in PRODUKT-Subcollections (collectionGroup, org-gefiltert).
+  for (const {group, orgField, fields} of
+    accountDeletion.SUBCOLLECTION_ANONYMIZE) {
+    for (const field of fields) {
+      counts.anonymized += await forEachQueryChunk(
+        db.collectionGroup(group)
+          .where(orgField, "==", orgId)
+          .where(field, "==", uid),
+        (batch, doc) => {
+          const update = accountDeletion.computeAnonymizeUpdate(
+            doc.data(), uid, sentinel, fields);
+          if (Object.keys(update).length === 0) {
+            return false;
+          }
+          batch.update(doc.ref, update);
+          return true;
+        },
+      );
+    }
+  }
+
+  // B) passwordEntries: uid aus Empfänger-Arrays entfernen, eigene Einträge
+  // samt Secret/Log löschen. Best-effort (Passwortmanager-Modul optional).
+  try {
+    await cleanupPasswordEntries(orgId, uid);
+  } catch (error) {
+    logger.warn("account_delete_passwords_failed",
+      {requestId, error: truncateError(error)});
+  }
+
+  // users/{uid} + Subcollection fcmTokens zuletzt (recursiveDelete kaskadiert).
+  await db.recursiveDelete(db.collection("users").doc(uid));
+  counts.hardDeleted++;
+
+  return counts;
+}
+
+async function cleanupPasswordEntries(orgId, uid) {
+  const entries = organizationCollection(orgId, "passwordEntries");
+  // uid aus den Empfänger-Arrays entfernen.
+  await forEachQueryChunk(
+    entries.where("audienceUids", "array-contains", uid),
+    (batch, doc) => {
+      batch.update(doc.ref, {audienceUids: FieldValue.arrayRemove(uid)});
+      return true;
+    },
+  );
+  // Eigene Einträge + zugehörige Secrets/Zugriffslogs löschen.
+  const ownSnap = await entries.where("ownerUid", "==", uid).get();
+  for (const doc of ownSnap.docs) {
+    const id = doc.id;
+    await doc.ref.delete().catch(() => {});
+    await organizationCollection(orgId, "passwordSecrets").doc(id)
+      .delete().catch(() => {});
+    await forEachQueryChunk(
+      organizationCollection(orgId, "passwordAccessLog")
+        .where("entryId", "==", id),
+      (batch, logDoc) => {
+        batch.delete(logDoc.ref);
+        return true;
+      },
+    );
+  }
+}
 
 // kioskBeginSession: das Kiosk-Geraet meldet einen Mitarbeiter per PIN an.
 // request.auth == Geraete-Konto. Prueft PIN serverseitig (scrypt) + Rate-Limit/
@@ -5851,4 +6100,5 @@ exports._testables = {
   fromFirestoreShift,
   resolveWorkEntryApproval,
   isReviewer,
+  accountDeletion,
 };

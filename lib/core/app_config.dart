@@ -156,6 +156,30 @@ class AppConfig {
     defaultValue: false,
   );
 
+  /// Schaltet die **digitalen Werbe-Displays** frei (Bereich „Displays &
+  /// Werbung" im Laden-Hub + öffentlicher Player `/anzeige/<token>`). Default
+  /// aus, bis die firestore.rules (signageDisplays/adMedia/publicDisplays) und
+  /// die storage.rules (Werbebild-Upload) deployt sind — sonst zeigt der Bereich
+  /// eine deep-linkbare URL, die am Fernseher noch nicht funktioniert. Per
+  /// `--dart-define=APP_SIGNAGE_ENABLED=true` an. **Kein Secret** — nur ein
+  /// Sichtbarkeits-/Rollout-Schalter. Der Bild-Upload ist zusätzlich an echtes
+  /// Firebase (Storage) gebunden → im Offline-/Demo-Modus verwaltbar, aber ohne
+  /// Upload/Player.
+  static const bool signageEnabled = bool.fromEnvironment(
+    'APP_SIGNAGE_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Basis-URL (Origin) des öffentlichen Werbe-Players, z. B.
+  /// `https://taskmaster-ebcez.web.app`. Damit baut die Verwaltung den kopierbaren
+  /// Fernseh-Link `<base>/anzeige/<token>`. Leer ⇒ im Web-Build wird der eigene
+  /// Origin (`Uri.base.origin`) genutzt; auf Mobil bleibt ohne diese Angabe nur
+  /// der relative Pfad. Per `--dart-define=APP_SIGNAGE_PLAYER_BASE_URL=<url>`.
+  static const String signagePlayerBaseUrl = String.fromEnvironment(
+    'APP_SIGNAGE_PLAYER_BASE_URL',
+    defaultValue: '',
+  );
+
   /// Schaltet den **Passwortmanager** frei. Rein server-verschlüsselt (Cloud
   /// KMS + Callables) → funktioniert NUR mit echtem Firebase/Blaze. Default aus,
   /// bis KMS-Key + Callables deployt sind. Per

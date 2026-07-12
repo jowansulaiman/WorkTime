@@ -85,6 +85,127 @@ void main() {
     expect(find.text('Feuerzeug Clipper'), findsWidgets);
   });
 
+  testWidgets('rendert auf Handybreite ohne Overflow (kompakte Tabs)',
+      (tester) async {
+    // Handy-Viewport erzwingen: hier greifen die mobilen Pfade (kompakte Tabs,
+    // schmale Produktkacheln), die bei 800px nie getestet werden.
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final firestoreService =
+        FirestoreService(firestore: FakeFirebaseFirestore());
+    final inventory = InventoryProvider(
+      firestoreService: firestoreService,
+      disableAuthentication: true,
+    );
+    await inventory.updateSession(admin);
+    // Voll bestückter, ausverkaufter Artikel mit langem Namen: prüft den
+    // Wrap-Untertitel (Status-Pill + Min + VK + Kategorie) und das Leading.
+    await inventory.saveProduct(
+      const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Feuerzeug Clipper Sonderedition Extralang',
+        category: 'Raucherbedarf',
+        currentStock: 0,
+        minStock: 10,
+        sellingPriceCents: 250,
+        unit: 'Stück',
+      ),
+    );
+
+    final auth = _TestAuthProvider(
+      firestoreService: firestoreService,
+      profile: admin,
+    );
+    final team = TeamProvider(firestoreService: firestoreService);
+    await team.updateSession(admin);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AuthProvider>.value(value: auth),
+          ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+          ChangeNotifierProvider<TeamProvider>.value(value: team),
+        ],
+        child: const MaterialApp(home: InventoryScreen()),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    // Kein RenderFlex-Overflow o.ä. beim Layout auf 360px.
+    expect(tester.takeException(), isNull);
+
+    // Nicht-farbliches Statussignal (WCAG 1.4.1) für den Leerbestand.
+    expect(find.text('Leer'), findsWidgets);
+    expect(find.text('Feuerzeug Clipper Sonderedition Extralang'),
+        findsOneWidget);
+
+    // Kompakte Tabs: alle Tabs rendern nur ihr Icon (Label lebt im Tooltip/
+    // Semantics, nicht als sichtbarer Text) → kein horizontales Scrollen/Reflow.
+    expect(find.text('Bestand'), findsNothing);
+    expect(find.text('Lieferanten'), findsNothing);
+    expect(find.byIcon(Icons.inventory_2_outlined), findsWidgets);
+    expect(find.byIcon(Icons.local_shipping_outlined), findsWidgets);
+  });
+
+  testWidgets('Suchfeld ist eingeklappt und öffnet erst per Lupen-Button',
+      (tester) async {
+    final firestoreService =
+        FirestoreService(firestore: FakeFirebaseFirestore());
+    final inventory = InventoryProvider(
+      firestoreService: firestoreService,
+      disableAuthentication: true,
+    );
+    await inventory.updateSession(admin);
+    await inventory.saveProduct(
+      const Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Feuerzeug Clipper',
+        currentStock: 5,
+      ),
+    );
+
+    final auth = _TestAuthProvider(
+      firestoreService: firestoreService,
+      profile: admin,
+    );
+    final team = TeamProvider(firestoreService: firestoreService);
+    await team.updateSession(admin);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AuthProvider>.value(value: auth),
+          ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+          ChangeNotifierProvider<TeamProvider>.value(value: team),
+        ],
+        child: const MaterialApp(home: InventoryScreen()),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    // Standardmäßig KEINE Suchzeile.
+    expect(find.byType(TextField), findsNothing);
+
+    // Lupen-Button blendet das Suchfeld ein.
+    await tester.tap(find.byTooltip('Artikel suchen'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byType(TextField), findsOneWidget);
+
+    // AppBar-Button zeigt jetzt das „Schließen"-Icon und klappt wieder ein.
+    await tester.tap(find.byIcon(Icons.search_off));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byType(TextField), findsNothing);
+  });
+
   testWidgets('zeigt den Leerzustand ohne Artikel', (tester) async {
     final firestoreService = FirestoreService(firestore: FakeFirebaseFirestore());
     final inventory = InventoryProvider(

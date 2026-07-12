@@ -24,6 +24,7 @@ import '../screens/finance_screen.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
+import '../screens/inventur_screen.dart';
 import '../screens/kassenbericht_screen.dart';
 import '../screens/knowledge/knowledge_screen.dart';
 import '../screens/passwords_screen.dart';
@@ -35,6 +36,7 @@ import '../screens/personal_screen.dart';
 import '../screens/personal/employee_detail_screen.dart';
 import '../screens/scanner_screen.dart';
 import '../screens/settings_screen.dart';
+import '../screens/signage/signage_screen.dart';
 import '../screens/sortiment_screen.dart';
 import '../screens/staffing_profile_screen.dart';
 import '../screens/store_health_screen.dart';
@@ -211,6 +213,10 @@ GoRouter buildAppRouter({
           (c, s) => const BestandInsightsScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.sortiment,
           (c, s) => const SortimentScreen(parentLabel: 'Warenwirtschaft')),
+      // Geführter Inventur-Modus (Bestandszählung): canManageInventory-Gate in
+      // RoutePermissions + _gateRedirect (kritische Kopplung #7).
+      _sectionRoute(AppRoutes.inventur,
+          (c, s) => const InventurScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.staffingProfile,
           (c, s) => const StaffingProfileScreen(parentLabel: 'Schichtplan')),
       // Erreichbar aus Buchhaltung (Admin) UND dem Laden-Insights-Menü
@@ -225,6 +231,8 @@ GoRouter buildAppRouter({
           (c, s) => const StoreHealthScreen(parentLabel: 'Warenwirtschaft')),
       _sectionRoute(AppRoutes.cashierAnomaly,
           (c, s) => const CashierAnomalyScreen(parentLabel: 'Personal')),
+      _sectionRoute(AppRoutes.signage,
+          (c, s) => const SignageScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.knowledge,
           (c, s) => KnowledgeScreen(parentLabel: 'Profil')),
 
@@ -264,6 +272,7 @@ const Set<String> _denseSectionPaths = <String>{
   AppRoutes.kassenbericht,
   AppRoutes.storeHealth,
   AppRoutes.cashierAnomaly,
+  AppRoutes.signage,
   AppRoutes.auditLog,
   AppRoutes.zeitErfassung,
   AppRoutes.zeitStundenkonto,

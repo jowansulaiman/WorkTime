@@ -11,6 +11,7 @@ void main() {
     int currentStock = 0,
     int? purchasePriceCents,
     String siteId = 'site-1',
+    DateTime? createdAt,
   }) =>
       Product(
         id: id,
@@ -19,6 +20,7 @@ void main() {
         name: id,
         currentStock: currentStock,
         purchasePriceCents: purchasePriceCents,
+        createdAt: createdAt,
       );
 
   StockMovement movement({
@@ -49,10 +51,12 @@ void main() {
               productId: 'p1',
               quantityDelta: -28,
               createdAt: asOf.subtract(const Duration(days: 1))),
+          // Genau am Fensterstart: zählt noch UND belegt eine Datenhistorie
+          // über das volle Fenster (isReliable misst echte Datentage).
           movement(
               productId: 'p1',
               quantityDelta: -28,
-              createdAt: asOf.subtract(const Duration(days: 10))),
+              createdAt: windowStart),
         ],
         windowStart: windowStart,
         asOf: asOf,
@@ -183,6 +187,80 @@ void main() {
         asOf: asOf,
       );
       expect(result.single.soldUnits, 0);
+    });
+
+    test('isReliable misst die tatsächliche Datenhistorie, '
+        'nicht die angefragte Fensterlänge', () {
+      // 28-Tage-Fenster, aber die früheste Bewegung ist erst 3 Tage alt —
+      // wer erst seit 3 Tagen erfasst, bekommt KEIN „belastbar".
+      final result = computeProductVelocities(
+        products: [product('p1', currentStock: 10)],
+        movements: [
+          movement(
+              productId: 'p1',
+              quantityDelta: -6,
+              createdAt: asOf.subtract(const Duration(days: 3))),
+        ],
+        windowStart: windowStart,
+        asOf: asOf,
+      );
+      final v = result.single;
+      expect(v.windowDays, 28);
+      expect(v.effectiveDataDays, 3);
+      expect(v.isReliable, isFalse);
+    });
+
+    test('injiziertes dataSince übersteuert die Ableitung aus den Bewegungen',
+        () {
+      // Der Aufrufer weiß es besser (Erfassung läuft seit Fensterstart, es gab
+      // nur lange keinen Abgang) ⇒ volle Datenbasis, belastbar.
+      final result = computeProductVelocities(
+        products: [product('p1', currentStock: 10)],
+        movements: [
+          movement(
+              productId: 'p1',
+              quantityDelta: -6,
+              createdAt: asOf.subtract(const Duration(days: 3))),
+        ],
+        windowStart: windowStart,
+        asOf: asOf,
+        dataSince: windowStart,
+      );
+      final v = result.single;
+      expect(v.effectiveDataDays, 28);
+      expect(v.isReliable, isTrue);
+    });
+
+    test('neuer Artikel (createdAt im Fenster) ist kein Ladenhüter '
+        'und nicht belastbar', () {
+      final result = computeProductVelocities(
+        products: [
+          // Erst vor 5 Tagen angelegt, noch kein Verkauf — zu neu für Aussage.
+          product('neu',
+              currentStock: 40,
+              purchasePriceCents: 250,
+              createdAt: asOf.subtract(const Duration(days: 5))),
+          // Alt-Artikel als Kontrolle: bleibt Ladenhüter.
+          product('alt',
+              currentStock: 40,
+              purchasePriceCents: 250,
+              createdAt: asOf.subtract(const Duration(days: 90))),
+        ],
+        movements: const [],
+        windowStart: windowStart,
+        asOf: asOf,
+      );
+
+      final neu = result.firstWhere((v) => v.productId == 'neu');
+      expect(neu.isNewProduct, isTrue);
+      expect(neu.isDeadStock, isFalse);
+      expect(neu.effectiveDataDays, 5); // eigene Lebensdauer, nicht Org-Basis
+      expect(neu.isReliable, isFalse);
+
+      final alt = result.firstWhere((v) => v.productId == 'alt');
+      expect(alt.isNewProduct, isFalse);
+      expect(alt.isDeadStock, isTrue);
+      expect(alt.isReliable, isTrue);
     });
   });
 }

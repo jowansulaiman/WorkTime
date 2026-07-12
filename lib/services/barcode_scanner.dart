@@ -7,14 +7,16 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 /// Was der Scanner gerade erkennen soll — steuert die aktive Formatliste.
 ///
 /// Jedes zusaetzliche Format kostet Erkennungszeit pro Frame, deshalb bleibt
-/// der schnelle Produktscan bewusst auf 1D-Handelscodes beschraenkt; QR wird
-/// nur im [qr]-Modus mitgescannt (umschaltbar im [ScannerScreen]).
+/// der schnelle Produktscan bewusst auf 1D-Handelscodes beschraenkt; QR,
+/// DataMatrix und Karton-Codes werden nur im [extended]-Modus mitgescannt
+/// (umschaltbar im [ScannerScreen]).
 enum ScannerTarget {
-  /// Handels-Barcodes: EAN-13/EAN-8/UPC-A (Standard, schnell).
+  /// Handels-Barcodes: EAN-13/EAN-8/UPC-A/UPC-E (Standard, schnell).
   retail,
 
-  /// Zusaetzlich QR-Codes (etwas langsamer, nur bei Bedarf).
-  qr,
+  /// Zusaetzlich QR, GS1 DataMatrix, ITF-14 (Umkartons) und Code-128
+  /// (etwas langsamer, nur bei Bedarf).
+  extended,
 }
 
 /// Seam fuer die Kamera-/Barcode-Quelle.
@@ -37,18 +39,37 @@ abstract interface class BarcodeScanner {
   /// Ob eine Taschenlampe ein-/ausgeschaltet werden kann (nur echte Handys).
   bool get supportsTorch;
 
+  /// Ob die Kamera-Vergroesserung steuerbar ist (nur echte Handys). Fuer kleine
+  /// oder weit entfernte Barcodes.
+  bool get supportsZoom;
+
+  /// Ob ein Foto in voller Aufloesung nachtraeglich analysiert werden kann
+  /// ([analyzePhoto]) — der Rettungsanker fuer beschaedigte/winzige Codes.
+  bool get supportsPhotoAnalysis;
+
   /// Aktuell aktives Scan-Ziel (Formatliste).
   ScannerTarget get target;
 
-  /// Wechselt die erkannten Formate zur Laufzeit (z.B. QR ein/aus). Baut den
-  /// Kamera-Controller neu auf (Formate sind ein final-Konstruktor-Parameter)
-  /// und startet ihn wieder, falls er lief — [codes] bleibt dabei stabil.
+  /// Wechselt die erkannten Formate zur Laufzeit (z.B. erweiterten Modus
+  /// ein/aus). Baut den Kamera-Controller neu auf (Formate sind ein
+  /// final-Konstruktor-Parameter) und startet ihn wieder, falls er lief —
+  /// [codes] bleibt dabei stabil.
   Future<void> setTarget(ScannerTarget target);
 
   Future<void> start();
   Future<void> stop();
   Future<void> toggleTorch();
   Future<void> switchCamera();
+
+  /// Setzt die Kamera-Vergroesserung (0.0 = keine, 1.0 = maximal).
+  /// No-op, wenn [supportsZoom] false ist.
+  Future<void> setZoom(double scale);
+
+  /// Analysiert ein Standbild (Dateipfad) in voller Aufloesung mit ALLEN
+  /// unterstuetzten Formaten und liefert die erkannten Codes (leer = nichts
+  /// erkannt). Deutlich robuster als der Live-Stream bei kleinen oder
+  /// beschaedigten Codes.
+  Future<List<String>> analyzePhoto(String path);
 
   /// Live-Kameravorschau. Liefert bei fehlender Unterstuetzung einen leeren
   /// Platzhalter.
@@ -81,9 +102,24 @@ class MobileScannerAdapter implements BarcodeScanner {
   /// dann wieder startet, wenn er vorher lief.
   bool _started = false;
 
-  // Ziel-Fenster (Reticle): EAN-13 ist quer/breit -> flaches, breites Rechteck,
-  // mittig. Dieselben Werte speisen scanWindow (Analysezone) UND das sichtbare
-  // Overlay, damit beide deckungsgleich sind.
+  /// Zaehlt stop()/setTarget()-Aufrufe. Ein noch laufendes start() darf
+  /// `_started` NICHT mehr auf true setzen, wenn zwischenzeitlich gestoppt
+  /// wurde (sonst startet setTarget die Kamera "aus dem Nichts" wieder).
+  int _lifecycleEpoch = 0;
+
+  /// Zuletzt gesetzter Zoom — wird nach einem Controller-Neuaufbau (setTarget)
+  /// wieder angewendet, damit der Nutzer die Einstellung nicht verliert.
+  double _zoom = 0;
+
+  // Ziel-Hilfe (Reticle): EAN-13 ist quer/breit -> flaches, breites Rechteck,
+  // mittig. Das Reticle ist REIN VISUELL — analysiert wird bewusst der GANZE
+  // Frame. Frueher wurde hier zusaetzlich `scanWindow` gesetzt; die native
+  // Widget->Textur-Umrechnung ist aber fehleranfaellig (mobile_scanner #1009/
+  // #633: beim ersten Frame ist die Texturgroesse oft noch 0, das falsch
+  // berechnete Fenster wird wegen des Update-Thresholds nie korrigiert) — die
+  // Analysezone lag dann NEBEN dem sichtbaren Reticle und der Scanner erkannte
+  // im Laden praktisch nichts. Volle Frame-Analyse ist fuer MLKit/Apple Vision
+  // problemlos und erkennt Codes ueberall im Bild.
   static const double _reticleWidthFraction = 0.82;
   static const double _reticleHeightFraction = 0.32;
 
@@ -100,17 +136,39 @@ class MobileScannerAdapter implements BarcodeScanner {
           BarcodeFormat.ean13,
           BarcodeFormat.ean8,
           BarcodeFormat.upcA,
+          // Kleine Import-Artikel tragen oft UPC-E — ohne dieses Format wurden
+          // sie NIE erkannt (haeufige Ursache fuer "Scanner findet nichts").
+          BarcodeFormat.upcE,
         ];
-      case ScannerTarget.qr:
-        // 1D bleibt aktiv, damit man im QR-Modus auch Produkte scannen kann.
+      case ScannerTarget.extended:
+        // 1D bleibt aktiv, damit man im erweiterten Modus auch Produkte
+        // scannen kann; dazu QR/DataMatrix (GS1-Inhalte mit MHD/Charge) und
+        // ITF-14/Code-128 (Umkartons, Lieferanten-Etiketten).
         return const <BarcodeFormat>[
           BarcodeFormat.ean13,
           BarcodeFormat.ean8,
           BarcodeFormat.upcA,
+          BarcodeFormat.upcE,
           BarcodeFormat.qrCode,
+          BarcodeFormat.dataMatrix,
+          BarcodeFormat.itf14,
+          BarcodeFormat.code128,
         ];
     }
   }
+
+  /// Formatliste fuer die Standbild-Analyse: immer ALLE unterstuetzten Formate
+  /// — beim Foto zaehlt maximale Trefferchance, nicht Frame-Tempo.
+  static const List<BarcodeFormat> _photoFormats = <BarcodeFormat>[
+    BarcodeFormat.ean13,
+    BarcodeFormat.ean8,
+    BarcodeFormat.upcA,
+    BarcodeFormat.upcE,
+    BarcodeFormat.qrCode,
+    BarcodeFormat.dataMatrix,
+    BarcodeFormat.itf14,
+    BarcodeFormat.code128,
+  ];
 
   /// Auf Web laedt `mobile_scanner` die ZXing-Bibliothek sonst zur Laufzeit von
   /// `https://unpkg.com/@zxing/library@0.21.3` nach. Das blockiert unsere
@@ -150,6 +208,11 @@ class MobileScannerAdapter implements BarcodeScanner {
     }
   }
 
+  static bool get _isMobileDevice =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
   MobileScannerController _ensureController() {
     final existing = _controller;
     if (existing != null) return existing;
@@ -187,10 +250,13 @@ class MobileScannerAdapter implements BarcodeScanner {
   bool get isAvailable => _platformSupported;
 
   @override
-  bool get supportsTorch =>
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS);
+  bool get supportsTorch => _isMobileDevice;
+
+  @override
+  bool get supportsZoom => _isMobileDevice;
+
+  @override
+  bool get supportsPhotoAnalysis => _isMobileDevice;
 
   @override
   ScannerTarget get target => _target;
@@ -203,6 +269,7 @@ class MobileScannerAdapter implements BarcodeScanner {
     // Formate sind ein final-Konstruktor-Parameter -> Controller neu aufbauen.
     // Der stabile _out-Strom bleibt bestehen; nur die Quelle wird neu verdrahtet.
     final wasStarted = _started;
+    _lifecycleEpoch++; // haengige start()-Futures des alten Controllers entwerten
     await _controllerSub?.cancel();
     _controllerSub = null;
     await _controller?.dispose();
@@ -227,12 +294,23 @@ class MobileScannerAdapter implements BarcodeScanner {
   @override
   Future<void> start() async {
     if (!_platformSupported) return;
+    final epoch = _lifecycleEpoch;
     await _ensureController().start();
+    // Kam waehrend des (langsamen) Kamera-Starts ein stop()/setTarget()
+    // dazwischen, gilt dessen Zustand — nicht unserer.
+    if (epoch != _lifecycleEpoch) return;
     _started = true;
+    if (_zoom > 0 && supportsZoom) {
+      // Nutzer-Zoom ueberlebt Formatwechsel/Neustart.
+      unawaited(
+        _controller?.setZoomScale(_zoom).catchError((Object _) {}),
+      );
+    }
   }
 
   @override
   Future<void> stop() async {
+    _lifecycleEpoch++;
     _started = false;
     await _controller?.stop();
   }
@@ -245,6 +323,28 @@ class MobileScannerAdapter implements BarcodeScanner {
   @override
   Future<void> switchCamera() async {
     await _controller?.switchCamera();
+  }
+
+  @override
+  Future<void> setZoom(double scale) async {
+    if (!supportsZoom) return;
+    _zoom = scale.clamp(0.0, 1.0);
+    await _controller?.setZoomScale(_zoom);
+  }
+
+  @override
+  Future<List<String>> analyzePhoto(String path) async {
+    if (!supportsPhotoAnalysis) return const <String>[];
+    final capture = await _ensureController().analyzeImage(
+      path,
+      formats: _photoFormats,
+    );
+    if (capture == null) return const <String>[];
+    return capture.barcodes
+        .map((barcode) => barcode.rawValue?.trim() ?? '')
+        .where((value) => value.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
   }
 
   @override
@@ -265,10 +365,8 @@ class MobileScannerAdapter implements BarcodeScanner {
           key: ObjectKey(controller),
           controller: controller,
           fit: BoxFit.cover,
-          // scanWindow begrenzt die Analysezone (schneller/stabiler) — auf Web
-          // ein No-op, dort bleibt das Reticle rein visuell.
-          scanWindow: kIsWeb ? null : rect,
-          scanWindowUpdateThreshold: 0.05, // gegen Rebuild-Flackern
+          // KEIN scanWindow (siehe Kommentar am Reticle): analysiert wird der
+          // ganze Frame, das Reticle ist nur eine sichtbare Ziel-Hilfe.
           tapToFocus: true, // Nutzer kann Fokus erzwingen (iOS/Android)
           overlayBuilder: (context, _) => _ScanReticle(rect: rect),
         );
@@ -288,7 +386,7 @@ class MobileScannerAdapter implements BarcodeScanner {
 
 /// Sichtbares Ziel-Fenster ueber der Kameravorschau: dunkelt den Bereich
 /// ausserhalb ab und rahmt das mittige Scan-Rechteck. Rein visuell (blockiert
-/// keine Gesten) und deckungsgleich mit dem [scanWindow] auf Mobile.
+/// keine Gesten) — die Analyse laeuft auf dem ganzen Frame.
 class _ScanReticle extends StatelessWidget {
   const _ScanReticle({required this.rect});
 

@@ -70,12 +70,21 @@ abstract final class AppRoutes {
   static const String orderAnalytics = '/bestell-auswertung';
   static const String bestandInsights = '/bestand-insights';
   static const String sortiment = '/sortimentsanalyse';
+  // Geführter Inventur-Modus (Bestandszählung je Standort/Warengruppe):
+  // Zähl-Liste + Differenz-Vorschau + Buchung via recordStocktake. Gate =
+  // canManageInventory (er bucht Bestand), enger als die übrige Warenwirtschaft.
+  static const String inventur = '/inventur';
   static const String staffingProfile = '/besetzungs-profil';
   static const String dailyClosing = '/tagesabschluss';
   static const String kassenbericht = '/kassenbericht';
   static const String passwords = '/passwoerter';
   static const String storeHealth = '/laden-benchmark';
   static const String cashierAnomaly = '/kassierer-pruefung';
+
+  /// Digitale Werbe-Displays (Store-TVs): admin-only Verwaltung (Bilder,
+  /// Playlists, Displays). Der öffentliche Player läuft NICHT über den go_router,
+  /// sondern als isolierte Web-Route `/anzeige/<token>` (siehe main.dart).
+  static const String signage = '/werbung';
 
   /// Wissens-/Hilfe-Bereich (In-App-Doku, Bereich „Wissen"). Fach-Doku fuer alle
   /// angemeldeten Nutzer; die Entwickler-/Technik-Doku gated der Screen intern

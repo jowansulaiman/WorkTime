@@ -29,6 +29,7 @@ void main() {
     required int soldUnits,
     int windowDaysOverride = windowDays,
     String siteId = 'site-1',
+    bool isNewProduct = false,
   }) =>
       ProductVelocity(
         productId: id,
@@ -37,6 +38,7 @@ void main() {
         windowDays: windowDaysOverride,
         currentStock: 0,
         purchasePriceCents: null,
+        isNewProduct: isNewProduct,
       );
 
   test('Renner: höhere Schwellen aus Tagesabsatz × (Lieferzeit + Sicherheit)', () {
@@ -83,6 +85,27 @@ void main() {
     expect(s.suggestedTargetStock, 0);
     expect(s.minStockChanged, isTrue); // von 10 auf 0
     expect(s.targetStockChanged, isTrue);
+  });
+
+  test('Neu-Artikel ohne Absatz: KEIN Schwellen-0-Vorschlag (zu neu für Aussage)',
+      () {
+    final result = computeReorderSuggestions(
+      velocities: [velocity('p1', soldUnits: 0, isNewProduct: true)],
+      products: [product('p1', minStock: 10, targetStock: 20)],
+    );
+    // Frisch angelegter Artikel darf nicht sofort auf „nicht nachbestellen"
+    // gestellt werden — gar kein Vorschlag.
+    expect(result, isEmpty);
+  });
+
+  test('Neu-Artikel MIT Absatz bekommt weiterhin einen Vorschlag', () {
+    // 28/28 = 1/Tag, default lead 3 + safety 3 -> min=6; coverage 14 -> target 20.
+    final result = computeReorderSuggestions(
+      velocities: [velocity('p1', soldUnits: 28, isNewProduct: true)],
+      products: [product('p1')],
+    );
+    expect(result.single.suggestedMinStock, 6);
+    expect(result.single.suggestedTargetStock, 20);
   });
 
   test('Lieferzeit kommt vom Lieferanten, sonst Default', () {

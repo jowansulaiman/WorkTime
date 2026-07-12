@@ -140,20 +140,31 @@ void main() {
 
     test('mehrere aktive Treffer im selben Laden werden alle zurueckgegeben',
         () async {
-      final provider = await seededLocalProvider(const [
-        Product(
-          orgId: 'org-1',
-          siteId: 'site-1',
-          name: 'Dublette A',
-          barcode: '4001234567890',
-        ),
-        Product(
-          orgId: 'org-1',
-          siteId: 'site-1',
-          name: 'Dublette B',
-          barcode: '4001234567890',
-        ),
-      ]);
+      // Neuanlage solcher Duplikate ist inzwischen hart gesperrt
+      // (saveProduct wirft) — Altbestand/Race-Duplikate existieren aber
+      // weiterhin und muessen vom Lookup ALLE geliefert werden. Deshalb
+      // direkt in den lokalen Speicher seeden, an saveProduct vorbei.
+      await DatabaseService.saveLocalProducts(
+        const [
+          Product(
+            id: 'dub-a',
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Dublette A',
+            barcode: '4001234567890',
+          ),
+          Product(
+            id: 'dub-b',
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Dublette B',
+            barcode: '4001234567890',
+          ),
+        ],
+        scope: LocalStorageScope.fromUser(user),
+      );
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
 
       expect(
         provider.productsByBarcode('4001234567890', siteId: 'site-1'),

@@ -37,6 +37,8 @@ class ProductVelocity {
     required this.currentStock,
     required this.purchasePriceCents,
     this.minReliableDays = SalesVelocity.defaultReliableDays,
+    this.dataDays,
+    this.isNewProduct = false,
   });
 
   final String productId;
@@ -58,6 +60,17 @@ class ProductVelocity {
   /// Ab wie vielen Fenstertagen die Velocity als belastbar gilt.
   final int minReliableDays;
 
+  /// Tatsächlich vorhandene Datenhistorie in Tagen innerhalb des Fensters
+  /// (0..[windowDays]) — misst, seit wann wirklich Bewegungen/Artikel erfasst
+  /// werden, statt der nur ANGEFRAGTEN Fensterlänge. `null` ⇒ unbekannt, es
+  /// gilt das volle Fenster (rückwärtskompatibel).
+  final int? dataDays;
+
+  /// Artikel wurde erst INNERHALB des Auswertungsfensters angelegt
+  /// (`createdAt` nach `windowStart`) — zu neu für eine Ladenhüter-/
+  /// Schwellen-Aussage („0 Verkäufe" heißt hier nur „noch keine Historie").
+  final bool isNewProduct;
+
   /// Verkaufsgeschwindigkeit in Einheiten pro Tag (>= 0).
   double get dailyVelocity => soldUnits / windowDays;
 
@@ -72,8 +85,10 @@ class ProductVelocity {
   }
 
   /// Kein Absatz im Fenster trotz vorhandenem Bestand ⇒ Ladenhüter-Kandidat
-  /// (Basis für P1.2 Dead-Stock). Saisonware nie automatisch auslisten.
-  bool get isDeadStock => soldUnits == 0 && currentStock > 0;
+  /// (Basis für P1.2 Dead-Stock). Neue Artikel ([isNewProduct]) sind KEINE
+  /// Ladenhüter — sie hatten noch keine Chance auf ein volles Fenster.
+  /// Saisonware nie automatisch auslisten.
+  bool get isDeadStock => !isNewProduct && soldUnits == 0 && currentStock > 0;
 
   /// `true`, wenn der Einkaufspreis gesetzt ist (gebundenes Kapital berechenbar).
   bool get isValuated => purchasePriceCents != null;
@@ -83,8 +98,14 @@ class ProductVelocity {
   int get tiedUpCapitalCents =>
       (purchasePriceCents ?? 0) * (currentStock > 0 ? currentStock : 0);
 
-  /// Datenbasis lang genug für eine belastbare Aussage.
-  bool get isReliable => windowDays >= minReliableDays;
+  /// Tatsächliche Datenbasis in Tagen, nie größer als das Fenster.
+  int get effectiveDataDays => math.min(windowDays, dataDays ?? windowDays);
+
+  /// Datenbasis lang genug für eine belastbare Aussage — gemessen an der
+  /// TATSÄCHLICHEN Datenhistorie ([effectiveDataDays]), nicht an der
+  /// angefragten Fensterlänge (sonst wäre ein 28-Tage-Fenster über 3 Tagen
+  /// echter Erfassung fälschlich „belastbar").
+  bool get isReliable => effectiveDataDays >= minReliableDays;
 }
 
 /// Berechnet [ProductVelocity] je übergebenem Artikel aus den
@@ -96,14 +117,45 @@ class ProductVelocity {
 ///   der Aufrufer sollte bereits gefiltert liefern (Range-Query), das ist die
 ///   defensive Zweitprüfung.
 /// - [minReliableDays] steuert die `isReliable`-Schwelle der Ergebnisse.
+/// - [dataSince] = frühestes Erfassungsdatum (Beginn der echten Datenhistorie).
+///   Nicht übergeben ⇒ wird aus den injizierten Daten abgeleitet: das früheste
+///   Signal aus Bewegungsdaten (jeder Typ — auch Wareneingänge belegen, dass
+///   erfasst wurde) UND Artikel-`createdAt` gemeinsam, sonst volles Fenster
+///   (rückwärtskompatibel). Bestimmt `dataDays`/`isReliable` — die ehrliche
+///   Datenbasis statt der nur angefragten Fensterlänge.
 List<ProductVelocity> computeProductVelocities({
   required List<Product> products,
   required List<StockMovement> movements,
   required DateTime windowStart,
   required DateTime asOf,
   int minReliableDays = SalesVelocity.defaultReliableDays,
+  DateTime? dataSince,
 }) {
   final windowDays = math.max(1, asOf.difference(windowStart).inDays);
+
+  // Ehrliche Datenbasis bestimmen (bleibt pur: nur aus injizierten Daten).
+  // Bewegungen UND Artikel-Anlagedaten gemeinsam werten: die übergebenen
+  // Bewegungen sind typischerweise bereits fenster-gefiltert — die älteste
+  // In-Fenster-Bewegung allein würde die Historie massiv unterschätzen
+  // (sobald irgendeine Bewegung im Fenster liegt, wären ALLE Artikel
+  // „nicht belastbar"). Das früheste Artikel-`createdAt` belegt den
+  // Erfassungsbeginn davor.
+  var since = dataSince;
+  if (since == null) {
+    for (final m in movements) {
+      final at = m.createdAt;
+      if (at == null) continue;
+      if (since == null || at.isBefore(since)) since = at;
+    }
+    for (final p in products) {
+      final at = p.createdAt;
+      if (at == null) continue;
+      if (since == null || at.isBefore(since)) since = at;
+    }
+  }
+  final baseDataDays = since == null
+      ? windowDays
+      : math.max(0, math.min(windowDays, asOf.difference(since).inDays));
 
   final soldByProduct = <String, int>{};
   for (final m in movements) {
@@ -120,6 +172,15 @@ List<ProductVelocity> computeProductVelocities({
   for (final p in products) {
     final id = p.id;
     if (id == null) continue;
+    final createdAt = p.createdAt;
+    // Neu-Artikel-Guard: erst im Fenster angelegt ⇒ „zu neu für Aussage".
+    final isNewProduct = createdAt != null && createdAt.isAfter(windowStart);
+    // Je Artikel zählt höchstens seine eigene Lebensdauer als Datenbasis.
+    final ageDays = createdAt == null
+        ? null
+        : math.max(0, asOf.difference(createdAt).inDays);
+    final dataDays =
+        ageDays == null ? baseDataDays : math.min(baseDataDays, ageDays);
     result.add(
       ProductVelocity(
         productId: id,
@@ -129,6 +190,8 @@ List<ProductVelocity> computeProductVelocities({
         currentStock: p.currentStock,
         purchasePriceCents: p.purchasePriceCents,
         minReliableDays: minReliableDays,
+        dataDays: dataDays,
+        isNewProduct: isNewProduct,
       ),
     );
   }

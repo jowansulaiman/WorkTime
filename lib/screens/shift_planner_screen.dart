@@ -4614,29 +4614,39 @@ class _PlannerCompactMonthDayCell extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Container(
-                    padding: isToday
-                        ? const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 3,
-                          )
-                        : EdgeInsets.zero,
-                    decoration: isToday
-                        ? BoxDecoration(
-                            color: colorScheme.primary,
-                            borderRadius: BorderRadius.circular(999),
-                          )
-                        : null,
-                    child: Text(
-                      '${day.day}',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: isToday
-                            ? colorScheme.onPrimary
-                            : (isInVisibleMonth
-                                ? colorScheme.onSurface
-                                : colorScheme.onSurfaceVariant
-                                    .withValues(alpha: 0.62)),
-                        fontWeight: FontWeight.w700,
+                  // Heutige Tag-Pille + Abwesenheits-Badge koennen in sehr
+                  // schmalen Zellen zusammen minimal breiter sein als die
+                  // Zelle (zweistelliger Tag) -> Pille darf schrumpfen statt
+                  // ueberzulaufen.
+                  Flexible(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Container(
+                        padding: isToday
+                            ? const EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 3,
+                              )
+                            : EdgeInsets.zero,
+                        decoration: isToday
+                            ? BoxDecoration(
+                                color: colorScheme.primary,
+                                borderRadius: BorderRadius.circular(999),
+                              )
+                            : null,
+                        child: Text(
+                          '${day.day}',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: isToday
+                                ? colorScheme.onPrimary
+                                : (isInVisibleMonth
+                                    ? colorScheme.onSurface
+                                    : colorScheme.onSurfaceVariant
+                                        .withValues(alpha: 0.62)),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ),
                     ),
                   ),

@@ -1,14 +1,19 @@
 import 'dart:async';
 
 import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../core/ean.dart';
+import '../core/gs1.dart';
 import '../models/app_user.dart';
 import '../models/order_cart.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
+import '../models/scan_event.dart';
 import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
 import '../providers/auth_provider.dart';
@@ -19,8 +24,10 @@ import '../services/database_service.dart';
 import '../services/scan_feedback.dart';
 import '../theme/theme_extensions.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/goods_receipt_sheet.dart';
 import '../widgets/price_history_sheet.dart';
 import 'inventory_screen.dart' show formatCents, parseEuroToCents, showProductDialog;
+import 'scan_statistik_screen.dart';
 
 /// Betriebsart des Scanners.
 enum _ScanMode {
@@ -79,6 +86,40 @@ class _ScannerScreenState extends State<ScannerScreen>
   List<Product> _multiMatches = const [];
   Product? _inactiveMatch;
   String? _notFoundCode;
+
+  // Fachlich ausgewerteter GS1-Inhalt des letzten Scans (QR/DataMatrix mit
+  // GTIN + MHD/Charge) — befuellt den gefuehrten Wareneingang vor.
+  Gs1ScanData? _gs1Data;
+
+  // Nicht-GS1-QR-Inhalt (URL/Freitext) des letzten Scans.
+  String? _qrContent;
+
+  // Foto-Fallback (Standbild-Analyse) laeuft gerade.
+  bool _analyzingPhoto = false;
+
+  // Nutzer-Zoom (0..1) fuer kleine/entfernte Codes.
+  double _zoom = 0;
+
+  // Startpunkt der Zeitmessung "wie lange bis zum Treffer" (Scan-Statistik):
+  // gesetzt beim Kamera-Start und nach jedem verarbeiteten Ergebnis.
+  DateTime? _scanTimingStart;
+
+  // Die Kamera laeuft hinter modalen Sheets/Dialogen weiter — waehrend einer
+  // offenen Interaktion (Wareneingang-Sheet, Auswahl, Preis-Dialog, ...)
+  // duerfen neue Kamera-Codes NICHT verarbeitet werden, sonst stapeln sich
+  // Sheets bzw. wechselt der Zustand unter dem offenen Dialog.
+  bool _dialogOpen = false;
+
+  /// Fuehrt eine modale Interaktion aus und blockiert solange die
+  /// Verarbeitung neuer Kamera-Codes.
+  Future<T> _withDialogGuard<T>(Future<T> Function() action) async {
+    _dialogOpen = true;
+    try {
+      return await action();
+    } finally {
+      _dialogOpen = false;
+    }
+  }
 
   // Doppel-Scan-Entprellung + Buchungssperre.
   String _lastCode = '';
@@ -191,6 +232,7 @@ class _ScannerScreenState extends State<ScannerScreen>
       if (mounted && _cameraError != null) {
         setState(() => _cameraError = null);
       }
+      _scanTimingStart = DateTime.now();
       _armDarkHint();
     }).catchError((Object error) {
       _scanning = false;
@@ -227,25 +269,28 @@ class _ScannerScreenState extends State<ScannerScreen>
     if (_showDarkHint && mounted) setState(() => _showDarkHint = false);
   }
 
-  /// Schaltet zwischen reinem Handels-Barcode-Scan (schnell) und zusaetzlichem
-  /// QR-Modus um.
+  /// Schaltet zwischen reinem Handels-Barcode-Scan (schnell) und dem
+  /// erweiterten Modus (QR/DataMatrix/Umkarton-Codes) um.
   Future<void> _toggleScanTarget() async {
-    final next = _scanner.target == ScannerTarget.qr
+    final next = _scanner.target == ScannerTarget.extended
         ? ScannerTarget.retail
-        : ScannerTarget.qr;
+        : ScannerTarget.extended;
     await _scanner.setTarget(next);
     if (!mounted) return;
     setState(() {});
     _showSnack(
-      next == ScannerTarget.qr
-          ? 'QR-Modus an — QR-Codes werden jetzt mitgelesen.'
-          : 'QR-Modus aus — nur Handels-Barcodes (schneller).',
+      next == ScannerTarget.extended
+          ? 'Erweiterter Modus an — QR, DataMatrix und Karton-Codes werden '
+              'mitgelesen (GS1-Codes befuellen MHD/Charge automatisch).'
+          : 'Erweiterter Modus aus — nur Handels-Barcodes (schneller).',
     );
   }
 
   // --- Scan-Verarbeitung --------------------------------------------------
 
   void _onCodeDetected(String code) {
+    // Offene Interaktion (Sheet/Dialog) -> Kamera-Codes verwerfen.
+    if (_dialogOpen) return;
     final now = DateTime.now();
     // Erkennung angekommen -> Kamera sieht etwas: Dunkel-Hinweis zuruecknehmen.
     _cancelDarkHint();
@@ -258,7 +303,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
     _lastCode = code;
     _lastCodeAt = now;
-    _handleCode(code);
+    _handleCode(code, source: 'camera');
   }
 
   void _onManualSearch() {
@@ -266,19 +311,64 @@ class _ScannerScreenState extends State<ScannerScreen>
     if (code.isEmpty) return;
     _lastCode = code;
     _lastCodeAt = DateTime.now();
-    _handleCode(code);
+    _handleCode(code, source: 'manual');
   }
 
-  Future<void> _handleCode(String rawCode) async {
+  // --- Scan-Statistik-Hilfen ------------------------------------------------
+
+  String get _platformName => kIsWeb ? 'web' : defaultTargetPlatform.name;
+
+  String get _modeValue {
+    switch (_mode) {
+      case _ScanMode.order:
+        return 'order';
+      case _ScanMode.book:
+        return 'book';
+      case _ScanMode.stocktake:
+        return 'stocktake';
+    }
+  }
+
+  /// Protokolliert den Scan-Ausgang fire-and-forget (Statistik/Fehleranalyse).
+  /// Zeit-bis-Treffer nur fuer Kamera-Scans (Tippdauer ist keine Zielzeit).
+  void _logScan({
+    required String code,
+    required ScanOutcome outcome,
+    required String source,
+    String? productId,
+  }) {
+    int? timeToHitMs;
+    final startedAt = _scanTimingStart;
+    if (source == 'camera' && startedAt != null) {
+      timeToHitMs = DateTime.now().difference(startedAt).inMilliseconds;
+    }
+    // Naechste Messung beginnt jetzt (Zeit bis zum naechsten Ergebnis).
+    _scanTimingStart = DateTime.now();
+    unawaited(
+      context.read<InventoryProvider>().logScanEvent(
+            code: code,
+            outcome: outcome,
+            siteId: _selectedSiteId,
+            mode: _modeValue,
+            source: source,
+            timeToHitMs: timeToHitMs,
+            productId: productId,
+            platform: _platformName,
+          ),
+    );
+  }
+
+  Future<void> _handleCode(String rawCode, {required String source}) async {
     final code = rawCode.trim();
     if (code.isEmpty) return;
 
-    // Pruefziffer nur fuer Standard-Laengen (EAN-13/8, UPC-A) erzwingen;
-    // proprietaere Hauscodes anderer Laenge durchlassen.
-    if (looksLikeEan(code) && !isValidEanChecksum(code)) {
+    // Pruefziffer fuer Standard-Laengen erzwingen (EAN-13/8, UPC-A/UPC-E,
+    // GTIN-14); proprietaere Hauscodes anderer Laenge passieren.
+    if (!isPlausibleRetailCode(code)) {
       _flash(false);
       unawaited(_feedback.failure());
       _showSnack('Ungueltiger Barcode (Pruefziffer stimmt nicht).');
+      _logScan(code: code, outcome: ScanOutcome.invalidChecksum, source: source);
       return;
     }
 
@@ -291,14 +381,63 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
 
     final inventory = context.read<InventoryProvider>();
-    final matches = inventory.productsByBarcode(code, siteId: siteId);
+
+    // Fachliche QR-/GS1-Auswertung: Nicht-Standard-Codes (QR-Inhalte,
+    // GS1-Element-Strings, Digital Links) werden interpretiert statt blind
+    // nachgeschlagen. Reihenfolge: exakter Treffer (Hauscodes!) gewinnt vor
+    // der GS1-Deutung; nur wenn beides nichts ergibt, zaehlt der Inhalt als
+    // QR-Text.
+    var lookupCode = code;
+    Gs1ScanData? gs1;
+    if (!looksLikeEan(code) &&
+        inventory
+            .productsByBarcode(code, siteId: siteId, includeInactive: true)
+            .isEmpty) {
+      gs1 = parseGs1(code);
+      if (gs1 != null && gs1.hasGtin) {
+        lookupCode = gs1.gtin!;
+      } else if (code.length > 20 || !RegExp(r'^\d+$').hasMatch(code)) {
+        // Kein Produktcode und kein GS1 mit GTIN -> als QR-Inhalt anzeigen
+        // (URL/Freitext), nicht als "Artikel nicht gefunden" verwirren.
+        // Bewusst KEINE Telemetrie: fremde QR-Inhalte (URLs, Kontakte, ...)
+        // sind keine Produkt-Fehlversuche und gehoeren nicht in ein
+        // append-only Log (Datenschutz).
+        _flash(false);
+        unawaited(_feedback.failure());
+        setState(() {
+          _match = null;
+          _multiMatches = const [];
+          _inactiveMatch = null;
+          _notFoundCode = null;
+          _gs1Data = null;
+          _qrContent = code;
+        });
+        return;
+      }
+    }
+
+    final matches = inventory.productsByBarcode(lookupCode, siteId: siteId);
+
+    // Ausgang zentral protokollieren (fuer alle Modi identisch).
+    _logScan(
+      code: code,
+      outcome: matches.length == 1
+          ? ScanOutcome.matched
+          : (matches.length > 1 ? ScanOutcome.multiMatch : ScanOutcome.notFound),
+      source: source,
+      productId: matches.length == 1 ? matches.first.id : null,
+    );
+
+    // GS1-Zusatzdaten (MHD/Charge) fuer den gefuehrten Wareneingang merken.
+    _gs1Data = gs1;
+    _qrContent = null;
 
     switch (_mode) {
       case _ScanMode.stocktake:
         _handleStocktakeScan(matches);
         return;
       case _ScanMode.order:
-        await _handleOrderScan(inventory, code, siteId, matches);
+        await _handleOrderScan(inventory, lookupCode, siteId, matches);
         return;
       case _ScanMode.book:
         break; // Buchen-Modus weiter unten
@@ -320,16 +459,50 @@ class _ScannerScreenState extends State<ScannerScreen>
 
     // Kein aktiver Treffer -> deaktivierten Artikel suchen (Reaktivierung statt
     // Neuanlage anbieten).
-    final inactive =
-        inventory.productsByBarcode(code, siteId: siteId, includeInactive: true);
+    final inactive = inventory.productsByBarcode(
+      lookupCode,
+      siteId: siteId,
+      includeInactive: true,
+    );
     _flash(false);
     unawaited(_feedback.failure());
     setState(() {
       _match = null;
       _multiMatches = const [];
       _inactiveMatch = inactive.isNotEmpty ? inactive.first : null;
-      _notFoundCode = code;
+      _notFoundCode = lookupCode;
     });
+  }
+
+  /// Foto-Fallback fuer beschaedigte/winzige Codes: Standbild in voller
+  /// Aufloesung aufnehmen und mit allen Formaten analysieren — deutlich
+  /// robuster als der Live-Stream.
+  Future<void> _scanPhoto() async {
+    if (_analyzingPhoto) return;
+    setState(() => _analyzingPhoto = true);
+    try {
+      final photo = await ImagePicker().pickImage(source: ImageSource.camera);
+      if (photo == null || !mounted) return;
+      final codes = await _scanner.analyzePhoto(photo.path);
+      if (!mounted) return;
+      if (codes.isEmpty) {
+        _flash(false);
+        unawaited(_feedback.failure());
+        _showSnack(
+          'Kein Code im Foto erkannt. Naeher herangehen, fuer Licht sorgen '
+          'oder den Code manuell eingeben.',
+        );
+        return;
+      }
+      // Bei mehreren erkannten Codes den plausibelsten (Pruefziffer ok) nehmen.
+      final best =
+          codes.firstWhereOrNull(isPlausibleRetailCode) ?? codes.first;
+      await _handleCode(best, source: 'photo');
+    } catch (error) {
+      if (mounted) _showSnack('Foto-Scan fehlgeschlagen: $error');
+    } finally {
+      if (mounted) setState(() => _analyzingPhoto = false);
+    }
   }
 
   // --- Scan & Go (Bestellen) ----------------------------------------------
@@ -420,28 +593,31 @@ class _ScannerScreenState extends State<ScannerScreen>
     InventoryProvider inventory,
     List<Product> matches,
   ) async {
-    final chosen = await showModalBottomSheet<Product>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(12),
-              child: Text('Mehrere Artikel mit diesem Barcode — bitte waehlen:'),
-            ),
-            for (final product in matches)
-              ListTile(
-                title: Text(product.name),
-                subtitle: Text(
-                  'Bestand: ${product.currentStock} ${product.unit} · '
-                  'VK ${formatCents(product.sellingPriceCents)}',
-                ),
-                onTap: () => Navigator.of(sheetContext).pop(product),
+    final chosen = await _withDialogGuard(
+      () => showModalBottomSheet<Product>(
+        context: context,
+        showDragHandle: true,
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child:
+                    Text('Mehrere Artikel mit diesem Barcode — bitte waehlen:'),
               ),
-          ],
+              for (final product in matches)
+                ListTile(
+                  title: Text(product.name),
+                  subtitle: Text(
+                    'Bestand: ${product.currentStock} ${product.unit} · '
+                    'VK ${formatCents(product.sellingPriceCents)}',
+                  ),
+                  onTap: () => Navigator.of(sheetContext).pop(product),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -487,7 +663,29 @@ class _ScannerScreenState extends State<ScannerScreen>
     return '$_scanSessionId::${product.id}::$_bookingSeq::$suffix';
   }
 
-  Future<void> _receive(Product product, int quantity) async {
+  /// Gefuehrter Wareneingang: EIN Ablauf fuer Menge + optionales MHD +
+  /// optionale Charge. GS1-Scans (DataMatrix/QR mit AI 17/10/30) befuellen die
+  /// Felder vor — ein Karton-Scan wird so zum Zwei-Tap-Wareneingang.
+  Future<void> _receiveGuided(Product product) async {
+    if (_booking || product.id == null) return;
+    final gs1 = _gs1Data;
+    final input = await _withDialogGuard(
+      () => showGoodsReceiptSheet(
+        context,
+        product: product,
+        initialQuantity: (gs1?.quantity != null && gs1!.quantity! > 0)
+            ? gs1.quantity!
+            : _quantity,
+        initialExpiry: gs1?.expiryDate,
+        initialLot: gs1?.lot,
+      ),
+    );
+    if (input == null || !mounted) return;
+    await _receive(product, input);
+  }
+
+  Future<void> _receive(Product product, GoodsReceiptInput input) async {
+    final quantity = input.quantity;
     if (_booking || product.id == null || quantity <= 0) return;
     setState(() => _booking = true);
     try {
@@ -498,10 +696,43 @@ class _ScannerScreenState extends State<ScannerScreen>
             reason: 'Scan-Wareneingang',
             clientMutationId: _nextMutationId(product, 'receipt:$quantity'),
           );
+      // Bestand ist gebucht — MHD/Charge (falls erfasst) direkt hinterher.
+      // Ein Teil-Fehler wird explizit gemeldet, damit der Nutzer weiss, was
+      // gebucht wurde und was nicht.
+      if (input.hasBatch) {
+        if (!mounted) return;
+        try {
+          await context.read<InventoryProvider>().saveBatch(
+                ProductBatch(
+                  orgId: product.orgId,
+                  siteId: product.siteId,
+                  productId: product.id!,
+                  productName: product.name,
+                  expiryDate: ProductBatch.normalizeDay(input.expiryDate!),
+                  quantity: quantity,
+                  note: input.lot,
+                ),
+              );
+        } catch (error) {
+          _flash(false);
+          unawaited(_feedback.failure());
+          _showSnack(
+            'Bestand gebucht (+$quantity), aber MHD-Charge fehlgeschlagen: '
+            '$error',
+          );
+          return;
+        }
+      }
       _flash(true);
       unawaited(_feedback.success());
-      _showSnack('Wareneingang: +$quantity ${product.unit} gebucht.');
+      final expiry = input.expiryDate;
+      final expiryText = expiry == null
+          ? ''
+          : ' — MHD ${expiry.day.toString().padLeft(2, '0')}.'
+              '${expiry.month.toString().padLeft(2, '0')}.${expiry.year} erfasst';
+      _showSnack('Wareneingang: +$quantity ${product.unit} gebucht$expiryText.');
       _resetQuantity();
+      if (mounted && _gs1Data != null) setState(() => _gs1Data = null);
     } catch (error) {
       _flash(false);
       unawaited(_feedback.failure());
@@ -547,7 +778,8 @@ class _ScannerScreenState extends State<ScannerScreen>
   Future<void> _stocktake(Product product) async {
     final controller =
         TextEditingController(text: product.currentStock.toString());
-    final counted = await showDialog<int>(
+    final counted = await _withDialogGuard(
+      () => showDialog<int>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Inventur'),
@@ -571,6 +803,7 @@ class _ScannerScreenState extends State<ScannerScreen>
           ),
         ],
       ),
+      ),
     );
     controller.dispose();
     if (counted == null || product.id == null || !mounted) return;
@@ -593,7 +826,10 @@ class _ScannerScreenState extends State<ScannerScreen>
 
   // --- Preisabweichung ----------------------------------------------------
 
-  Future<void> _changePrice(Product product) async {
+  Future<void> _changePrice(Product product) =>
+      _withDialogGuard(() => _changePriceFlow(product));
+
+  Future<void> _changePriceFlow(Product product) async {
     final controller = TextEditingController(
       text: product.sellingPriceCents == null
           ? ''
@@ -696,14 +932,16 @@ class _ScannerScreenState extends State<ScannerScreen>
   Future<void> _captureExpiry(Product product) async {
     if (_booking || product.id == null) return;
     final today = DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime(today.year, today.month, today.day)
-          .add(const Duration(days: 7)),
-      firstDate: DateTime(today.year - 1),
-      lastDate: DateTime(today.year + 5),
-      helpText: 'Mindesthaltbarkeitsdatum (MHD)',
-      locale: const Locale('de', 'DE'),
+    final picked = await _withDialogGuard(
+      () => showDatePicker(
+        context: context,
+        initialDate: DateTime(today.year, today.month, today.day)
+            .add(const Duration(days: 7)),
+        firstDate: DateTime(today.year - 1),
+        lastDate: DateTime(today.year + 5),
+        helpText: 'Mindesthaltbarkeitsdatum (MHD)',
+        locale: const Locale('de', 'DE'),
+      ),
     );
     if (picked == null || !mounted) return;
     setState(() => _booking = true);
@@ -732,7 +970,10 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
   }
 
-  Future<void> _createNew(String barcode) async {
+  Future<void> _createNew(String barcode) =>
+      _withDialogGuard(() => _createNewFlow(barcode));
+
+  Future<void> _createNewFlow(String barcode) async {
     final inventory = context.read<InventoryProvider>();
     final sites = context.read<TeamProvider>().sites;
     final siteId = _selectedSiteId ?? (sites.isNotEmpty ? sites.first.id : null);
@@ -749,33 +990,23 @@ class _ScannerScreenState extends State<ScannerScreen>
     );
     if (result == null || !mounted) return;
 
-    // Dublettenwarnung: existiert der Barcode im selben Laden schon?
+    // Harte Barcode-Eindeutigkeit je Laden: Duplikat wird nicht mehr per
+    // Dialog durchgewunken („Trotzdem anlegen" entfaellt) — saveProduct lehnt
+    // es ohnehin ab. Hier nur die freundlichere Frueh-Meldung.
     final code = result.barcode?.trim() ?? '';
     if (code.isNotEmpty) {
-      final existing =
-          inventory.productsByBarcode(code, siteId: result.siteId);
+      final existing = inventory.productsByBarcode(
+        code,
+        siteId: result.siteId,
+        includeInactive: true,
+      );
       if (existing.isNotEmpty) {
-        final proceed = await showDialog<bool>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('Barcode existiert bereits'),
-            content: Text(
-              'Im gewaehlten Laden gibt es schon "${existing.first.name}" mit '
-              'diesem Barcode. Trotzdem neu anlegen?',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(false),
-                child: const Text('Abbrechen'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(dialogContext).pop(true),
-                child: const Text('Trotzdem anlegen'),
-              ),
-            ],
-          ),
+        _showSnack(
+          'Barcode bereits vergeben: „${existing.first.name}" traegt diesen '
+          'Code im gewaehlten Laden. Jeder Barcode darf je Laden nur an einem '
+          'Artikel haengen.',
         );
-        if (proceed != true || !mounted) return;
+        return;
       }
     }
 
@@ -832,15 +1063,27 @@ class _ScannerScreenState extends State<ScannerScreen>
         ],
         actions: [
           IconButton(
-            tooltip: _scanner.target == ScannerTarget.qr
-                ? 'QR-Modus aus'
-                : 'QR-Codes mitlesen',
+            tooltip: _scanner.target == ScannerTarget.extended
+                ? 'Erweiterten Modus aus (nur Handels-Barcodes)'
+                : 'Erweiterter Modus: QR, DataMatrix & Karton-Codes',
             icon: Icon(
-              _scanner.target == ScannerTarget.qr
+              _scanner.target == ScannerTarget.extended
                   ? Icons.qr_code_2
                   : Icons.qr_code_scanner_outlined,
             ),
             onPressed: _toggleScanTarget,
+          ),
+          IconButton(
+            tooltip: 'Scan-Statistik',
+            icon: const Icon(Icons.insights_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      ScanStatistikScreen(initialSiteId: _selectedSiteId),
+                ),
+              );
+            },
           ),
           IconButton(
             tooltip: _soundEnabled
@@ -940,6 +1183,8 @@ class _ScannerScreenState extends State<ScannerScreen>
                           _multiMatches = const [];
                           _inactiveMatch = null;
                           _notFoundCode = null;
+                          _gs1Data = null;
+                          _qrContent = null;
                         });
                         if (value != null) _startScanner();
                       },
@@ -959,6 +1204,35 @@ class _ScannerScreenState extends State<ScannerScreen>
                 'manuell eingeben.',
       );
     }
+    return Column(
+      children: [
+        _buildCameraPreview(context),
+        if (_scanner.supportsZoom) _buildZoomRow(context),
+      ],
+    );
+  }
+
+  /// Zoom fuer kleine/weit entfernte Barcodes (zusaetzlich zum Android-
+  /// autoZoom, das nur automatisch heranfaehrt).
+  Widget _buildZoomRow(BuildContext context) {
+    return Row(
+      children: [
+        const Icon(Icons.zoom_out, size: 20),
+        Expanded(
+          child: Slider(
+            value: _zoom,
+            onChanged: (value) {
+              setState(() => _zoom = value);
+              unawaited(_scanner.setZoom(value));
+            },
+          ),
+        ),
+        const Icon(Icons.zoom_in, size: 20),
+      ],
+    );
+  }
+
+  Widget _buildCameraPreview(BuildContext context) {
     final flash = _flashColor;
     return AspectRatio(
       aspectRatio: 3 / 4,
@@ -1047,25 +1321,48 @@ class _ScannerScreenState extends State<ScannerScreen>
   }
 
   Widget _buildManualEntry(BuildContext context) {
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(
-          child: TextField(
-            controller: _manualController,
-            keyboardType: TextInputType.number,
-            textInputAction: TextInputAction.search,
-            onSubmitted: (_) => _onManualSearch(),
-            decoration: const InputDecoration(
-              labelText: 'Barcode manuell eingeben',
-              prefixIcon: Icon(Icons.keyboard_outlined),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _manualController,
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _onManualSearch(),
+                decoration: const InputDecoration(
+                  labelText: 'Barcode manuell eingeben',
+                  prefixIcon: Icon(Icons.keyboard_outlined),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _onManualSearch,
+              child: const Text('Suchen'),
+            ),
+          ],
+        ),
+        if (_scanner.supportsPhotoAnalysis) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _analyzingPhoto ? null : _scanPhoto,
+            icon: _analyzingPhoto
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.photo_camera_outlined),
+            label: Text(
+              _analyzingPhoto
+                  ? 'Foto wird ausgewertet …'
+                  : 'Foto scannen (kleiner/beschaedigter Code)',
             ),
           ),
-        ),
-        const SizedBox(width: 8),
-        FilledButton(
-          onPressed: _onManualSearch,
-          child: const Text('Suchen'),
-        ),
+        ],
       ],
     );
   }
@@ -1087,23 +1384,25 @@ class _ScannerScreenState extends State<ScannerScreen>
     if (mode == _mode) return;
     // Beim Verlassen des Inventurmodus mit offener Zaehlung nachfragen.
     if (_mode == _ScanMode.stocktake && _countByProduct.isNotEmpty) {
-      final discard = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Inventur verwerfen?'),
-          content: Text(
-            '${_countByProduct.length} gezaehlte Artikel gehen verloren.',
+      final discard = await _withDialogGuard(
+        () => showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Inventur verwerfen?'),
+            content: Text(
+              '${_countByProduct.length} gezaehlte Artikel gehen verloren.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Weiter zaehlen'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Verwerfen'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Weiter zaehlen'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Verwerfen'),
-            ),
-          ],
         ),
       );
       if (discard != true || !mounted) return;
@@ -1117,12 +1416,15 @@ class _ScannerScreenState extends State<ScannerScreen>
       _inactiveMatch = null;
       _notFoundCode = null;
       _lastAddedName = null;
+      _gs1Data = null;
+      _qrContent = null;
       // Entprell-Zustand zuruecksetzen, damit derselbe Artikel direkt nach
       // einem Moduswechsel erneut gescannt werden kann (sonst 2s verschluckt,
       // probleme #50).
       _lastCode = '';
       _lastCodeAt = null;
     });
+    _scanTimingStart = DateTime.now();
   }
 
   Widget _buildInventorySession(
@@ -1322,11 +1624,46 @@ class _ScannerScreenState extends State<ScannerScreen>
     if (_inactiveMatch != null) {
       return _buildInactiveCard(context, _inactiveMatch!);
     }
+    if (_qrContent != null) {
+      return _buildQrContentCard(context, _qrContent!);
+    }
     if (_notFoundCode != null) {
       return _buildNotFoundCard(context, _notFoundCode!);
     }
     return const _CenteredHint(
       'Richte die Kamera auf einen Barcode oder gib ihn manuell ein.',
+    );
+  }
+
+  /// Nicht-GS1-QR-Inhalt (URL/Freitext): Inhalt zeigen + kopieren statt
+  /// verwirrendem „Artikel nicht gefunden".
+  Widget _buildQrContentCard(BuildContext context, String content) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('QR-Inhalt erkannt', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            SelectableText(
+              content,
+              maxLines: 6,
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: content));
+                _showSnack('Inhalt kopiert.');
+              },
+              icon: const Icon(Icons.copy_outlined),
+              label: const Text('Inhalt kopieren'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1342,7 +1679,10 @@ class _ScannerScreenState extends State<ScannerScreen>
           _LastAddedBanner(name: _lastAddedName!),
           const SizedBox(height: 8),
         ],
-        if (_notFoundCode != null) ...[
+        if (_qrContent != null) ...[
+          _buildQrContentCard(context, _qrContent!),
+          const SizedBox(height: 8),
+        ] else if (_notFoundCode != null) ...[
           _buildNotFoundCard(context, _notFoundCode!),
           const SizedBox(height: 8),
         ] else if (_inactiveMatch != null) ...[
@@ -1558,6 +1898,26 @@ class _ScannerScreenState extends State<ScannerScreen>
             Text(product.name, style: theme.textTheme.titleLarge),
             if ((product.category ?? '').isNotEmpty)
               Text(product.category!, style: theme.textTheme.bodySmall),
+            if (_gs1Data != null &&
+                (_gs1Data!.expiryDate != null || _gs1Data!.lot != null)) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: theme.appColors.info.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'GS1-Code: '
+                  '${_gs1Data!.expiryDate != null ? 'MHD ${_gs1Data!.expiryDate!.day.toString().padLeft(2, '0')}.${_gs1Data!.expiryDate!.month.toString().padLeft(2, '0')}.${_gs1Data!.expiryDate!.year}' : ''}'
+                  '${_gs1Data!.expiryDate != null && _gs1Data!.lot != null ? ' · ' : ''}'
+                  '${_gs1Data!.lot != null ? 'Charge ${_gs1Data!.lot}' : ''}'
+                  ' — „Wareneingang" uebernimmt das automatisch.',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Wrap(
               spacing: 16,
@@ -1579,7 +1939,7 @@ class _ScannerScreenState extends State<ScannerScreen>
                 Expanded(
                   child: FilledButton.icon(
                     onPressed:
-                        _booking ? null : () => _receive(product, _quantity),
+                        _booking ? null : () => _receiveGuided(product),
                     icon: const Icon(Icons.add),
                     label: const Text('Wareneingang'),
                   ),

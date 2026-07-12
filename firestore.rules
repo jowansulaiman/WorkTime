@@ -1465,6 +1465,57 @@ service cloud.firestore {
         allow delete: if sameOrg(orgId) && canManageInventory();
       }
 
+      // Scan-Telemetrie (Scan-Statistik/Fehleranalyse des Barcode-Scanners).
+      // Append-only-Log wie stockMovements: Scannen duerfen Manager/Admin
+      // (der Scanner selbst ist canUseScanner = canManageInventory gegated,
+      // Kiosk-Konten scannen nicht) — Feld-Allowlist gegen Mass Assignment,
+      // orgId an den Pfad gebunden, outcome auf die Enum-Werte begrenzt,
+      // createdByUid an den Aufrufer gepinnt. Lesen ebenfalls Verwaltung
+      // (die Statistik ist eine Management-Ansicht). Nie aendern/loeschen.
+      match /scanEvents/{eventId} {
+        allow read: if sameOrg(orgId) && canManageInventory();
+        // Typ-/Groessen-Checks: Events sind append-only und clientseitig
+        // nicht loeschbar — ein einzelnes "Poison-Doc" (falsche Typen,
+        // Riesen-Strings) darf gar nicht erst entstehen koennen.
+        allow create: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'code', 'outcome', 'mode', 'source',
+                 'timeToHitMs', 'productId', 'platform', 'createdByUid',
+                 'createdAt'
+               ])
+            && request.resource.data.code is string
+            && request.resource.data.code.size() <= 200
+            && request.resource.data.outcome in
+                 ['matched', 'multi_match', 'not_found', 'invalid_checksum']
+            && (!('siteId' in request.resource.data)
+                 || request.resource.data.siteId == null
+                 || request.resource.data.siteId is string)
+            && (!('mode' in request.resource.data)
+                 || request.resource.data.mode == null
+                 || (request.resource.data.mode is string
+                     && request.resource.data.mode.size() <= 32))
+            && (!('source' in request.resource.data)
+                 || request.resource.data.source == null
+                 || (request.resource.data.source is string
+                     && request.resource.data.source.size() <= 32))
+            && (!('platform' in request.resource.data)
+                 || request.resource.data.platform == null
+                 || (request.resource.data.platform is string
+                     && request.resource.data.platform.size() <= 32))
+            && (!('timeToHitMs' in request.resource.data)
+                 || request.resource.data.timeToHitMs == null
+                 || request.resource.data.timeToHitMs is number)
+            && (!('productId' in request.resource.data)
+                 || request.resource.data.productId == null
+                 || request.resource.data.productId is string)
+            && (!('createdByUid' in request.resource.data)
+                 || request.resource.data.createdByUid == null
+                 || request.resource.data.createdByUid == request.auth.uid);
+        allow update, delete: if false;
+      }
+
       // Kundenbestellungen (Sonderbestellungen) – wie Lieferantenbestellungen
       // direkte Writes, gated ueber dieselbe Warenwirtschafts-Berechtigung.
       match /customerOrders/{orderId} {
@@ -1697,21 +1748,75 @@ service cloud.firestore {
         allow delete: if sameOrg(orgId) && canManageContacts();
       }
 
+      // Digitale Werbe-Displays (Store-TVs) – ADMIN-only Verwaltung. Werbebild-
+      // Bibliothek (adMedia) + Displays (signageDisplays). Lesen alle aktiven
+      // Mitglieder; anlegen/aendern/loeschen nur Admin (Muster workTasks). Der
+      // Fernseher liest NICHT hier, sondern die per-Token projizierte
+      // publicDisplays/{token} (Top-Level, oeffentlich). Spiegelt das
+      // Client-Gate (RoutePermissions.isLocationAllowed -> isAdmin).
+      // Lesen NUR Admin (der pairingToken ist ein Bearer-Secret; die ganze
+      // Verwaltung ist ohnehin admin-only). Der Fernseher liest NICHT hier.
+      match /adMedia/{mediaId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+      match /signageDisplays/{displayId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if isAdmin() && sameOrg(orgId);
+      }
+
       // Bestandsbewegungen sind ein Audit-Log: anlegen ja, aendern/loeschen nein.
       // Feld-Allowlist + Typ-/Wertpruefung gegen Mass Assignment (BOPLA) und
       // Manipulation des Audit-Logs (counters-bopla-no-monotonic-check).
       match /stockMovements/{movementId} {
-        allow read: if sameOrg(orgId) && !isKiosk();
+        // Punkt-Get auch fuer das Kiosk-Geraetekonto: der Refill-Batch
+        // (setFridgeStock) macht VOR dem Schreiben einen Idempotenz-Get auf
+        // die eigene (zufaellige UUID-)Movement-Doc-ID — ohne get-Recht
+        // scheiterte das Nachfuellen am Laden-Tablet still im Hybrid-Fallback.
+        // Die Historien-ENUMERATION (list) bleibt dem Kiosk verwehrt.
+        allow get: if sameOrg(orgId);
+        allow list: if sameOrg(orgId) && !isKiosk();
+        // Zwei Create-Pfade: (a) Bestandsbuchungen nur fuer die Leitung,
+        // (b) `fridge_refill` fuer JEDES aktive Mitglied — das Nachfuellen des
+        // Verkaufs-Kuehlschranks ist ausdruecklich Mitarbeiter-Arbeit (§12.2)
+        // und der Batch aus setFridgeStock schreibt Produkt-fridgeStock (eigener
+        // schmaler update-Pfad unter /products) UND diese Bewegung zusammen.
+        // Im Jedermann-Pfad ist der Akteur PFLICHT (kein anonymes Protokoll).
         allow create: if sameOrg(orgId)
-            && canManageInventory()
+            && (
+                 (canManageInventory()
+                   && request.resource.data.type in
+                        ['receipt', 'issue', 'adjustment', 'stocktake',
+                         'transfer', 'fridge_refill'])
+                 || (request.resource.data.type == 'fridge_refill'
+                   && request.resource.data.createdByUid == request.auth.uid)
+               )
             && request.resource.data.orgId == orgId
             && request.resource.data.keys().hasOnly([
                  'orgId', 'siteId', 'productId', 'productName', 'type',
                  'quantityDelta', 'balanceAfter', 'reason', 'relatedOrderId',
                  'source', 'externalRef', 'createdByUid', 'createdAt'
                ])
-            && request.resource.data.type in
-                 ['receipt', 'issue', 'adjustment', 'stocktake', 'transfer']
+            // Typ-Checks gegen Poison-Docs (Muster cashCounts): der Create-
+            // Pfad ist fuer alle Aktiven offen; ein untypisiertes Feld braeche
+            // die Bewegungs-Reads (fromFirestore) der ganzen Org.
+            && request.resource.data.siteId is string
+            && request.resource.data.productId is string
+            && (!('productName' in request.resource.data)
+                 || request.resource.data.productName == null
+                 || request.resource.data.productName is string)
+            && (!('reason' in request.resource.data)
+                 || request.resource.data.reason == null
+                 || request.resource.data.reason is string)
+            && (!('relatedOrderId' in request.resource.data)
+                 || request.resource.data.relatedOrderId == null
+                 || request.resource.data.relatedOrderId is string)
             && request.resource.data.quantityDelta is number
             // balanceAfter ist im Modell nullable (int?) -> null/absent zulassen.
             && (!('balanceAfter' in request.resource.data)
@@ -1888,6 +1993,30 @@ service cloud.firestore {
             && request.resource.data.seq >= resource.data.seq;
         allow delete: if false;
       }
+    }
+
+    // Oeffentliche Werbe-Player-Projektion (Store-Fernseher, Route
+    // /anzeige/<token>). BEWUSST Top-Level (nicht unter organizations/{orgId}):
+    // der Fernseher ist NICHT angemeldet und kann sameOrg() nicht erfuellen. Er
+    // liest OHNE Login exakt EIN Dokument ueber seinen unratbaren Token
+    // (Bearer-Secret) — daher `get`, aber KEIN `list` (keine Aufzaehlung/
+    // Scraping der ganzen Collection). Geschrieben ausschliesslich vom
+    // Org-Admin, der die denormalisierte Playlist hierher spiegelt; die orgId im
+    // Body ist an die eigene Org gebunden. Enthaelt nur nicht-sensible
+    // Werbebild-URLs (Storage-Bearer-Token) + Anzeigedauer, keine internen
+    // Daten. Zusaetzlicher Abuse-Schutz = App Check (Console-Enforcement).
+    match /publicDisplays/{displayToken} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isAdmin()
+          && request.resource.data.orgId == currentOrgId();
+      // Update pinnt AUCH die orgId des EXISTIERENDEN Docs (nicht nur den Body),
+      // sonst könnte ein Admin einer anderen Org mit bekanntem Token die
+      // Projektion re-tenanten (Muster userInvites-Update). Mandantenfähig.
+      allow update: if isAdmin()
+          && resource.data.orgId == currentOrgId()
+          && request.resource.data.orgId == currentOrgId();
+      allow delete: if isAdmin() && resource.data.orgId == currentOrgId();
     }
   }
 }

@@ -111,5 +111,82 @@ class AuthService {
     );
   }
 
+  /// Anmelde-Anbieter des aktuellen Nutzers (`password`, `google.com`, …) — für
+  /// die Wahl des Reauth-Wegs vor destruktiven Aktionen (Kontolöschen). Null,
+  /// wenn niemand angemeldet ist.
+  String? get primaryProviderId {
+    final user = _firebaseAuth.currentUser;
+    if (user == null) {
+      return null;
+    }
+    for (final info in user.providerData) {
+      if (info.providerId == 'password' || info.providerId == 'google.com') {
+        return info.providerId;
+      }
+    }
+    return user.providerData.isNotEmpty
+        ? user.providerData.first.providerId
+        : null;
+  }
+
+  /// Bestätigt die Identität des angemeldeten Nutzers per Passwort neu — das
+  /// Sicherheits-Gate vor dem Kontolöschen (E-Mail/Passwort-Konten). Wirft die
+  /// üblichen [FirebaseAuthException] (`wrong-password`/`invalid-credential`),
+  /// die [AuthProvider] deutsch mappt.
+  Future<void> reauthenticateWithPassword(String password) async {
+    final user = _firebaseAuth.currentUser;
+    final email = user?.email;
+    if (user == null || email == null || email.trim().isEmpty) {
+      throw FirebaseAuthException(
+        code: 'user-mismatch',
+        message: 'Kein angemeldeter Nutzer mit E-Mail für die Bestätigung.',
+      );
+    }
+    final credential = EmailAuthProvider.credential(
+      email: email.trim(),
+      password: password,
+    );
+    await user.reauthenticateWithCredential(credential);
+    // Frisches ID-Token erzwingen: sonst behält der Callable das alte `auth_time`
+    // und der server-seitige Step-up-Check (assertRecentAuth) würde fehlschlagen.
+    await user.getIdToken(true);
+  }
+
+  /// Bestätigt die Identität per erneutem Google-Login (Google-Konten).
+  Future<void> reauthenticateWithGoogle() async {
+    final user = _firebaseAuth.currentUser;
+    if (user == null) {
+      throw FirebaseAuthException(
+        code: 'user-mismatch',
+        message: 'Kein angemeldeter Nutzer für die Bestätigung.',
+      );
+    }
+    if (kIsWeb) {
+      final provider = GoogleAuthProvider()..addScope('email');
+      await user.reauthenticateWithPopup(provider);
+      await user.getIdToken(true);
+      return;
+    }
+    await _ensureGoogleSignInInitialized();
+    final googleSignIn = GoogleSignIn.instance;
+    if (googleSignIn.supportsAuthenticate()) {
+      final account = await googleSignIn.authenticate(scopeHint: ['email']);
+      final idToken = account.authentication.idToken;
+      if (idToken == null) {
+        throw FirebaseAuthException(
+          code: 'invalid-credential',
+          message: 'Google lieferte kein ID-Token.',
+        );
+      }
+      final credential = GoogleAuthProvider.credential(idToken: idToken);
+      await user.reauthenticateWithCredential(credential);
+    } else {
+      final provider = GoogleAuthProvider()..addScope('email');
+      await user.reauthenticateWithProvider(provider);
+    }
+    // Frisches ID-Token erzwingen (siehe reauthenticateWithPassword).
+    await user.getIdToken(true);
+  }
+
   Future<void> signOut() => _firebaseAuth.signOut();
 }

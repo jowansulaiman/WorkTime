@@ -30,6 +30,7 @@ import 'providers/password_provider.dart';
 import 'providers/personal_provider.dart';
 import 'providers/sales_insights_provider.dart';
 import 'providers/schedule_provider.dart';
+import 'providers/signage_provider.dart';
 import 'providers/storage_mode_provider.dart';
 import 'providers/store_task_provider.dart';
 import 'providers/team_provider.dart';
@@ -37,6 +38,7 @@ import 'providers/theme_provider.dart';
 import 'providers/work_provider.dart';
 import 'providers/zeitwirtschaft_provider.dart';
 import 'routing/app_router.dart';
+import 'screens/public/public_display_app.dart';
 import 'screens/public/public_feedback_app.dart';
 import 'screens/public/public_legal_app.dart';
 import 'screens/public/public_legal_screen.dart';
@@ -107,6 +109,9 @@ class _AppBootstrapState extends State<AppBootstrap> {
   // Bootstrap ausgewertet.
   final bool _publicWishMode = isPublicWishRoute();
   final bool _publicFeedbackMode = isPublicFeedbackRoute();
+  // Öffentlicher Werbe-Player (Store-TV, Route /anzeige/<token>): login-frei,
+  // liest nur die per-Token projizierte Playlist (publicDisplays/{token}).
+  final bool _publicDisplayMode = isPublicDisplayRoute();
   // Rechtliche Pflichtseiten (reine Statik, kein Firebase): /impressum,
   // /datenschutz. Wie die anderen öffentlichen Modi login-frei und ohne
   // Provider-Kette.
@@ -115,6 +120,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
   bool get _publicMode =>
       _publicWishMode ||
       _publicFeedbackMode ||
+      _publicDisplayMode ||
       _publicImpressumMode ||
       _publicDatenschutzMode;
   late Future<void> _initialization = _initializeApp();
@@ -281,6 +287,10 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
         if (_publicWishMode) {
           return PublicWishApp(firestoreService: _firestoreService);
+        }
+
+        if (_publicDisplayMode) {
+          return const PublicDisplayApp();
         }
 
         return WorkTimeApp(
@@ -510,6 +520,35 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'ContactProvider.updateSession',
+              onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        // Digitale Werbe-Displays (Store-TVs): Werbebild-Bibliothek + Displays
+        // + öffentliche Player-Projektion. Admin-only (Screen/Route/Rules).
+        // Bild-Upload nutzt denselben DocumentStorage-Seam wie die Personalakte;
+        // im Demo-/Offline-Modus bleibt er null (Upload aus). Auth/Storage/Audit
+        // wie ContactProvider.
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, SignageProvider>(
+          create: (_) => SignageProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, audit, provider) {
+            provider ??= SignageProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
+            final documentStorage = _resolveDocumentStorage();
+            if (documentStorage != null) {
+              provider.setDocumentStorage(documentStorage);
+            }
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'SignageProvider.updateSession',
               onError: provider.surfaceSessionError,
             );
             return provider;

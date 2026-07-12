@@ -22,7 +22,9 @@ import '../models/employee_profile.dart';
 import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
 import '../models/product.dart';
+import '../models/purchase_order.dart';
 import '../models/shift.dart';
+import '../models/supplier.dart';
 import '../models/user_settings.dart';
 import '../models/work_entry.dart';
 import 'download_service.dart';
@@ -304,6 +306,60 @@ class ExportService {
       bytes: Uint8List.fromList(utf8.encode(csv)),
       fileName: _inventoryFileName('nachbestellliste', 'csv'),
       mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  // --- Warenwirtschaft: Lieferanten-Bestellung ------------------------------
+
+  /// Klartext einer Lieferanten-Bestellung — gemeinsame Quelle für
+  /// Zwischenablage („Bestelltext kopieren") und mailto:-Body. Bewusst ohne
+  /// EK-Preise (geht an Externe).
+  static String buildPurchaseOrderText({
+    required PurchaseOrder order,
+    Supplier? supplier,
+  }) {
+    final buffer = StringBuffer()
+      ..writeln('Bestellung ${order.orderNumber ?? ''}'.trim())
+      ..writeln('Lieferant: ${order.supplierName ?? ''}');
+    if (supplier?.customerNumber?.isNotEmpty ?? false) {
+      buffer.writeln('Kundennr.: ${supplier!.customerNumber}');
+    }
+    if (order.siteName?.isNotEmpty ?? false) {
+      buffer.writeln('Laden: ${order.siteName}');
+    }
+    buffer.writeln('');
+    for (final item in order.items) {
+      buffer.writeln('- ${item.quantityOrdered} ${item.unit}  ${item.name}'
+          '${item.sku != null ? ' (${item.sku})' : ''}');
+    }
+    if (order.notes?.isNotEmpty ?? false) {
+      buffer
+        ..writeln('')
+        ..writeln('Notiz: ${order.notes}');
+    }
+    return buffer.toString();
+  }
+
+  /// Bestell-PDF erzeugen und über das plattformneutrale Download-/Share-
+  /// Muster ausgeben (Mobile/Desktop: share_plus-Share-Sheet, Web: Blob).
+  static Future<void> exportPurchaseOrderPdf({
+    required PurchaseOrder order,
+    Supplier? supplier,
+    String? orgName,
+  }) async {
+    final bytes = await PdfService.generatePurchaseOrderDocument(
+      order: order,
+      supplier: supplier,
+      orgName: orgName,
+    );
+    final number = order.orderNumber?.trim().toLowerCase() ?? '';
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _inventoryFileName(
+        number.isEmpty ? 'bestellung' : 'bestellung-$number',
+        'pdf',
+      ),
+      mimeType: 'application/pdf',
     );
   }
 

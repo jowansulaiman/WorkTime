@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/product.dart';
+import 'package:worktime_app/models/scan_event.dart';
 import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
@@ -38,6 +40,12 @@ class _FakeBarcodeScanner implements BarcodeScanner {
   bool get supportsTorch => false;
 
   @override
+  bool get supportsZoom => false;
+
+  @override
+  bool get supportsPhotoAnalysis => false;
+
+  @override
   Stream<String> get codes => _controller.stream;
 
   void emit(String code) => _controller.add(code);
@@ -58,6 +66,10 @@ class _FakeBarcodeScanner implements BarcodeScanner {
   Future<void> toggleTorch() async {}
   @override
   Future<void> switchCamera() async {}
+  @override
+  Future<void> setZoom(double scale) async {}
+  @override
+  Future<List<String>> analyzePhoto(String path) async => const [];
   @override
   Widget buildPreview(BuildContext context) =>
       const SizedBox(key: Key('fake-preview'));
@@ -152,6 +164,15 @@ void main() {
         ],
         child: MaterialApp(
           theme: AppTheme.resolveLight(useV2: true),
+          // Date-Picker im Wareneingang-Sheet braucht MaterialLocalizations
+          // (locale de_DE wie in der echten App).
+          locale: const Locale('de', 'DE'),
+          supportedLocales: const [Locale('de', 'DE')],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           home: ScannerScreen(
             scanner: scanner,
             feedback: const NoopScanFeedback(),
@@ -278,11 +299,66 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
+    // Gefuehrter Wareneingang: Button oeffnet das Sheet (Menge/MHD/Charge),
+    // gebucht wird erst mit "Wareneingang buchen".
     await tester.tap(find.text('Wareneingang'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.textContaining('Wareneingang: Feuerzeug Clipper'),
+        findsOneWidget);
+    await tester.tap(find.textContaining('Wareneingang buchen'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(inventory.products.single.currentStock, 6);
+  });
+
+  testWidgets('Wareneingang mit MHD legt zusaetzlich eine Charge an',
+      (tester) async {
+    final (scanner, inventory) = await pumpScanner(
+      tester,
+      products: const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Energy Drink',
+          barcode: validEan,
+          currentStock: 2,
+        ),
+      ],
+    );
+
+    await tester.tap(find.text('Buchen'));
+    await tester.pump();
+
+    scanner.emit(validEan);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(inventory.products.single.currentStock, 6);
+    await tester.tap(find.text('Wareneingang'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // MHD im Sheet erfassen (Date-Picker mit vorbelegtem Datum bestaetigen).
+    await tester.tap(find.text('MHD erfassen (optional)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('OK'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // Chargen-Feld erscheint erst mit gesetztem MHD.
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Charge/Los (optional)'), 'L-4711');
+    await tester.tap(find.textContaining('Wareneingang buchen'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(inventory.products.single.currentStock, 3);
+    expect(inventory.productBatches, hasLength(1));
+    expect(inventory.productBatches.single.note, 'L-4711');
+    expect(inventory.productBatches.single.quantity, 1);
   });
 
   testWidgets('Ton-Schalter schaltet stumm und persistiert', (tester) async {
@@ -379,10 +455,84 @@ void main() {
     expect(find.textContaining('Noch keine Preisaenderungen'), findsOneWidget);
   });
 
-  testWidgets('QR-Umschalter aktiviert das QR-Ziel und meldet es', (tester) async {
+  testWidgets('GS1-Code findet den Artikel und zeigt MHD/Charge an',
+      (tester) async {
+    final (scanner, _) = await pumpScanner(
+      tester,
+      products: const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Energy Drink',
+          barcode: validEan, // 4011200296908
+          currentStock: 5,
+        ),
+      ],
+    );
+
+    await tester.tap(find.text('Buchen'));
+    await tester.pump();
+
+    // GS1-Element-String: (01) GTIN-14 mit fuehrender 0 + (17) MHD + (10) Charge.
+    scanner.emit('01040112002969081726123110L42');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('Energy Drink'), findsOneWidget);
+    expect(find.textContaining('MHD 31.12.2026'), findsOneWidget);
+    expect(find.textContaining('Charge L42'), findsOneWidget);
+  });
+
+  testWidgets('Nicht-GS1-QR-Inhalt zeigt die Inhalt-Karte statt „nicht gefunden"',
+      (tester) async {
     final (scanner, _) = await pumpScanner(tester);
 
-    // Startzustand: Handels-Barcode-Modus (QR aus).
+    scanner.emit('https://example.com/aktion');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('QR-Inhalt erkannt'), findsOneWidget);
+    expect(find.text('https://example.com/aktion'), findsOneWidget);
+    expect(find.text('Artikel nicht vorhanden'), findsNothing);
+  });
+
+  testWidgets('Scans werden fuer die Statistik protokolliert', (tester) async {
+    final (scanner, inventory) = await pumpScanner(
+      tester,
+      products: const [
+        Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Feuerzeug Clipper',
+          barcode: validEan,
+          currentStock: 5,
+        ),
+      ],
+    );
+
+    scanner.emit(validEan); // Treffer (Scan & Go)
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    scanner.emit('4006381333931'); // unbekannt
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final events = await inventory.fetchScanEvents();
+    expect(events, hasLength(2));
+    expect(events.first.code, '4006381333931');
+    expect(events.first.outcome, ScanOutcome.notFound);
+    expect(events.last.code, validEan);
+    expect(events.last.outcome, ScanOutcome.matched);
+    expect(events.last.productId, isNotNull);
+    expect(events.last.mode, 'order');
+    expect(events.last.source, 'camera');
+  });
+
+  testWidgets('Umschalter aktiviert den erweiterten Modus und meldet es',
+      (tester) async {
+    final (scanner, _) = await pumpScanner(tester);
+
+    // Startzustand: Handels-Barcode-Modus (erweiterter Modus aus).
     expect(scanner.target, ScannerTarget.retail);
     expect(find.byIcon(Icons.qr_code_scanner_outlined), findsOneWidget);
 
@@ -390,9 +540,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(scanner.target, ScannerTarget.qr);
+    expect(scanner.target, ScannerTarget.extended);
     expect(find.byIcon(Icons.qr_code_2), findsOneWidget);
-    expect(find.textContaining('QR-Modus an'), findsOneWidget);
+    expect(find.textContaining('Erweiterter Modus an'), findsOneWidget);
   });
 
   testWidgets('Gleichcode wird ~1s entprellt, danach wieder verarbeitet',

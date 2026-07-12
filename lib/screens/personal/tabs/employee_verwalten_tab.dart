@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 
 import '../../../models/app_user.dart';
 import '../../../models/employee_profile.dart';
+import '../../../providers/auth_provider.dart';
 import '../../../providers/personal_provider.dart';
 import '../../../providers/team_provider.dart';
 import '../../../ui/ui.dart';
+import '../../../widgets/account_delete_confirm_dialog.dart';
 import '../../../widgets/info_row.dart';
 import '../../team_management_screen.dart'
     show showMemberConfigurationSheet, showShiftPreferenceSheet;
@@ -15,9 +17,11 @@ import '../../team_management_screen.dart'
 /// (`employee_manage_tab`): (1) Aktiv-Status umschalten + Beschäftigungsstatus,
 /// (2) Gefahrenzone, (3) technische Meta-IDs.
 ///
-/// **WorkTime-Entscheidung:** „Mitarbeiter löschen" = **Deaktivieren-Alias**
-/// (`TeamProvider.updateMember(isActive:false)`) — ein Mitarbeiter ist ein
-/// Auth-gebundenes Login (users-Doc), kein reines HR-Objekt; sicher & reversibel.
+/// **WorkTime-Entscheidung:** Standard ist **Deaktivieren** (reversibel,
+/// `TeamProvider.updateMember(isActive:false)`). Zusätzlich gibt es „Endgültig
+/// löschen" (`TeamProvider.deleteMemberAccount`, Plan `plan/account-loeschung.md`)
+/// — serverseitige Komplett-Löschung mit Anonymisierung der
+/// aufbewahrungspflichtigen Daten, hinter Reauth + destruktiver Bestätigung.
 class EmployeeVerwaltenTab extends StatelessWidget {
   const EmployeeVerwaltenTab({super.key, required this.userId});
 
@@ -29,6 +33,9 @@ class EmployeeVerwaltenTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final team = context.watch<TeamProvider>();
     final personal = context.watch<PersonalProvider>();
+    // Self-Erkennung über den (ohnehin gewatchten) TeamProvider — die
+    // Runtime-Reauth in _deleteMemberAccount nutzt weiterhin den AuthProvider.
+    final selfUid = team.currentUser?.uid;
 
     AppUserProfile? member;
     for (final m in team.members) {
@@ -135,9 +142,10 @@ class EmployeeVerwaltenTab extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Ein Mitarbeiter ist mit einem Login verknüpft und wird nicht '
-                'endgültig gelöscht, sondern deaktiviert. Der Zugang bleibt '
-                'erhalten und kann jederzeit reaktiviert werden.',
+                'Empfohlen: Mitarbeiter deaktivieren — der Login bleibt erhalten '
+                'und kann jederzeit reaktiviert werden. Das endgültige Löschen '
+                'entfernt Konto und persönliche Daten unwiderruflich; '
+                'aufbewahrungspflichtige Zeit-/Lohndaten bleiben anonymisiert.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
@@ -171,6 +179,30 @@ class EmployeeVerwaltenTab extends StatelessWidget {
                         },
                 ),
               ),
+              const SizedBox(height: 8),
+              // Selbst-Löschung gehört in den abgesicherten Einstellungs-Flow
+              // (Einstellungen → Konto & Profil), nicht in die Fremd-Verwaltung —
+              // sonst meldet der stille Self-Ausschluss im Provider falschen
+              // Erfolg. Für das eigene Konto daher nur ein Hinweis.
+              if (m.uid == selfUid)
+                Text(
+                  'Dein eigenes Konto löschst du unter '
+                  'Einstellungen → Konto & Profil.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                )
+              else
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    style: TextButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.error,
+                    ),
+                    icon: const Icon(Icons.delete_forever_outlined),
+                    label: const Text('Endgültig löschen'),
+                    onPressed: () => _deleteMemberAccount(context, m),
+                  ),
+                ),
             ],
           ),
         ),
@@ -195,6 +227,51 @@ class EmployeeVerwaltenTab extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  /// Admin-Fremdlöschung eines Mitarbeiter-Kontos (Plan
+  /// `plan/account-loeschung.md`): Reauth des Admins + destruktive Bestätigung,
+  /// dann serverseitige Löschung/Anonymisierung. Bei Erfolg zurück zur Liste.
+  Future<void> _deleteMemberAccount(
+    BuildContext context,
+    AppUserProfile m,
+  ) async {
+    final auth = context.read<AuthProvider>();
+    final team = context.read<TeamProvider>();
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+
+    final result = await AccountDeleteConfirmDialog.show(
+      context,
+      needsPassword: auth.primaryProviderId == 'password',
+      title: 'Mitarbeiter endgültig löschen',
+      message: '„${m.displayName}" wird unwiderruflich gelöscht. Persönliche '
+          'Daten werden entfernt, aufbewahrungspflichtige Zeit-/Lohndaten '
+          'anonymisiert.',
+    );
+    if (result == null || !result.confirmed) {
+      return;
+    }
+
+    final reauthed = await auth.reauthenticate(password: result.password);
+    if (!reauthed) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(auth.errorMessage ?? 'Bestätigung fehlgeschlagen.')),
+      );
+      return;
+    }
+
+    try {
+      await team.deleteMemberAccount(m.uid);
+      messenger.showSnackBar(
+        SnackBar(content: Text('„${m.displayName}" wurde gelöscht.')),
+      );
+      navigator.maybePop();
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Löschen fehlgeschlagen: $error')),
+      );
+    }
   }
 }
 

@@ -76,6 +76,9 @@ class TeamProvider extends ChangeNotifier {
   String? _errorMessage;
 
   List<AppUserProfile> get members => _members;
+  /// Das eingeloggte Profil (aus `updateSession`), z. B. um in der
+  /// Mitarbeiter-Verwaltung den eigenen Datensatz zu erkennen.
+  AppUserProfile? get currentUser => _currentUser;
   List<UserInvite> get invites => _invites;
   List<TeamDefinition> get teams => _teams;
   List<SiteDefinition> get sites => _sites;
@@ -1393,6 +1396,63 @@ class TeamProvider extends ChangeNotifier {
       entityId: uid,
       summary: auditSummary,
     );
+  }
+
+  /// Löscht das Konto eines **fremden** Mitglieds komplett (Admin-Pfad, Plan
+  /// `plan/account-loeschung.md`) — im Gegensatz zum reversiblen
+  /// [setMemberActive]/[updateMember]-`isActive:false`. Serverseitig gegatet
+  /// (Callable prüft Admin + gleiche Org + Letzter-Admin-Schutz und anonymisiert
+  /// die aufbewahrungspflichtigen Daten). Die eigene Kontolöschung läuft NICHT
+  /// hier, sondern über `AuthProvider.deleteOwnAccount` (mit Reauth-Gate).
+  Future<void> deleteMemberAccount(String uid) async {
+    final currentUser = _currentUser;
+    if (currentUser == null || !currentUser.isAdmin) {
+      return;
+    }
+    if (uid == currentUser.uid) {
+      // Selbst-Löschung gehört in den abgesicherten AuthProvider-Flow.
+      return;
+    }
+    final memberName = _memberLabel(uid);
+
+    if (usesLocalStorage) {
+      final matches = _localMembers.where((m) => m.uid == uid);
+      final email =
+          matches.isNotEmpty ? matches.first.email.trim().toLowerCase() : '';
+      _localMembers.removeWhere((m) => m.uid == uid);
+      if (email.isNotEmpty) {
+        _localInvites
+            .removeWhere((inv) => inv.email.trim().toLowerCase() == email);
+      }
+      _localTeams = _localTeams
+          .map((team) => team.copyWith(
+                memberIds: team.memberIds
+                    .where((candidate) => candidate != uid)
+                    .toList(growable: false),
+              ))
+          .toList(growable: false);
+      await _persistLocalState();
+      _applyLocalState();
+      notifyListeners();
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Benutzerkonto',
+        entityId: uid,
+        summary: 'Konto $memberName endgültig gelöscht',
+      );
+      return;
+    }
+
+    // Defense-in-Depth: nur Mitglieder der eigenen Org (Callable + Rules
+    // erzwingen es zusätzlich serverseitig). Der Members-Stream entfernt den
+    // Nutzer nach dem serverseitigen Doc-Delete automatisch aus der Liste.
+    final isOrgMember = _members.any((m) => m.uid == uid);
+    if (!isOrgMember) {
+      return;
+    }
+    // Kein Client-Audit auf dem Cloud-Pfad: die Callable schreibt den
+    // maßgeblichen server-Audit-Eintrag selbst (kein Doppel-Logging).
+    await _firestoreService.deleteUserAccount(uid);
   }
 
   Future<void> cacheCloudStateLocally() async {

@@ -9,6 +9,7 @@ import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
+import '../models/scan_event.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
 
@@ -114,7 +115,10 @@ abstract interface class InventoryRepository {
     required String supplierId,
   });
 
-  Future<void> saveProduct(Product product);
+  /// Speichert einen Artikel und gibt dessen Doc-ID zurueck (bei Anlage die
+  /// neu vergebene) — Aufrufer wie die Umlagerung mit Zielartikel-Anlage
+  /// brauchen die ID fuer die direkt folgende Bestandsbuchung.
+  Future<String> saveProduct(Product product);
 
   Future<void> deleteProduct({
     required String orgId,
@@ -148,6 +152,19 @@ abstract interface class InventoryRepository {
     required String orgId,
     required String productId,
   });
+
+  // --- Scan-Telemetrie (scanEvents) ---------------------------------------
+  // Append-only wie stockMovements; Auswertung clientseitig via
+  // `computeScanStats`. Nur `orderBy(createdAt)` -> Single-Field-Index,
+  // KEIN Composite noetig.
+
+  /// Schreibt ein Scan-Ereignis. Aufrufer loggen fire-and-forget — Fehler
+  /// hier duerfen das Scannen nie stoeren oder verlangsamen.
+  Future<void> addScanEvent(ScanEvent event);
+
+  /// Liest die juengsten Scan-Ereignisse (neueste zuerst, einmaliger Read —
+  /// die Statistik ist eine Auswertungs-Ansicht, kein Live-Board).
+  Future<List<ScanEvent>> fetchScanEvents(String orgId, {int limit = 500});
 
   /// Bucht eine Bestandsaenderung atomar und gibt den neuen Bestand zurueck.
   Future<int> adjustProductStock({

@@ -59,7 +59,9 @@ import '../models/work_template.dart';
 import '../repositories/contact_repository.dart';
 import '../repositories/firestore_contact_repository.dart';
 import '../repositories/firestore_inventory_repository.dart';
+import '../repositories/firestore_signage_repository.dart';
 import '../repositories/inventory_repository.dart';
+import '../repositories/signage_repository.dart';
 import 'compliance_rejected_exception.dart';
 import 'database_service.dart';
 
@@ -587,6 +589,11 @@ class FirestoreService {
       FirestoreContactRepository(firestore: _firestore);
 
   ContactRepository get contactRepository => _contactRepository;
+
+  late final SignageRepository _signageRepository =
+      FirestoreSignageRepository(firestore: _firestore);
+
+  SignageRepository get signageRepository => _signageRepository;
 
   FirebaseFunctions get _firebaseFunctions =>
       _functions ??= FirebaseFunctions.instanceFor(
@@ -1462,6 +1469,19 @@ class FirestoreService {
   /// admin-gegatet (`resetKioskPin`-Callable).
   Future<void> resetKioskPin(String employeeId) async {
     await _callCloudFunction('resetKioskPin', {'employeeId': employeeId});
+  }
+
+  /// Löscht ein Konto **komplett** (Plan `plan/account-loeschung.md`): entfernt
+  /// den Firebase-Auth-Nutzer + persönliche Daten hart und anonymisiert die
+  /// aufbewahrungspflichtigen Zeit-/Lohndaten. Läuft ausschließlich serverseitig
+  /// (Admin SDK) — `users/{uid}` ist per Rules client-unlöschbar. Server prüft
+  /// Self- vs. Admin-Berechtigung, gleiche Org und den Letzter-Admin-Schutz.
+  ///
+  /// [userId] == eigene uid ⇒ Selbst-Löschung; sonst Admin-Fremdlöschung.
+  /// Es gibt **keinen** Direkt-Write-Fallback: ist die Callable nicht deployt,
+  /// schlägt der Aufruf hart fehl (`not-found`/`unavailable`).
+  Future<void> deleteUserAccount(String userId) async {
+    await _callCloudFunction('deleteUserAccount', {'userId': userId});
   }
 
   /// „Wer ist gerade im Dienst" (PA-4.5b): live-Stream der server-gepflegten

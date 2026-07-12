@@ -215,6 +215,82 @@ class AuthProvider extends ChangeNotifier {
     );
   }
 
+  /// Anmelde-Anbieter des aktuellen Nutzers (`password`/`google.com`) — steuert,
+  /// welches Reauth-UI vor dem Kontolöschen gezeigt wird. Null im Demo-Modus.
+  String? get primaryProviderId =>
+      authDisabled ? null : _authService.primaryProviderId;
+
+  /// Bestätigt die Identität vor einer destruktiven Aktion (Kontolöschen) neu.
+  /// Bei Passwort-Konten muss [password] gesetzt sein; Google-Konten lösen einen
+  /// erneuten Google-Login aus. Liefert `true` bei Erfolg, sonst steht der Grund
+  /// in [errorMessage]. Im Demo-Modus (kein Firebase) ein No-op mit `true`.
+  Future<bool> reauthenticate({String? password}) async {
+    if (authDisabled) {
+      return true;
+    }
+    final providerId = _authService.primaryProviderId;
+    await _runAction(() async {
+      if (providerId == 'password') {
+        final pw = password ?? '';
+        if (pw.isEmpty) {
+          throw StateError('Bitte gib dein Passwort ein.');
+        }
+        await _authService.reauthenticateWithPassword(pw);
+      } else {
+        await _authService.reauthenticateWithGoogle();
+      }
+    }, clearError: true);
+    return _errorMessage == null;
+  }
+
+  /// Löscht das **eigene** Konto komplett (Plan `plan/account-loeschung.md`).
+  /// Voraussetzung: [reauthenticate] lief zuvor erfolgreich (UI-Gate).
+  ///
+  /// Real: serverseitige Löschung über die Callable (Auth-Nutzer + persönliche
+  /// Daten hart, aufbewahrungspflichtige Daten anonymisiert), danach lokaler
+  /// Bulk-Wipe + Sign-out → Gate leitet auf `/anmelden`. Demo/Offline: es gibt
+  /// keinen Server — nur lokaler Wipe + State-Reset.
+  Future<bool> deleteOwnAccount() async {
+    if (authDisabled) {
+      await _runAction(() async {
+        await DatabaseService.wipeAllLocalData();
+        _firebaseUser = null;
+        _profile = null;
+      }, clearError: true);
+      return _errorMessage == null;
+    }
+    final uid = _firebaseUser?.uid;
+    if (uid == null) {
+      _errorMessage = 'Kein angemeldetes Konto gefunden.';
+      notifyListeners();
+      return false;
+    }
+    // 1) Die serverseitige Löschung ist der maßgebliche Erfolg.
+    await _runAction(
+      () => _firestoreService.deleteUserAccount(uid),
+      clearError: true,
+    );
+    if (_errorMessage != null) {
+      return false;
+    }
+    // 2) Lokaler Wipe + Sign-out sind best-effort: ein Fehler hier darf die
+    // bereits erfolgte Server-Löschung NICHT als Fehlschlag maskieren (der
+    // Profil-Stream/Auth-Event leitet ohnehin auf /anmelden um).
+    try {
+      await DatabaseService.wipeAllLocalData();
+    } catch (error, stackTrace) {
+      AppLogger.warning('Lokaler Wipe nach Kontolöschung fehlgeschlagen',
+          error: error, stackTrace: stackTrace);
+    }
+    try {
+      await _authService.signOut();
+    } catch (error, stackTrace) {
+      AppLogger.warning('Sign-out nach Kontolöschung fehlgeschlagen',
+          error: error, stackTrace: stackTrace);
+    }
+    return true;
+  }
+
   Future<void> _runAction(
     Future<void> Function() action, {
     bool clearError = false,
@@ -320,6 +396,10 @@ class AuthProvider extends ChangeNotifier {
         'too-many-requests' =>
           'Zu viele Anmeldeversuche. Bitte warte einen Moment und versuche es erneut.',
         'user-disabled' => 'Dieses Konto wurde deaktiviert.',
+        'requires-recent-login' =>
+          'Aus Sicherheitsgründen bitte erneut anmelden und die Aktion wiederholen.',
+        'user-mismatch' =>
+          'Die Bestätigung passt nicht zum angemeldeten Konto.',
         'account-exists-with-different-credential' =>
           'Ein Konto mit dieser E-Mail existiert bereits mit einer anderen Anmeldemethode.',
         _ =>

@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
 import '../models/supplier.dart';
 import '../providers/inventory_provider.dart';
+import '../services/export_service.dart';
 import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import 'inventory_screen.dart';
@@ -504,6 +506,17 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
         ],
         actions: [
           IconButton(
+            tooltip: 'Bestellung als PDF teilen',
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            onPressed: () => _sharePdf(context, order, supplier),
+          ),
+          if (supplier != null && supplier.effectiveOrderEmail != null)
+            IconButton(
+              tooltip: 'Per E-Mail senden',
+              icon: const Icon(Icons.mail_outline),
+              onPressed: () => _sendByEmail(context, order, supplier),
+            ),
+          IconButton(
             tooltip: 'Bestelltext kopieren',
             icon: const Icon(Icons.copy_all_outlined),
             onPressed: () => _copyOrderText(context, order, supplier),
@@ -733,28 +746,80 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
     PurchaseOrder order,
     Supplier? supplier,
   ) {
-    final buffer = StringBuffer()
-      ..writeln('Bestellung ${order.orderNumber ?? ''}'.trim())
-      ..writeln('Lieferant: ${order.supplierName ?? ''}');
-    if (supplier?.customerNumber?.isNotEmpty ?? false) {
-      buffer.writeln('Kundennr.: ${supplier!.customerNumber}');
-    }
-    if (order.siteName?.isNotEmpty ?? false) {
-      buffer.writeln('Laden: ${order.siteName}');
-    }
-    buffer.writeln('');
-    for (final item in order.items) {
-      buffer.writeln('- ${item.quantityOrdered} ${item.unit}  ${item.name}'
-          '${item.sku != null ? ' (${item.sku})' : ''}');
-    }
-    if (order.notes?.isNotEmpty ?? false) {
-      buffer
-        ..writeln('')
-        ..writeln('Notiz: ${order.notes}');
-    }
-    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    Clipboard.setData(ClipboardData(
+      text: ExportService.buildPurchaseOrderText(
+        order: order,
+        supplier: supplier,
+      ),
+    ));
     _toast(context, 'Bestelltext in die Zwischenablage kopiert.');
   }
+
+  /// Erzeugt das Bestell-PDF und gibt es über das plattformneutrale
+  /// Download-/Share-Muster aus (Mobile/Desktop: share_plus, Web: Blob).
+  Future<void> _sharePdf(
+    BuildContext context,
+    PurchaseOrder order,
+    Supplier? supplier,
+  ) async {
+    try {
+      await ExportService.exportPurchaseOrderPdf(
+        order: order,
+        supplier: supplier,
+      );
+    } catch (_) {
+      if (context.mounted) {
+        _toast(context, 'PDF-Export fehlgeschlagen.');
+      }
+    }
+  }
+
+  /// Öffnet den E-Mail-Client mit vorbefüllter Bestellung (mailto:) an die
+  /// Bestell-E-Mail des Lieferanten. Body = derselbe Klartext wie
+  /// „Bestelltext kopieren".
+  Future<void> _sendByEmail(
+    BuildContext context,
+    PurchaseOrder order,
+    Supplier supplier,
+  ) async {
+    final email = supplier.effectiveOrderEmail;
+    if (email == null) {
+      return;
+    }
+    final uri = Uri(
+      scheme: 'mailto',
+      path: email,
+      query: _encodeMailtoQuery({
+        'subject': 'Bestellung ${order.orderNumber ?? ''}'.trim(),
+        'body': ExportService.buildPurchaseOrderText(
+          order: order,
+          supplier: supplier,
+        ),
+      }),
+    );
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      launched = false;
+    }
+    if (!launched && context.mounted) {
+      _toast(
+        context,
+        'Kein E-Mail-Programm gefunden. Nutze stattdessen '
+        '„Bestelltext kopieren".',
+      );
+    }
+  }
+}
+
+/// mailto:-Query von Hand kodieren: `Uri(queryParameters:)` kodiert
+/// Leerzeichen als `+`, was Mail-Programme wörtlich anzeigen würden.
+String _encodeMailtoQuery(Map<String, String> params) {
+  return params.entries
+      .map((e) =>
+          '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+      .join('&');
 }
 
 class _InfoRow extends StatelessWidget {

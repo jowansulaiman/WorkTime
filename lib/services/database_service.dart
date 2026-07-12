@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_logger.dart';
 import '../models/absence_request.dart';
+import '../models/ad_media.dart';
 import '../models/app_user.dart';
 import '../models/compliance_rule_set.dart';
 import '../models/contact.dart';
@@ -36,12 +37,14 @@ import '../models/payroll_record.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
+import '../models/scan_event.dart';
 import '../models/purchase_order.dart';
 import '../models/qualification_definition.dart';
 import '../models/shift.dart';
 import '../models/shift_swap_request.dart';
 import '../models/swap_credit.dart';
 import '../models/shift_template.dart';
+import '../models/signage_display.dart';
 import '../models/site_definition.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
@@ -107,6 +110,9 @@ class DatabaseService {
   static const _purchaseOrdersKey = 'purchase_orders';
   static const _stockMovementsKey = 'stock_movements';
   static const _priceHistoryKey = 'price_history';
+  // Scan-Telemetrie (Scan-Statistik/Fehleranalyse): org-skopiert, lokal auf
+  // die juengsten Eintraege gecappt (siehe InventoryProvider).
+  static const _scanEventsKey = 'scan_events';
   static const _customerOrdersKey = 'customer_orders';
   static const _orderCartsKey = 'order_carts';
   static const _weeklyOrderListsKey = 'weekly_order_lists';
@@ -118,6 +124,9 @@ class DatabaseService {
   static const _contactOrganizationsKey = 'contact_organizations';
   // Laden-To-Dos (Arbeitsmodus/Kiosk): org-skopiert, je Laden (Broadcast).
   static const _storeTasksKey = 'store_tasks';
+  // Digitale Werbe-Displays (Store-TVs): org-skopiert, neue Collections.
+  static const _adMediaKey = 'ad_media';
+  static const _signageDisplaysKey = 'signage_displays';
   // Personal-Bereich (nur Admin): org-skopiert, ohne Legacy-Migration.
   static const _workTasksKey = 'work_tasks';
   static const _payrollRecordsKey = 'payroll_records';
@@ -183,6 +192,8 @@ class DatabaseService {
     _purchaseOrdersKey,
     _stockMovementsKey,
     _priceHistoryKey,
+    // Scan-Telemetrie: org-skopiert, neue Collection ohne Altbestand.
+    _scanEventsKey,
     _customerOrdersKey,
     // Wochen-Bestellkorb + Standard-Wochenliste: org-skopiert (je Laden ein
     // Eintrag), neue Collections ohne Altbestand.
@@ -196,6 +207,9 @@ class DatabaseService {
     _contactOrganizationsKey,
     // Laden-To-Dos (Arbeitsmodus/Kiosk): org-skopiert (je Laden / org-weit).
     _storeTasksKey,
+    // Digitale Werbe-Displays (Store-TVs): org-skopiert, neue Collections.
+    _adMediaKey,
+    _signageDisplaysKey,
     // Personal-Bereich: org-skopiert, neue Collections ohne Altbestand.
     _workTasksKey,
     _payrollRecordsKey,
@@ -1301,6 +1315,31 @@ class DatabaseService {
     );
   }
 
+  static Future<List<ScanEvent>> loadLocalScanEvents({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _scanEventsKey,
+      scope: scope,
+      fromMap: ScanEvent.fromMap,
+      // Juengste zuerst — die Statistik interessiert sich fuer die Gegenwart.
+      compare: (a, b) => (b.createdAt ?? DateTime(2000))
+          .compareTo(a.createdAt ?? DateTime(2000)),
+    );
+  }
+
+  static Future<void> saveLocalScanEvents(
+    List<ScanEvent> events, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _scanEventsKey,
+      scope: scope,
+      items: events,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<PurchaseOrder>> loadLocalPurchaseOrders({
     LocalStorageScope? scope,
   }) {
@@ -1512,6 +1551,54 @@ class DatabaseService {
     );
   }
 
+  // --- Digitale Werbe-Displays (Store-TVs) ---------------------------------
+
+  static Future<List<AdMedia>> loadLocalAdMedia({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _adMediaKey,
+      scope: scope,
+      fromMap: AdMedia.fromMap,
+      compare: (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+    );
+  }
+
+  static Future<void> saveLocalAdMedia(
+    List<AdMedia> media, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _adMediaKey,
+      scope: scope,
+      items: media,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<SignageDisplay>> loadLocalSignageDisplays({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _signageDisplaysKey,
+      scope: scope,
+      fromMap: SignageDisplay.fromMap,
+      compare: (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+  }
+
+  static Future<void> saveLocalSignageDisplays(
+    List<SignageDisplay> displays, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _signageDisplaysKey,
+      scope: scope,
+      items: displays,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<String?> loadLocalAuthUserId() async {
     final prefs = await _prefs;
     return prefs.getString(_localAuthUserIdKey);
@@ -1633,6 +1720,33 @@ class DatabaseService {
     await prefs.remove(_templatesKey);
     for (final key in _legacyWorkSettingKeys) {
       await prefs.remove(_resolveGlobalSettingKey(key));
+    }
+  }
+
+  /// Löscht ALLE lokal (SharedPreferences) gespiegelten App-Daten dieses Geräts —
+  /// gescoped auf die App-eigenen Namensräume, damit fremde Prefs (falls je
+  /// welche existieren) unberührt bleiben.
+  ///
+  /// Aufgerufen beim **kompletten Löschen des eigenen Kontos** (Plan
+  /// `plan/account-loeschung.md`, Slice 1): „keine Spur auf dem Gerät". Entfernt
+  /// den scoped-`local_v2/`-Baum (Zeiteinträge, Schichten, Stammdaten-Cache,
+  /// user-Settings-Spiegel), die globalen `setting_`-Keys (Legacy-Settings,
+  /// Theme/Locale, Storage-Modus) und die lokale Auth-Kennung.
+  ///
+  /// Bewusst NICHT nur user-scoped: Beim Selbst-Löschen soll das Gerät leer sein,
+  /// nicht nur der eine Nutzer-Teilbaum. Für Admin-Fremdlöschung wird diese
+  /// Methode nicht aufgerufen (das fremde Gerät ist nicht erreichbar).
+  static Future<void> wipeAllLocalData() async {
+    final prefs = await _prefs;
+    final toRemove = prefs
+        .getKeys()
+        .where((key) =>
+            key == _localAuthUserIdKey ||
+            key.startsWith(_scopedPrefix) ||
+            key.startsWith(_settingsPrefix))
+        .toList(growable: false);
+    for (final key in toRemove) {
+      await prefs.remove(key);
     }
   }
 

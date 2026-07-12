@@ -2,7 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:worktime_app/core/finance_analytics.dart';
 import 'package:worktime_app/models/finance_models.dart';
+import 'package:worktime_app/models/purchase_order.dart';
 import 'package:worktime_app/models/shift.dart';
+import 'package:worktime_app/models/supplier.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/models/work_entry.dart';
 import 'package:worktime_app/services/export_service.dart';
@@ -119,6 +121,104 @@ void main() {
       );
       expect(bytes, isNotEmpty);
       expect(bytes.length, greaterThan(1000));
+    });
+
+    test('generates a purchase order document without external font downloads',
+        () async {
+      final bytes = await PdfService.generatePurchaseOrderDocument(
+        order: PurchaseOrder(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          siteName: 'Tabak Börse',
+          supplierId: 'sup-1',
+          supplierName: 'Getränke Meyer',
+          orderNumber: 'BE-2026-0042',
+          status: PurchaseOrderStatus.ordered,
+          orderedAt: DateTime(2026, 7, 10),
+          notes: 'Bitte bis Freitag liefern.',
+          items: const [
+            PurchaseOrderItem(
+              name: 'Cola 0,5l',
+              sku: '4000177001234',
+              unit: 'Kiste',
+              quantityOrdered: 5,
+              unitPriceCents: 1099,
+            ),
+            PurchaseOrderItem(
+              name: 'Wasser still',
+              quantityOrdered: 3,
+            ),
+          ],
+        ),
+        supplier: const Supplier(
+          orgId: 'org-1',
+          name: 'Getränke Meyer',
+          customerNumber: 'K-4711',
+          orderEmail: 'bestellung@meyer.example',
+        ),
+        orgName: 'Worktime',
+      );
+
+      expect(bytes, isNotEmpty);
+      expect(bytes.length, greaterThan(1000));
+    });
+
+    test('generates a purchase order document for a minimal draft', () async {
+      // Entwurf ohne Nummer/Notiz/Positionen und ohne Supplier-Objekt darf
+      // nicht werfen (alle optionalen Felder leer).
+      final bytes = await PdfService.generatePurchaseOrderDocument(
+        order: const PurchaseOrder(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          supplierId: 'sup-1',
+        ),
+      );
+
+      expect(bytes, isNotEmpty);
+      expect(bytes.length, greaterThan(500));
+    });
+
+    test('builds the purchase order plain text (clipboard + mailto body)', () {
+      final text = ExportService.buildPurchaseOrderText(
+        order: const PurchaseOrder(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          siteName: 'Tabak Börse',
+          supplierId: 'sup-1',
+          supplierName: 'Getränke Meyer',
+          orderNumber: 'BE-2026-0042',
+          notes: 'Bitte bis Freitag liefern.',
+          items: [
+            PurchaseOrderItem(
+              name: 'Cola 0,5l',
+              sku: '4000177001234',
+              unit: 'Kiste',
+              quantityOrdered: 5,
+              unitPriceCents: 1099,
+            ),
+            PurchaseOrderItem(
+              name: 'Wasser still',
+              quantityOrdered: 3,
+            ),
+          ],
+        ),
+        supplier: const Supplier(
+          orgId: 'org-1',
+          name: 'Getränke Meyer',
+          customerNumber: 'K-4711',
+        ),
+      );
+
+      expect(text, contains('Bestellung BE-2026-0042'));
+      expect(text, contains('Lieferant: Getränke Meyer'));
+      expect(text, contains('Kundennr.: K-4711'));
+      expect(text, contains('Laden: Tabak Börse'));
+      expect(text, contains('- 5 Kiste  Cola 0,5l (4000177001234)'));
+      expect(text, contains('- 3 Stück  Wasser still'));
+      expect(text, contains('Notiz: Bitte bis Freitag liefern.'));
+      // Keine EK-Preise im Text, der an den Lieferanten geht.
+      expect(text, isNot(contains('10,99')));
+      expect(text, isNot(contains('€')));
     });
 
     test('builds a shift plan csv split per site (matrix)', () {

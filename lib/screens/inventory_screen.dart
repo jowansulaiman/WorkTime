@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_config.dart';
 import '../core/money.dart';
@@ -11,18 +12,24 @@ import '../models/contact.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
+import '../models/stock_movement.dart';
 import '../models/supplier.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
 import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
+import '../theme/theme_extensions.dart';
+import '../ui/app_status.dart';
 import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/contact_picker_field.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/price_history_sheet.dart';
+import '../widgets/responsive_layout.dart';
 import 'fridge_refill_screen.dart';
 import 'order_cart_screen.dart';
+import 'price_deviation_screen.dart';
 import 'purchase_order_screens.dart';
 
 final NumberFormat _euroFormat =
@@ -114,8 +121,22 @@ class _InventoryScreenState extends State<InventoryScreen>
   static const int _tabCount = 5;
 
   late final TabController _tabController;
+  final TextEditingController _searchController = TextEditingController();
   String? _selectedSiteId;
   String _search = '';
+  // Suchfeld ist standardmäßig eingeklappt (spart eine Zeile) und wird erst
+  // über den Lupen-Button in der AppBar (nur im Bestand-Tab) eingeblendet.
+  bool _searchVisible = false;
+
+  void _toggleSearch() {
+    setState(() {
+      _searchVisible = !_searchVisible;
+      if (!_searchVisible) {
+        _search = '';
+        _searchController.clear();
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -135,6 +156,7 @@ class _InventoryScreenState extends State<InventoryScreen>
   @override
   void dispose() {
     _tabController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -178,6 +200,17 @@ class _InventoryScreenState extends State<InventoryScreen>
             inventory.fridgeShortfallCount(effectiveSiteId),
           ].reduce((a, b) => a > b ? a : b);
 
+    // Auf Handybreite (< mediumWindow) rendern ALLE Tabs nur ihr Icon (+ Badge);
+    // das Label lebt in Tooltip/Semantics (siehe _TabLabel). So bleibt der
+    // Tab-Streifen schmal, passt ohne horizontales Scrollen UND springt beim
+    // Tabwechsel nicht um (kein Reflow durch ein wachsendes Aktiv-Label). Ab
+    // Tablet-/Desktopbreite (Rail-Layout, zentrierter Inhalt) ist Platz für alle
+    // Labels. Tab-Reihenfolge/Indizes bleiben UNVERÄNDERT (Deeplink-Kopplung).
+    final compactTabs =
+        MediaQuery.sizeOf(context).width < MobileBreakpoints.mediumWindow;
+    final selectedTab = _tabController.index;
+    final showTabLabels = !compactTabs;
+
     return Scaffold(
       appBar: BreadcrumbAppBar(
         breadcrumbs: [
@@ -188,6 +221,24 @@ class _InventoryScreenState extends State<InventoryScreen>
           const BreadcrumbItem(label: 'Warenwirtschaft'),
         ],
         actions: [
+          // Lupe nur im Bestand-Tab — blendet das (sonst eingeklappte) Suchfeld
+          // ein/aus, damit die Liste keine Dauer-Suchzeile trägt.
+          if (selectedTab == _stockTabIndex)
+            IconButton(
+              tooltip: _searchVisible ? 'Suche schließen' : 'Artikel suchen',
+              isSelected: _searchVisible,
+              icon: const Icon(Icons.search),
+              selectedIcon: const Icon(Icons.search_off),
+              onPressed: _toggleSearch,
+            ),
+          // Geführte Bestandszählung (eigener Bereich /inventur) — nur wer
+          // buchen darf, sieht den Einstieg.
+          if (canManage && selectedTab == _stockTabIndex)
+            IconButton(
+              tooltip: 'Inventur (Bestand zählen)',
+              icon: const Icon(Icons.fact_check_outlined),
+              onPressed: () => context.push(AppRoutes.inventur),
+            ),
           if (AppConfig.oktoposEnabled && profile.isAdmin)
             PopupMenuButton<String>(
               icon: const Icon(Icons.point_of_sale_outlined),
@@ -203,6 +254,8 @@ class _InventoryScreenState extends State<InventoryScreen>
                   case 'pushCustomers':
                     _pushCustomersToOktopos(
                         context, inventory, sites, effectiveSiteId);
+                  case 'priceCheck':
+                    _openPriceDeviation(context, sites, effectiveSiteId);
                   case 'settings':
                     _openOktoposSettings(context, inventory, sites);
                 }
@@ -230,6 +283,14 @@ class _InventoryScreenState extends State<InventoryScreen>
                     contentPadding: EdgeInsets.zero,
                     leading: Icon(Icons.people_alt_outlined),
                     title: Text('Kunden an Kasse senden'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'priceCheck',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.price_check_outlined),
+                    title: Text('Preisabgleich Kasse'),
                   ),
                 ),
                 PopupMenuItem(
@@ -350,14 +411,21 @@ class _InventoryScreenState extends State<InventoryScreen>
                   controller: _tabController,
                   // 5 Text-Tabs passen fix verteilt nicht auf Handybreite
                   // (Labels/Badges abgeschnitten) → scrollbar + linksbündig.
+                  // Im Kompaktmodus (nur Icons) engeres Label-Padding, damit
+                  // alle 5 Icon-Tabs bequem ohne Scrollen nebeneinander liegen.
                   isScrollable: true,
                   tabAlignment: TabAlignment.start,
+                  labelPadding: showTabLabels
+                      ? null
+                      : const EdgeInsets.symmetric(horizontal: 12),
                   tabs: [
                     Tab(
                       child: _TabLabel(
                         icon: Icons.inventory_2_outlined,
                         label: 'Bestand',
                         badgeCount: lowStockCount,
+                        badgeTone: _BadgeTone.warning,
+                        showLabel: showTabLabels,
                       ),
                     ),
                     Tab(
@@ -367,12 +435,15 @@ class _InventoryScreenState extends State<InventoryScreen>
                         // Wie der Bestellkorb: ohne eindeutigen Laden kein
                         // Summen-Badge (der Tab zeigt dann „Laden wählen").
                         badgeCount: fridgeBadgeCount,
+                        badgeTone: _BadgeTone.warning,
+                        showLabel: showTabLabels,
                       ),
                     ),
-                    const Tab(
+                    Tab(
                       child: _TabLabel(
                         icon: Icons.local_shipping_outlined,
                         label: 'Lieferanten',
+                        showLabel: showTabLabels,
                       ),
                     ),
                     Tab(
@@ -385,6 +456,7 @@ class _InventoryScreenState extends State<InventoryScreen>
                         badgeCount: effectiveSiteId == null
                             ? 0
                             : inventory.cartItemCount(effectiveSiteId),
+                        showLabel: showTabLabels,
                       ),
                     ),
                     Tab(
@@ -396,6 +468,7 @@ class _InventoryScreenState extends State<InventoryScreen>
                                 _selectedSiteId == null ||
                                 order.siteId == _selectedSiteId)
                             .length,
+                        showLabel: showTabLabels,
                       ),
                     ),
                   ],
@@ -412,9 +485,12 @@ class _InventoryScreenState extends State<InventoryScreen>
                       _StockTab(
                         siteId: _selectedSiteId,
                         search: _search,
+                        searchController: _searchController,
+                        searchVisible: _searchVisible,
                         canManage: canManage,
                         onSearchChanged: (value) =>
                             setState(() => _search = value),
+                        onCloseSearch: _toggleSearch,
                         sites: sites,
                       ),
                       FridgeRefillTab(
@@ -535,6 +611,28 @@ class _InventoryScreenState extends State<InventoryScreen>
                 onTap: () => Navigator.of(sheetContext).pop(site.id),
               ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// Öffnet den automatischen Preisabgleich App-VK vs. Kasse für einen Laden.
+  Future<void> _openPriceDeviation(
+    BuildContext context,
+    List<SiteDefinition> sites,
+    String? effectiveSiteId,
+  ) async {
+    final siteId = await _pickOktoposSite(context, sites, effectiveSiteId);
+    if (siteId == null || !context.mounted) return;
+    final site = sites
+        .where((s) => s.id == siteId)
+        .cast<SiteDefinition?>()
+        .firstWhere((_) => true, orElse: () => null);
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PriceDeviationScreen(
+          siteId: siteId,
+          siteName: site?.name ?? 'Laden',
         ),
       ),
     );
@@ -928,18 +1026,20 @@ class _SiteFilterBar extends StatelessWidget {
         child: Row(
           children: [
             ChoiceChip(
-              label: const Text('Alle Laeden'),
+              label: const Text('Alle Läden'),
               selected: selectedSiteId == null,
               onSelected: (_) => onChanged(null),
+              materialTapTargetSize: MaterialTapTargetSize.padded,
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 12),
             for (final site in sites) ...[
               ChoiceChip(
                 label: Text(site.name),
                 selected: selectedSiteId == site.id,
                 onSelected: (_) => onChanged(site.id),
+                materialTapTargetSize: MaterialTapTargetSize.padded,
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 12),
             ],
           ],
         ),
@@ -948,45 +1048,92 @@ class _SiteFilterBar extends StatelessWidget {
   }
 }
 
+/// Farbrolle eines Tab-Zählers: [warning] für Handlungsbedarf (Bestand unter
+/// Minimum, Kühlschrank-Lücken), [neutral] für reine Mengen (Korb, Bestellungen).
+enum _BadgeTone { warning, neutral }
+
 class _TabLabel extends StatelessWidget {
   const _TabLabel({
     required this.icon,
     required this.label,
     this.badgeCount = 0,
+    this.badgeTone = _BadgeTone.neutral,
+    this.showLabel = true,
   });
 
   final IconData icon;
   final String label;
   final int badgeCount;
+  final _BadgeTone badgeTone;
+
+  /// `false` (nur auf Handybreite, inaktiver Tab): rendert Icon (+ Badge) ohne
+  /// Textlabel — das Label bleibt via Tooltip/Semantics erhalten.
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Row(
+    final row = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, size: 18),
-        const SizedBox(width: 6),
-        Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
-        if (badgeCount > 0) ...[
+        if (showLabel) ...[
           const SizedBox(width: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: colorScheme.error,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              '$badgeCount',
-              style: TextStyle(
-                color: colorScheme.onError,
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
+          Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+        ],
+        if (badgeCount > 0) ...[
+          SizedBox(width: showLabel ? 6 : 4),
+          _TabBadge(count: badgeCount, tone: badgeTone),
         ],
       ],
+    );
+    if (showLabel) {
+      return row;
+    }
+    // Icon-only: Label für Sehende (Tooltip) und Screenreader (Semantics) retten.
+    return Tooltip(
+      message: badgeCount > 0 ? '$label ($badgeCount)' : label,
+      child: Semantics(
+        label: badgeCount > 0 ? '$label, $badgeCount' : label,
+        child: row,
+      ),
+    );
+  }
+}
+
+class _TabBadge extends StatelessWidget {
+  const _TabBadge({required this.count, required this.tone});
+
+  final int count;
+  final _BadgeTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final status = theme.appColors;
+    final (Color bg, Color fg) = switch (tone) {
+      _BadgeTone.warning => (status.warning, status.onWarning),
+      _BadgeTone.neutral => (
+          scheme.secondaryContainer,
+          scheme.onSecondaryContainer,
+        ),
+    };
+    return Container(
+      constraints: const BoxConstraints(minWidth: 18),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        '$count',
+        textAlign: TextAlign.center,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: fg,
+          fontWeight: FontWeight.bold,
+          height: 1.1,
+        ),
+      ),
     );
   }
 }
@@ -1028,25 +1175,70 @@ class _ErrorBanner extends StatelessWidget {
 // Bestand-Tab
 // ===========================================================================
 
-class _StockTab extends StatelessWidget {
+class _StockTab extends StatefulWidget {
   const _StockTab({
     required this.siteId,
     required this.search,
+    required this.searchController,
+    required this.searchVisible,
     required this.canManage,
     required this.onSearchChanged,
+    required this.onCloseSearch,
     required this.sites,
   });
 
   final String? siteId;
   final String search;
+  final TextEditingController searchController;
+
+  /// Suchfeld ist nur sichtbar, wenn über den AppBar-Lupen-Button eingeblendet.
+  final bool searchVisible;
   final bool canManage;
   final ValueChanged<String> onSearchChanged;
+  final VoidCallback onCloseSearch;
   final List<SiteDefinition> sites;
+
+  @override
+  State<_StockTab> createState() => _StockTabState();
+}
+
+/// Status-Schnellfilter der Bestandsliste.
+enum _StockFilter { alle, nachbestellen, leer, kuehlschrank }
+
+/// Sortierung der Bestandsliste.
+enum _StockSort { name, bestand, wert }
+
+class _StockTabState extends State<_StockTab> {
+  _StockFilter _filter = _StockFilter.alle;
+  String? _categoryFilter;
+  _StockSort _sort = _StockSort.name;
+
+  bool _matchesFilter(Product product) => switch (_filter) {
+        _StockFilter.alle => true,
+        _StockFilter.nachbestellen => product.needsReorder,
+        _StockFilter.leer => product.isOutOfStock,
+        _StockFilter.kuehlschrank => product.inFridge,
+      };
 
   @override
   Widget build(BuildContext context) {
     final inventory = context.watch<InventoryProvider>();
-    final query = search.trim().toLowerCase();
+    final query = widget.search.trim().toLowerCase();
+    final allForSite = inventory.productsForSite(widget.siteId);
+    // Warengruppen aus dem ungefilterten Standort-Sortiment (Filter-Menü).
+    final categories = <String>{
+      for (final product in allForSite)
+        if (product.category?.trim().isNotEmpty ?? false)
+          product.category!.trim(),
+    }.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    // Gewählte Warengruppe kann durch Standortwechsel verschwinden — dann
+    // still zurücksetzen (kein setState: wir sind bereits im Build).
+    if (_categoryFilter != null && !categories.contains(_categoryFilter)) {
+      _categoryFilter = null;
+    }
+    final reorderCount = allForSite.where((p) => p.needsReorder).length;
+    final emptyCount = allForSite.where((p) => p.isOutOfStock).length;
     // Bewusste Entscheidung (barcode-no-index-clientside-scan): Die Produktsuche
     // ist ein Volltext-Substring-Filter (contains) ueber die bereits gestreamte
     // Produktliste. Firestore kann Substring-Suche serverseitig ohnehin nicht.
@@ -1054,7 +1246,14 @@ class _StockTab extends StatelessWidget {
     // echter POS-Barcode-Scan kommt (Exact-Match) -> dann findProductByBarcode im
     // Repository + (siteId, barcode)-Index ergaenzen. Fuer die heutige Datenmenge
     // (2 Laeden) ist die clientseitige Filterung ausreichend.
-    final products = inventory.productsForSite(siteId).where((product) {
+    final products = allForSite.where((product) {
+      if (!_matchesFilter(product)) {
+        return false;
+      }
+      if (_categoryFilter != null &&
+          product.category?.trim() != _categoryFilter) {
+        return false;
+      }
       if (query.isEmpty) {
         return true;
       }
@@ -1063,73 +1262,116 @@ class _StockTab extends StatelessWidget {
           (product.barcode?.toLowerCase().contains(query) ?? false) ||
           (product.category?.toLowerCase().contains(query) ?? false);
     }).toList();
+    // Warenwert-Sortierung ist eine EK-Groesse -> wie der Metrikblock nur fuer
+    // die Leitung; defensiv zuruecksetzen, falls das Recht entzogen wurde.
+    if (!widget.canManage && _sort == _StockSort.wert) {
+      _sort = _StockSort.name;
+    }
+    switch (_sort) {
+      case _StockSort.name:
+        break; // Liste kommt bereits alphabetisch aus dem Provider.
+      case _StockSort.bestand:
+        products.sort((a, b) => a.currentStock.compareTo(b.currentStock));
+      case _StockSort.wert:
+        products.sort((a, b) =>
+            b.stockValuePurchaseCents.compareTo(a.stockValuePurchaseCents));
+    }
+    final filtersActive = _filter != _StockFilter.alle ||
+        _categoryFilter != null ||
+        query.isNotEmpty;
 
-    final lowStock = inventory.lowStockProducts(siteId: siteId);
+    final lowStock = inventory.lowStockProducts(siteId: widget.siteId);
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: TextField(
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              hintText: 'Artikel, Artikelnr. oder Barcode suchen',
-              isDense: true,
-              border: OutlineInputBorder(),
-            ),
-            onChanged: onSearchChanged,
-          ),
-        ),
-        Builder(builder: (context) {
-          final valueCents =
-              inventory.totalStockValuePurchaseCents(siteId: siteId);
-          if (valueCents <= 0) {
-            return const SizedBox.shrink();
-          }
-          final sellingCents =
-              inventory.totalStockValueSellingCents(siteId: siteId);
-          final marginCents = inventory.totalStockMarginCents(siteId: siteId);
-          final theme = Theme.of(context);
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
-              children: [
-                Icon(Icons.account_balance_wallet_outlined,
-                    size: 18, color: theme.colorScheme.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Wrap(
-                    spacing: 12,
-                    runSpacing: 2,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        'Warenwert (EK): ${formatCents(valueCents)}',
-                        style: theme.textTheme.bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      if (sellingCents > 0)
-                        Text(
-                          'VK: ${formatCents(sellingCents)}',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      if (marginCents > 0)
-                        Text(
-                          'Spanne: ${formatCents(marginCents)}',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                    ],
-                  ),
+        // Eingeklappt (Default): keine Suchzeile. Erst der Lupen-Button in der
+        // AppBar blendet das Feld ein (autofokussiert).
+        if (widget.searchVisible)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: TextField(
+              controller: widget.searchController,
+              autofocus: true,
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                labelText: 'Artikel suchen',
+                hintText: 'Name, Artikelnr. oder Barcode',
+                border: const OutlineInputBorder(),
+                // Ein X: erst Text leeren, bei leerem Feld das Suchfeld schließen.
+                suffixIcon: IconButton(
+                  tooltip: widget.search.isEmpty
+                      ? 'Suche schließen'
+                      : 'Suche leeren',
+                  icon: const Icon(Icons.close),
+                  onPressed: () {
+                    if (widget.search.isEmpty) {
+                      widget.onCloseSearch();
+                    } else {
+                      widget.searchController.clear();
+                      widget.onSearchChanged('');
+                    }
+                  },
                 ),
-              ],
+              ),
+              onChanged: widget.onSearchChanged,
             ),
-          );
-        }),
-        if (lowStock.isNotEmpty && canManage)
+          ),
+        // Warenwert/Spanne enthalten EK-Kalkulation -> nur für die Leitung
+        // (canManageInventory), konsistent zur admin-only Sortimentsanalyse.
+        if (widget.canManage)
+          Builder(builder: (context) {
+            final valueCents =
+                inventory.totalStockValuePurchaseCents(siteId: widget.siteId);
+            if (valueCents <= 0) {
+              return const SizedBox.shrink();
+            }
+            final sellingCents =
+                inventory.totalStockValueSellingCents(siteId: widget.siteId);
+            final marginCents =
+                inventory.totalStockMarginCents(siteId: widget.siteId);
+            final theme = Theme.of(context);
+            // Fester Metrikblock statt Wrap: EK/VK/Spanne behalten mobil ihre
+            // Reihenfolge und springen nicht in eine zweite Zeile.
+            return Container(
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(context.radii.md),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.account_balance_wallet_outlined,
+                      size: 18, color: theme.colorScheme.primary),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _StockValueMetric(
+                      label: 'Warenwert (EK)',
+                      value: formatCents(valueCents),
+                      emphasize: true,
+                    ),
+                  ),
+                  if (sellingCents > 0)
+                    Expanded(
+                      child: _StockValueMetric(
+                        label: 'Verkaufswert',
+                        value: formatCents(sellingCents),
+                      ),
+                    ),
+                  if (marginCents > 0)
+                    Expanded(
+                      child: _StockValueMetric(
+                        label: 'Spanne',
+                        value: formatCents(marginCents),
+                      ),
+                    ),
+                ],
+              ),
+            );
+          }),
+        if (lowStock.isNotEmpty && widget.canManage)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: _ReorderBanner(
@@ -1137,12 +1379,113 @@ class _StockTab extends StatelessWidget {
               onTap: () => _startReorder(context, inventory, lowStock),
             ),
           ),
+        // Schnellfilter + Sortierung: bei kiosktypisch hunderten SKUs ist
+        // „nur Nachbestellen/Leer/Kühlschrank" der häufigste Blick auf die
+        // Liste — ohne Scrollen und ohne Suchbegriff.
+        if (allForSite.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        FilterChip(
+                          label: Text(reorderCount > 0
+                              ? 'Nachbestellen ($reorderCount)'
+                              : 'Nachbestellen'),
+                          selected: _filter == _StockFilter.nachbestellen,
+                          onSelected: (selected) => setState(() => _filter =
+                              selected
+                                  ? _StockFilter.nachbestellen
+                                  : _StockFilter.alle),
+                        ),
+                        const SizedBox(width: 8),
+                        FilterChip(
+                          label: Text(
+                              emptyCount > 0 ? 'Leer ($emptyCount)' : 'Leer'),
+                          selected: _filter == _StockFilter.leer,
+                          onSelected: (selected) => setState(() => _filter =
+                              selected ? _StockFilter.leer : _StockFilter.alle),
+                        ),
+                        const SizedBox(width: 8),
+                        FilterChip(
+                          label: const Text('Kühlschrank'),
+                          selected: _filter == _StockFilter.kuehlschrank,
+                          onSelected: (selected) => setState(() => _filter =
+                              selected
+                                  ? _StockFilter.kuehlschrank
+                                  : _StockFilter.alle),
+                        ),
+                        if (categories.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          PopupMenuButton<String>(
+                            tooltip: 'Warengruppe filtern',
+                            onSelected: (value) => setState(() =>
+                                _categoryFilter = value.isEmpty ? null : value),
+                            itemBuilder: (_) => [
+                              const PopupMenuItem(
+                                value: '',
+                                child: Text('Alle Warengruppen'),
+                              ),
+                              for (final category in categories)
+                                PopupMenuItem(
+                                  value: category,
+                                  child: Text(category),
+                                ),
+                            ],
+                            child: Chip(
+                              avatar: const Icon(Icons.category_outlined,
+                                  size: 16),
+                              label: Text(_categoryFilter ?? 'Warengruppe'),
+                              deleteIcon: _categoryFilter == null
+                                  ? const Icon(Icons.arrow_drop_down)
+                                  : null,
+                              onDeleted: _categoryFilter == null
+                                  ? null
+                                  : () => setState(
+                                      () => _categoryFilter = null),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                PopupMenuButton<_StockSort>(
+                  tooltip: 'Sortierung',
+                  icon: const Icon(Icons.sort),
+                  initialValue: _sort,
+                  onSelected: (value) => setState(() => _sort = value),
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: _StockSort.name,
+                      child: Text('Name (A–Z)'),
+                    ),
+                    const PopupMenuItem(
+                      value: _StockSort.bestand,
+                      child: Text('Bestand (niedrig zuerst)'),
+                    ),
+                    // EK-Groesse -> nur fuer die Leitung (wie der Metrikblock).
+                    if (widget.canManage)
+                      const PopupMenuItem(
+                        value: _StockSort.wert,
+                        child: Text('Warenwert (hoch zuerst)'),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         Expanded(
           child: products.isEmpty
-              ? const EmptyState(
+              ? EmptyState(
                   icon: Icons.inventory_2_outlined,
-                  message:
-                      'Noch keine Artikel. Lege ueber das Plus den ersten Artikel an.',
+                  message: filtersActive
+                      ? 'Keine Artikel für die gewählten Filter.'
+                      : 'Noch keine Artikel. Lege ueber das Plus den ersten Artikel an.',
                 )
               : ListView.separated(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, kFabSafeBottomInset),
@@ -1150,8 +1493,8 @@ class _StockTab extends StatelessWidget {
                   separatorBuilder: (_, __) => const SizedBox(height: 8),
                   itemBuilder: (context, index) => _ProductTile(
                     product: products[index],
-                    canManage: canManage,
-                    sites: sites,
+                    canManage: widget.canManage,
+                    sites: widget.sites,
                   ),
                 ),
         ),
@@ -1164,22 +1507,125 @@ class _StockTab extends StatelessWidget {
     InventoryProvider inventory,
     List<Product> lowStock,
   ) async {
-    // Nachzubestellende Artikel nach Lieferant gruppieren und den groessten
-    // Vorschlag zuerst anbieten.
-    final bySupplier = <String?, List<Product>>{};
-    for (final product in lowStock) {
-      bySupplier.putIfAbsent(product.supplierId, () => []).add(product);
-    }
-    final targetSiteId = siteId ?? (lowStock.isNotEmpty ? lowStock.first.siteId : null);
+    final targetSiteId =
+        widget.siteId ?? (lowStock.isNotEmpty ? lowStock.first.siteId : null);
     if (targetSiteId == null) {
       return;
     }
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PurchaseOrderEditorScreen(
-          sites: sites,
+          sites: widget.sites,
           initialSiteId: targetSiteId,
           prefillReorder: true,
+        ),
+      ),
+    );
+  }
+}
+
+/// Label-über-Wert-Metrik für den Warenwert-Block (feste Spaltenbreite via
+/// Expanded des Aufrufers). Tabellenziffern verhindern springende Beträge.
+class _StockValueMetric extends StatelessWidget {
+  const _StockValueMetric({
+    required this.label,
+    required this.value,
+    this.emphasize = false,
+  });
+
+  final String label;
+  final String value;
+  final bool emphasize;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: (emphasize
+                  ? theme.textTheme.titleSmall
+                  : theme.textTheme.bodyMedium)
+              ?.copyWith(fontWeight: FontWeight.w700)
+              .tabular,
+        ),
+      ],
+    );
+  }
+}
+
+/// Farbrolle einer [_MetricChip]: neutral (Kennwert) oder semantisch
+/// (warning/error) für den kompakten Bestandsstatus je Zeile.
+enum _ChipTone { neutral, warning, error }
+
+/// Kleine, umbruchsichere Kennwert-Pille (Label-Wert) für Tile-Untertitel —
+/// ersetzt die auf Handybreite still abschneidenden „·"-Ketten. Alle Pillen
+/// (auch die Status-Variante) teilen Größe/Baseline, damit die Wrap-Zeile
+/// gleichmäßig bleibt; lange Werte werden auf eine Zeile gekürzt statt umbrochen.
+class _MetricChip extends StatelessWidget {
+  const _MetricChip(this.label, {this.tone = _ChipTone.neutral, this.icon});
+
+  final String label;
+  final _ChipTone tone;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final status = theme.appColors;
+    final (Color bg, Color fg) = switch (tone) {
+      _ChipTone.neutral => (
+          scheme.surfaceContainerHigh,
+          scheme.onSurfaceVariant,
+        ),
+      _ChipTone.warning => (
+          status.warningContainer,
+          status.onWarningContainer,
+        ),
+      _ChipTone.error => (scheme.errorContainer, scheme.onErrorContainer),
+    };
+    return ConstrainedBox(
+      // Deckelt die Breite, damit ein langer Kategorie-/Standortname im
+      // Wrap-Kontext (unbeschränkte Breite) nicht die Zeile sprengt.
+      constraints: const BoxConstraints(maxWidth: 180),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 13, color: fg),
+              const SizedBox(width: 4),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: fg,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1194,31 +1640,21 @@ class _ReorderBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    // Semantischer Warn-Ton (appColors) statt frei überschriebenem
+    // tertiaryContainer; tappbar über einen InkWell mit gleichem Radius.
     return Material(
-      color: colorScheme.tertiaryContainer,
-      borderRadius: BorderRadius.circular(12),
+      color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(context.radii.lg),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              Icon(Icons.warning_amber_rounded,
-                  color: colorScheme.onTertiaryContainer),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  '$count Artikel unter Mindestbestand – jetzt nachbestellen',
-                  style: TextStyle(
-                    color: colorScheme.onTertiaryContainer,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Icon(Icons.chevron_right, color: colorScheme.onTertiaryContainer),
-            ],
+        child: AppStatusBanner(
+          icon: Icons.warning_amber_rounded,
+          tone: AppStatusTone.warning,
+          message:
+              '$count Artikel unter Mindestbestand – jetzt nachbestellen',
+          action: Icon(
+            Icons.chevron_right,
+            color: Theme.of(context).appColors.warning,
           ),
         ),
       ),
@@ -1239,21 +1675,94 @@ class _ProductTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final status = theme.appColors;
     final inventory = context.read<InventoryProvider>();
+
+    // Bestandsfarbe über semantische Tokens (appColors.warning statt des frei
+    // überschriebenen tertiary) — mit zusätzlichem, nicht-farblichem Signal.
     final stockColor = product.isOutOfStock
         ? colorScheme.error
-        : (product.needsReorder ? colorScheme.tertiary : colorScheme.primary);
+        : (product.needsReorder ? status.warning : colorScheme.primary);
+
+    // Kompakte Status-Pille in derselben Größe wie die Kennwert-Pillen, damit
+    // die Wrap-Zeile gleich hoch bleibt (statt einer großen AppStatusBadge).
+    final Widget? statusChip = product.isOutOfStock
+        ? const _MetricChip('Leer',
+            tone: _ChipTone.error, icon: Icons.error_outline)
+        : (product.needsReorder
+            ? const _MetricChip('Nachbestellen',
+                tone: _ChipTone.warning, icon: Icons.warning_amber_rounded)
+            : null);
+
+    final siteName = sites.length > 1
+        ? resolveSiteName(sites, product.siteId, fallback: product.siteName)
+        : null;
+
+    // Untertitel als umbruchsichere Kennwert-Pillen statt „·"-Kette, damit
+    // Min/VK/Standort auf Handybreite nie still abgeschnitten werden. Die
+    // „Bestand: X"-Angabe entfällt (dupliziert die Avatar-Zahl).
+    final chips = <Widget>[
+      // Status doppelt zu vermeiden: der Screenreader liest ihn schon aus dem
+      // Leading-Semantics-Label → sichtbare Pille aus dem Semantics ausschließen.
+      if (statusChip != null) ExcludeSemantics(child: statusChip),
+      if (product.minStock > 0) _MetricChip('Min ${product.minStock}'),
+      if (product.sellingPriceCents != null)
+        _MetricChip('VK ${formatCents(product.sellingPriceCents)}'),
+      if (product.category?.isNotEmpty ?? false) _MetricChip(product.category!),
+      if (siteName?.isNotEmpty ?? false) _MetricChip(siteName!),
+    ];
+
+    final semanticStatus = product.isOutOfStock
+        ? ', ausverkauft'
+        : (product.needsReorder ? ', unter Mindestbestand' : '');
 
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(
+        isThreeLine: chips.isNotEmpty,
         onTap: canManage ? () => _edit(context, inventory) : null,
-        leading: CircleAvatar(
-          backgroundColor: stockColor.withValues(alpha: 0.15),
-          child: Text(
-            '${product.currentStock}',
-            style: TextStyle(color: stockColor, fontWeight: FontWeight.bold),
+        leading: Semantics(
+          label:
+              'Bestand ${product.currentStock} ${product.unit}$semanticStatus',
+          child: ExcludeSemantics(
+            child: SizedBox(
+              width: 44,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: stockColor.withValues(alpha: 0.15),
+                    child: Text(
+                      '${product.currentStock}',
+                      style: TextStyle(
+                          color: stockColor, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  // Einheit als Caption unter der Zahl; FittedBox verhindert
+                  // Überlauf des schmalen Leading-Slots bei großer Textskalierung.
+                  Flexible(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          product.unit,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: colorScheme.onSurfaceVariant),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
         title: Text(
@@ -1262,67 +1771,53 @@ class _ProductTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 2),
-            Text(
-              [
-                if (product.category?.isNotEmpty ?? false) product.category!,
-                'Bestand: ${product.currentStock} ${product.unit}',
-                if (product.minStock > 0) 'Min: ${product.minStock}',
-                if (product.sellingPriceCents != null)
-                  'VK ${formatCents(product.sellingPriceCents)}',
-              ].join('  ·  '),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: colorScheme.onSurfaceVariant),
-            ),
-            if (sites.length > 1 &&
-                (resolveSiteName(sites, product.siteId,
-                            fallback: product.siteName)
-                        ?.isNotEmpty ??
-                    false))
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(
-                  resolveSiteName(sites, product.siteId,
-                      fallback: product.siteName)!,
-                  style: TextStyle(
-                    color: colorScheme.outline,
-                    fontSize: 12,
-                  ),
+        subtitle: chips.isEmpty
+            ? null
+            : Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: chips,
                 ),
               ),
-          ],
-        ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             // Schnellaktion für JEDEN aktiven Mitarbeiter: Artikel in den
-            // gemeinsamen Bestellkorb legen ("Sorte ist leer").
+            // gemeinsamen Bestellkorb legen ("Sorte ist leer"). Volles 48dp-
+            // Touch-Target (kein visualDensity.compact).
             IconButton(
               tooltip: 'In den Bestellkorb',
-              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.add_shopping_cart_outlined),
               onPressed: () => _addToCart(context, inventory),
             ),
-            if (canManage)
+            if (canManage) ...[
+              const SizedBox(width: 4),
               PopupMenuButton<String>(
+                tooltip: 'Artikel-Aktionen',
                 onSelected: (value) => _onMenu(context, inventory, value),
                 itemBuilder: (_) => const [
                   PopupMenuItem(value: 'edit', child: Text('Bearbeiten')),
+                  PopupMenuItem(
+                      value: 'receive', child: Text('Zugang buchen')),
                   PopupMenuItem(
                       value: 'issue', child: Text('Abgang buchen')),
                   PopupMenuItem(
                       value: 'adjust', child: Text('Bestand korrigieren')),
                   PopupMenuItem(value: 'stocktake', child: Text('Inventur')),
                   PopupMenuItem(value: 'transfer', child: Text('Umlagern')),
+                  PopupMenuDivider(),
+                  PopupMenuItem(
+                      value: 'movements', child: Text('Bewegungen anzeigen')),
+                  PopupMenuItem(
+                      value: 'priceHistory', child: Text('Preisverlauf')),
+                  PopupMenuDivider(),
                   PopupMenuItem(value: 'delete', child: Text('Löschen')),
                 ],
-              )
-            else if (product.needsReorder)
-              Icon(Icons.warning_amber_rounded, color: colorScheme.tertiary),
+              ),
+            ],
           ],
         ),
       ),
@@ -1359,6 +1854,9 @@ class _ProductTile extends StatelessWidget {
       case 'edit':
         await _edit(context, inventory);
         break;
+      case 'receive':
+        await _receive(context, inventory);
+        break;
       case 'issue':
         await _issue(context, inventory);
         break;
@@ -1370,6 +1868,12 @@ class _ProductTile extends StatelessWidget {
         break;
       case 'transfer':
         await _transfer(context, inventory);
+        break;
+      case 'movements':
+        await _showMovementsSheet(context, product);
+        break;
+      case 'priceHistory':
+        await showPriceHistorySheet(context, product: product);
         break;
       case 'delete':
         if (await _confirmDelete(context, product.name) &&
@@ -1411,15 +1915,41 @@ class _ProductTile extends StatelessWidget {
     }
   }
 
+  /// Wareneingang ohne Bestellung (z.B. Barkauf beim Großmarkt): positiver
+  /// Zugang vom Typ `receipt` mit eigenem Grund — bewusst getrennt von der
+  /// anonymen „Korrektur", damit Schwund-Auswertungen sauber bleiben.
+  Future<void> _receive(
+      BuildContext context, InventoryProvider inventory) async {
+    final result = await _showStockReceiptDialog(context, product);
+    if (result == null || product.id == null) {
+      return;
+    }
+    try {
+      await inventory.adjustStock(
+        productId: product.id!,
+        delta: result.quantity,
+        type: StockMovementType.receipt,
+        reason: result.reason,
+      );
+      if (context.mounted) {
+        _showSnack(context, 'Zugang gebucht.');
+      }
+    } catch (error) {
+      if (context.mounted) {
+        _showSnack(context, 'Fehler: $error');
+      }
+    }
+  }
+
   Future<void> _adjust(
       BuildContext context, InventoryProvider inventory) async {
-    final delta = await _showStockDeltaDialog(context, product);
-    if (delta != null && delta != 0 && product.id != null) {
+    final result = await _showStockDeltaDialog(context, product);
+    if (result != null && result.delta != 0 && product.id != null) {
       try {
         await inventory.adjustStock(
           productId: product.id!,
-          delta: delta,
-          reason: 'Manuelle Korrektur',
+          delta: result.delta,
+          reason: result.reason,
         );
         if (context.mounted) {
           _showSnack(context, 'Bestand korrigiert.');
@@ -1468,22 +1998,26 @@ class _ProductTile extends StatelessWidget {
 
   Future<void> _transfer(
       BuildContext context, InventoryProvider inventory) async {
-    final candidates = inventory.products
-        .where((p) =>
-            p.id != null && p.id != product.id && p.siteId != product.siteId)
+    // Ziel ist ein STANDORT, kein manuell vorangelegter Zielartikel: existiert
+    // der Artikel dort noch nicht, legt der Provider ihn automatisch an
+    // (transferStockToSite) — die tägliche Umlagerung zwischen den zwei Läden
+    // scheitert damit nicht mehr an fehlenden Duplikaten.
+    final otherSites = sites
+        .where((site) => site.id != null && site.id != product.siteId)
         .toList();
-    if (candidates.isEmpty) {
-      _showSnack(context,
-          'Kein Zielartikel an einem anderen Standort vorhanden. Lege ihn dort zuerst an.');
+    if (otherSites.isEmpty) {
+      _showSnack(context, 'Es gibt keinen weiteren Standort zum Umlagern.');
       return;
     }
-    final result = await _showTransferDialog(context, product, candidates);
+    final result =
+        await _showTransferDialog(context, product, otherSites, inventory);
     if (result == null) {
       return;
     }
-    final error = await inventory.transferStock(
+    final error = await inventory.transferStockToSite(
       from: product,
-      to: result.target,
+      toSiteId: result.site.id!,
+      toSiteName: result.site.name,
       quantity: result.quantity,
     );
     if (context.mounted) {
@@ -1520,9 +2054,21 @@ class _SuppliersTab extends StatelessWidget {
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final supplier = suppliers[index];
+        // Identität (Ansprechpartner + Lieferzeit) zuerst — überlebt die
+        // Truncation; Kontaktdaten (längster Freitext) in Zeile 2.
+        final identityLine = [
+          if (supplier.contactPerson?.isNotEmpty ?? false)
+            supplier.contactPerson!,
+          if (supplier.leadTimeDays != null)
+            'Lieferzeit ${supplier.leadTimeDays} Tage',
+        ].join('  ·  ');
+        final phone = supplier.phone?.trim();
+        final email = supplier.effectiveOrderEmail;
         return Card(
           margin: EdgeInsets.zero,
           child: ListTile(
+            isThreeLine:
+                identityLine.isNotEmpty && (phone != null || email != null),
             onTap: canManage
                 ? () => _edit(context, inventory, supplier)
                 : null,
@@ -1535,18 +2081,58 @@ class _SuppliersTab extends StatelessWidget {
               supplier.name,
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
-            subtitle: Text(
-              [
-                if (supplier.contactPerson?.isNotEmpty ?? false)
-                  supplier.contactPerson!,
-                if (supplier.phone?.isNotEmpty ?? false) supplier.phone!,
-                if (supplier.effectiveOrderEmail != null)
-                  supplier.effectiveOrderEmail!,
-                if (supplier.leadTimeDays != null)
-                  'Lieferzeit ${supplier.leadTimeDays} Tage',
-              ].join('  ·  '),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (identityLine.isNotEmpty)
+                    Text(
+                      identityLine,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  // Telefon/E-Mail direkt antippbar — Nachbestellen am Telefon
+                  // ist der häufigste Lieferanten-Kontakt im Ladenalltag.
+                  if ((phone?.isNotEmpty ?? false) || email != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          if (phone?.isNotEmpty ?? false)
+                            ActionChip(
+                              avatar: const Icon(Icons.phone_outlined,
+                                  size: 16),
+                              label: Text(phone!),
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => _launchContact(
+                                context,
+                                Uri(scheme: 'tel', path: phone),
+                                'Telefon-App konnte nicht geöffnet werden.',
+                              ),
+                            ),
+                          if (email != null)
+                            ActionChip(
+                              avatar: const Icon(Icons.mail_outline,
+                                  size: 16),
+                              label: Text(
+                                email,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => _launchContact(
+                                context,
+                                Uri(scheme: 'mailto', path: email),
+                                'E-Mail-App konnte nicht geöffnet werden.',
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
             ),
             trailing: canManage
                 ? PopupMenuButton<String>(
@@ -1575,6 +2161,24 @@ class _SuppliersTab extends StatelessWidget {
     );
   }
 
+  /// Öffnet tel:/mailto: extern; Fehlschlag (kein Handler, z.B. Desktop ohne
+  /// Mail-Client) wird als deutsche SnackBar gemeldet statt still verschluckt.
+  Future<void> _launchContact(
+    BuildContext context,
+    Uri uri,
+    String errorMessage,
+  ) async {
+    var ok = false;
+    try {
+      ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && context.mounted) {
+      _showSnack(context, errorMessage);
+    }
+  }
+
   Future<void> _edit(
     BuildContext context,
     InventoryProvider inventory,
@@ -1600,7 +2204,10 @@ class _SuppliersTab extends StatelessWidget {
 // Bestellungen-Tab
 // ===========================================================================
 
-class _OrdersTab extends StatelessWidget {
+/// Status-Filter des Bestellungen-Tabs.
+enum _OrderFilter { alle, offen, geliefert, storniert }
+
+class _OrdersTab extends StatefulWidget {
   const _OrdersTab({
     required this.siteId,
     required this.canManage,
@@ -1612,11 +2219,29 @@ class _OrdersTab extends StatelessWidget {
   final List<SiteDefinition> sites;
 
   @override
+  State<_OrdersTab> createState() => _OrdersTabState();
+}
+
+class _OrdersTabState extends State<_OrdersTab> {
+  _OrderFilter _filter = _OrderFilter.alle;
+
+  bool _matchesFilter(PurchaseOrder order) => switch (_filter) {
+        _OrderFilter.alle => true,
+        _OrderFilter.offen => order.status == PurchaseOrderStatus.draft ||
+            order.status == PurchaseOrderStatus.ordered ||
+            order.status == PurchaseOrderStatus.partiallyReceived,
+        _OrderFilter.geliefert =>
+          order.status == PurchaseOrderStatus.received,
+        _OrderFilter.storniert =>
+          order.status == PurchaseOrderStatus.cancelled,
+      };
+
+  @override
   Widget build(BuildContext context) {
     final inventory = context.watch<InventoryProvider>();
-    final orders = inventory.ordersForSite(siteId);
+    final allOrders = inventory.ordersForSite(widget.siteId);
 
-    if (orders.isEmpty) {
+    if (allOrders.isEmpty) {
       return const EmptyState(
         icon: Icons.receipt_long_outlined,
         message:
@@ -1624,8 +2249,60 @@ class _OrdersTab extends StatelessWidget {
       );
     }
 
+    final orders = allOrders.where(_matchesFilter).toList();
+    final openCount = allOrders
+        .where((order) =>
+            order.status == PurchaseOrderStatus.draft ||
+            order.status == PurchaseOrderStatus.ordered ||
+            order.status == PurchaseOrderStatus.partiallyReceived)
+        .length;
+
+    return Column(
+      children: [
+        // Status-Schnellfilter: die Historie wächst unbegrenzt — im Alltag
+        // zählt fast immer nur „Offen".
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final (filter, label) in [
+                  (_OrderFilter.alle, 'Alle'),
+                  (
+                    _OrderFilter.offen,
+                    openCount > 0 ? 'Offen ($openCount)' : 'Offen'
+                  ),
+                  (_OrderFilter.geliefert, 'Geliefert'),
+                  (_OrderFilter.storniert, 'Storniert'),
+                ]) ...[
+                  FilterChip(
+                    label: Text(label),
+                    selected: _filter == filter,
+                    onSelected: (selected) => setState(() =>
+                        _filter = selected ? filter : _OrderFilter.alle),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+              ],
+            ),
+          ),
+        ),
+        Expanded(
+          child: orders.isEmpty
+              ? const EmptyState(
+                  icon: Icons.receipt_long_outlined,
+                  message: 'Keine Bestellungen mit diesem Status.',
+                )
+              : _buildList(context, orders),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildList(BuildContext context, List<PurchaseOrder> orders) {
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, kFabSafeBottomInset),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, kFabSafeBottomInset),
       itemCount: orders.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
@@ -1637,8 +2314,8 @@ class _OrdersTab extends StatelessWidget {
               MaterialPageRoute(
                 builder: (_) => PurchaseOrderDetailScreen(
                   orderId: order.id!,
-                  sites: sites,
-                  canManage: canManage,
+                  sites: widget.sites,
+                  canManage: widget.canManage,
                 ),
               ),
             ),
@@ -1662,6 +2339,8 @@ class _OrdersTab extends StatelessWidget {
                   '${order.itemCount} Positionen',
                   if (order.hasPrices) formatCents(order.totalCents),
                 ].join('  ·  '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ),
@@ -1678,29 +2357,15 @@ class _StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final color = switch (status) {
-      PurchaseOrderStatus.draft => colorScheme.outline,
-      PurchaseOrderStatus.ordered => colorScheme.primary,
-      PurchaseOrderStatus.partiallyReceived => colorScheme.tertiary,
-      PurchaseOrderStatus.received => colorScheme.secondary,
-      PurchaseOrderStatus.cancelled => colorScheme.error,
+    // Semantische Töne: erhalten=Erfolg, teilweise=Warnung, bestellt=Info.
+    final tone = switch (status) {
+      PurchaseOrderStatus.draft => AppStatusTone.neutral,
+      PurchaseOrderStatus.ordered => AppStatusTone.info,
+      PurchaseOrderStatus.partiallyReceived => AppStatusTone.warning,
+      PurchaseOrderStatus.received => AppStatusTone.success,
+      PurchaseOrderStatus.cancelled => AppStatusTone.error,
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        status.label,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
-        ),
-      ),
-    );
+    return AppStatusBadge(label: status.label, tone: tone);
   }
 }
 
@@ -1912,6 +2577,10 @@ class _ProductDialogState extends State<_ProductDialog> {
                         decoration:
                             const InputDecoration(labelText: 'Barcode/EAN'),
                         keyboardType: TextInputType.number,
+                        // Harte Eindeutigkeit je Laden: freundliche Meldung
+                        // schon im Formular (saveProduct lehnt das Duplikat
+                        // sonst mit StateError ab).
+                        validator: _validateBarcodeUnique,
                       ),
                     ),
                   ],
@@ -1926,6 +2595,10 @@ class _ProductDialogState extends State<_ProductDialog> {
                         ),
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
+                        // Nicht parsebare Eingabe blockiert das Speichern —
+                        // sonst löscht ein Tippfehler („1,9o") still den
+                        // gespeicherten Preis (clearPurchasePrice in _submit).
+                        validator: _validatePriceInput,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1937,6 +2610,7 @@ class _ProductDialogState extends State<_ProductDialog> {
                         ),
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
+                        validator: _validatePriceInput,
                       ),
                     ),
                   ],
@@ -2072,6 +2746,45 @@ class _ProductDialogState extends State<_ProductDialog> {
         ),
       ],
     );
+  }
+
+  /// Leer ist erlaubt (Preis wird geloescht), aber eine nicht parsebare
+  /// Eingabe blockiert das Speichern — sonst ginge der gespeicherte Preis
+  /// still verloren (clear*-Flags in [_submit]).
+  static String? _validatePriceInput(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) {
+      return null;
+    }
+    return parseEuroToCents(text) == null
+        ? 'Ungültiger Betrag (z.B. 1,99)'
+        : null;
+  }
+
+  /// Harte Barcode-Eindeutigkeit je Laden (Spiegel der saveProduct-Prüfung):
+  /// derselbe Code darf im gewählten Laden an keinem ANDEREN Artikel hängen
+  /// (auch keinem deaktivierten). Unverändert belassene Alt-Barcodes bleiben
+  /// gültig — Altbestands-Duplikate blockieren das Bearbeiten nicht.
+  String? _validateBarcodeUnique(String? value) {
+    final code = value?.trim() ?? '';
+    if (code.isEmpty) {
+      return null;
+    }
+    final unchanged = widget.product != null &&
+        (widget.product!.barcode?.trim() ?? '') == code;
+    if (unchanged) {
+      return null;
+    }
+    final inventory = context.read<InventoryProvider>();
+    final clash = inventory
+        .productsByBarcode(code, siteId: _siteId, includeInactive: true)
+        .where((other) => other.id != widget.product?.id);
+    if (clash.isEmpty) {
+      return null;
+    }
+    final first = clash.first;
+    return 'Bereits vergeben an „${first.name}"'
+        '${first.isActive ? '' : ' (deaktiviert)'}';
   }
 
   void _submit() {
@@ -2401,14 +3114,15 @@ class _SupplierDialogState extends State<_SupplierDialog> {
   }
 }
 
-Future<({Product target, int quantity})?> _showTransferDialog(
+Future<({SiteDefinition site, int quantity})?> _showTransferDialog(
   BuildContext context,
   Product product,
-  List<Product> candidates,
+  List<SiteDefinition> otherSites,
+  InventoryProvider inventory,
 ) {
-  Product target = candidates.first;
+  SiteDefinition targetSite = otherSites.first;
   final quantityController = TextEditingController();
-  return showDialog<({Product target, int quantity})>(
+  return showDialog<({SiteDefinition site, int quantity})>(
     context: context,
     builder: (_) => StatefulBuilder(
       builder: (context, setState) {
@@ -2420,34 +3134,46 @@ Future<({Product target, int quantity})?> _showTransferDialog(
                 ? 'Nur ${product.currentStock} ${product.unit} verfügbar'
                 : null);
         final canBook = qty != null && qty > 0 && qtyError == null;
+        // Vorschau: existiert der Artikel am Ziel schon oder wird er (mit
+        // denselben Stammdaten, Bestand 0) automatisch angelegt?
+        final existingTarget =
+            inventory.findTransferTarget(product, targetSite.id!);
+        final theme = Theme.of(context);
         return AlertDialog(
           title: Text('Umlagern: ${product.name}'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('Bestand ${product.siteName ?? 'Quelle'}: '
                   '${product.currentStock} ${product.unit}'),
               const SizedBox(height: 12),
-              DropdownButtonFormField<Product>(
-                initialValue: target,
+              DropdownButtonFormField<SiteDefinition>(
+                initialValue: targetSite,
                 decoration: const InputDecoration(
                   labelText: 'Ziel-Standort',
                   border: OutlineInputBorder(),
                 ),
                 items: [
-                  for (final candidate in candidates)
+                  for (final site in otherSites)
                     DropdownMenuItem(
-                      value: candidate,
-                      child: Text(
-                        '${candidate.siteName ?? 'Standort'} · ${candidate.name}'
-                        ' (${candidate.currentStock})',
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                      value: site,
+                      child: Text(site.name, overflow: TextOverflow.ellipsis),
                     ),
                 ],
                 onChanged: (value) {
-                  if (value != null) setState(() => target = value);
+                  if (value != null) setState(() => targetSite = value);
                 },
+              ),
+              const SizedBox(height: 8),
+              Text(
+                existingTarget != null
+                    ? 'Zielartikel vorhanden (Bestand '
+                        '${existingTarget.currentStock} ${existingTarget.unit}).'
+                    : 'Artikel wird am Zielstandort automatisch angelegt '
+                        '(Bestand 0, gleiche Stammdaten).',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -2472,7 +3198,7 @@ Future<({Product target, int quantity})?> _showTransferDialog(
             FilledButton(
               onPressed: canBook
                   ? () => Navigator.of(context)
-                      .pop((target: target, quantity: qty))
+                      .pop((site: targetSite, quantity: qty))
                   : null,
               child: const Text('Umlagern'),
             ),
@@ -2553,9 +3279,11 @@ Future<({int quantity, String reason})?> _showStockIssueDialog(
   );
 }
 
-Future<int?> _showStockDeltaDialog(BuildContext context, Product product) {
+Future<({int delta, String reason})?> _showStockDeltaDialog(
+    BuildContext context, Product product) {
   final controller = TextEditingController();
-  return showDialog<int>(
+  final reasonController = TextEditingController();
+  return showDialog<({int delta, String reason})>(
     context: context,
     builder: (_) => AlertDialog(
       title: Text('Bestand korrigieren: ${product.name}'),
@@ -2576,42 +3304,13 @@ Future<int?> _showStockDeltaDialog(BuildContext context, Product product) {
               border: OutlineInputBorder(),
             ),
           ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Abbrechen'),
-        ),
-        FilledButton(
-          onPressed: () =>
-              Navigator.of(context).pop(int.tryParse(controller.text.trim())),
-          child: const Text('Buchen'),
-        ),
-      ],
-    ),
-  );
-}
-
-Future<int?> _showStocktakeDialog(BuildContext context, Product product) {
-  final controller =
-      TextEditingController(text: product.currentStock.toString());
-  return showDialog<int>(
-    context: context,
-    builder: (_) => AlertDialog(
-      title: Text('Inventur: ${product.name}'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('Bisheriger Bestand: ${product.currentStock} ${product.unit}'),
           const SizedBox(height: 12),
+          // Grund macht die Korrektur in Bewegungen/Schwund-Report
+          // nachvollziehbar (Bruch, Zaehlfehler, Eigenbedarf ...).
           TextField(
-            controller: controller,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            controller: reasonController,
             decoration: const InputDecoration(
-              labelText: 'Gezaehlter Bestand',
+              labelText: 'Grund (z.B. Bruch, Zählfehler)',
               border: OutlineInputBorder(),
             ),
           ),
@@ -2623,13 +3322,296 @@ Future<int?> _showStocktakeDialog(BuildContext context, Product product) {
           child: const Text('Abbrechen'),
         ),
         FilledButton(
-          onPressed: () =>
-              Navigator.of(context).pop(int.tryParse(controller.text.trim())),
-          child: const Text('Speichern'),
+          onPressed: () {
+            final delta = int.tryParse(controller.text.trim());
+            if (delta == null) {
+              Navigator.of(context).pop();
+              return;
+            }
+            final reason = reasonController.text.trim();
+            Navigator.of(context).pop((
+              delta: delta,
+              reason: reason.isEmpty ? 'Manuelle Korrektur' : reason,
+            ));
+          },
+          child: const Text('Buchen'),
         ),
       ],
     ),
   );
+}
+
+/// Zugang buchen (Wareneingang ohne Bestellung). Nur positive Mengen.
+Future<({int quantity, String reason})?> _showStockReceiptDialog(
+    BuildContext context, Product product) {
+  final quantityController = TextEditingController();
+  final reasonController = TextEditingController();
+  return showDialog<({int quantity, String reason})>(
+    context: context,
+    builder: (_) => StatefulBuilder(
+      builder: (context, setState) {
+        final qty = int.tryParse(quantityController.text.trim());
+        final canBook = qty != null && qty > 0;
+        return AlertDialog(
+          title: Text('Zugang buchen: ${product.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                  'Aktueller Bestand: ${product.currentStock} ${product.unit}'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: quantityController,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'Menge (Zugang)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: reasonController,
+                decoration: const InputDecoration(
+                  labelText: 'Grund (z.B. Barkauf Großmarkt)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Abbrechen'),
+            ),
+            FilledButton(
+              onPressed: canBook
+                  ? () {
+                      final reason = reasonController.text.trim();
+                      Navigator.of(context).pop((
+                        quantity: qty,
+                        reason: reason.isEmpty ? 'Wareneingang' : reason,
+                      ));
+                    }
+                  : null,
+              child: const Text('Buchen'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+Future<int?> _showStocktakeDialog(BuildContext context, Product product) {
+  // Bewusst KEINE Vorbefuellung mit dem Buchbestand: ein hastiges „Speichern"
+  // wuerde sonst eine Schein-Inventur buchen, die den Buchbestand als gezaehlt
+  // bestaetigt. Leeres Pflichtfeld erzwingt echtes Zaehlen.
+  final controller = TextEditingController();
+  return showDialog<int>(
+    context: context,
+    builder: (_) => StatefulBuilder(
+      builder: (context, setState) {
+        final counted = int.tryParse(controller.text.trim());
+        return AlertDialog(
+          title: Text('Inventur: ${product.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                  'Bisheriger Bestand: ${product.currentStock} ${product.unit}'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'Gezaehlter Bestand',
+                  hintText: 'Tatsaechlich gezaehlte Menge',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Abbrechen'),
+            ),
+            FilledButton(
+              onPressed: counted == null
+                  ? null
+                  : () => Navigator.of(context).pop(counted),
+              child: const Text('Speichern'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+/// Bewegungshistorie eines Artikels als Bottom-Sheet — macht erstmals in der
+/// Warenwirtschaft sichtbar, WARUM ein Bestand ist, wie er ist (Wareneingang,
+/// Abgang, Korrektur, Inventur, Umlagerung, Kühlschrank, Kasse).
+Future<void> _showMovementsSheet(BuildContext context, Product product) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (_) => _MovementsSheet(product: product),
+  );
+}
+
+class _MovementsSheet extends StatefulWidget {
+  const _MovementsSheet({required this.product});
+
+  final Product product;
+
+  @override
+  State<_MovementsSheet> createState() => _MovementsSheetState();
+}
+
+class _MovementsSheetState extends State<_MovementsSheet> {
+  static final DateFormat _dateFormat =
+      DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+
+  /// Einmalig im State gehalten — ein in build() erzeugtes Future liesse
+  /// jeden Sheet-Rebuild (Rotation, Theme, Tastatur) neu laden und zurueck
+  /// zum Spinner springen (klassische FutureBuilder-Falle).
+  Future<List<StockMovement>>? _future;
+
+  @override
+  void initState() {
+    super.initState();
+    final productId = widget.product.id;
+    if (productId != null) {
+      _future =
+          context.read<InventoryProvider>().movementsForProduct(productId);
+    }
+  }
+
+  IconData _iconFor(StockMovementType type) => switch (type) {
+        StockMovementType.receipt => Icons.call_received,
+        StockMovementType.issue => Icons.call_made,
+        StockMovementType.adjustment => Icons.tune,
+        StockMovementType.stocktake => Icons.fact_check_outlined,
+        StockMovementType.transfer => Icons.swap_horiz,
+        StockMovementType.fridgeRefill => Icons.kitchen_outlined,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final status = theme.appColors;
+    final product = widget.product;
+
+    return SizedBox(
+      height: MediaQuery.sizeOf(context).height * 0.6,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(
+              'Bewegungen: ${product.name}',
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          Expanded(
+            child: _future == null
+                ? const EmptyState(
+                    icon: Icons.history,
+                    message: 'Artikel ist noch nicht gespeichert.',
+                  )
+                : FutureBuilder<List<StockMovement>>(
+                    future: _future,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState !=
+                          ConnectionState.done) {
+                        return const Center(
+                            child: CircularProgressIndicator());
+                      }
+                      final movements =
+                          snapshot.data ?? const <StockMovement>[];
+                      if (movements.isEmpty) {
+                        return const EmptyState(
+                          icon: Icons.history,
+                          message:
+                              'Noch keine Bewegungen zu diesem Artikel.',
+                        );
+                      }
+                      return ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        itemCount: movements.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final movement = movements[index];
+                          final delta = movement.quantityDelta;
+                          final deltaColor = delta > 0
+                              ? status.success
+                              : (delta < 0
+                                  ? theme.colorScheme.error
+                                  : theme.colorScheme.onSurfaceVariant);
+                          final subtitleParts = <String>[
+                            if (movement.createdAt != null)
+                              _dateFormat.format(movement.createdAt!),
+                            if (movement.reason?.isNotEmpty ?? false)
+                              movement.reason!,
+                            if (movement.isFromPos) 'Kasse',
+                          ];
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(_iconFor(movement.type),
+                                color: theme.colorScheme.onSurfaceVariant),
+                            title: Text(movement.type.label),
+                            subtitle: subtitleParts.isEmpty
+                                ? null
+                                : Text(
+                                    subtitleParts.join('  ·  '),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                            trailing: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  delta > 0 ? '+$delta' : '$delta',
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    color: deltaColor,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                if (movement.balanceAfter != null)
+                                  Text(
+                                    'Bestand: ${movement.balanceAfter}',
+                                    style: theme.textTheme.labelSmall
+                                        ?.copyWith(
+                                      color: theme
+                                          .colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Admin-Einstellungen der OktoPOS-Kassenanbindung: Basis-URL, nächtlicher

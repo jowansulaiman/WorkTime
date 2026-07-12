@@ -106,21 +106,25 @@ class StockMovement {
   /// True, wenn die Bewegung aus dem Kassensystem (OktoPOS) übernommen wurde.
   bool get isFromPos => source == 'oktopos';
 
+  // Tolerante Parser (Repo-Regel „Parser nie hart casten"): Bewegungen sind
+  // ein org-weit gestreamtes Audit-Log mit fuer alle Aktiven offenem
+  // fridge_refill-Create-Pfad — EIN hart gecastetes Poison-Doc wuerde sonst
+  // alle Bewegungs-Reads der Org crashen. String-Felder via ?.toString().
   factory StockMovement.fromFirestore(String id, Map<String, dynamic> map) {
     return StockMovement(
       id: id,
       orgId: (map['orgId'] ?? '').toString(),
       siteId: (map['siteId'] ?? '').toString(),
       productId: (map['productId'] ?? '').toString(),
-      productName: map['productName'] as String?,
+      productName: map['productName']?.toString(),
       type: StockMovementTypeX.fromValue(map['type']?.toString()),
       quantityDelta: parse.toInt(map['quantityDelta']) ?? 0,
       balanceAfter: parse.toInt(map['balanceAfter']),
-      reason: map['reason'] as String?,
-      relatedOrderId: map['relatedOrderId'] as String?,
-      source: map['source'] as String?,
-      externalRef: map['externalRef'] as String?,
-      createdByUid: map['createdByUid'] as String?,
+      reason: map['reason']?.toString(),
+      relatedOrderId: map['relatedOrderId']?.toString(),
+      source: map['source']?.toString(),
+      externalRef: map['externalRef']?.toString(),
+      createdByUid: map['createdByUid']?.toString(),
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
     );
   }
@@ -131,15 +135,15 @@ class StockMovement {
       orgId: (map['org_id'] ?? '').toString(),
       siteId: (map['site_id'] ?? '').toString(),
       productId: (map['product_id'] ?? '').toString(),
-      productName: map['product_name'] as String?,
+      productName: map['product_name']?.toString(),
       type: StockMovementTypeX.fromValue(map['type']?.toString()),
       quantityDelta: parse.toInt(map['quantity_delta']) ?? 0,
       balanceAfter: parse.toInt(map['balance_after']),
-      reason: map['reason'] as String?,
-      relatedOrderId: map['related_order_id'] as String?,
-      source: map['source'] as String?,
-      externalRef: map['external_ref'] as String?,
-      createdByUid: map['created_by_uid'] as String?,
+      reason: map['reason']?.toString(),
+      relatedOrderId: map['related_order_id']?.toString(),
+      source: map['source']?.toString(),
+      externalRef: map['external_ref']?.toString(),
+      createdByUid: map['created_by_uid']?.toString(),
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
     );
   }

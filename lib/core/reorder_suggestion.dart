@@ -65,7 +65,11 @@ class ReorderSuggestion {
 /// - [coverageDays]: gewünschte Eindeckung zwischen zwei Bestellungen (bestimmt
 ///   den Abstand Zielbestand↔Meldebestand).
 /// - Artikel ohne Absatz (`dailyVelocity == 0`, Ladenhüter) bekommen Schwellen 0
-///   (nicht nachbestellen) — das setzt totes Kapital frei.
+///   (nicht nachbestellen) — das setzt totes Kapital frei. **Ausnahme:** neue
+///   Artikel ([ProductVelocity.isNewProduct], erst im Fenster angelegt) sind zu
+///   neu für eine Aussage und bekommen KEINEN Schwellen-0-Vorschlag (sonst
+///   würde jeder frisch angelegte Artikel sofort auf „nicht nachbestellen"
+///   gestellt).
 List<ReorderSuggestion> computeReorderSuggestions({
   required List<ProductVelocity> velocities,
   required List<Product> products,
@@ -90,6 +94,9 @@ List<ReorderSuggestion> computeReorderSuggestions({
     final leadTimeDays = math.max(0, supplierLead ?? defaultLeadTimeDays);
 
     final daily = v.dailyVelocity;
+    // Neu-Artikel-Guard: ohne Absatz UND jünger als das Fenster ⇒ zu neu für
+    // eine „Schwellen auf 0"-Empfehlung — Artikel überspringen.
+    if (daily <= 0 && v.isNewProduct) continue;
     final suggestedMin =
         daily <= 0 ? 0 : (daily * (leadTimeDays + safetyDays)).ceil();
     final coverage = daily <= 0 ? 0 : (daily * coverageDays).ceil();

@@ -94,5 +94,45 @@ service firebase.storage {
             )
           );
     }
+
+    // organizations/{orgId}/signage/{fileName} — Werbebilder der digitalen
+    // Displays (Store-TVs).
+    //  - Schreiben: NUR Admin der Org, < 10 MB, image/*.
+    //  - Lesen: NUR Admin. Wird gebraucht, weil der Upload direkt danach
+    //    getDownloadURL() aufruft (das verlangt Leserecht) und die Verwaltung
+    //    die Vorschau zeigt. Der FERNSEHER liest NICHT ueber diese Rules — er
+    //    laedt das Bild ueber die tokenisierte Download-URL (Bearer-Token in der
+    //    URL, umgeht die Storage-Rules), daher KEINE oeffentliche Leseregel.
+    match /organizations/{orgId}/signage/{fileName} {
+      function signedIn() {
+        return request.auth != null;
+      }
+      function callerDoc() {
+        return firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        );
+      }
+      function callerOrg() {
+        return callerDoc().data.orgId;
+      }
+      function callerRole() {
+        return callerDoc().data.role;
+      }
+      function isAdmin() {
+        return signedIn()
+            && callerRole() == 'admin'
+            && callerOrg() == orgId;
+      }
+
+      allow read: if isAdmin();
+      allow write: if isAdmin()
+          && (
+            request.resource == null
+            || (
+              request.resource.size < 10 * 1024 * 1024
+              && request.resource.contentType.matches('image/.*')
+            )
+          );
+    }
   }
 }

@@ -17,6 +17,7 @@ import '../core/ean.dart';
 import '../core/expiry_warning.dart';
 import '../core/fridge_refill_shortfall.dart';
 import '../core/local_demo_data.dart';
+import '../core/price_deviation.dart';
 import '../core/reorder_suggestion.dart';
 import '../core/sales_velocity.dart';
 import '../core/seasonal_factor.dart';
@@ -34,6 +35,7 @@ import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
+import '../models/scan_event.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
 import '../repositories/inventory_repository.dart';
@@ -96,6 +98,14 @@ class InventoryProvider extends ChangeNotifier {
   List<SiteOrderList> _orderCarts = [];
   List<SiteOrderList> _weeklyLists = [];
   List<FridgeRefillList> _fridgeLists = [];
+  List<ScanEvent> _scanEvents = [];
+
+  /// Ob der lokale Telemetrie-Spiegel bereits geladen wurde. Anders als die
+  /// uebrigen Collections gibt es fuer scanEvents KEINEN Stream, der die
+  /// In-Memory-Liste fuellt — im hybrid-Modus muss der Spiegel vor dem ersten
+  /// Append/Fallback-Read explizit geladen werden, sonst ueberschreibt der
+  /// erste Scan der Session den kompletten Alt-Spiegel.
+  bool _scanEventsLoaded = false;
   bool _loading = false;
   String? _errorMessage;
   bool _disposed = false;
@@ -674,6 +684,11 @@ class InventoryProvider extends ChangeNotifier {
     _currentUser = user;
 
     await _cancelSubscriptions();
+    // Scan-Telemetrie ist nicht stream-gespeist -> beim Sessionwechsel
+    // explizit zuruecksetzen, sonst koennten Events der alten Session in den
+    // Spiegel der neuen geschrieben werden.
+    _scanEvents = [];
+    _scanEventsLoaded = false;
 
     if (user == null) {
       _resetData();
@@ -711,6 +726,8 @@ class InventoryProvider extends ChangeNotifier {
         await DatabaseService.loadLocalWeeklyOrderLists(scope: scope);
     _fridgeLists =
         await DatabaseService.loadLocalFridgeRefillLists(scope: scope);
+    _scanEvents = await DatabaseService.loadLocalScanEvents(scope: scope);
+    _scanEventsLoaded = true;
   }
 
   Future<void> _persistSuppliers() =>
@@ -736,6 +753,8 @@ class InventoryProvider extends ChangeNotifier {
   Future<void> _persistFridgeLists() =>
       DatabaseService.saveLocalFridgeRefillLists(_fridgeLists,
           scope: _localScope);
+  Future<void> _persistScanEvents() =>
+      DatabaseService.saveLocalScanEvents(_scanEvents, scope: _localScope);
 
   Future<void> _persistAllLocal() async {
     await _persistSuppliers();
@@ -748,6 +767,7 @@ class InventoryProvider extends ChangeNotifier {
     await _persistOrderCarts();
     await _persistWeeklyLists();
     await _persistFridgeLists();
+    await _persistScanEvents();
   }
 
   // --- Speichermodus-Migration (H-H1) -------------------------------------
@@ -834,6 +854,8 @@ class InventoryProvider extends ChangeNotifier {
     _orderCarts = [];
     _weeklyLists = [];
     _fridgeLists = [];
+    _scanEvents = [];
+    _scanEventsLoaded = false;
     _loading = false;
   }
 
@@ -960,7 +982,7 @@ class InventoryProvider extends ChangeNotifier {
     final stored = prepared.id == null
         ? prepared.copyWith(id: _nextLocalId('supplier'))
         : prepared;
-    _upsertLocal(
+    _suppliers = _upsertLocal(
       _suppliers,
       stored,
       (item) => item.id,
@@ -1003,9 +1025,10 @@ class InventoryProvider extends ChangeNotifier {
       );
       return;
     }
-    _suppliers = _suppliers
-        .where((supplier) => supplier.id != supplierId)
-        .toList(growable: false);
+    // Growable lassen: _upsertLocal ruft .add() auf derselben Liste — eine
+    // fixed-length-Liste liesse das naechste lokale Speichern crashen.
+    _suppliers =
+        _suppliers.where((supplier) => supplier.id != supplierId).toList();
     await _persistSuppliers();
     _safeNotify();
     _audit?.call(
@@ -1034,6 +1057,38 @@ class InventoryProvider extends ChangeNotifier {
     prepared = prepared.copyWith(
       fridgeStock: productById(prepared.id)?.fridgeStock ?? 0,
     );
+    // Harte Barcode-Eindeutigkeit je Laden: ein Barcode darf im selben Laden
+    // nur an EINEM Artikel haengen (inkl. deaktivierter — die blockieren sonst
+    // die Reaktivierung). Geprueft wird nur bei Neuanlage oder geaendertem
+    // Barcode: Altbestands-Duplikate bleiben editierbar (sonst waere z.B. eine
+    // Preisaenderung an einem Alt-Duplikat blockiert) und werden stattdessen
+    // im Duplikat-Report der Scan-Statistik sichtbar. Schreibweisen-tolerant
+    // ueber gtinLookupVariants (UPC-A vs. EAN-13 mit fuehrender Null etc.).
+    // Grenze: ein Race zweier Geraete kann die Pruefung umgehen (direkter
+    // Firestore-Write per Design; Rules koennen Cross-Doc-Eindeutigkeit nicht
+    // erzwingen) — auch das faengt der Report auf.
+    final barcode = prepared.barcode?.trim() ?? '';
+    if (barcode.isNotEmpty) {
+      final stored = productById(prepared.id);
+      final barcodeUnchanged =
+          stored != null && (stored.barcode?.trim() ?? '') == barcode;
+      if (!barcodeUnchanged) {
+        final clash = productsByBarcode(
+          barcode,
+          siteId: prepared.siteId,
+          includeInactive: true,
+        ).where((other) => other.id != prepared.id).toList();
+        if (clash.isNotEmpty) {
+          final first = clash.first;
+          throw StateError(
+            'Barcode bereits vergeben: „${first.name}"'
+            '${first.isActive ? '' : ' (deaktiviert)'} traegt den Code '
+            '$barcode in diesem Laden. Jeder Barcode darf je Laden nur an '
+            'einem Artikel haengen.',
+          );
+        }
+      }
+    }
     // created vs. updated VOR einer evtl. neuen lokalen id bestimmen.
     final isNew = prepared.id == null || prepared.id!.isEmpty;
     if (_usesFirestore &&
@@ -1053,7 +1108,7 @@ class InventoryProvider extends ChangeNotifier {
     final stored = prepared.id == null
         ? prepared.copyWith(id: _nextLocalId('product'))
         : prepared;
-    _upsertLocal(
+    _products = _upsertLocal(
       _products,
       stored,
       (item) => item.id,
@@ -1184,6 +1239,172 @@ class InventoryProvider extends ChangeNotifier {
         .toList(growable: false);
   }
 
+  // --- Scan-Telemetrie (Scan-Statistik/Fehleranalyse) ----------------------
+
+  /// Lokale Scan-Telemetrie hart auf die juengsten Eintraege cappen —
+  /// SharedPreferences ist kein Ort fuer unbegrenzte Logs.
+  static const int _scanEventCap = 500;
+
+  void _appendLocalScanEvent(ScanEvent event) {
+    _scanEvents.insert(0, event); // Liste ist "neueste zuerst" sortiert
+    if (_scanEvents.length > _scanEventCap) {
+      _scanEvents.removeRange(_scanEventCap, _scanEvents.length);
+    }
+  }
+
+  /// Laedt den lokalen Telemetrie-Spiegel einmalig nach (hybrid-Modus: dort
+  /// laeuft kein _loadLocalData) — sonst wuerde der erste Scan der Session den
+  /// persistierten Spiegel mit einer 1-Element-Liste ueberschreiben.
+  Future<void> _ensureScanEventsLoaded() async {
+    if (_scanEventsLoaded) return;
+    _scanEventsLoaded = true;
+    _scanEvents = await DatabaseService.loadLocalScanEvents(scope: _localScope);
+  }
+
+  /// Protokolliert einen Scan-Versuch fuer die Scan-Statistik — best-effort
+  /// und fire-and-forget: wirft NIE und blockiert das Scannen nicht (Muster
+  /// AuditSink). Kein notifyListeners (keine Live-Anzeige; die Statistik laedt
+  /// on demand via [fetchScanEvents]). Bewusst KEIN Audit-Log (Rauschen).
+  ///
+  /// cloud/hybrid: append-only nach Firestore (`scanEvents`), bei hybrid
+  /// zusaetzlich lokal gespiegelt (Offline-Statistik); local: nur gecappte
+  /// lokale Liste.
+  Future<void> logScanEvent({
+    required String code,
+    required ScanOutcome outcome,
+    String? siteId,
+    String? mode,
+    String? source,
+    int? timeToHitMs,
+    String? productId,
+    String? platform,
+  }) async {
+    try {
+      final orgId = _orgId;
+      if (orgId == null) return;
+      // Datenschutz by Design: (a) Codes hart auf 128 Zeichen cappen — lange
+      // QR-Inhalte (URLs mit Tokens etc.) gehoeren nicht in ein append-only
+      // Log; (b) bewusst KEIN createdByUid — die Statistik wertet Geraete/
+      // Quellen aus, keine Personen (keine Leistungskontrolle).
+      final trimmedCode =
+          code.length > 128 ? '${code.substring(0, 125)}…' : code;
+      final event = ScanEvent(
+        orgId: orgId,
+        siteId: siteId,
+        code: trimmedCode,
+        outcome: outcome,
+        mode: mode,
+        source: source,
+        timeToHitMs: timeToHitMs,
+        productId: productId,
+        platform: platform,
+        createdAt: DateTime.now(),
+      );
+      if (_usesFirestore) {
+        try {
+          await _inventory.addScanEvent(event);
+        } catch (error) {
+          AppLogger.warning(
+            'Scan-Telemetrie: Cloud-Write fehlgeschlagen',
+            error: error,
+          );
+          // Telemetrie ist verzichtbar — im Cloud-only-Modus still verwerfen.
+          if (!usesHybridStorage) return;
+        }
+        if (!usesHybridStorage) return;
+      }
+      await _ensureScanEventsLoaded();
+      _appendLocalScanEvent(event);
+      await _persistScanEvents();
+    } catch (error) {
+      // Telemetrie darf den Scanner unter keinen Umstaenden stoeren.
+      AppLogger.warning('Scan-Telemetrie fehlgeschlagen', error: error);
+    }
+  }
+
+  /// Juengste Scan-Ereignisse fuer die Scan-Statistik (neueste zuerst).
+  /// cloud/hybrid: einmaliger Read aus Firestore (Hybrid-Offline-Fallback auf
+  /// den lokalen Spiegel); local: aus der gecappten lokalen Liste.
+  Future<List<ScanEvent>> fetchScanEvents({int limit = 500}) async {
+    final orgId = _orgId;
+    if (orgId == null) return const <ScanEvent>[];
+    if (_usesFirestore) {
+      try {
+        return await _inventory.fetchScanEvents(orgId, limit: limit);
+      } catch (error) {
+        if (!usesHybridStorage) rethrow;
+        AppLogger.warning(
+          'Scan-Statistik offline – zeige lokalen Spiegel',
+          error: error,
+        );
+      }
+    }
+    await _ensureScanEventsLoaded();
+    return List<ScanEvent>.unmodifiable(_scanEvents.take(limit));
+  }
+
+  // --- Preisabgleich Kasse (posReceipts) -----------------------------------
+
+  /// Automatischer Preisabgleich App-VK vs. Kasse: vergleicht die Artikel des
+  /// Ladens gegen die juengsten TATSAECHLICH kassierten Stueckpreise aus den
+  /// gesyncten Belegen (`posReceipts`, cloud-only — es gibt keinen Kassen-
+  /// Endpunkt, der Artikelpreise liest). Wirft im local-Modus einen deutschen
+  /// [StateError] (die UI blendet den Einstieg dann gar nicht erst ein).
+  Future<List<PriceDeviation>> loadPriceDeviations({
+    required String siteId,
+    int days = 30,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    if (!_usesFirestore) {
+      throw StateError(
+        'Der Preisabgleich benoetigt die Cloud-Anbindung (Kassen-Belege).',
+      );
+    }
+    final now = DateTime.now();
+    final receipts = await _inventory.getPosReceiptsInRange(
+      orgId,
+      now.subtract(Duration(days: days)),
+      now,
+      siteId: siteId,
+    );
+    return computePriceDeviations(
+      products: _products,
+      receipts: receipts,
+      siteId: siteId,
+    );
+  }
+
+  /// Bestandsbewegungen eines Artikels (neueste zuerst, max. [limit]). In
+  /// cloud/hybrid aus der produktgefilterten Query (bedient den vorhandenen
+  /// (productId, createdAt)-Composite-Index — deckt anders als [recentMovements]
+  /// auch Bewegungen jenseits der letzten 100 org-weiten ab); im local-Modus
+  /// bzw. als Hybrid-Offline-Fallback aus dem lokalen Spiegel.
+  Future<List<StockMovement>> movementsForProduct(
+    String productId, {
+    int limit = 50,
+  }) async {
+    if (_usesFirestore) {
+      final orgId = _orgId;
+      if (orgId == null) {
+        return const <StockMovement>[];
+      }
+      try {
+        return await _inventory
+            .watchStockMovements(orgId, productId: productId, limit: limit)
+            .first;
+      } catch (_) {
+        // Hybrid-Offline-Fallback: lokalen Spiegel zeigen (ggf. leer).
+      }
+    }
+    return _movements
+        .where((movement) => movement.productId == productId)
+        .take(limit)
+        .toList(growable: false);
+  }
+
   Future<void> deleteProduct(String productId) async {
     final orgId = _orgId;
     if (orgId == null) {
@@ -1209,9 +1430,10 @@ class InventoryProvider extends ChangeNotifier {
       );
       return;
     }
-    _products = _products
-        .where((product) => product.id != productId)
-        .toList(growable: false);
+    // Growable lassen: _upsertLocal ruft .add() auf derselben Liste — eine
+    // fixed-length-Liste liesse das naechste lokale Speichern crashen.
+    _products =
+        _products.where((product) => product.id != productId).toList();
     await _persistProducts();
     _safeNotify();
     _audit?.call(
@@ -2111,7 +2333,7 @@ class InventoryProvider extends ChangeNotifier {
     final stored = prepared.id == null
         ? prepared.copyWith(id: _nextLocalId('batch'))
         : prepared;
-    _upsertLocal(_batches, stored, (item) => item.id);
+    _batches = _upsertLocal(_batches, stored, (item) => item.id);
     _batches.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
     await _persistBatches();
     _safeNotify();
@@ -2158,7 +2380,7 @@ class InventoryProvider extends ChangeNotifier {
       );
       return;
     }
-    _upsertLocal(_batches, resolved, (item) => item.id);
+    _batches = _upsertLocal(_batches, resolved, (item) => item.id);
     await _persistBatches();
     _safeNotify();
     _audit?.call(
@@ -2408,6 +2630,135 @@ class InventoryProvider extends ChangeNotifier {
     return null;
   }
 
+  /// Sucht den passenden Zielartikel fuer eine Umlagerung von [from] an den
+  /// Standort [toSiteId]: erst exakter Barcode-Match, dann Name (case-
+  /// insensitiv). `null`, wenn der Artikel dort noch nicht gefuehrt wird.
+  Product? findTransferTarget(Product from, String toSiteId) {
+    final barcode = from.barcode?.trim();
+    if (barcode != null && barcode.isNotEmpty) {
+      // Schreibweisen-tolerant (UPC-A vs. EAN-13 mit fuehrender Null etc.),
+      // sonst legt die Umlagerung am Ziel ein Duplikat in anderer Schreibweise
+      // an — vorbei an der harten Eindeutigkeit (die Ziel-Anlage schreibt
+      // direkt uebers Repo).
+      final variants = gtinLookupVariants(barcode);
+      for (final candidate in _products) {
+        if (candidate.siteId == toSiteId &&
+            candidate.id != null &&
+            candidate.id != from.id &&
+            variants.contains(candidate.barcode?.trim() ?? '')) {
+          return candidate;
+        }
+      }
+    }
+    final nameLower = from.name.trim().toLowerCase();
+    for (final candidate in _products) {
+      if (candidate.siteId == toSiteId &&
+          candidate.id != null &&
+          candidate.id != from.id &&
+          candidate.name.trim().toLowerCase() == nameLower) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  /// Umlagerung nach Ziel-STANDORT statt Ziel-Artikel: existiert der Artikel
+  /// dort schon ([findTransferTarget]), wird direkt umgebucht; sonst wird er
+  /// am Ziel mit denselben Stammdaten (Bestand 0, ohne Kuehlschrank-Ist)
+  /// angelegt und anschliessend beliefert. Nimmt dem Alltag der zwei Laeden
+  /// die Huerde, den Artikel vor jeder ersten Umlagerung von Hand zu
+  /// duplizieren. Gibt `null` bei Erfolg oder eine deutsche Fehlermeldung.
+  Future<String?> transferStockToSite({
+    required Product from,
+    required String toSiteId,
+    String? toSiteName,
+    required int quantity,
+  }) async {
+    if (toSiteId == from.siteId) {
+      return 'Quelle und Ziel müssen unterschiedliche Standorte sein.';
+    }
+    final existing = findTransferTarget(from, toSiteId);
+    if (existing != null) {
+      return transferStock(from: from, to: existing, quantity: quantity);
+    }
+    final orgId = _orgId;
+    if (orgId == null) {
+      return 'Keine Organisation aktiv.';
+    }
+    if (quantity <= 0) {
+      return 'Bitte eine Menge größer als 0 eingeben.';
+    }
+    if (from.id == null) {
+      return 'Artikel ist noch nicht gespeichert.';
+    }
+    if (from.currentStock - quantity < 0) {
+      return 'Menge ($quantity) übersteigt den Bestand der Quelle '
+          '(${from.currentStock} ${from.unit}).';
+    }
+    final template = Product(
+      orgId: orgId,
+      siteId: toSiteId,
+      siteName: toSiteName,
+      name: from.name,
+      sku: from.sku,
+      barcode: from.barcode,
+      category: from.category,
+      unit: from.unit,
+      supplierId: from.supplierId,
+      supplierName: from.supplierName,
+      purchasePriceCents: from.purchasePriceCents,
+      sellingPriceCents: from.sellingPriceCents,
+      taxRatePercent: from.taxRatePercent,
+      minStock: from.minStock,
+      targetStock: from.targetStock,
+      reorderQuantity: from.reorderQuantity,
+      createdByUid: _currentUser?.uid,
+    );
+    // Anlage analog zum saveProduct-Speichermuster, aber mit der neuen Doc-ID
+    // als Rueckgabe (die braucht die direkt folgende Umlagerungs-Buchung).
+    Product? target;
+    if (_usesFirestore) {
+      try {
+        final newId = await _inventory.saveProduct(template);
+        target = template.copyWith(id: newId);
+        // Sofort in den In-Memory-Bestand uebernehmen: die direkt folgende
+        // Umlagerungs-Buchung kann im Hybrid-Fallback lokal landen und braucht
+        // den Zielartikel in _products (der Stream liefert ihn erst spaeter —
+        // sonst liefe _applyLocalStockChange ins Leere und die Quelle waere
+        // belastet, ohne dass das Ziel etwas bekommt). Der naechste
+        // Stream-Snapshot ersetzt die Liste ohnehin mit der Server-Wahrheit.
+        _products = _upsertLocal(_products, target, (item) => item.id);
+        _safeNotify();
+      } catch (error) {
+        if (!usesHybridStorage) {
+          AppLogger.warning(
+            'Inventory: transferStockToSite Zielartikel-Anlage fehlgeschlagen',
+            error: error,
+          );
+          return 'Zielartikel konnte nicht angelegt werden – bitte erneut '
+              'versuchen.';
+        }
+      }
+    }
+    if (target == null) {
+      final stored = template.copyWith(id: _nextLocalId('product'));
+      _products = _upsertLocal(_products, stored, (item) => item.id);
+      _products
+          .sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      await _persistProducts();
+      _safeNotify();
+      target = stored;
+    }
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Produkt',
+      entityId: target.id,
+      summary:
+          'Produkt „${target.name}" für Umlagerung am Zielstandort angelegt',
+    );
+    return transferStock(from: from, to: target, quantity: quantity);
+  }
+
   // --- Bestellungen -------------------------------------------------------
 
   /// Speichert eine Bestellung und gibt deren Id zurueck.
@@ -2455,11 +2806,10 @@ class InventoryProvider extends ChangeNotifier {
     final withId = prepared.id == null
         ? prepared.copyWith(
             id: _nextLocalId('order'),
-            orderNumber: prepared.orderNumber ??
-                'BST-${DateTime.now().year}-${(_orders.length + 1).toString().padLeft(4, '0')}',
+            orderNumber: prepared.orderNumber ?? _nextLocalOrderNumber(),
           )
         : prepared;
-    _upsertLocal(_orders, withId, (item) => item.id);
+    _orders = _upsertLocal(_orders, withId, (item) => item.id);
     _orders.sort((a, b) => (b.orderNumber ?? '').compareTo(a.orderNumber ?? ''));
     await _persistOrders();
     _safeNotify();
@@ -2471,6 +2821,25 @@ class InventoryProvider extends ChangeNotifier {
     );
     await _bookPurchaseOrderCostIfNeeded(withId, oldStatus);
     return withId.id!;
+  }
+
+  /// Naechste lokale Bestellnummer `BST-<Jahr>-NNNN`: hoechstes bereits
+  /// vergebenes Suffix des Jahres + 1 — NICHT die Listenlaenge, die nach einer
+  /// Loeschung mit bestehenden Nummern kollidieren wuerde.
+  String _nextLocalOrderNumber() {
+    final prefix = 'BST-${DateTime.now().year}-';
+    var maxSeq = 0;
+    for (final order in _orders) {
+      final number = order.orderNumber;
+      if (number == null || !number.startsWith(prefix)) {
+        continue;
+      }
+      final seq = int.tryParse(number.substring(prefix.length));
+      if (seq != null && seq > maxSeq) {
+        maxSeq = seq;
+      }
+    }
+    return '$prefix${(maxSeq + 1).toString().padLeft(4, '0')}';
   }
 
   /// Markiert eine Bestellung als abgeschickt.
@@ -2517,8 +2886,9 @@ class InventoryProvider extends ChangeNotifier {
       );
       return;
     }
-    _orders =
-        _orders.where((order) => order.id != orderId).toList(growable: false);
+    // Growable lassen: _upsertLocal ruft .add() auf derselben Liste — eine
+    // fixed-length-Liste liesse das naechste lokale Speichern crashen.
+    _orders = _orders.where((order) => order.id != orderId).toList();
     await _persistOrders();
     _safeNotify();
     _audit?.call(
@@ -2656,7 +3026,7 @@ class InventoryProvider extends ChangeNotifier {
                 'KB-${DateTime.now().year}-${(_customerOrders.length + 1).toString().padLeft(4, '0')}',
           )
         : prepared;
-    _upsertLocal(_customerOrders, withId, (item) => item.id);
+    _customerOrders = _upsertLocal(_customerOrders, withId, (item) => item.id);
     await _persistCustomerOrders();
     _safeNotify();
     _audit?.call(
@@ -2690,9 +3060,10 @@ class InventoryProvider extends ChangeNotifier {
       );
       return;
     }
-    _customerOrders = _customerOrders
-        .where((order) => order.id != orderId)
-        .toList(growable: false);
+    // Growable lassen: _upsertLocal ruft .add() auf derselben Liste — eine
+    // fixed-length-Liste liesse das naechste lokale Speichern crashen.
+    _customerOrders =
+        _customerOrders.where((order) => order.id != orderId).toList();
     await _persistCustomerOrders();
     _safeNotify();
     _audit?.call(
@@ -3090,11 +3461,11 @@ class InventoryProvider extends ChangeNotifier {
       return;
     }
     if (prepared.kind == OrderListKind.weeklyTemplate) {
-      _upsertLocal(_weeklyLists, prepared, (item) => item.siteId);
+      _weeklyLists = _upsertLocal(_weeklyLists, prepared, (item) => item.siteId);
       _weeklyLists = [..._weeklyLists];
       await _persistWeeklyLists();
     } else {
-      _upsertLocal(_orderCarts, prepared, (item) => item.siteId);
+      _orderCarts = _upsertLocal(_orderCarts, prepared, (item) => item.siteId);
       _orderCarts = [..._orderCarts];
       await _persistOrderCarts();
     }
@@ -3287,7 +3658,7 @@ class InventoryProvider extends ChangeNotifier {
         )) {
       return;
     }
-    _upsertLocal(_fridgeLists, prepared, (item) => item.siteId);
+    _fridgeLists = _upsertLocal(_fridgeLists, prepared, (item) => item.siteId);
     _fridgeLists = [..._fridgeLists];
     await _persistFridgeLists();
     _safeNotify();
@@ -3400,18 +3771,25 @@ class InventoryProvider extends ChangeNotifier {
     _orders = [..._orders];
   }
 
-  void _upsertLocal<T>(
+  /// Ersetzt das Element mit gleicher ID bzw. haengt es an — auf einer NEUEN
+  /// growable Liste, die der Aufrufer dem Feld zuweist. Wichtig: in
+  /// cloud/hybrid stammen die Felder direkt aus dem Firestore-Stream
+  /// (`.toList(growable: false)`) — ein in-place `.add()` wuerde dort mit
+  /// `UnsupportedError` crashen (Hybrid-Offline-Fallback nach Stream-Emit).
+  List<T> _upsertLocal<T>(
     List<T> list,
     T item,
     String? Function(T) idOf,
   ) {
     final id = idOf(item);
     final index = list.indexWhere((existing) => idOf(existing) == id);
+    final next = [...list];
     if (index >= 0) {
-      list[index] = item;
+      next[index] = item;
     } else {
-      list.add(item);
+      next.add(item);
     }
+    return next;
   }
 
   @override

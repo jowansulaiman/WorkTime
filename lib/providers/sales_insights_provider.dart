@@ -34,6 +34,10 @@ class SalesInsightsProvider extends ChangeNotifier {
   int _shrinkageWindowDays = 90;
 
   List<ProductVelocity> _velocities = const [];
+  // Velocities über das LANGE Ladenhüter-Fenster (_deadStockWindowDays) —
+  // die Ladenhüter-Aussage („X Tage kein Verkauf") muss über das kommunizierte
+  // Fenster beurteilt werden, nicht über das kurze Velocity-Fenster.
+  List<ProductVelocity> _deadStockVelocities = const [];
   List<TransferSuggestion> _transfers = const [];
   List<ReorderSuggestion> _reorders = const [];
   List<ListingGap> _listingGaps = const [];
@@ -49,9 +53,10 @@ class SalesInsightsProvider extends ChangeNotifier {
 
   List<ProductVelocity> get velocities => _velocities;
 
-  /// Ladenhüter (kein Absatz, Bestand > 0) — nach gebundenem Kapital absteigend.
+  /// Ladenhüter (kein Absatz, Bestand > 0) — beurteilt über das LANGE
+  /// [deadStockWindowDays]-Fenster, nach gebundenem Kapital absteigend.
   List<ProductVelocity> get deadStock {
-    final list = _velocities.where((v) => v.isDeadStock).toList()
+    final list = _deadStockVelocities.where((v) => v.isDeadStock).toList()
       ..sort((a, b) => b.tiedUpCapitalCents.compareTo(a.tiedUpCapitalCents));
     return list;
   }
@@ -127,6 +132,7 @@ class SalesInsightsProvider extends ChangeNotifier {
     // nichts). Fehlt eine Sektion, bleibt ihr letzter Stand stehen (stale-while-
     // error). Vollständiger Fehler nur, wenn ALLE Sektionen scheitern.
     List<ProductVelocity>? velocities;
+    List<ProductVelocity>? deadStockVelocities;
     List<TransferSuggestion>? transfers;
     List<ReorderSuggestion>? reorders;
     List<ListingGap>? listingGaps;
@@ -135,6 +141,14 @@ class SalesInsightsProvider extends ChangeNotifier {
     try {
       velocities =
           await inv.computeSiteVelocities(siteId: siteId, windowDays: windowDays, asOf: asOf);
+    } catch (_) {
+      failures++;
+    }
+    // Ladenhüter über das lange Fenster beurteilen (die UI kommuniziert
+    // deadStockWindowDays — das kurze Velocity-Fenster wäre unehrlich).
+    try {
+      deadStockVelocities = await inv.computeSiteVelocities(
+          siteId: siteId, windowDays: deadStockWindowDays, asOf: asOf);
     } catch (_) {
       failures++;
     }
@@ -170,6 +184,8 @@ class SalesInsightsProvider extends ChangeNotifier {
     // fremden Altdaten); bei Refresh desselben Standorts bleibt der letzte Stand.
     final siteChanged = siteId != _dataSiteId;
     _velocities = velocities ?? (siteChanged ? const [] : _velocities);
+    _deadStockVelocities = deadStockVelocities ??
+        (siteChanged ? const [] : _deadStockVelocities);
     _transfers = transfers != null
         ? transfers
             .where((t) => t.fromProduct.siteId == siteId)
@@ -180,7 +196,7 @@ class SalesInsightsProvider extends ChangeNotifier {
     _listingGaps = listingGaps ?? (siteChanged ? const [] : _listingGaps);
     _dataSiteId = siteId;
     _loading = false;
-    _error = failures == 5
+    _error = failures == 6
         ? 'Auswertung konnte nicht geladen werden. Bitte erneut versuchen.'
         : null;
     _safeNotify();
@@ -188,6 +204,7 @@ class SalesInsightsProvider extends ChangeNotifier {
 
   void _resetData() {
     _velocities = const [];
+    _deadStockVelocities = const [];
     _transfers = const [];
     _reorders = const [];
     _listingGaps = const [];

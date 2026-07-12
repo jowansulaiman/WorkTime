@@ -36,6 +36,7 @@ class AppNavRail extends StatelessWidget {
     required this.onOpenMenu,
     required this.user,
     this.onSearch,
+    this.themeAction,
     this.expandedLabels = false,
   });
 
@@ -48,6 +49,11 @@ class AppNavRail extends StatelessWidget {
 
   /// Globale Suche (Anf. 24). Null → kein Such-Button (Rückwärtskompatibel).
   final VoidCallback? onSearch;
+
+  /// Optionaler Aktions-Knopf oben in der Leiste (z. B. Hell/Dunkel-Umschalter).
+  /// Null → kein Knopf (rückwärtskompatibel; isolierte Tests brauchen dann
+  /// keinen zusätzlichen Provider).
+  final Widget? themeAction;
   final AppUserProfile? user;
 
   /// Mehr Breite + Weißraum ab dem Expanded-Window-Breakpoint (≥840).
@@ -93,6 +99,10 @@ class AppNavRail extends StatelessWidget {
                 icon: const Icon(Icons.search_rounded),
                 onPressed: onSearch,
               ),
+              SizedBox(height: spacing.sm),
+            ],
+            if (themeAction != null) ...[
+              themeAction!,
               SizedBox(height: spacing.sm),
             ],
             for (var i = 0; i < items.length; i++) ...[

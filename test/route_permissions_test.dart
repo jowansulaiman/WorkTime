@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:worktime_app/core/app_config.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/routing/route_permissions.dart';
@@ -65,6 +66,21 @@ void main() {
           isTrue);
     });
 
+    test('Werbe-Displays (/werbung): nie für Nicht-Admins; Admin nur bei Flag',
+        () {
+      // Nicht-Admins sind IMMER gesperrt (unabhängig vom Feature-Flag).
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.signage, _employee),
+          isFalse);
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.signage, _teamlead),
+          isFalse);
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.signage, null),
+          isFalse);
+      // Admin nur bei aktivem APP_SIGNAGE_ENABLED (im Test standardmäßig aus) —
+      // spiegelt die Hub-Kachel + verhindert Deep-Link-Umgehung des Flags.
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.signage, _admin),
+          AppConfig.signageEnabled);
+    });
+
     test('Mitarbeiter-Detail-Deep-Link /personal/{uid} ist admin-only', () {
       // Konkreter Pfad mit gefülltem :id — matcht KEINEN exakten switch-case und
       // fiele ohne den `/personal/`-Prefix-Guard auf default:true (Leck).
@@ -95,6 +111,19 @@ void main() {
         RoutePermissions.isLocationAllowed(path, _employee),
         RoutePermissions.isLocationAllowed('/kontakte', _employee),
       );
+    });
+
+    test('Inventur (/inventur): canManageInventory — Admin+Teamleitung ja, '
+        'Mitarbeiter nein', () {
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.inventur, _admin),
+          isTrue);
+      // Teamleitung hat per Default canEditSchedule -> canManageInventory.
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.inventur, _teamlead),
+          isTrue);
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.inventur, _employee),
+          isFalse);
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.inventur, null),
+          isFalse);
     });
 
     test('Kassenbericht: nur Admin (EK/Marge/Gewinn, M4)', () {

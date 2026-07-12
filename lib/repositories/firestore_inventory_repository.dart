@@ -14,6 +14,7 @@ import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
 import '../models/purchase_order.dart';
+import '../models/scan_event.dart';
 import '../models/stock_movement.dart';
 import '../models/supplier.dart';
 import 'inventory_repository.dart';
@@ -60,6 +61,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('posReceipts');
+
+  CollectionReference<Map<String, dynamic>> _scanEventCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('scanEvents');
 
   CollectionReference<Map<String, dynamic>> _customerOrderCollection(
     String orgId,
@@ -339,7 +345,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
   }
 
   @override
-  Future<void> saveProduct(Product product) async {
+  Future<String> saveProduct(Product product) async {
     final collection = _productCollection(product.orgId);
     final docRef =
         product.id == null ? collection.doc() : collection.doc(product.id);
@@ -351,6 +357,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
       if (product.id == null) 'createdAt': FieldValue.serverTimestamp(),
     }..remove('fridgeStock');
     await docRef.set(data, SetOptions(merge: true));
+    return docRef.id;
   }
 
   @override
@@ -416,6 +423,22 @@ class FirestoreInventoryRepository implements InventoryRepository {
         .get();
     return snapshot.docs
         .map((doc) => PriceHistoryEntry.fromFirestore(doc.id, doc.data()))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> addScanEvent(ScanEvent event) {
+    return _scanEventCollection(event.orgId).add(event.toFirestoreMap());
+  }
+
+  @override
+  Future<List<ScanEvent>> fetchScanEvents(String orgId, {int limit = 500}) async {
+    final snapshot = await _scanEventCollection(orgId)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .get();
+    return snapshot.docs
+        .map((doc) => ScanEvent.fromFirestore(doc.id, doc.data()))
         .toList(growable: false);
   }
 
