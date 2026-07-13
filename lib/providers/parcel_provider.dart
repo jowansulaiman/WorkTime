@@ -298,7 +298,8 @@ class ParcelProvider extends ChangeNotifier {
   // --- Mutatoren: Pakete ---------------------------------------------------
 
   /// Speichert ein Paket (Anlage oder Update) und gibt dessen Id zurück.
-  Future<String> saveParcel(ParcelShipment shipment) async {
+  /// [auditSummary] überschreibt die Standard-Zusammenfassung (personenfrei!).
+  Future<String> saveParcel(ParcelShipment shipment, {String? auditSummary}) async {
     final orgId = _orgId;
     if (orgId == null) {
       throw StateError('Keine Organisation aktiv.');
@@ -313,7 +314,7 @@ class ParcelProvider extends ChangeNotifier {
         newId = await _parcel.saveParcel(prepared);
       });
       if (ok) {
-        _auditParcel(isNew, newId, fach);
+        _auditParcel(isNew, newId, fach, auditSummary);
         return newId ?? (prepared.id ?? '');
       }
     }
@@ -324,8 +325,44 @@ class ParcelProvider extends ChangeNotifier {
     _sortParcels();
     await _persistParcels();
     _safeNotify();
-    _auditParcel(isNew, stored.id, fach);
+    _auditParcel(isNew, stored.id, fach, auditSummary);
     return stored.id!;
+  }
+
+  /// Paket ausgeben (Status → abgeholt). `compartmentId` bleibt erhalten
+  /// (Undo-fähig); die Fach-Belegung wird über offene Pakete abgeleitet.
+  Future<void> handOutParcel(ParcelShipment parcel) async {
+    await saveParcel(
+      parcel.copyWith(
+        status: ShipmentStatus.abgeholt,
+        handedOutAt: DateTime.now(),
+      ),
+      auditSummary: 'Paket ausgegeben${_fachSuffix(parcel)}',
+    );
+  }
+
+  /// Ausgabe rückgängig (Fehl-Tap, Plan §5b6): Status → eingelagert,
+  /// `handedOutAt` geleert; das erhaltene `compartmentId` bindet das Paket
+  /// automatisch wieder in sein Fach.
+  Future<void> undoHandOut(ParcelShipment parcel) async {
+    await saveParcel(
+      parcel.copyWith(
+        status: ShipmentStatus.eingelagert,
+        clearHandedOutAt: true,
+      ),
+      auditSummary: 'Ausgabe rückgängig${_fachSuffix(parcel)}',
+    );
+  }
+
+  /// Paket als Rücklauf markieren (Status → zurück, `returnedAt` = now).
+  Future<void> returnParcel(ParcelShipment parcel) async {
+    await saveParcel(
+      parcel.copyWith(
+        status: ShipmentStatus.zurueck,
+        returnedAt: DateTime.now(),
+      ),
+      auditSummary: 'Paket als Rücklauf markiert${_fachSuffix(parcel)}',
+    );
   }
 
   Future<void> deleteParcel(String id) async {
@@ -370,6 +407,14 @@ class ParcelProvider extends ChangeNotifier {
     final prepared = compartment.copyWith(orgId: orgId);
     final isNew = prepared.id == null || prepared.id!.isEmpty;
 
+    // Fach-Barcode je Standort eindeutig (clientseitig, Plan §7.2).
+    final barcode = prepared.barcode.trim();
+    if (barcode.isNotEmpty &&
+        _compartments
+            .any((f) => f.id != prepared.id && f.barcode.trim() == barcode)) {
+      throw StateError('Dieser Fach-Barcode ist bereits vergeben.');
+    }
+
     if (_usesFirestore) {
       String? newId;
       final ok = await _tryFirestore('saveCompartment', () async {
@@ -395,6 +440,10 @@ class ParcelProvider extends ChangeNotifier {
     final orgId = _orgId;
     if (orgId == null) {
       throw StateError('Keine Organisation aktiv.');
+    }
+    // Belegtes Fach nicht löschbar (offene Pakete zeigen darauf, Plan §5c4).
+    if (parcelsInCompartment(id).isNotEmpty) {
+      throw StateError('Fach ist belegt und kann nicht gelöscht werden.');
     }
     final label = _compartmentById(id)?.label;
 
@@ -551,12 +600,13 @@ class ParcelProvider extends ChangeNotifier {
 
   // --- intern --------------------------------------------------------------
 
-  void _auditParcel(bool isNew, String? id, String fach) {
+  void _auditParcel(bool isNew, String? id, String fach, [String? override]) {
     _audit?.call(
       action: isNew ? AuditAction.created : AuditAction.updated,
       entityType: 'Paket',
       entityId: id,
-      summary: isNew ? 'Paket angenommen$fach' : 'Paket aktualisiert$fach',
+      summary: override ??
+          (isNew ? 'Paket angenommen$fach' : 'Paket aktualisiert$fach'),
     );
   }
 

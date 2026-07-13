@@ -330,4 +330,97 @@ void main() {
       expect(provider.settings.overdueFristTage, 6);
     });
   });
+
+  group('ParcelProvider – Ausgeben / Rücklauf / Fach-Guards', () {
+    test('handOut → abgeholt, Fach frei; undo → wieder eingelagert im Fach',
+        () async {
+      final provider = localProvider();
+      await provider.updateSession(user, localStorageOnly: true);
+      final fachId = await provider.saveCompartment(
+        const ShelfCompartment(
+          orgId: 'org-1',
+          siteId: siteId,
+          label: 'A2',
+          barcode: 'BC-A2',
+        ),
+      );
+      final pid = await provider.saveParcel(
+        parcel('Max', 'Müller', compartmentId: fachId, compartmentLabel: 'A2'),
+      );
+
+      await provider.handOutParcel(provider.parcels.firstWhere((p) => p.id == pid));
+      var p = provider.parcels.firstWhere((e) => e.id == pid);
+      expect(p.status, ShipmentStatus.abgeholt);
+      expect(p.handedOutAt, isNotNull);
+      expect(p.compartmentId, fachId); // bleibt erhalten (Undo-fähig)
+      expect(provider.compartmentOccupancy[fachId], isNull); // Fach frei
+
+      await provider.undoHandOut(p);
+      p = provider.parcels.firstWhere((e) => e.id == pid);
+      expect(p.status, ShipmentStatus.eingelagert);
+      expect(p.handedOutAt, isNull);
+      expect(provider.compartmentOccupancy[fachId], 1); // wieder belegt
+    });
+
+    test('returnParcel setzt Status zurück', () async {
+      final provider = localProvider();
+      await provider.updateSession(user, localStorageOnly: true);
+      final pid = await provider.saveParcel(parcel('Max', 'Müller'));
+      await provider.returnParcel(provider.parcels.single);
+      final p = provider.parcels.firstWhere((e) => e.id == pid);
+      expect(p.status, ShipmentStatus.zurueck);
+      expect(p.returnedAt, isNotNull);
+      expect(provider.openParcels, isEmpty);
+    });
+
+    test('saveCompartment lehnt doppelten Barcode je Standort ab', () async {
+      final provider = localProvider();
+      await provider.updateSession(user, localStorageOnly: true);
+      await provider.saveCompartment(
+        const ShelfCompartment(
+          orgId: 'org-1',
+          siteId: siteId,
+          label: 'A2',
+          barcode: 'BC-DUP',
+        ),
+      );
+      expect(
+        () => provider.saveCompartment(
+          const ShelfCompartment(
+            orgId: 'org-1',
+            siteId: siteId,
+            label: 'B1',
+            barcode: 'BC-DUP',
+          ),
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('deleteCompartment: belegtes Fach nicht löschbar, leeres schon',
+        () async {
+      final provider = localProvider();
+      await provider.updateSession(user, localStorageOnly: true);
+      final fachId = await provider.saveCompartment(
+        const ShelfCompartment(
+          orgId: 'org-1',
+          siteId: siteId,
+          label: 'A2',
+          barcode: 'BC-A2',
+        ),
+      );
+      await provider.saveParcel(
+        parcel('Max', 'Müller', compartmentId: fachId, compartmentLabel: 'A2'),
+      );
+      await expectLater(
+        provider.deleteCompartment(fachId),
+        throwsA(isA<StateError>()),
+      );
+
+      // Nach Ausgabe ist das Fach leer → löschbar.
+      await provider.handOutParcel(provider.parcels.single);
+      await provider.deleteCompartment(fachId);
+      expect(provider.compartments, isEmpty);
+    });
+  });
 }

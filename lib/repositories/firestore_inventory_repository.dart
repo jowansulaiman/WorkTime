@@ -7,6 +7,7 @@ import '../core/retry.dart';
 import '../models/cash_closing.dart';
 import '../models/cash_count.dart';
 import '../models/customer_order.dart';
+import '../models/delivery_advice.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/pos_daily_stat.dart';
@@ -67,6 +68,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('scanEvents');
+
+  CollectionReference<Map<String, dynamic>> _deliveryAdviceCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('deliveryAdvices');
 
   CollectionReference<Map<String, dynamic>> _customerOrderCollection(
     String orgId,
@@ -801,6 +807,52 @@ class FirestoreInventoryRepository implements InventoryRepository {
         closedReason: normalizedReason,
       );
     });
+  }
+
+  // --- Lieferavise (deliveryAdvices, WW-4) --------------------------------
+  // Komplette Org-Collection als Stream, nach erwartetem Tag sortiert
+  // (Single-Field `expectedDay`, auto-indiziert). Filter (Status/Standort/Tag)
+  // laufen clientseitig im Provider — KEIN Composite-Index. `expectedDate` ist
+  // load-bearing (wie `ProductBatch.expiryDate`): Datensaetze ohne lesbares
+  // Datum werden protokolliert uebersprungen statt still verfaelscht.
+  @override
+  Stream<List<DeliveryAdvice>> watchDeliveryAdvices(String orgId) {
+    return _deliveryAdviceCollection(orgId).orderBy('expectedDay').snapshots().map(
+      (snapshot) {
+        final advices = <DeliveryAdvice>[];
+        for (final doc in snapshot.docs) {
+          try {
+            advices.add(DeliveryAdvice.fromFirestore(doc.id, doc.data()));
+          } on FormatException catch (error) {
+            AppLogger.warning(
+              'DeliveryAdvice uebersprungen (kein lesbarer Liefertermin)',
+              error: error,
+              fields: {'doc': doc.id},
+            );
+          }
+        }
+        return List<DeliveryAdvice>.unmodifiable(advices);
+      },
+    );
+  }
+
+  @override
+  Future<void> saveDeliveryAdvice(DeliveryAdvice advice) async {
+    final collection = _deliveryAdviceCollection(advice.orgId);
+    final docRef =
+        advice.id == null ? collection.doc() : collection.doc(advice.id);
+    await docRef.set({
+      ...advice.copyWith(id: docRef.id).toFirestoreMap(),
+      if (advice.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  @override
+  Future<void> deleteDeliveryAdvice({
+    required String orgId,
+    required String adviceId,
+  }) {
+    return _deliveryAdviceCollection(orgId).doc(adviceId).delete();
   }
 
   // Kundenbestellungen werden – wie Lieferantenbestellungen – nach createdAt

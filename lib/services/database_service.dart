@@ -12,6 +12,7 @@ import '../models/compliance_rule_set.dart';
 import '../models/contact.dart';
 import '../models/contact_organization.dart';
 import '../models/customer_order.dart';
+import '../models/delivery_advice.dart';
 import '../models/fridge_refill.dart';
 import '../models/paketshop_settings.dart';
 import '../models/parcel_customer.dart';
@@ -114,6 +115,9 @@ class DatabaseService {
   static const _productsKey = 'products';
   static const _productBatchesKey = 'product_batches';
   static const _purchaseOrdersKey = 'purchase_orders';
+  // Lieferavise (WW-4): org-skopiert, bewegliche Nutzdaten (im Hybrid-Modus
+  // lokal gespiegelt), neue Collection ohne Altbestand.
+  static const _deliveryAdvicesKey = 'delivery_advices';
   static const _stockMovementsKey = 'stock_movements';
   static const _priceHistoryKey = 'price_history';
   // Scan-Telemetrie (Scan-Statistik/Fehleranalyse): org-skopiert, lokal auf
@@ -202,6 +206,9 @@ class DatabaseService {
     // lokal gespiegelt).
     _productBatchesKey,
     _purchaseOrdersKey,
+    // Lieferavise: org-skopiert (bewegliche Nutzdaten, im Hybrid-Modus lokal
+    // gespiegelt).
+    _deliveryAdvicesKey,
     _stockMovementsKey,
     _priceHistoryKey,
     // Scan-Telemetrie: org-skopiert, neue Collection ohne Altbestand.
@@ -1400,6 +1407,29 @@ class DatabaseService {
       key: _purchaseOrdersKey,
       scope: scope,
       items: orders,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<DeliveryAdvice>> loadLocalDeliveryAdvices({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _deliveryAdvicesKey,
+      scope: scope,
+      fromMap: DeliveryAdvice.fromMap,
+      compare: (a, b) => a.expectedDate.compareTo(b.expectedDate),
+    );
+  }
+
+  static Future<void> saveLocalDeliveryAdvices(
+    List<DeliveryAdvice> advices, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _deliveryAdvicesKey,
+      scope: scope,
+      items: advices,
       toMap: (item) => item.toMap(),
     );
   }

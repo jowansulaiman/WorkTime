@@ -5,7 +5,11 @@ import '../models/site_definition.dart';
 import '../providers/parcel_provider.dart';
 import '../providers/team_provider.dart';
 import '../theme/theme_extensions.dart';
+import 'fach_verwaltung_screen.dart';
+import 'kunden_register_screen.dart';
+import 'paket_ausgeben_screen.dart';
 import 'paket_einlagern_screen.dart';
+import 'paket_uebersicht_screen.dart';
 
 /// Einstieg in den Paketshop (Section-Route `/paketshop` unter dem
 /// „Laden"-Hub, Plan §7.6/§8). v1 zeigt den Überblick (Kennzahlen + offene
@@ -54,19 +58,37 @@ class PaketshopHubScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: site?.id == null
-                ? null
-                : () => Navigator.of(context).push<bool>(
-                      MaterialPageRoute(
-                        builder: (_) => PaketEinlagernScreen(
-                          siteId: site!.id!,
-                          siteName: site.name,
-                        ),
-                      ),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: site?.id == null
+                      ? null
+                      : () => Navigator.of(context).push<bool>(
+                            MaterialPageRoute(
+                              builder: (_) => PaketEinlagernScreen(
+                                siteId: site!.id!,
+                                siteName: site.name,
+                              ),
+                            ),
+                          ),
+                  icon: const Icon(Icons.add_box_outlined),
+                  label: const Text('Paket annehmen'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const PaketAusgebenScreen(),
                     ),
-            icon: const Icon(Icons.add_box_outlined),
-            label: const Text('Paket annehmen'),
+                  ),
+                  icon: const Icon(Icons.outbox_outlined),
+                  label: const Text('Paket ausgeben'),
+                ),
+              ),
+            ],
           ),
           if (site?.id == null)
             Padding(
@@ -77,6 +99,43 @@ class PaketshopHubScreen extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => FachVerwaltungScreen(
+                      siteId: site?.id,
+                      siteName: site?.name,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.shelves),
+                label: const Text('Fächer verwalten'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const PaketUebersichtScreen(),
+                  ),
+                ),
+                icon: const Icon(Icons.fact_check_outlined),
+                label: const Text('Übersicht & Überfällig'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const KundenRegisterScreen(),
+                  ),
+                ),
+                icon: const Icon(Icons.contacts_outlined),
+                label: const Text('Kundenregister'),
+              ),
+            ],
+          ),
           const SizedBox(height: 24),
           Text(
             'Offene Pakete',

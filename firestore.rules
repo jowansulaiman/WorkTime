@@ -329,6 +329,14 @@ service cloud.firestore {
       return isActiveUser() && canEditSchedule();
     }
 
+    // Paketshop (Plan §12.1): bedienen darf jedes aktive Mitglied
+    // (Betreiber-Entscheidung §0; Personal wird organisatorisch aufs Post-/
+    // Datengeheimnis verpflichtet). Spiegelt app_user.canManageParcels /
+    // canViewParcels (beide == isActive) und RoutePermissions.
+    function canManageParcels() {
+      return isActiveUser();
+    }
+
     // Warenwirtschaft: verwalten duerfen Admins und Schichtleiter
     // (Mitarbeiter mit Schicht-Bearbeitungsrecht). Ansehen darf jedes
     // aktive Mitglied der Organisation.
@@ -1385,8 +1393,13 @@ service cloud.firestore {
             && request.resource.data.orgId == orgId;
         allow delete: if isAdmin() && sameOrg(orgId);
       }
+      // PERSONAL-6: Self-Read der EIGENEN Qualifikationen (Muster
+      // urlaubskontoJahre — es sind die eigenen Personaldaten des MA, daher
+      // OHNE canViewTimeTracking-Gate). Schreiben bleibt admin-only. Kein neuer
+      // Index nötig (Self-Query where('userId'==uid) ohne orderBy).
       match /employeeQualifications/{qualificationId} {
-        allow read: if isAdmin() && sameOrg(orgId);
+        allow read: if sameOrg(orgId)
+            && (isAdmin() || resource.data.userId == request.auth.uid);
         allow create, update: if isAdmin()
             && sameOrg(orgId)
             && request.resource.data.orgId == orgId;
@@ -1543,6 +1556,26 @@ service cloud.firestore {
         allow delete: if sameOrg(orgId) && canManageInventory();
       }
 
+      // WW-4: Lieferavise (avisierte Lieferungen). Lesen jedes aktive Mitglied
+      // (speist die „heute erwartet"-Karte), pflegen nur die Bestandsverwaltung
+      // (Kiosk-Geraetekonto nie). Feld-Allowlist (= DeliveryAdvice.toFirestoreMap)
+      // gegen Mass Assignment, orgId an den Pfad gebunden, status auf die
+      // Enum-Werte begrenzt.
+      match /deliveryAdvices/{adviceId} {
+        allow read: if sameOrg(orgId) && !isKiosk();
+        allow create, update: if sameOrg(orgId)
+            && canManageInventory()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'siteName', 'supplierId', 'supplierName',
+                 'purchaseOrderId', 'reference', 'status', 'expectedDate',
+                 'expectedDay', 'items', 'notes', 'receivedAt', 'createdByUid',
+                 'createdAt', 'updatedAt'
+               ])
+            && request.resource.data.status in ['announced', 'received', 'cancelled'];
+        allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
       // MHD-/Ablauf-Chargen (Warencharge mit Mindesthaltbarkeitsdatum). Operative
       // Nutzdaten: JEDES aktive Mitglied darf erfassen/aufloesen — sowohl der
       // Scanner-Wareneingang als auch das Kiosk-Geraete-Konto (das kein
@@ -1624,6 +1657,29 @@ service cloud.firestore {
             && canManageInventory()
             && request.resource.data.orgId == orgId;
         allow delete: if sameOrg(orgId) && canManageInventory();
+      }
+
+      // Paketshop (Plan §12.1): Pakete / Fächer / Kunden-Namensregister.
+      // sameOrg + aktiver Nutzer + orgId-Pin (gegen Spoofing). Bewusst KEINE
+      // Rollen- oder Standort-Isolation (Betreiber-Entscheidung §0/§13);
+      // Postgeheimnis wird organisatorisch getragen. Kein Callable-Pfad.
+      match /parcelShipments/{parcelId} {
+        allow read: if sameOrg(orgId) && canManageParcels();
+        allow create, update: if sameOrg(orgId) && canManageParcels()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageParcels();
+      }
+      match /shelfCompartments/{compId} {
+        allow read: if sameOrg(orgId) && canManageParcels();
+        allow create, update: if sameOrg(orgId) && canManageParcels()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageParcels();
+      }
+      match /parcelCustomers/{customerId} {
+        allow read: if sameOrg(orgId) && canManageParcels();
+        allow create, update: if sameOrg(orgId) && canManageParcels()
+            && request.resource.data.orgId == orgId;
+        allow delete: if sameOrg(orgId) && canManageParcels();
       }
 
       // Öffentliche Kundenwünsche (über die Webseite /wunsch). EINZIGER

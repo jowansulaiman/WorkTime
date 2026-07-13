@@ -959,6 +959,17 @@ class PersonalProvider extends ChangeNotifier with HybridWriteFallback {
           _safeNotify();
         }, onError: _setError);
 
+        // PERSONAL-6-Self-Read: eigene Qualifikationen („Meine Akte").
+        // Self-scoped Query (userId == uid), damit sie unter den erweiterten
+        // employeeQualifications-Self-Read-Rules zulässig ist; Schreiben bleibt
+        // admin-only.
+        _qualificationsSubscription = _firestore
+            .watchEmployeeQualificationsForUser(orgId: orgId, userId: uid)
+            .listen((items) {
+          _qualifications = items;
+          _safeNotify();
+        }, onError: _setError);
+
         // PA-7.1-Self-Read: eigene freigegebene/bezahlte Lohnabrechnungen.
         _payrollSubscription = _firestore
             .watchPayrollRecordsForUser(orgId: orgId, userId: uid)
@@ -1723,7 +1734,10 @@ class PersonalProvider extends ChangeNotifier with HybridWriteFallback {
   /// Lädt eine Datei hoch (Admin) und legt anschließend das Metadaten-Doc an.
   /// Reihenfolge Storage → Firestore; scheitert der Metadaten-Write, wird das
   /// Storage-Objekt best-effort wieder entfernt (kein verwaistes Binary).
-  Future<void> uploadDocument({
+  /// Lädt ein Personaldokument hoch und gibt die vergebene Dokument-ID zurück
+  /// (PERSONAL-6: die aufrufende Stelle kann sie als weiche FK, z. B. an einer
+  /// Qualifikation, verknüpfen). Wirft im lokalen/Demo-Modus.
+  Future<String> uploadDocument({
     required String userId,
     required DocumentCategory category,
     required String title,
@@ -1789,6 +1803,7 @@ class PersonalProvider extends ChangeNotifier with HybridWriteFallback {
       summary: 'Dokument „${document.title}" für '
           '${_memberLabel(userId)} hochgeladen',
     );
+    return docId;
   }
 
   /// Lädt die Binärdatei eines Dokuments herunter (`null`, wenn nicht vorhanden).

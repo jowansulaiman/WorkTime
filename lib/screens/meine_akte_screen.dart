@@ -10,6 +10,7 @@ import '../providers/team_provider.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 import '../widgets/employee_documents_card.dart';
+import '../widgets/meine_qualifikationen_card.dart';
 
 /// „Meine Personalakte" (PA-2.4) – die Selbstsicht für Mitarbeiter auf ihre
 /// EIGENEN Daten: Stammdaten (read-only), Urlaubsanspruch/-rest und Dokumente
@@ -66,6 +67,8 @@ class MeineAkteScreen extends StatelessWidget {
                       ? profile.email
                       : profile.settings.name,
                 ),
+                SizedBox(height: spacing.lg),
+                MeineQualifikationenCard(userId: profile.uid),
                 SizedBox(height: spacing.lg),
                 EmployeeDocumentsCard(userId: profile.uid, canManage: false),
                 SizedBox(height: spacing.lg),

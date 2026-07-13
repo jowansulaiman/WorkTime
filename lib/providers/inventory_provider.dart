@@ -31,6 +31,7 @@ import '../models/audit_log_entry.dart';
 import '../models/cash_closing.dart';
 import '../models/cash_count.dart';
 import '../models/customer_order.dart';
+import '../models/delivery_advice.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/pos_daily_stat.dart';
@@ -85,6 +86,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   StreamSubscription<List<Product>>? _productsSubscription;
   StreamSubscription<List<ProductBatch>>? _batchesSubscription;
   StreamSubscription<List<PurchaseOrder>>? _ordersSubscription;
+  StreamSubscription<List<DeliveryAdvice>>? _advicesSubscription;
   StreamSubscription<List<StockMovement>>? _movementsSubscription;
   StreamSubscription<List<CustomerOrder>>? _customerOrdersSubscription;
   StreamSubscription<List<SiteOrderList>>? _orderCartsSubscription;
@@ -96,6 +98,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   List<Product> _products = [];
   List<ProductBatch> _batches = [];
   List<PurchaseOrder> _orders = [];
+  List<DeliveryAdvice> _advices = [];
   List<StockMovement> _movements = [];
   List<PriceHistoryEntry> _priceHistory = [];
   List<CustomerOrder> _customerOrders = [];
@@ -195,6 +198,9 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   List<Supplier> get suppliers => _suppliers;
   List<Product> get products => _products;
   List<PurchaseOrder> get purchaseOrders => _orders;
+
+  /// **WW-4:** Alle Lieferavise der Organisation (angekündigte Lieferungen).
+  List<DeliveryAdvice> get deliveryAdvices => _advices;
   List<StockMovement> get recentMovements => _movements;
 
   /// Lokal protokollierte Preisaenderungen. Im **local**-Modus die volle
@@ -366,6 +372,41 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       result.add(order);
     }
     result.sort((a, b) => a.expectedAt!.compareTo(b.expectedAt!));
+    return result;
+  }
+
+  // --- Lieferavise (WW-4) -------------------------------------------------
+
+  /// Lieferavise eines Ladens, optional gefiltert. Ohne [siteId] alle Avise.
+  List<DeliveryAdvice> advicesForSite(String? siteId) {
+    if (siteId == null || siteId.isEmpty) {
+      return _advices;
+    }
+    return _advices
+        .where((advice) => advice.siteId == siteId)
+        .toList(growable: false);
+  }
+
+  /// **WW-4:** Für einen Tag erwartete, noch offene Lieferavise
+  /// (`announced` + `expectedDay == heute`) — speist die „heute erwartet"-Karte
+  /// aus WW-3 mit. Rein clientseitig über die gestreamten Avise (kein Query,
+  /// kein Index). [day] Standard `DateTime.now()`, [siteId] beschränkt auf einen
+  /// Laden; sortiert nach Referenz/Lieferant für stabile Anzeige.
+  List<DeliveryAdvice> advicesExpectedToday({DateTime? day, String? siteId}) {
+    final today = DeliveryAdvice.dayKey(day ?? DateTime.now());
+    final result = _advices.where((advice) {
+      if (!advice.status.isOpen) return false;
+      if (advice.expectedDay != today) return false;
+      if (siteId != null && siteId.isNotEmpty && advice.siteId != siteId) {
+        return false;
+      }
+      return true;
+    }).toList();
+    result.sort((a, b) {
+      final aKey = a.supplierName ?? a.reference ?? '';
+      final bKey = b.supplierName ?? b.reference ?? '';
+      return aKey.toLowerCase().compareTo(bKey.toLowerCase());
+    });
     return result;
   }
 
@@ -850,6 +891,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _products = await DatabaseService.loadLocalProducts(scope: scope);
     _batches = await DatabaseService.loadLocalProductBatches(scope: scope);
     _orders = await DatabaseService.loadLocalPurchaseOrders(scope: scope);
+    _advices = await DatabaseService.loadLocalDeliveryAdvices(scope: scope);
     _movements = await DatabaseService.loadLocalStockMovements(scope: scope);
     _priceHistory = await DatabaseService.loadLocalPriceHistory(scope: scope);
     _customerOrders =
@@ -871,6 +913,8 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       DatabaseService.saveLocalProductBatches(_batches, scope: _localScope);
   Future<void> _persistOrders() =>
       DatabaseService.saveLocalPurchaseOrders(_orders, scope: _localScope);
+  Future<void> _persistDeliveryAdvices() =>
+      DatabaseService.saveLocalDeliveryAdvices(_advices, scope: _localScope);
   Future<void> _persistMovements() =>
       DatabaseService.saveLocalStockMovements(_movements, scope: _localScope);
   Future<void> _persistPriceHistory() =>
@@ -894,6 +938,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     await _persistProducts();
     await _persistBatches();
     await _persistOrders();
+    await _persistDeliveryAdvices();
     await _persistMovements();
     await _persistPriceHistory();
     await _persistCustomerOrders();
@@ -935,6 +980,10 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     }
     for (final o in List<PurchaseOrder>.from(_orders)) {
       await push('order', () => _inventory.savePurchaseOrder(o.copyWith(orgId: orgId)));
+    }
+    for (final a in List<DeliveryAdvice>.from(_advices)) {
+      await push('deliveryAdvice',
+          () => _inventory.saveDeliveryAdvice(a.copyWith(orgId: orgId)));
     }
     for (final co in List<CustomerOrder>.from(_customerOrders)) {
       await push('customerOrder',
@@ -1056,6 +1105,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _products = [];
     _batches = [];
     _orders = [];
+    _advices = [];
     _movements = [];
     _priceHistory = [];
     _customerOrders = [];
@@ -1095,6 +1145,12 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _ordersSubscription =
         _inventory.watchPurchaseOrders(orgId).listen((items) {
       _orders = items;
+      _safeNotify();
+    }, onError: _setError);
+
+    _advicesSubscription =
+        _inventory.watchDeliveryAdvices(orgId).listen((items) {
+      _advices = items;
       _safeNotify();
     }, onError: _setError);
 
@@ -1154,6 +1210,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     await _productsSubscription?.cancel();
     await _batchesSubscription?.cancel();
     await _ordersSubscription?.cancel();
+    await _advicesSubscription?.cancel();
     await _movementsSubscription?.cancel();
     await _customerOrdersSubscription?.cancel();
     await _orderCartsSubscription?.cancel();
@@ -1163,6 +1220,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _productsSubscription = null;
     _batchesSubscription = null;
     _ordersSubscription = null;
+    _advicesSubscription = null;
     _movementsSubscription = null;
     _customerOrdersSubscription = null;
     _orderCartsSubscription = null;
@@ -2897,6 +2955,112 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       action: AuditAction.updated,
       entityType: 'Charge',
       entityId: batchId,
+      summary: summary,
+    );
+  }
+
+  // --- Lieferavise (WW-4) -------------------------------------------------
+
+  DeliveryAdvice? _adviceById(String id) {
+    for (final advice in _advices) {
+      if (advice.id == id) {
+        return advice;
+      }
+    }
+    return null;
+  }
+
+  /// Lesbares Etikett eines Avises für Audit-/UI-Zusammenfassungen.
+  String _adviceLabel(DeliveryAdvice advice) {
+    final supplier = advice.supplierName?.trim();
+    if (supplier != null && supplier.isNotEmpty) return supplier;
+    final reference = advice.reference?.trim();
+    if (reference != null && reference.isNotEmpty) return reference;
+    return 'Lieferavis';
+  }
+
+  /// Legt ein Lieferavis an oder aktualisiert es (Drei-Modi-Muster; Q1-Fallback
+  /// nur bei echten Offline-Fehlern via [_tryFirestore]). `_audit` nur auf den
+  /// Erfolgs-Pfaden.
+  Future<void> saveDeliveryAdvice(DeliveryAdvice advice) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final prepared = advice.copyWith(
+      orgId: orgId,
+      createdByUid: advice.createdByUid ?? _currentUser?.uid,
+    );
+    final isNew = prepared.id == null || prepared.id!.isEmpty;
+    final summary = 'Lieferavis „${_adviceLabel(prepared)}" '
+        '${isNew ? 'angelegt' : 'aktualisiert'} '
+        '(erwartet ${_formatDay(prepared.expectedDate)})';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveDeliveryAdvice',
+          () => _inventory.saveDeliveryAdvice(prepared),
+        )) {
+      _audit?.call(
+        action: isNew ? AuditAction.created : AuditAction.updated,
+        entityType: 'Lieferavis',
+        entityId: prepared.id,
+        summary: summary,
+      );
+      return;
+    }
+    final stored = isNew
+        ? prepared.copyWith(id: _nextLocalId('advice'))
+        : prepared;
+    // Growable lassen: _upsertLocal ruft .add() auf derselben Liste — eine
+    // fixed-length-Liste liesse das naechste lokale Speichern crashen.
+    _advices = _upsertLocal(_advices, stored, (item) => item.id);
+    _advices.sort((a, b) => a.expectedDate.compareTo(b.expectedDate));
+    await _persistDeliveryAdvices();
+    _safeNotify();
+    _audit?.call(
+      action: isNew ? AuditAction.created : AuditAction.updated,
+      entityType: 'Lieferavis',
+      entityId: stored.id,
+      summary: summary,
+    );
+  }
+
+  /// Löscht ein Lieferavis (Drei-Modi-Muster). `_audit` nur auf Erfolgs-Pfaden.
+  Future<void> deleteDeliveryAdvice(String adviceId) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      return;
+    }
+    // Etikett VOR der Loeschung fuer eine lesbare Zusammenfassung nachschlagen.
+    final existing = _adviceById(adviceId);
+    final summary = existing == null
+        ? 'Lieferavis gelöscht'
+        : 'Lieferavis „${_adviceLabel(existing)}" gelöscht';
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'deleteDeliveryAdvice',
+          () => _inventory.deleteDeliveryAdvice(
+            orgId: orgId,
+            adviceId: adviceId,
+          ),
+        )) {
+      _audit?.call(
+        action: AuditAction.deleted,
+        entityType: 'Lieferavis',
+        entityId: adviceId,
+        summary: summary,
+      );
+      return;
+    }
+    // Growable lassen (siehe deleteSupplier).
+    _advices =
+        _advices.where((advice) => advice.id != adviceId).toList();
+    await _persistDeliveryAdvices();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.deleted,
+      entityType: 'Lieferavis',
+      entityId: adviceId,
       summary: summary,
     );
   }

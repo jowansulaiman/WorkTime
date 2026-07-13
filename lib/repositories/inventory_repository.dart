@@ -1,6 +1,7 @@
 import '../models/cash_closing.dart';
 import '../models/cash_count.dart';
 import '../models/customer_order.dart';
+import '../models/delivery_advice.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/pos_daily_stat.dart';
@@ -229,6 +230,24 @@ abstract interface class InventoryRepository {
     required String orgId,
     required String orderId,
     required String reason,
+  });
+
+  // --- Lieferavise (deliveryAdvices) -------------------------------------
+  // Angekündigte Lieferungen (WW-4). Komplette Org-Collection als Stream
+  // (kleines Org-Volumen; Filter/Sortierung clientseitig) — reiner Read ohne
+  // where/orderBy, KEIN Composite-Index. Direkte Firestore-Writes wie
+  // productBatches (kein Callable-Pfad).
+
+  /// Lieferavise einer Organisation (Collection `deliveryAdvices`).
+  Stream<List<DeliveryAdvice>> watchDeliveryAdvices(String orgId);
+
+  /// Speichert ein Lieferavis (Anlage oder Update; Doc-ID bei Anlage vergeben).
+  Future<void> saveDeliveryAdvice(DeliveryAdvice advice);
+
+  /// Löscht ein Lieferavis.
+  Future<void> deleteDeliveryAdvice({
+    required String orgId,
+    required String adviceId,
   });
 
   Stream<List<CustomerOrder>> watchCustomerOrders(String orgId);

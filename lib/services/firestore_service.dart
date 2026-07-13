@@ -19,6 +19,7 @@ import '../models/employment_contract.dart';
 import '../models/shift_preference.dart';
 import '../models/product.dart';
 import '../models/customer_order.dart';
+import '../models/delivery_advice.dart';
 import '../models/customer_feedback.dart';
 import '../models/customer_wish.dart';
 import '../models/audit_log_entry.dart';
@@ -914,6 +915,9 @@ class FirestoreService {
 
   Stream<List<PurchaseOrder>> watchPurchaseOrders(String orgId) =>
       _inventoryRepository.watchPurchaseOrders(orgId);
+
+  Stream<List<DeliveryAdvice>> watchDeliveryAdvices(String orgId) =>
+      _inventoryRepository.watchDeliveryAdvices(orgId);
 
   Stream<List<CustomerOrder>> watchCustomerOrders(String orgId) =>
       _inventoryRepository.watchCustomerOrders(orgId);
@@ -2172,6 +2176,25 @@ class FirestoreService {
         );
   }
 
+  /// **Self-scoped** Qualifikationen eines Mitarbeiters (PERSONAL-6, „Meine
+  /// Qualifikationen"). Die Query ist auf `userId` eingeschränkt, damit sie
+  /// unter den erweiterten Self-Read-Rules (`resource.data.userId == uid`)
+  /// zulässig ist (Muster [watchUrlaubskontoJahreForUser]).
+  Stream<List<EmployeeQualification>> watchEmployeeQualificationsForUser({
+    required String orgId,
+    required String userId,
+  }) {
+    return _employeeQualificationCollection(orgId)
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map(
+          (s) => s.docs
+              .map((doc) =>
+                  EmployeeQualification.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
   Future<void> saveEmployeeQualification(EmployeeQualification quali) async {
     final collection = _employeeQualificationCollection(quali.orgId);
     final docRef = quali.id == null ? collection.doc() : collection.doc(quali.id);
@@ -2568,6 +2591,15 @@ class FirestoreService {
         orderId: orderId,
         reason: reason,
       );
+
+  Future<void> saveDeliveryAdvice(DeliveryAdvice advice) =>
+      _inventoryRepository.saveDeliveryAdvice(advice);
+
+  Future<void> deleteDeliveryAdvice({
+    required String orgId,
+    required String adviceId,
+  }) =>
+      _inventoryRepository.deleteDeliveryAdvice(orgId: orgId, adviceId: adviceId);
 
   Future<String> saveCustomerOrder(CustomerOrder order) =>
       _inventoryRepository.saveCustomerOrder(order);

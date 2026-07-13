@@ -45,6 +45,7 @@ class EmployeeQualification {
     this.erworbenAm,
     this.gueltigBis,
     this.bemerkung,
+    this.documentId,
     this.qualifikationsart,
     this.beschreibung,
     this.zertifikatNr,
@@ -65,6 +66,12 @@ class EmployeeQualification {
   final DateTime? erworbenAm;
   final DateTime? gueltigBis;
   final String? bemerkung;
+
+  /// **PERSONAL-6:** Weiche FK auf ein [EmployeeDocument] (`employeeDocuments`),
+  /// das den Qualifikationsnachweis enthält (Zertifikat/Bescheinigung o. ä.).
+  /// Bewusst OHNE harte Integrität: wird das verknüpfte Dokument gelöscht,
+  /// verwaist die Referenz (die UI zeigt dann „Nachweis nicht mehr vorhanden").
+  final String? documentId;
 
   // AllTec-Feld-Parität (freitextliche Zusatzangaben zur Qualifikation).
   final String? qualifikationsart;
@@ -114,6 +121,7 @@ class EmployeeQualification {
       erworbenAm: FirestoreDateParser.readDate(map['erworbenAm']),
       gueltigBis: FirestoreDateParser.readDate(map['gueltigBis']),
       bemerkung: map['bemerkung'] as String?,
+      documentId: map['documentId'] as String?,
       qualifikationsart: map['qualifikationsart'] as String?,
       beschreibung: map['beschreibung'] as String?,
       zertifikatNr: map['zertifikatNr'] as String?,
@@ -135,6 +143,7 @@ class EmployeeQualification {
       erworbenAm: FirestoreDateParser.readLocalDate(map['erworben_am']),
       gueltigBis: FirestoreDateParser.readLocalDate(map['gueltig_bis']),
       bemerkung: map['bemerkung'] as String?,
+      documentId: map['document_id'] as String?,
       qualifikationsart: map['qualifikationsart'] as String?,
       beschreibung: map['beschreibung'] as String?,
       zertifikatNr: map['zertifikat_nr'] as String?,
@@ -159,6 +168,7 @@ class EmployeeQualification {
           ? null
           : Timestamp.fromDate(_dateOnly(gueltigBis)!),
       'bemerkung': bemerkung,
+      'documentId': documentId,
       'qualifikationsart': qualifikationsart,
       'beschreibung': beschreibung,
       'zertifikatNr': zertifikatNr,
@@ -181,6 +191,7 @@ class EmployeeQualification {
       'erworben_am': _dateOnly(erworbenAm)?.toIso8601String(),
       'gueltig_bis': _dateOnly(gueltigBis)?.toIso8601String(),
       'bemerkung': bemerkung,
+      'document_id': documentId,
       'qualifikationsart': qualifikationsart,
       'beschreibung': beschreibung,
       'zertifikat_nr': zertifikatNr,
@@ -205,6 +216,8 @@ class EmployeeQualification {
     bool clearGueltigBis = false,
     String? bemerkung,
     bool clearBemerkung = false,
+    String? documentId,
+    bool clearDocumentId = false,
     String? qualifikationsart,
     bool clearQualifikationsart = false,
     String? beschreibung,
@@ -228,6 +241,7 @@ class EmployeeQualification {
       erworbenAm: clearErworbenAm ? null : (erworbenAm ?? this.erworbenAm),
       gueltigBis: clearGueltigBis ? null : (gueltigBis ?? this.gueltigBis),
       bemerkung: clearBemerkung ? null : (bemerkung ?? this.bemerkung),
+      documentId: clearDocumentId ? null : (documentId ?? this.documentId),
       qualifikationsart: clearQualifikationsart
           ? null
           : (qualifikationsart ?? this.qualifikationsart),

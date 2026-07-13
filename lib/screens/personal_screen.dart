@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +24,7 @@ import '../models/customer_order.dart';
 import '../models/employee_profile.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
+import '../models/employee_document.dart';
 import '../models/employee_qualification.dart';
 import '../models/employment_contract.dart';
 import '../models/org_payroll_settings.dart';
@@ -37,6 +39,7 @@ import '../providers/inventory_provider.dart';
 import '../providers/personal_provider.dart';
 import '../providers/team_provider.dart';
 import '../routing/shell_tab.dart';
+import '../services/download_service.dart';
 import '../services/export_service.dart';
 import '../ui/ui.dart';
 import '../widgets/employee_documents_card.dart';
@@ -4003,6 +4006,9 @@ class _QualificationEditorSheetState extends State<_QualificationEditorSheet> {
   QualiErwerb _erwerb = QualiErwerb.vorab;
   DateTime? _erworbenAm;
   DateTime? _gueltigBis;
+  // PERSONAL-6: weiche FK auf ein EmployeeDocument als Nachweis.
+  String? _documentId;
+  bool _busyDoc = false;
   bool _saving = false;
 
   @override
@@ -4014,6 +4020,7 @@ class _QualificationEditorSheetState extends State<_QualificationEditorSheet> {
     _erwerb = e?.erwerb ?? QualiErwerb.vorab;
     _erworbenAm = e?.erworbenAm;
     _gueltigBis = e?.gueltigBis;
+    _documentId = e?.documentId;
   }
 
   @override
@@ -4067,6 +4074,8 @@ class _QualificationEditorSheetState extends State<_QualificationEditorSheet> {
             SizedBox(height: spacing.md),
             AppFormField(controller: _bemerkung, label: 'Bemerkung (optional)'),
             SizedBox(height: spacing.md),
+            _buildNachweisSection(context),
+            SizedBox(height: spacing.md),
             _EditorActions(
               saving: _saving,
               onDelete: widget.existing == null ? null : _delete,
@@ -4094,6 +4103,8 @@ class _QualificationEditorSheetState extends State<_QualificationEditorSheet> {
       gueltigBis: _gueltigBis,
       bemerkung:
           _bemerkung.text.trim().isEmpty ? null : _bemerkung.text.trim(),
+      // PERSONAL-6: weiche FK auf den Nachweis (bleibt beim Speichern erhalten).
+      documentId: _documentId,
       createdByUid: e?.createdByUid,
       createdAt: e?.createdAt,
       updatedAt: e?.updatedAt,
@@ -4117,6 +4128,217 @@ class _QualificationEditorSheetState extends State<_QualificationEditorSheet> {
       setState(() => _saving = false);
       messenger
           .showSnackBar(SnackBar(content: Text('Fehlgeschlagen: $error')));
+    }
+  }
+
+  /// PERSONAL-6: Abschnitt „Nachweis" — verknüpft die Qualifikation mit einem
+  /// Personaldokument (Zertifikat/Bescheinigung). Der Nachweis kann aus den
+  /// bereits hochgeladenen Dokumenten des Mitarbeiters gewählt ODER frisch
+  /// hochgeladen werden (beides über den bestehenden Dokument-Stack). Ist das
+  /// verknüpfte Dokument gelöscht, verwaist die Referenz → sichtbarer Hinweis.
+  Widget _buildNachweisSection(BuildContext context) {
+    final theme = Theme.of(context);
+    final spacing = context.spacing;
+    final personal = context.watch<PersonalProvider>();
+    final available = personal.documentsAvailable;
+    final docs = personal.documentsForUser(widget.member.uid);
+    EmployeeDocument? linked;
+    if (_documentId != null) {
+      for (final d in docs) {
+        if (d.id == _documentId) {
+          linked = d;
+          break;
+        }
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Nachweis', style: theme.textTheme.labelLarge),
+        SizedBox(height: spacing.xs),
+        if (!available)
+          Text(
+            'Nachweise (Zertifikat/Bescheinigung) benötigen den Cloud-Modus '
+            '— im lokalen/Demo-Modus nicht verfügbar.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          )
+        else ...[
+          if (_documentId != null && linked != null)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.verified_outlined),
+              title: Text(
+                  linked.title.isEmpty ? linked.fileName : linked.title),
+              subtitle: Text(linked.category.label),
+              trailing: _busyDoc
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.download_outlined),
+                          tooltip: 'Nachweis herunterladen',
+                          onPressed: () => _downloadNachweis(linked!),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.link_off_outlined),
+                          tooltip: 'Verknüpfung entfernen',
+                          onPressed: () => setState(() => _documentId = null),
+                        ),
+                      ],
+                    ),
+            )
+          else if (_documentId != null)
+            AppStatusBanner(
+              tone: AppStatusTone.warning,
+              icon: Icons.link_off_outlined,
+              message: 'Nachweis nicht mehr vorhanden (Dokument wurde '
+                  'gelöscht oder ist nicht sichtbar).',
+              action: TextButton(
+                onPressed: () => setState(() => _documentId = null),
+                child: const Text('Entfernen'),
+              ),
+            ),
+          SizedBox(height: spacing.sm),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed:
+                      (_busyDoc || docs.isEmpty) ? null : _pickExistingNachweis,
+                  icon: const Icon(Icons.attach_file_outlined),
+                  label: const Text('Dokument wählen'),
+                ),
+              ),
+              SizedBox(width: spacing.sm),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _busyDoc ? null : _uploadNachweis,
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: const Text('Hochladen'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Wählt einen bereits hochgeladenen Nachweis aus den Dokumenten des
+  /// Mitarbeiters aus und verknüpft ihn (setzt nur die weiche FK).
+  Future<void> _pickExistingNachweis() async {
+    final personal = context.read<PersonalProvider>();
+    final docs = personal.documentsForUser(widget.member.uid);
+    final selected = await showAppBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => AppBottomSheetScaffold(
+        title: 'Nachweis wählen',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final d in docs)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.insert_drive_file_outlined),
+                title: Text(d.title.isEmpty ? d.fileName : d.title),
+                subtitle: Text(d.category.label),
+                onTap: () => Navigator.of(sheetContext).pop(d.id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (selected != null && mounted) setState(() => _documentId = selected);
+  }
+
+  /// Lädt eine Datei hoch (bestehendes `uploadDocument`, Kategorie
+  /// Bescheinigung) und verknüpft die vergebene Dokument-ID als Nachweis.
+  Future<void> _uploadNachweis() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final personal = context.read<PersonalProvider>();
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['pdf', 'jpg', 'jpeg', 'png'],
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) return;
+    final file = picked.files.single;
+    final bytes = file.bytes;
+    if (bytes == null) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Datei konnte nicht gelesen werden.')));
+      return;
+    }
+    if (bytes.length >= 15 * 1024 * 1024) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Datei ist zu groß (max. 15 MB).')));
+      return;
+    }
+    setState(() => _busyDoc = true);
+    try {
+      final quali = _name.text.trim();
+      final title = quali.isEmpty
+          ? file.name.replaceAll(RegExp(r'\.[^.]+$'), '')
+          : 'Nachweis – $quali';
+      final docId = await personal.uploadDocument(
+        userId: widget.member.uid,
+        category: DocumentCategory.bescheinigung,
+        title: title,
+        fileName: file.name,
+        contentType: _nachweisContentType(file.extension),
+        bytes: bytes,
+      );
+      if (mounted) setState(() => _documentId = docId);
+    } catch (error) {
+      messenger
+          .showSnackBar(SnackBar(content: Text('Upload fehlgeschlagen: $error')));
+    } finally {
+      if (mounted) setState(() => _busyDoc = false);
+    }
+  }
+
+  /// Lädt den verknüpften Nachweis herunter (Admin-Sicht: kein Öffnen-Vermerk).
+  Future<void> _downloadNachweis(EmployeeDocument doc) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final personal = context.read<PersonalProvider>();
+    setState(() => _busyDoc = true);
+    try {
+      final bytes = await personal.downloadDocument(doc);
+      if (bytes == null) {
+        messenger.showSnackBar(
+            const SnackBar(content: Text('Datei nicht gefunden.')));
+        return;
+      }
+      await downloadFileBytes(
+        bytes: bytes,
+        fileName: doc.fileName.isEmpty ? '${doc.title}.pdf' : doc.fileName,
+        mimeType: doc.contentType,
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('Download fehlgeschlagen: $error')));
+    } finally {
+      if (mounted) setState(() => _busyDoc = false);
+    }
+  }
+
+  static String _nachweisContentType(String? extension) {
+    switch ((extension ?? '').toLowerCase()) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      default:
+        return 'application/octet-stream';
     }
   }
 }

@@ -6,6 +6,7 @@ import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/cash_closing.dart';
 import 'package:worktime_app/models/cash_count.dart';
 import 'package:worktime_app/models/customer_order.dart';
+import 'package:worktime_app/models/delivery_advice.dart';
 import 'package:worktime_app/models/fridge_refill.dart';
 import 'package:worktime_app/models/order_cart.dart';
 import 'package:worktime_app/models/pos_daily_stat.dart';
@@ -157,6 +158,21 @@ class _OfflineInventoryRepository implements InventoryRepository {
     required String batchId,
   }) =>
       _delegate.deleteProductBatch(orgId: orgId, batchId: batchId);
+
+  @override
+  Stream<List<DeliveryAdvice>> watchDeliveryAdvices(String orgId) =>
+      _delegate.watchDeliveryAdvices(orgId);
+
+  @override
+  Future<void> saveDeliveryAdvice(DeliveryAdvice advice) =>
+      _delegate.saveDeliveryAdvice(advice);
+
+  @override
+  Future<void> deleteDeliveryAdvice({
+    required String orgId,
+    required String adviceId,
+  }) =>
+      _delegate.deleteDeliveryAdvice(orgId: orgId, adviceId: adviceId);
 
   @override
   Future<int> adjustProductStock({

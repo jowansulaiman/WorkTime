@@ -1,11 +1,16 @@
 import 'package:flutter/foundation.dart';
 
 import '../core/app_logger.dart';
+import '../core/kasse_report.dart';
 import '../core/kpi_permissions.dart';
 import '../core/org_zeit_kpis.dart';
+import '../core/site_comparison.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
+import '../models/payroll_record.dart';
+import '../models/site_definition.dart';
 import '../models/sollzeit_profile.dart';
+import '../models/work_entry.dart';
 import 'inventory_provider.dart';
 import 'personal_provider.dart';
 import 'schedule_provider.dart';
@@ -41,6 +46,13 @@ class ManagementDashboardProvider extends ChangeNotifier {
   int? _bestandswertVkCents;
   int? _offeneAbwesenheiten;
 
+  // Standortvergleich (REPORTING-5) — eigener Read-State mit eigenem Lauf-
+  // Schlüssel, weil er unabhängig vom Kennzahlen-Load angestoßen wird.
+  SiteVergleich? _siteVergleich;
+  bool _siteVergleichLoading = false;
+  String? _siteVergleichError;
+  String? _siteVergleichKey;
+
   bool get isLoading => _loading;
   String? get error => _error;
 
@@ -55,6 +67,12 @@ class ManagementDashboardProvider extends ChangeNotifier {
 
   /// Anzahl offener (pending) Abwesenheitsanträge (nur `canManageShifts`).
   int? get offeneAbwesenheiten => _offeneAbwesenheiten;
+
+  /// Standortvergleich des zuletzt geladenen Zeitraums (REPORTING-5); `null`,
+  /// solange nichts geladen wurde oder das Profil den Vergleich nicht sehen darf.
+  SiteVergleich? get siteVergleich => _siteVergleich;
+  bool get isSiteVergleichLoading => _siteVergleichLoading;
+  String? get siteVergleichError => _siteVergleichError;
 
   /// Die für das gebundene Profil sichtbaren Kennzahlen (Katalog-gesteuert).
   List<KpiId> get visibleKpis => KpiPermissions.visibleKpis(_profile);
@@ -187,6 +205,148 @@ class ManagementDashboardProvider extends ChangeNotifier {
     _safeNotify();
   }
 
+  /// **REPORTING-5 — Standortvergleich laden.** Komponiert je Standort die
+  /// Monats-Kassenperiode ([InventoryProvider.loadKassenbericht]) und die
+  /// Bestandswerte, dazu die org-weiten Monats-Zeiteinträge
+  /// ([ZeitwirtschaftProvider.loadOrgWorkEntriesForMonth]) und die
+  /// finalisierten Monats-Abrechnungen, und reicht sie in die pure Engine
+  /// [computeSiteVergleich].
+  ///
+  /// - **Teilerfolg** (Muster [load]): eine fehlgeschlagene Sektion (Zeit oder
+  ///   ein einzelner Standort) reißt die anderen NICHT mit; ein Vollfehler wird
+  ///   nur gemeldet, wenn ALLE Sektionen scheiterten.
+  /// - **Stale-Guard:** ein späterer Lauf für einen anderen Monat gewinnt; der
+  ///   alte committet sein Ergebnis nicht mehr.
+  /// - **Sichtbarkeit** ([KpiPermissions]): ohne `umsatz`-Recht wird gar nicht
+  ///   geladen (die Route ist ohnehin admin-only — dies ist die Defensive); der
+  ///   Rohertrag nur bei `rohertrag`, der Lohnkosten-Richtwert nur bei
+  ///   `lohnquote`, der EK-/VK-Bestandswert je nach `bestandswertEk`/`Vk`.
+  ///
+  /// [purchasePricesIncludeVat] = Org-Schalter §3.4 (aus dem `FeatureFlag`-
+  /// Provider; wird vom aufrufenden Screen durchgereicht, damit dieser Provider
+  /// keine weitere Provider-Bindung braucht).
+  Future<void> loadSiteVergleich({
+    required int year,
+    required int month,
+    required bool purchasePricesIncludeVat,
+  }) async {
+    final key = '$year-$month';
+    _siteVergleichKey = key;
+    _siteVergleichLoading = true;
+    _siteVergleichError = null;
+    _safeNotify();
+
+    // Gate: ohne Recht auf die Umsatz-/Beleg-Kennzahl gibt es nichts zu
+    // vergleichen. Leeres Ergebnis, kein Fehler (bewusste stille Degradation).
+    if (!_allowed(KpiId.umsatz)) {
+      if (_disposed || _siteVergleichKey != key) return;
+      _siteVergleich = null;
+      _siteVergleichLoading = false;
+      _safeNotify();
+      return;
+    }
+
+    final inventory = _inventory;
+    final zeit = _zeit;
+    final personal = _personal;
+    final schedule = _schedule;
+
+    final includeRohertrag = _allowed(KpiId.rohertrag);
+    final showEk = _allowed(KpiId.bestandswertEk);
+    final showVk = _allowed(KpiId.bestandswertVk);
+    final showLohn = _allowed(KpiId.lohnquote);
+
+    // Repräsentativer Stichtag am MONATSENDE: der Kassenbericht bindet sein
+    // Datenfenster an `asOf` — am Monatsanfang lüde er nur den ersten Tag.
+    final asOf = DateTime(year, month + 1, 0);
+    final monthStart = DateTime(year, month);
+
+    var sections = 0;
+    var failures = 0;
+
+    // (A) Org-weite Monats-Zeiteinträge (Personalstunden-Basis; nur approved
+    // filtert die Engine via `countsAsIst`).
+    var periodEntries = const <WorkEntry>[];
+    if (zeit != null) {
+      sections++;
+      try {
+        periodEntries = await zeit.loadOrgWorkEntriesForMonth(monthStart);
+      } catch (error) {
+        failures++;
+        AppLogger.warning(
+            'Standortvergleich: Monats-Zeiteinträge fehlgeschlagen',
+            error: error);
+      }
+    }
+
+    // (B) Je konfiguriertem Standort die Monats-Kassenperiode + Bestandswerte.
+    final inputs = <SiteVergleichInput>[];
+    final sites = schedule?.sites ?? const <SiteDefinition>[];
+    for (final site in sites) {
+      final id = site.id;
+      if (id == null || id.trim().isEmpty) continue; // nicht scope-bar
+      sections++;
+      KassenPeriode? kassen;
+      try {
+        if (inventory != null) {
+          final periods = await inventory.loadKassenbericht(
+            granularity: ReportGranularity.month,
+            purchasePricesIncludeVat: purchasePricesIncludeVat,
+            siteId: id,
+            bucketCount: 1,
+            asOf: asOf,
+          );
+          for (final p in periods) {
+            if (p.start.year == year && p.start.month == month) {
+              kassen = p;
+              break;
+            }
+          }
+          kassen ??= periods.isNotEmpty ? periods.last : null;
+        }
+      } catch (error) {
+        failures++;
+        AppLogger.warning(
+            'Standortvergleich: Kassenperiode für Standort fehlgeschlagen',
+            error: error);
+      }
+      inputs.add(SiteVergleichInput(
+        siteId: id,
+        siteName: site.name,
+        kassen: kassen,
+        bestandswertEkCents: (showEk && inventory != null)
+            ? inventory.totalStockValuePurchaseCents(siteId: id)
+            : null,
+        bestandswertVkCents: (showVk && inventory != null)
+            ? inventory.totalStockValueSellingCents(siteId: id)
+            : null,
+      ));
+    }
+
+    // (C) Lohnkosten-Richtwert-Basis: org-weite finalisierte Abrechnungen des
+    // Monats (nur bei Lohn-Sichtbarkeit; sonst leer → keine Allokation, kein
+    // stiller 50/50-Split — siehe `computeSiteVergleich`).
+    final payroll = (showLohn && personal != null)
+        ? personal.payrollForPeriod(year, month)
+        : const <PayrollRecord>[];
+
+    final result = computeSiteVergleich(
+      sites: inputs,
+      periodEntries: periodEntries,
+      payroll: payroll,
+      includeRohertrag: includeRohertrag,
+    );
+
+    // Stale-Guard: nur committen, wenn kein neuerer Lauf gestartet wurde.
+    if (_disposed || _siteVergleichKey != key) return;
+    _siteVergleich = result;
+    _siteVergleichLoading = false;
+    _siteVergleichError = (sections > 0 && failures == sections)
+        ? 'Der Standortvergleich konnte nicht geladen werden.'
+        : null;
+    _safeNotify();
+  }
+
   void _resetData() {
     _dataKey = null;
     _orgZeit = null;
@@ -195,6 +355,10 @@ class ManagementDashboardProvider extends ChangeNotifier {
     _offeneAbwesenheiten = null;
     _loading = false;
     _error = null;
+    _siteVergleich = null;
+    _siteVergleichKey = null;
+    _siteVergleichLoading = false;
+    _siteVergleichError = null;
   }
 
   void _safeNotify() {
