@@ -73,6 +73,16 @@ class _PublicWishScreenState extends State<PublicWishScreen> {
     // Firebase-Konfiguration) kann nicht geschrieben werden — ehrliche Meldung
     // statt "Internetverbindung prüfen".
     if (Firebase.apps.isEmpty) {
+      if (AppConfig.disableAuthentication) {
+        // Lokaler Demo-Erfolgspfad: Formular, Validierung, Bestätigungsansicht
+        // und Reset lassen sich ohne produktiven anonymen Auth-Nutzer testen.
+        setState(() {
+          _resultCode = CustomerWish.generateReferenceCode();
+          _error = null;
+          _submitting = false;
+        });
+        return;
+      }
       _handleError(
         'Diese Seite ist hier nicht mit dem Backend verbunden '
         '(keine Firebase-Konfiguration). Sie funktioniert nur im echten '

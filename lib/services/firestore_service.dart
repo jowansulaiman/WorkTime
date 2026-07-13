@@ -35,6 +35,10 @@ import '../models/sollzeit_profile.dart';
 import '../models/urlaubsanpassung.dart';
 import '../models/urlaubskonto_jahr.dart';
 import '../models/zeitkonto_snapshot.dart';
+import '../core/datev_export.dart';
+import '../core/datev_lohn_export.dart';
+import '../models/app_notification.dart';
+import '../models/datev_export_run.dart';
 import '../models/finance_models.dart';
 import '../models/payroll_profile.dart';
 import '../models/password_entry.dart';
@@ -60,8 +64,10 @@ import '../models/work_template.dart';
 import '../repositories/contact_repository.dart';
 import '../repositories/firestore_contact_repository.dart';
 import '../repositories/firestore_inventory_repository.dart';
+import '../repositories/firestore_parcel_repository.dart';
 import '../repositories/firestore_signage_repository.dart';
 import '../repositories/inventory_repository.dart';
+import '../repositories/parcel_repository.dart';
 import '../repositories/signage_repository.dart';
 import 'compliance_rejected_exception.dart';
 import 'database_service.dart';
@@ -136,6 +142,134 @@ class FirestoreService {
         .collection('config')
         .doc(OrgSettings.documentId)
         .set(settings.toFirestoreMap(), SetOptions(merge: true));
+  }
+
+  /// **DATEV-1:** Liest das org-weite DATEV-Export-Config-Singleton aus der
+  /// **eigenen admin-only Collection** `financeConfig/datev` (bewusst NICHT der
+  /// generische `config/`-Block — dessen sameOrg-Read würde Berater-/
+  /// Mandantennummer allen Mitgliedern zeigen). Null, wenn es (noch) nicht
+  /// existiert → Aufrufer nutzt den lokalen Spiegel / Defaults.
+  Future<DatevExportConfig?> fetchDatevConfig(String orgId) async {
+    final snapshot = await _organizationDoc(orgId)
+        .collection('financeConfig')
+        .doc(DatevExportConfig.firestoreDocId)
+        .get();
+    final data = snapshot.data();
+    if (data == null) {
+      return null;
+    }
+    return DatevExportConfig.fromFirestore(snapshot.id, data);
+  }
+
+  /// **DATEV-1:** Schreibt das DATEV-Export-Config-Singleton unter der festen
+  /// Doc-ID `datev`, merge-sicher. Der `orgId`-Pin (Rules) und `updatedAt`
+  /// werden hier gesetzt — die Config selbst bleibt org-frei.
+  Future<void> saveDatevConfig({
+    required String orgId,
+    required DatevExportConfig config,
+  }) async {
+    await _organizationDoc(orgId)
+        .collection('financeConfig')
+        .doc(DatevExportConfig.firestoreDocId)
+        .set(
+      {
+        ...config.toFirestoreMap(),
+        'orgId': orgId,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  /// **PERSONAL-2/3:** Liest das DATEV-Lohn-Config-Singleton `financeConfig/
+  /// datevLohn` (admin-only, gleicher Rules-Block wie `datev`). Null, wenn (noch)
+  /// nicht vorhanden.
+  Future<DatevLohnConfig?> fetchDatevLohnConfig(String orgId) async {
+    final snapshot = await _organizationDoc(orgId)
+        .collection('financeConfig')
+        .doc(DatevLohnConfig.firestoreDocId)
+        .get();
+    final data = snapshot.data();
+    if (data == null) return null;
+    return DatevLohnConfig.fromFirestore(snapshot.id, data);
+  }
+
+  /// **PERSONAL-2/3:** Schreibt das DATEV-Lohn-Config-Singleton (merge-sicher;
+  /// `orgId`-Pin + `updatedAt` gesetzt).
+  Future<void> saveDatevLohnConfig({
+    required String orgId,
+    required DatevLohnConfig config,
+  }) async {
+    await _organizationDoc(orgId)
+        .collection('financeConfig')
+        .doc(DatevLohnConfig.firestoreDocId)
+        .set(
+      {
+        ...config.toFirestoreMap(),
+        'orgId': orgId,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  /// **PERSONAL-9/Q4:** Streamt die In-App-Inbox eines Nutzers (eigene
+  /// Mitteilungen, neueste zuerst, gekappt). Braucht den Composite-Index
+  /// `notifications(recipientUid ASC, createdAt DESC)`.
+  Stream<List<AppNotification>> watchNotifications({
+    required String orgId,
+    required String uid,
+    int limit = 50,
+  }) {
+    return _organizationDoc(orgId)
+        .collection('notifications')
+        .where('recipientUid', isEqualTo: uid)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map((snap) => snap.docs
+            .map((d) => AppNotification.fromFirestore(d.id, d.data()))
+            .toList(growable: false));
+  }
+
+  /// **PERSONAL-9/Q4:** Markiert eine Mitteilung als gelesen — feldgranular nur
+  /// `readAt` (deckungsgleich mit der Rules-Allowlist).
+  Future<void> markNotificationRead({
+    required String orgId,
+    required String notificationId,
+  }) {
+    return _organizationDoc(orgId)
+        .collection('notifications')
+        .doc(notificationId)
+        .set({'readAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
+  }
+
+  /// **Q2:** Legt einen DATEV-Export-Lauf in der gemeinsamen Historie
+  /// `datevExportRuns` an (immutabel; die Rules erlauben nur create). Gibt die
+  /// vergebene Doc-ID zurück. `createdAt` setzt der Client als serverTimestamp
+  /// (die create-Rule erzwingt `createdAt == request.time`). Reihenfolge im
+  /// Aufrufer: **Run-Doc schreiben, DANN Download.**
+  Future<String> createDatevExportRun(DatevExportRun run) async {
+    final doc = _organizationDoc(run.orgId).collection('datevExportRuns').doc();
+    await doc.set(run.toFirestoreMap());
+    return doc.id;
+  }
+
+  /// **Q2:** Streamt die Export-Historie einer Art (`finanz`/`lohn`), neueste
+  /// zuerst. Braucht den Composite-Index `datevExportRuns(exportArt, createdAt
+  /// DESC)`.
+  Stream<List<DatevExportRun>> watchDatevExportRuns(
+    String orgId,
+    DatevExportArt art,
+  ) {
+    return _organizationDoc(orgId)
+        .collection('datevExportRuns')
+        .where('exportArt', isEqualTo: art.value)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((snap) => snap.docs
+            .map((d) => DatevExportRun.fromFirestore(d.id, d.data()))
+            .toList(growable: false));
   }
 
   /// Liest das OktoPOS-Sync-Config-Doc `config/oktoposSync` (baseUrl,
@@ -595,6 +729,11 @@ class FirestoreService {
       FirestoreSignageRepository(firestore: _firestore);
 
   SignageRepository get signageRepository => _signageRepository;
+
+  late final ParcelRepository _parcelRepository =
+      FirestoreParcelRepository(firestore: _firestore);
+
+  ParcelRepository get parcelRepository => _parcelRepository;
 
   FirebaseFunctions get _firebaseFunctions =>
       _functions ??= FirebaseFunctions.instanceFor(
@@ -1858,6 +1997,44 @@ class FirestoreService {
     );
   }
 
+  /// **PERSONAL-4:** Markiert das bewusste Öffnen durch den Mitarbeiter
+  /// (feldgranular `openedAt` (+ optional `downloadedAt`) + `updatedAt` —
+  /// deckungsgleich mit der Self-Update-Allowlist).
+  Future<void> markEmployeeDocumentOpened({
+    required String orgId,
+    required String docId,
+    bool alsoDownloaded = false,
+  }) {
+    return _employeeDocumentCollection(orgId).doc(docId).set(
+      {
+        'openedAt': FieldValue.serverTimestamp(),
+        if (alsoDownloaded) 'downloadedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  /// **PERSONAL-4:** Ablehnung durch den Mitarbeiter (feldgranular
+  /// `declinedAt` + `declineComment` + räumt `acknowledgedAt`; passend zur
+  /// Self-Update-Allowlist — die Rules erzwingen `declineComment` NUR zusammen
+  /// mit `declinedAt`).
+  Future<void> declineEmployeeDocument({
+    required String orgId,
+    required String docId,
+    required String comment,
+  }) {
+    return _employeeDocumentCollection(orgId).doc(docId).set(
+      {
+        'declinedAt': FieldValue.serverTimestamp(),
+        'declineComment': comment,
+        'acknowledgedAt': null,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+  }
+
   /// Sollzeit-Profile (Arbeitszeitmodelle, gültig-ab-versioniert) – bewusst OHNE
   /// `orderBy` abgefragt (Sortierung clientseitig), damit kein Composite-Index
   /// nötig ist (Personal-Modul-Konvention).
@@ -2380,6 +2557,17 @@ class FirestoreService {
     required String orderId,
   }) =>
       _inventoryRepository.deletePurchaseOrder(orgId: orgId, orderId: orderId);
+
+  Future<PurchaseOrder> closePurchaseOrderRemainder({
+    required String orgId,
+    required String orderId,
+    required String reason,
+  }) =>
+      _inventoryRepository.closePurchaseOrderRemainder(
+        orgId: orgId,
+        orderId: orderId,
+        reason: reason,
+      );
 
   Future<String> saveCustomerOrder(CustomerOrder order) =>
       _inventoryRepository.saveCustomerOrder(order);

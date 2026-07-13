@@ -42,6 +42,10 @@ abstract final class RoutePermissions {
       // seine EIGENEN Daten (self-scoped Streams + Rules).
       case AppRoutes.meineAkte:
         return p != null;
+      // Mitteilungs-Inbox (PERSONAL-9/Q4): jeder angemeldete Nutzer sieht seine
+      // EIGENEN Mitteilungen (self-scoped `recipientUid`-Query + Rules).
+      case AppRoutes.mitteilungen:
+        return p != null;
       // Wissen/Hilfe: jeder angemeldete Nutzer sieht die Fach-Doku; die
       // Technik-Doku blendet der Screen fuer Nicht-Admins aus.
       case AppRoutes.knowledge:
@@ -73,6 +77,10 @@ abstract final class RoutePermissions {
       case AppRoutes.customerWishes:
       case AppRoutes.orderAnalytics:
         return p?.canViewInventory ?? false;
+      // Hermes-Paketshop (Plan §7.6): alle aktiven Mitarbeiter (Betreiber §0).
+      // Gespiegelt in app_user.canViewParcels + firestore.rules canManageParcels.
+      case AppRoutes.paketshop:
+        return p?.canViewParcels ?? false;
       // Geführter Inventur-Modus: bucht Bestand (recordStocktake) -> nur wer
       // den Bestand verwalten darf (Admin + Schichtleitung), enger als das
       // Ansehen der Warenwirtschaft (canViewInventory == isActive). Spiegelt
@@ -117,6 +125,12 @@ abstract final class RoutePermissions {
         return (p?.isActive ?? false) && AppConfig.passwordManagerEnabled;
       case AppRoutes.feedbackInbox:
         return p?.canManageFeedback ?? false;
+      // Management-Dashboard (REPORTING-4): org-weite Kennzahlen für Führung —
+      // Admin UND Schichtleitung (canManageShifts, konsistent mit den
+      // workEntries-/OrgZeit-Rules). Einzelne Kennzahlen blendet der Screen über
+      // KpiPermissions zusätzlich aus (z. B. Lohn/EK nur Admin).
+      case AppRoutes.kennzahlen:
+        return (p?.isAdmin ?? false) || (p?.canManageShifts ?? false);
       case AppRoutes.monthReport:
       case AppRoutes.statistics:
         return p?.canViewReports ?? false;

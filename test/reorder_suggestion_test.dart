@@ -27,6 +27,7 @@ void main() {
   ProductVelocity velocity(
     String id, {
     required int soldUnits,
+    int currentStock = 0,
     int windowDaysOverride = windowDays,
     String siteId = 'site-1',
     bool isNewProduct = false,
@@ -36,7 +37,7 @@ void main() {
         siteId: siteId,
         soldUnits: soldUnits,
         windowDays: windowDaysOverride,
-        currentStock: 0,
+        currentStock: currentStock,
         purchasePriceCents: null,
         isNewProduct: isNewProduct,
       );
@@ -144,5 +145,45 @@ void main() {
       products: [product('p1', minStock: 6, targetStock: 20)],
     );
     expect(result.single.hasChange, isFalse);
+  });
+
+  test('unterwegs-Menge senkt nur die konkrete Nachbestellmenge', () {
+    final result = computeReorderSuggestions(
+      velocities: [velocity('p1', soldUnits: 28, currentStock: 5)],
+      products: [product('p1', minStock: 6, targetStock: 20)],
+      incomingByProductId: const {'p1': 7},
+    );
+
+    final suggestion = result.single;
+    expect(suggestion.currentStock, 5);
+    expect(suggestion.incomingQuantity, 7);
+    expect(suggestion.suggestedMinStock, 6);
+    expect(suggestion.suggestedTargetStock, 20);
+    expect(suggestion.suggestedOrderQuantity, 8);
+  });
+
+  test(
+    'konkrete Nachbestellmenge wird bei ausreichendem Zulauf auf 0 gekappt',
+    () {
+      final result = computeReorderSuggestions(
+        velocities: [velocity('p1', soldUnits: 28, currentStock: 5)],
+        products: [product('p1')],
+        incomingByProductId: const {'p1': 99},
+      );
+
+      expect(result.single.incomingQuantity, 99);
+      expect(result.single.suggestedOrderQuantity, 0);
+    },
+  );
+
+  test('negative injizierte unterwegs-Mengen werden als 0 behandelt', () {
+    final result = computeReorderSuggestions(
+      velocities: [velocity('p1', soldUnits: 28, currentStock: 5)],
+      products: [product('p1')],
+      incomingByProductId: const {'p1': -7},
+    );
+
+    expect(result.single.incomingQuantity, 0);
+    expect(result.single.suggestedOrderQuantity, 15);
   });
 }

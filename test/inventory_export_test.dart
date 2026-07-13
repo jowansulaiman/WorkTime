@@ -45,5 +45,13 @@ void main() {
       // Zielbestand 20 - Bestand 10 = 10 Vorschlag, letzte Spalte.
       expect(csv.trimRight().endsWith(';10'), isTrue);
     });
+
+    test('übernimmt einen bereits um unterwegs-Ware reduzierten Vorschlag', () {
+      final csv = ExportService.buildReorderListCsv(
+        products: [stock.copyWith(reorderQuantity: 4)],
+      );
+
+      expect(csv.trimRight().endsWith(';4'), isTrue);
+    });
   });
 }

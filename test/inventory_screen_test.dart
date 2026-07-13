@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/product.dart';
+import 'package:worktime_app/models/purchase_order.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/auth_provider.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
@@ -37,6 +38,32 @@ void main() {
     isActive: true,
     settings: UserSettings(name: 'Inhaber'),
   );
+
+  Future<void> pumpInventoryScreen(
+    WidgetTester tester, {
+    required FirestoreService firestoreService,
+    required InventoryProvider inventory,
+  }) async {
+    final auth = _TestAuthProvider(
+      firestoreService: firestoreService,
+      profile: admin,
+    );
+    final team = TeamProvider(firestoreService: firestoreService);
+    await team.updateSession(admin);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AuthProvider>.value(value: auth),
+          ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+          ChangeNotifierProvider<TeamProvider>.value(value: team),
+        ],
+        child: const MaterialApp(home: InventoryScreen()),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+  }
 
   testWidgets('zeigt Tabs und einen Niedrigbestand-Artikel', (tester) async {
     final firestoreService = FirestoreService(firestore: FakeFirebaseFirestore());
@@ -238,6 +265,128 @@ void main() {
     expect(find.byType(InventoryScreen), findsOneWidget);
     expect(find.textContaining('Artikel'), findsWidgets);
   });
+
+  testWidgets(
+    'gedeckter Niedrigbestand bleibt als „Bestellt, unterwegs“ sichtbar',
+    (tester) async {
+      final firestoreService = FirestoreService(
+        firestore: FakeFirebaseFirestore(),
+      );
+      final inventory = InventoryProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await inventory.updateSession(admin);
+      await inventory.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Wasser unterwegs',
+          currentStock: 1,
+          minStock: 5,
+          targetStock: 10,
+        ),
+      );
+      final productId = inventory.products.single.id!;
+      await inventory.savePurchaseOrder(
+        PurchaseOrder(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          supplierId: 'sup-1',
+          status: PurchaseOrderStatus.ordered,
+          items: [
+            PurchaseOrderItem(
+              productId: productId,
+              name: 'Wasser unterwegs',
+              quantityOrdered: 5,
+            ),
+          ],
+        ),
+      );
+
+      await pumpInventoryScreen(
+        tester,
+        firestoreService: firestoreService,
+        inventory: inventory,
+      );
+
+      expect(find.text('Wasser unterwegs'), findsOneWidget);
+      expect(find.text('Bestellt, unterwegs'), findsOneWidget);
+      expect(inventory.lowStockProducts(), isEmpty);
+      expect(find.text('Nachbestellen (1)'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'Teilabdeckung bleibt nachzubestellen und Bestellkarte zeigt offene Menge',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final firestoreService = FirestoreService(
+        firestore: FakeFirebaseFirestore(),
+      );
+      final inventory = InventoryProvider(
+        firestoreService: firestoreService,
+        disableAuthentication: true,
+      );
+      await inventory.updateSession(admin);
+      await inventory.saveProduct(
+        const Product(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          name: 'Cola teilweise unterwegs',
+          currentStock: 5,
+          minStock: 10,
+          targetStock: 20,
+        ),
+      );
+      final productId = inventory.products.single.id!;
+      await inventory.savePurchaseOrder(
+        PurchaseOrder(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          supplierId: 'sup-1',
+          supplierName: 'Getränke-Großhandel mit langem Namen',
+          status: PurchaseOrderStatus.partiallyReceived,
+          items: [
+            PurchaseOrderItem(
+              productId: productId,
+              name: 'Cola teilweise unterwegs',
+              quantityOrdered: 10,
+              quantityReceived: 5,
+            ),
+            const PurchaseOrderItem(
+              name: 'Sirup',
+              unit: 'kg',
+              quantityOrdered: 4,
+              quantityReceived: 1,
+            ),
+          ],
+        ),
+      );
+
+      await pumpInventoryScreen(
+        tester,
+        firestoreService: firestoreService,
+        inventory: inventory,
+      );
+
+      expect(find.text('Nachbestellen'), findsOneWidget);
+      expect(find.text('5 unterwegs'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.receipt_long_outlined).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('offen 5 von 10 Stk.'), findsOneWidget);
+      expect(find.text('offen 3 von 4 kg'), findsOneWidget);
+      expect(find.text('offen 8 von 14 Stk.'), findsNothing);
+      expect(find.text('Teillieferung'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 class _TestAuthProvider extends AuthProvider {

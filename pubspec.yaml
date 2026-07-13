@@ -35,6 +35,9 @@ dependencies:
   # UI
   cupertino_icons: ^1.0.6
   intl: ^0.20.2
+  # DATEV-3: SHA-256 der Export-Datei (Historie/Reproduktion). Bisher nur
+  # transitiv aufgelöst — als direkte Abhängigkeit gepinnt.
+  crypto: ^3.0.7
   fl_chart: ^0.67.0
   
   # File Saver

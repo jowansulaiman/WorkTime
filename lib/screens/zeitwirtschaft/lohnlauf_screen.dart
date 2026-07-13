@@ -2,8 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/app_config.dart';
+import '../../core/datev_lohn_export.dart';
 import '../../core/money.dart';
+import '../../models/datev_export_run.dart';
+import '../../models/employee_profile.dart';
 import '../../models/payroll_record.dart';
+import '../../providers/finance_provider.dart';
 import '../../providers/personal_provider.dart';
 import '../../routing/shell_tab.dart';
 import '../../services/export_service.dart';
@@ -99,20 +104,44 @@ class _LohnlaufScreenState extends State<LohnlaufScreen> {
                 ),
                 if (records.isNotEmpty) ...[
                   SizedBox(height: spacing.sm),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.table_view_outlined),
-                      label: const Text('Lohnjournal (CSV)'),
-                      onPressed: () => ExportService.exportLohnjournalCsv(
-                        records: records,
-                        employeeName: (uid) =>
-                            personal.memberById(uid)?.displayName ?? uid,
-                        monthLabel: '${_monthNames[_month - 1]} $_year',
-                        fileStamp:
-                            '$_year-${_month.toString().padLeft(2, '0')}',
+                  Wrap(
+                    spacing: spacing.sm,
+                    runSpacing: spacing.sm,
+                    children: [
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.table_view_outlined),
+                        label: const Text('Lohnjournal (CSV)'),
+                        onPressed: () => ExportService.exportLohnjournalCsv(
+                          records: records,
+                          employeeName: (uid) =>
+                              personal.memberById(uid)?.displayName ?? uid,
+                          monthLabel: '${_monthNames[_month - 1]} $_year',
+                          fileStamp:
+                              '$_year-${_month.toString().padLeft(2, '0')}',
+                        ),
                       ),
-                    ),
+                      // PERSONAL-3: DATEV-Lohn-Export nur bei Flag + Admin.
+                      if (AppConfig.datevLohnEnabled && personal.isAdmin)
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.download_outlined),
+                          label: const Text('DATEV-Lohn (Export)'),
+                          onPressed:
+                              _busy ? null : () => _exportDatevLohn(personal),
+                        ),
+                      if (AppConfig.datevLohnEnabled && personal.isAdmin)
+                        TextButton.icon(
+                          icon: const Icon(Icons.settings_outlined, size: 18),
+                          label: const Text('DATEV-Lohn-Einstellungen'),
+                          onPressed: () => showAppBottomSheet(
+                            context: context,
+                            builder: (_) => _DatevLohnConfigSheet(
+                              config: context
+                                  .read<FinanceProvider>()
+                                  .datevLohnConfig,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ],
                 if (drafts > 0) ...[
@@ -208,6 +237,96 @@ class _LohnlaufScreenState extends State<LohnlaufScreen> {
       await ExportService.exportPayrollPdf(record: record, employeeName: name);
     } catch (error) {
       if (mounted) _snack('PDF-Export fehlgeschlagen: $error');
+    }
+  }
+
+  /// **PERSONAL-3:** DATEV-Lohn-Export — Config-Prüfung → `buildBewegungsdaten`
+  /// → Vorprüfungs-Dialog (Probleme + DSGVO) → Run in `datevExportRuns` (Q2,
+  /// `exportArt: lohn`, mit `rowsSnapshot`) → Download. Reihenfolge: Run VOR
+  /// Download; hybrid-offline blockiert (Q2-Semantik).
+  Future<void> _exportDatevLohn(PersonalProvider personal) async {
+    final finance = context.read<FinanceProvider>();
+    final config = finance.datevLohnConfig;
+    if (!config.isConfigured) {
+      _snack('Bitte zuerst die DATEV-Lohn-Einstellungen (Berater-/Mandanten-'
+          'nummer, Grundlohn-Lohnart) hinterlegen.');
+      return;
+    }
+
+    final records = personal.payrollForPeriod(_year, _month);
+    final profilesByUserId = <String, EmployeeProfile>{
+      for (final p in personal.employeeProfiles) p.userId: p,
+    };
+    final ergebnis = buildBewegungsdaten(
+      config: config,
+      records: records,
+      profilesByUserId: profilesByUserId,
+      payLineTypes: personal.activePayLineTypes,
+      jahr: _year,
+      monat: _month,
+    );
+    if (ergebnis.zeilenAnzahl == 0 && ergebnis.probleme.isEmpty) {
+      _snack('Keine freigegebenen Lohnabrechnungen für diesen Monat.');
+      return;
+    }
+
+    // Vorprüfungs-Dialog (Probleme + DSGVO-Hinweis + Override bei Problemen).
+    final proceed = await showAppBottomSheet<bool>(
+      context: context,
+      builder: (_) => _DatevLohnVorpruefungSheet(ergebnis: ergebnis),
+    );
+    if (proceed != true || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final content = ergebnis.content;
+      final fileName =
+          'DATEV_Lohn_${_year}_${_month.toString().padLeft(2, '0')}.txt';
+      final run = DatevExportRun(
+        orgId: '',
+        exportArt: DatevExportArt.lohn,
+        kind: config.format.value == 'lodas'
+            ? 'lodas_bewegungsdaten'
+            : 'lohn_und_gehalt_bewegungsdaten',
+        periodYear: _year,
+        periodMonth: _month,
+        createdByUid: '',
+        entryCount: ergebnis.zeilenAnzahl,
+        summeCents: ergebnis.summeCents,
+        fileName: fileName,
+        fileSha256: ExportService.sha256Hex(content),
+        configSnapshot: config.toFirestoreMap(),
+        rowsSnapshot: ergebnis.rows,
+        snapshotRowCount: ergebnis.rows.length,
+        subjectUserIds: ergebnis.subjectUserIds,
+        problemeAnzahl: ergebnis.probleme.length,
+        overrideBestaetigt: ergebnis.probleme.isNotEmpty,
+      );
+
+      if (finance.supportsExportHistory) {
+        try {
+          await finance.logDatevExportRun(run);
+        } catch (error) {
+          if (mounted) {
+            _snack('Export nicht möglich: die Historie kann offline nicht '
+                'geschrieben werden. Erst wieder online exportieren.');
+          }
+          return;
+        }
+      }
+      await ExportService.downloadDatevBuchungsstapel(
+        content: content,
+        fileName: fileName,
+      );
+      if (mounted) {
+        _snack(finance.supportsExportHistory
+            ? 'DATEV-Lohn erstellt + in der Historie erfasst.'
+            : 'DATEV-Lohn erstellt (ohne Historie im lokalen Modus).');
+      }
+    } catch (error) {
+      if (mounted) _snack('DATEV-Lohn-Export fehlgeschlagen: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -511,6 +630,196 @@ class _MonthPicker extends StatelessWidget {
             icon: const Icon(Icons.chevron_right),
             tooltip: 'Nächster Monat',
             onPressed: onNext,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PERSONAL-3: DATEV-Lohn Vorprüfung + Konfiguration
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Vorprüfungs-Dialog: zeigt gesammelte Probleme + DSGVO-Hinweis; Rückgabe
+/// `true` = exportieren. Probleme blockieren NICHT (Override), werden aber
+/// deutlich gezeigt.
+class _DatevLohnVorpruefungSheet extends StatelessWidget {
+  const _DatevLohnVorpruefungSheet({required this.ergebnis});
+
+  final DatevLohnExportErgebnis ergebnis;
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final probleme = ergebnis.probleme;
+    return AppBottomSheetScaffold(
+      title: 'DATEV-Lohn — Vorprüfung',
+      subtitle: '${ergebnis.zeilenAnzahl} Zeile(n) · '
+          '${ergebnis.subjectUserIds.length} Mitarbeiter',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (probleme.isEmpty)
+            const AppStatusBanner(
+              icon: Icons.check_circle_outline,
+              tone: AppStatusTone.success,
+              message: 'Keine Probleme gefunden.',
+            )
+          else ...[
+            AppStatusBanner(
+              icon: Icons.warning_amber_rounded,
+              tone: AppStatusTone.warning,
+              message: '${probleme.length} Hinweis(e) — betroffene Zeilen '
+                  'werden NICHT exportiert:',
+            ),
+            SizedBox(height: spacing.sm),
+            for (final p in probleme.take(20))
+              Padding(
+                padding: EdgeInsets.only(bottom: spacing.xxs),
+                child: Text('• ${p.message}',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ),
+            if (probleme.length > 20)
+              Text('… und ${probleme.length - 20} weitere',
+                  style: Theme.of(context).textTheme.bodySmall),
+          ],
+          SizedBox(height: spacing.md),
+          const AppStatusBanner(
+            icon: Icons.privacy_tip_outlined,
+            tone: AppStatusTone.info,
+            message: 'Die Datei enthält Lohn-Personendaten. Nur an den '
+                'Steuerberater weitergeben; die App speichert keinen '
+                'Datei-Inhalt (nur revisionssichere Metadaten).',
+          ),
+          SizedBox(height: spacing.md),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Abbrechen'),
+                ),
+              ),
+              SizedBox(width: spacing.sm),
+              Expanded(
+                child: FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: Text(probleme.isEmpty
+                      ? 'Exportieren'
+                      : 'Trotzdem exportieren'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Editor für die [DatevLohnConfig] (Format, Berater-/Mandantennummer,
+/// Grundlohn-Lohnart). Speichert über [FinanceProvider.saveDatevLohnConfig].
+class _DatevLohnConfigSheet extends StatefulWidget {
+  const _DatevLohnConfigSheet({required this.config});
+
+  final DatevLohnConfig config;
+
+  @override
+  State<_DatevLohnConfigSheet> createState() => _DatevLohnConfigSheetState();
+}
+
+class _DatevLohnConfigSheetState extends State<_DatevLohnConfigSheet> {
+  late DatevLohnFormat _format;
+  late final TextEditingController _berater;
+  late final TextEditingController _mandant;
+  late final TextEditingController _grundlohn;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _format = widget.config.format;
+    _berater = TextEditingController(text: widget.config.beraterNr);
+    _mandant = TextEditingController(text: widget.config.mandantenNr);
+    _grundlohn =
+        TextEditingController(text: widget.config.festeLohnartGrundlohn);
+  }
+
+  @override
+  void dispose() {
+    _berater.dispose();
+    _mandant.dispose();
+    _grundlohn.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await context.read<FinanceProvider>().saveDatevLohnConfig(
+            widget.config.copyWith(
+              format: _format,
+              beraterNr: _berater.text.trim(),
+              mandantenNr: _mandant.text.trim(),
+              festeLohnartGrundlohn: _grundlohn.text.trim(),
+            ),
+          );
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Speichern fehlgeschlagen: $error')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: 'DATEV-Lohn-Einstellungen',
+      subtitle: 'Vorgaben des Steuerberaters',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Format', style: Theme.of(context).textTheme.labelLarge),
+          SizedBox(height: spacing.xs),
+          AppSegmented<DatevLohnFormat>(
+            segments: const [
+              AppSegment(value: DatevLohnFormat.lodas, label: 'LODAS'),
+              AppSegment(
+                  value: DatevLohnFormat.lohnUndGehalt, label: 'Lohn & Gehalt'),
+            ],
+            selected: _format,
+            onChanged: (v) => setState(() => _format = v),
+          ),
+          SizedBox(height: spacing.md),
+          AppFormField(
+            controller: _berater,
+            label: 'Beraternummer',
+            keyboardType: TextInputType.number,
+          ),
+          SizedBox(height: spacing.md),
+          AppFormField(
+            controller: _mandant,
+            label: 'Mandantennummer',
+            keyboardType: TextInputType.number,
+          ),
+          SizedBox(height: spacing.md),
+          AppFormField(
+            controller: _grundlohn,
+            label: 'Lohnart Grundlohn (z. B. 100)',
+            keyboardType: TextInputType.number,
+          ),
+          SizedBox(height: spacing.lg),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: _saving ? null : _save,
+              child: const Text('Speichern'),
+            ),
           ),
         ],
       ),

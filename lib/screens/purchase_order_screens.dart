@@ -10,6 +10,7 @@ import '../models/site_definition.dart';
 import '../models/supplier.dart';
 import '../providers/inventory_provider.dart';
 import '../services/export_service.dart';
+import '../theme/theme_extensions.dart';
 import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import 'inventory_screen.dart';
@@ -83,6 +84,25 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
   final TextEditingController _notes = TextEditingController();
   bool _prefilledForSupplier = false;
   bool _saving = false;
+
+  /// **WW-3:** erwarteter Liefertermin (optional, auf 12:00 Uhr normalisiert wie
+  /// die POS-/ProductBatch-Datumsfelder, damit der Tagesabgleich nicht über die
+  /// UTC-Grenze kippt).
+  DateTime? _expectedAt;
+
+  Future<void> _pickExpectedAt() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _expectedAt ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 2),
+      helpText: 'Liefertermin (erwartet)',
+    );
+    if (picked != null) {
+      setState(() => _expectedAt = DateTime(picked.year, picked.month, picked.day, 12));
+    }
+  }
 
   @override
   void initState() {
@@ -163,6 +183,33 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
                           _prefilledForSupplier = false;
                         }),
                       ),
+                      if (_supplierId != null) ...[
+                        const SizedBox(height: 12),
+                        InkWell(
+                          onTap: _pickExpectedAt,
+                          borderRadius: BorderRadius.circular(4),
+                          child: InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Liefertermin (erwartet)',
+                              border: const OutlineInputBorder(),
+                              prefixIcon: const Icon(Icons.event_outlined),
+                              suffixIcon: _expectedAt == null
+                                  ? null
+                                  : IconButton(
+                                      icon: const Icon(Icons.clear),
+                                      tooltip: 'Termin entfernen',
+                                      onPressed: () =>
+                                          setState(() => _expectedAt = null),
+                                    ),
+                            ),
+                            child: Text(
+                              _expectedAt == null
+                                  ? 'Kein Termin'
+                                  : _dateFormat.format(_expectedAt!),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -264,6 +311,12 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
       return const [];
     }
     final freq = inventory.orderFrequencyByProduct(siteId: _siteId);
+    final reorderProductIds = <String>{
+      for (final product in inventory.lowStockProducts(siteId: _siteId))
+        if (product.id != null) product.id!,
+    };
+    final incomingByProductId =
+        inventory.incomingQuantityByProductId(siteId: _siteId);
     final products = inventory
         .productsForSite(_siteId)
         .where((product) =>
@@ -271,8 +324,12 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
         .toList()
       ..sort((a, b) {
         // Nachzubestellende zuerst.
-        if (a.needsReorder != b.needsReorder) {
-          return a.needsReorder ? -1 : 1;
+        final aNeedsReorder =
+            a.id != null && reorderProductIds.contains(a.id);
+        final bNeedsReorder =
+            b.id != null && reorderProductIds.contains(b.id);
+        if (aNeedsReorder != bNeedsReorder) {
+          return aNeedsReorder ? -1 : 1;
         }
         // Dann häufig bestellte Artikel.
         final fa = freq[a.id] ?? 0;
@@ -286,8 +343,14 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
     if (widget.prefillReorder && !_prefilledForSupplier) {
       _prefilledForSupplier = true;
       for (final product in products) {
-        if (product.needsReorder && product.id != null) {
-          _quantities[product.id!] = product.suggestedReorderQuantity;
+        if (product.id != null && reorderProductIds.contains(product.id)) {
+          final quantity = inventory.suggestedReorderQuantityAfterIncoming(
+            product,
+            incomingQuantity: incomingByProductId[product.id!] ?? 0,
+          );
+          if (quantity > 0) {
+            _quantities[product.id!] = quantity;
+          }
         }
       }
     }
@@ -339,6 +402,7 @@ class _PurchaseOrderEditorScreenState extends State<PurchaseOrderEditorScreen> {
       items: items,
       notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
       orderedAt: asOrdered ? DateTime.now() : null,
+      expectedAt: _expectedAt,
     );
 
     setState(() => _saving = true);
@@ -494,6 +558,12 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
 
     final colorScheme = Theme.of(context).colorScheme;
     final supplier = inventory.supplierById(order.supplierId);
+    final canReceive = order.closedAt == null && order.status.acceptsReceipt;
+    final canCloseRemainder = order.closedAt == null &&
+        (order.status == PurchaseOrderStatus.ordered ||
+            order.status == PurchaseOrderStatus.partiallyReceived) &&
+        order.hasAnyReceipt &&
+        !order.isFullyReceived;
 
     return Scaffold(
       appBar: BreadcrumbAppBar(
@@ -525,10 +595,15 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
             PopupMenuButton<String>(
               onSelected: (value) => _onMenu(context, inventory, order, value),
               itemBuilder: (_) => [
-                if (order.status.acceptsReceipt)
+                if (canReceive)
                   const PopupMenuItem(
                     value: 'receive',
                     child: Text('Wareneingang buchen'),
+                  ),
+                if (canCloseRemainder)
+                  const PopupMenuItem(
+                    value: 'closeRemainder',
+                    child: Text('Rest schließen'),
                   ),
                 if (order.status == PurchaseOrderStatus.draft)
                   const PopupMenuItem(
@@ -548,7 +623,7 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
             ),
         ],
       ),
-      floatingActionButton: canManage && order.status.acceptsReceipt
+      floatingActionButton: canManage && canReceive
           ? ExpandableFab(
               heroTag: 'purchase_order_receive_fab',
               actions: [
@@ -601,11 +676,25 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
                             text:
                                 'Bestellt am ${_dateFormat.format(order.orderedAt!)}',
                           ),
+                        if (order.expectedAt != null)
+                          _ExpectedDeliveryRow(order: order),
                         if (order.receivedAt != null)
                           _InfoRow(
                             icon: Icons.check_circle_outline,
                             text:
                                 'Geliefert am ${_dateFormat.format(order.receivedAt!)}',
+                          ),
+                        if (order.closedAt != null)
+                          _InfoRow(
+                            icon: Icons.inventory_2_outlined,
+                            text:
+                                'Rest geschlossen am ${_dateFormat.format(order.closedAt!)}',
+                          ),
+                        if (order.closedAt != null &&
+                            (order.closedReason?.trim().isNotEmpty ?? false))
+                          _InfoRow(
+                            icon: Icons.comment_outlined,
+                            text: 'Begründung: ${order.closedReason!.trim()}',
                           ),
                         if (order.notes?.isNotEmpty ?? false)
                           _InfoRow(
@@ -648,10 +737,18 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Gesamt (EK)',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
                         Text(
-                          formatCents(order.totalCents),
+                          order.closedAt != null
+                              ? 'Geliefert (EK)'
+                              : 'Gesamt (EK)',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          formatCents(
+                            order.closedAt != null
+                                ? order.deliveredTotalCents
+                                : order.totalCents,
+                          ),
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ],
@@ -674,6 +771,28 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
     switch (value) {
       case 'receive':
         await _receive(context, inventory, order);
+        break;
+      case 'closeRemainder':
+        final reason = await showDialog<String>(
+          context: context,
+          builder: (_) => _CloseRemainderDialog(order: order),
+        );
+        if (reason == null || order.id == null) {
+          break;
+        }
+        try {
+          await inventory.closePurchaseOrderRemainder(
+            orderId: order.id!,
+            reason: reason,
+          );
+          if (context.mounted) {
+            _toast(context, 'Restmenge geschlossen.');
+          }
+        } catch (error) {
+          if (context.mounted) {
+            _toast(context, 'Fehler: $error');
+          }
+        }
         break;
       case 'order':
         await inventory.markOrderAsOrdered(order);
@@ -822,6 +941,56 @@ String _encodeMailtoQuery(Map<String, String> params) {
       .join('&');
 }
 
+/// **WW-3:** Liefertermin-Zeile mit „heute erwartet"/„überfällig"-Badge.
+class _ExpectedDeliveryRow extends StatelessWidget {
+  const _ExpectedDeliveryRow({required this.order});
+
+  final PurchaseOrder order;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final appColors = Theme.of(context).appColors;
+    final state = order.expectedDeliveryState(DateTime.now());
+    final (String? badge, Color? badgeColor) = switch (state) {
+      ExpectedDeliveryDayState.today => ('heute erwartet', appColors.info),
+      ExpectedDeliveryDayState.overdue => ('überfällig', appColors.warning),
+      _ => (null, null),
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(Icons.event_outlined,
+              size: 16, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+                'Erwartet am ${_dateFormat.format(order.expectedAt!)}'),
+          ),
+          if (badge != null)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: badgeColor?.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                badge,
+                style: TextStyle(
+                  color: badgeColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _InfoRow extends StatelessWidget {
   const _InfoRow({required this.icon, required this.text});
 
@@ -840,6 +1009,122 @@ class _InfoRow extends StatelessWidget {
           Expanded(child: Text(text)),
         ],
       ),
+    );
+  }
+}
+
+class _CloseRemainderDialog extends StatefulWidget {
+  const _CloseRemainderDialog({required this.order});
+
+  final PurchaseOrder order;
+
+  @override
+  State<_CloseRemainderDialog> createState() =>
+      _CloseRemainderDialogState();
+}
+
+class _CloseRemainderDialogState extends State<_CloseRemainderDialog> {
+  final TextEditingController _reasonController = TextEditingController();
+
+  bool get _canSubmit => _reasonController.text.trim().isNotEmpty;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final status = theme.appColors;
+    final outstandingItems = widget.order.items
+        .where((item) => item.outstandingQuantity > 0)
+        .toList(growable: false);
+
+    return AlertDialog(
+      icon: Icon(Icons.warning_amber_rounded, color: status.warning),
+      title: const Text('Restmenge schließen?'),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: status.warningContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'Bereits gelieferte Mengen und Bestände bleiben unverändert. '
+                  'Die offenen Mengen werden nicht mehr erwartet; der '
+                  'Wareneinsatz wird nur für die Ist-Lieferung gebucht.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: status.onWarningContainer,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Offene Positionen',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              for (final item in outstandingItems)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: Text(item.name)),
+                      const SizedBox(width: 12),
+                      Text(
+                        '${item.outstandingQuantity} ${item.unit} offen',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 16),
+              TextField(
+                key: const Key('close_purchase_order_reason'),
+                controller: _reasonController,
+                autofocus: true,
+                minLines: 2,
+                maxLines: 4,
+                textCapitalization: TextCapitalization.sentences,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'Begründung *',
+                  helperText: 'Pflichtfeld',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Abbrechen'),
+        ),
+        FilledButton.icon(
+          key: const Key('close_purchase_order_submit'),
+          onPressed: _canSubmit
+              ? () => Navigator.of(context).pop(
+                    _reasonController.text.trim(),
+                  )
+              : null,
+          icon: const Icon(Icons.task_alt_outlined),
+          label: const Text('Rest schließen'),
+        ),
+      ],
     );
   }
 }

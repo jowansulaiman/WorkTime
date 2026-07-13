@@ -542,7 +542,21 @@ class _InventoryScreenState extends State<InventoryScreen>
       tooltip: 'Exportieren',
       onSelected: (value) async {
         final products = inventory.productsForSite(_selectedSiteId);
-        final reorder = inventory.lowStockProducts(siteId: _selectedSiteId);
+        final incoming = inventory.incomingQuantityByProductId(
+          siteId: _selectedSiteId,
+        );
+        final reorder = inventory
+            .lowStockProducts(siteId: _selectedSiteId)
+            .map(
+              (product) => product.copyWith(
+                reorderQuantity: inventory.suggestedReorderQuantityAfterIncoming(
+                  product,
+                  incomingQuantity:
+                      product.id == null ? 0 : incoming[product.id!] ?? 0,
+                ),
+              ),
+            )
+            .toList(growable: false);
         try {
           switch (value) {
             case 0:
@@ -1213,9 +1227,14 @@ class _StockTabState extends State<_StockTab> {
   String? _categoryFilter;
   _StockSort _sort = _StockSort.name;
 
-  bool _matchesFilter(Product product) => switch (_filter) {
+  bool _matchesFilter(
+    Product product,
+    Set<String> productsNeedingReorder,
+  ) =>
+      switch (_filter) {
         _StockFilter.alle => true,
-        _StockFilter.nachbestellen => product.needsReorder,
+        _StockFilter.nachbestellen =>
+          product.id != null && productsNeedingReorder.contains(product.id),
         _StockFilter.leer => product.isOutOfStock,
         _StockFilter.kuehlschrank => product.inFridge,
       };
@@ -1225,6 +1244,13 @@ class _StockTabState extends State<_StockTab> {
     final inventory = context.watch<InventoryProvider>();
     final query = widget.search.trim().toLowerCase();
     final allForSite = inventory.productsForSite(widget.siteId);
+    final incomingByProductId =
+        inventory.incomingQuantityByProductId(siteId: widget.siteId);
+    final lowStock = inventory.lowStockProducts(siteId: widget.siteId);
+    final productsNeedingReorder = <String>{
+      for (final product in lowStock)
+        if (product.id != null) product.id!,
+    };
     // Warengruppen aus dem ungefilterten Standort-Sortiment (Filter-Menü).
     final categories = <String>{
       for (final product in allForSite)
@@ -1237,7 +1263,7 @@ class _StockTabState extends State<_StockTab> {
     if (_categoryFilter != null && !categories.contains(_categoryFilter)) {
       _categoryFilter = null;
     }
-    final reorderCount = allForSite.where((p) => p.needsReorder).length;
+    final reorderCount = lowStock.length;
     final emptyCount = allForSite.where((p) => p.isOutOfStock).length;
     // Bewusste Entscheidung (barcode-no-index-clientside-scan): Die Produktsuche
     // ist ein Volltext-Substring-Filter (contains) ueber die bereits gestreamte
@@ -1247,7 +1273,7 @@ class _StockTabState extends State<_StockTab> {
     // Repository + (siteId, barcode)-Index ergaenzen. Fuer die heutige Datenmenge
     // (2 Laeden) ist die clientseitige Filterung ausreichend.
     final products = allForSite.where((product) {
-      if (!_matchesFilter(product)) {
+      if (!_matchesFilter(product, productsNeedingReorder)) {
         return false;
       }
       if (_categoryFilter != null &&
@@ -1279,8 +1305,6 @@ class _StockTabState extends State<_StockTab> {
     final filtersActive = _filter != _StockFilter.alle ||
         _categoryFilter != null ||
         query.isNotEmpty;
-
-    final lowStock = inventory.lowStockProducts(siteId: widget.siteId);
 
     return Column(
       children: [
@@ -1495,6 +1519,10 @@ class _StockTabState extends State<_StockTab> {
                     product: products[index],
                     canManage: widget.canManage,
                     sites: widget.sites,
+                    incomingQuantity:
+                        incomingByProductId[products[index].id] ?? 0,
+                    needsAdditionalOrder: products[index].id != null &&
+                        productsNeedingReorder.contains(products[index].id),
                   ),
                 ),
         ),
@@ -1567,8 +1595,8 @@ class _StockValueMetric extends StatelessWidget {
 }
 
 /// Farbrolle einer [_MetricChip]: neutral (Kennwert) oder semantisch
-/// (warning/error) für den kompakten Bestandsstatus je Zeile.
-enum _ChipTone { neutral, warning, error }
+/// (warning/info/error) für den kompakten Bestandsstatus je Zeile.
+enum _ChipTone { neutral, warning, info, error }
 
 /// Kleine, umbruchsichere Kennwert-Pille (Label-Wert) für Tile-Untertitel —
 /// ersetzt die auf Handybreite still abschneidenden „·"-Ketten. Alle Pillen
@@ -1594,6 +1622,10 @@ class _MetricChip extends StatelessWidget {
       _ChipTone.warning => (
           status.warningContainer,
           status.onWarningContainer,
+        ),
+      _ChipTone.info => (
+          status.infoContainer,
+          status.onInfoContainer,
         ),
       _ChipTone.error => (scheme.errorContainer, scheme.onErrorContainer),
     };
@@ -1667,11 +1699,15 @@ class _ProductTile extends StatelessWidget {
     required this.product,
     required this.canManage,
     required this.sites,
+    required this.incomingQuantity,
+    required this.needsAdditionalOrder,
   });
 
   final Product product;
   final bool canManage;
   final List<SiteDefinition> sites;
+  final int incomingQuantity;
+  final bool needsAdditionalOrder;
 
   @override
   Widget build(BuildContext context) {
@@ -1688,13 +1724,21 @@ class _ProductTile extends StatelessWidget {
 
     // Kompakte Status-Pille in derselben Größe wie die Kennwert-Pillen, damit
     // die Wrap-Zeile gleich hoch bleibt (statt einer großen AppStatusBadge).
+    final isCoveredByIncoming =
+        product.needsReorder && incomingQuantity > 0 && !needsAdditionalOrder;
     final Widget? statusChip = product.isOutOfStock
         ? const _MetricChip('Leer',
             tone: _ChipTone.error, icon: Icons.error_outline)
-        : (product.needsReorder
+        : (isCoveredByIncoming
+            ? const _MetricChip(
+                'Bestellt, unterwegs',
+                tone: _ChipTone.info,
+                icon: Icons.local_shipping_outlined,
+              )
+            : (needsAdditionalOrder
             ? const _MetricChip('Nachbestellen',
                 tone: _ChipTone.warning, icon: Icons.warning_amber_rounded)
-            : null);
+                : null));
 
     final siteName = sites.length > 1
         ? resolveSiteName(sites, product.siteId, fallback: product.siteName)
@@ -1707,6 +1751,20 @@ class _ProductTile extends StatelessWidget {
       // Status doppelt zu vermeiden: der Screenreader liest ihn schon aus dem
       // Leading-Semantics-Label → sichtbare Pille aus dem Semantics ausschließen.
       if (statusChip != null) ExcludeSemantics(child: statusChip),
+      if (isCoveredByIncoming && product.isOutOfStock)
+        const ExcludeSemantics(
+          child: _MetricChip(
+            'Bestellt, unterwegs',
+            tone: _ChipTone.info,
+            icon: Icons.local_shipping_outlined,
+          ),
+        ),
+      if (incomingQuantity > 0 && !isCoveredByIncoming)
+        _MetricChip(
+          '$incomingQuantity unterwegs',
+          tone: _ChipTone.info,
+          icon: Icons.local_shipping_outlined,
+        ),
       if (product.minStock > 0) _MetricChip('Min ${product.minStock}'),
       if (product.sellingPriceCents != null)
         _MetricChip('VK ${formatCents(product.sellingPriceCents)}'),
@@ -1714,9 +1772,15 @@ class _ProductTile extends StatelessWidget {
       if (siteName?.isNotEmpty ?? false) _MetricChip(siteName!),
     ];
 
-    final semanticStatus = product.isOutOfStock
-        ? ', ausverkauft'
-        : (product.needsReorder ? ', unter Mindestbestand' : '');
+    final semanticParts = <String>[
+      if (product.isOutOfStock) 'ausverkauft',
+      if (isCoveredByIncoming)
+        'bestellt, $incomingQuantity ${product.unit} unterwegs'
+      else if (needsAdditionalOrder)
+        'unter Mindestbestand',
+    ];
+    final semanticStatus =
+        semanticParts.isEmpty ? '' : ', ${semanticParts.join(', ')}';
 
     return Card(
       margin: EdgeInsets.zero,
@@ -2205,7 +2269,7 @@ class _SuppliersTab extends StatelessWidget {
 // ===========================================================================
 
 /// Status-Filter des Bestellungen-Tabs.
-enum _OrderFilter { alle, offen, geliefert, storniert }
+enum _OrderFilter { alle, offen, erwartet, geliefert, storniert }
 
 class _OrdersTab extends StatefulWidget {
   const _OrdersTab({
@@ -2230,6 +2294,8 @@ class _OrdersTabState extends State<_OrdersTab> {
         _OrderFilter.offen => order.status == PurchaseOrderStatus.draft ||
             order.status == PurchaseOrderStatus.ordered ||
             order.status == PurchaseOrderStatus.partiallyReceived,
+        // WW-3: nur offene Bestellungen mit erwartetem Liefertermin.
+        _OrderFilter.erwartet => order.isDeliveryPending,
         _OrderFilter.geliefert =>
           order.status == PurchaseOrderStatus.received,
         _OrderFilter.storniert =>
@@ -2256,9 +2322,49 @@ class _OrdersTabState extends State<_OrdersTab> {
             order.status == PurchaseOrderStatus.ordered ||
             order.status == PurchaseOrderStatus.partiallyReceived)
         .length;
+    // WW-3: heute erwartete Lieferungen (rein clientseitig, kein Index).
+    final expectedToday =
+        inventory.expectedDeliveries(day: DateTime.now(), siteId: widget.siteId);
+    final expectedTotal =
+        allOrders.where((order) => order.isDeliveryPending).length;
 
     return Column(
       children: [
+        if (expectedToday.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Material(
+              color: Theme.of(context).appColors.infoContainer,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () =>
+                    setState(() => _filter = _OrderFilter.erwartet),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Icon(Icons.local_shipping_outlined,
+                          color: Theme.of(context).appColors.info, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          expectedToday.length == 1
+                              ? '1 Lieferung heute erwartet'
+                              : '${expectedToday.length} Lieferungen heute erwartet',
+                          style: TextStyle(
+                            color:
+                                Theme.of(context).appColors.onInfoContainer,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         // Status-Schnellfilter: die Historie wächst unbegrenzt — im Alltag
         // zählt fast immer nur „Offen".
         Padding(
@@ -2272,6 +2378,10 @@ class _OrdersTabState extends State<_OrdersTab> {
                   (
                     _OrderFilter.offen,
                     openCount > 0 ? 'Offen ($openCount)' : 'Offen'
+                  ),
+                  (
+                    _OrderFilter.erwartet,
+                    expectedTotal > 0 ? 'Erwartet ($expectedTotal)' : 'Erwartet'
                   ),
                   (_OrderFilter.geliefert, 'Geliefert'),
                   (_OrderFilter.storniert, 'Storniert'),
@@ -2307,6 +2417,19 @@ class _OrdersTabState extends State<_OrdersTab> {
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final order = orders[index];
+        final showOpenQuantity =
+            order.status == PurchaseOrderStatus.ordered ||
+                order.status == PurchaseOrderStatus.partiallyReceived;
+        final quantitiesByUnit = <String, ({int open, int ordered})>{};
+        for (final item in order.items) {
+          final rawUnit = item.unit.trim().isEmpty ? 'Stück' : item.unit.trim();
+          final unit = rawUnit.toLowerCase() == 'stück' ? 'Stk.' : rawUnit;
+          final current = quantitiesByUnit[unit] ?? (open: 0, ordered: 0);
+          quantitiesByUnit[unit] = (
+            open: current.open + item.outstandingQuantity,
+            ordered: current.ordered + item.quantityOrdered,
+          );
+        }
         return Card(
           margin: EdgeInsets.zero,
           child: ListTile(
@@ -2331,16 +2454,41 @@ class _OrdersTabState extends State<_OrdersTab> {
               ],
             ),
             subtitle: Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                [
+              padding: const EdgeInsets.only(top: 6),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
                   if (order.supplierName?.isNotEmpty ?? false)
-                    order.supplierName!,
-                  '${order.itemCount} Positionen',
-                  if (order.hasPrices) formatCents(order.totalCents),
-                ].join('  ·  '),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                    _MetricChip(order.supplierName!),
+                  _MetricChip('${order.itemCount} Positionen'),
+                  if (order.hasPrices)
+                    _MetricChip(formatCents(order.totalCents)),
+                  if (showOpenQuantity)
+                    for (final quantity in quantitiesByUnit.entries)
+                      _MetricChip(
+                        'offen ${quantity.value.open} von '
+                        '${quantity.value.ordered} ${quantity.key}',
+                        tone: order.status ==
+                                PurchaseOrderStatus.partiallyReceived
+                            ? _ChipTone.warning
+                            : _ChipTone.info,
+                        icon: Icons.local_shipping_outlined,
+                      ),
+                  // WW-3: Liefertermin-Badge nur bei offenem, fälligem Termin.
+                  ...switch (order.expectedDeliveryState(DateTime.now())) {
+                    ExpectedDeliveryDayState.today => [
+                        const _MetricChip('heute erwartet',
+                            tone: _ChipTone.info, icon: Icons.event_available),
+                      ],
+                    ExpectedDeliveryDayState.overdue => [
+                        const _MetricChip('überfällig',
+                            tone: _ChipTone.warning, icon: Icons.event_busy),
+                      ],
+                    _ => const <Widget>[],
+                  },
+                ],
               ),
             ),
           ),

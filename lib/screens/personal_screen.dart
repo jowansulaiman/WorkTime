@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/datev_lohn_export.dart';
 import '../core/de_number_input.dart';
 import '../core/lohn_herleitung.dart';
 import '../core/work_entry_rules.dart';
@@ -3210,6 +3211,16 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
     if (result == null || _userId == null) return;
     setState(() => _saving = true);
     final personal = context.read<PersonalProvider>();
+    // PERSONAL-1: abgerechnetes Ist als Mengengerüst im Datensatz einfrieren
+    // (GoBD-freundlich). Bearbeitung eines Bestandsdatensatzes ohne Mengengerüst
+    // trägt es nach; ein bereits eingefrorenes Ist bleibt unverändert erhalten.
+    final istMinutes = widget.existing?.istMinutes ??
+        personal.abgerechnetesIstMinutesFor(
+          _userId!,
+          widget.month.year,
+          widget.month.month,
+          widget.monthEntries,
+        );
     final record = result
         .buildRecord(
           id: widget.existing?.id,
@@ -3221,7 +3232,7 @@ class _PayrollEditorSheetState extends State<_PayrollEditorSheet> {
           churchTax: _churchTax,
           federalState: _federalState,
         )
-        .copyWith(lines: _lines);
+        .copyWith(lines: _lines, istMinutes: istMinutes);
     try {
       await personal.savePayrollRecord(record);
       // Stammdaten merken -> naechste Abrechnung wird vorbefuellt.
@@ -4804,6 +4815,14 @@ class _StammdatenBody extends StatelessWidget {
         if (g.$2.any((row) => hasValue(row.$2))) g,
     ];
 
+    // PERSONAL-1: weiche Inline-Warnung zur DATEV-Personalnummer. Dopplung wird
+    // über ALLE Stammakten geprüft (nicht nur dieses Profil), damit Kollisionen
+    // an beiden Mitarbeitern sichtbar werden. Reine Vorprüfung — blockiert nichts.
+    final personalnummerProblem = findePersonalnummerProbleme([
+      for (final e in personal.employeeProfiles)
+        (userId: e.userId, personnelNumber: e.personnelNumber),
+    ]).where((prob) => prob.userId == p.userId).firstOrNull;
+
     Widget heading(String text) => Text(
           text,
           style: theme.textTheme.labelLarge?.copyWith(
@@ -4815,6 +4834,15 @@ class _StammdatenBody extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (personalnummerProblem != null) ...[
+          AppStatusBanner(
+            icon: Icons.badge_outlined,
+            tone: AppStatusTone.warning,
+            message: '${personalnummerProblem.art.label} — für den '
+                'DATEV-Lohn-Export nötig (nur Ziffern, 1–5 Stellen).',
+          ),
+          SizedBox(height: spacing.md),
+        ],
         for (var i = 0; i < visibleGroups.length; i++) ...[
           if (i > 0) SizedBox(height: spacing.md),
           heading(visibleGroups[i].$1),

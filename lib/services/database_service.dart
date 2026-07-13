@@ -13,6 +13,10 @@ import '../models/contact.dart';
 import '../models/contact_organization.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
+import '../models/paketshop_settings.dart';
+import '../models/parcel_customer.dart';
+import '../models/parcel_shipment.dart';
+import '../models/shelf_compartment.dart';
 import '../models/order_cart.dart';
 import '../models/employee_site_assignment.dart';
 import '../models/employment_contract.dart';
@@ -21,6 +25,7 @@ import '../models/audit_log_entry.dart';
 import '../models/clock_entry.dart';
 import '../models/zeitkonto_snapshot.dart';
 import '../core/datev_export.dart';
+import '../core/datev_lohn_export.dart';
 import '../models/employee_ausbildung.dart';
 import '../models/employee_child.dart';
 import '../models/employee_note.dart';
@@ -119,6 +124,11 @@ class DatabaseService {
   static const _weeklyOrderListsKey = 'weekly_order_lists';
   // Kühlschrank-Nachfüllliste je Laden: org-skopiert, neue Collection.
   static const _fridgeRefillListsKey = 'fridge_refill_lists';
+  // Hermes-Paketshop: org-skopiert (Standort Tabak Börse), neue Collections.
+  static const _parcelShipmentsKey = 'parcel_shipments';
+  static const _shelfCompartmentsKey = 'shelf_compartments';
+  static const _parcelCustomersKey = 'parcel_customers';
+  static const _paketshopSettingsKey = 'paketshop_settings';
   // Kontakte (Kunden/Lieferanten/Partner): org-skopiert, ohne Legacy-Migration.
   static const _contactsKey = 'contacts';
   // Kontakt-Organisationen (eigenständiges Adressbuch, M9): org-skopiert.
@@ -148,6 +158,7 @@ class DatabaseService {
   static const _journalEntriesKey = 'journal_entries';
   static const _budgetsKey = 'budgets';
   static const _datevConfigKey = 'datev_config';
+  static const _datevLohnConfigKey = 'datev_lohn_config';
   static const _auditLogKey = 'audit_log';
   // Org-weite operative Einstellungen (Auto-Schichtverteilung): org-skopiert,
   // ein Objekt je Org.
@@ -202,6 +213,11 @@ class DatabaseService {
     _weeklyOrderListsKey,
     // Kühlschrank-Nachfüllliste: org-skopiert (je Laden ein Eintrag).
     _fridgeRefillListsKey,
+    // Hermes-Paketshop: org-skopiert (Standort Tabak Börse), neue Collections.
+    _parcelShipmentsKey,
+    _shelfCompartmentsKey,
+    _parcelCustomersKey,
+    _paketshopSettingsKey,
     // Kontakte: org-skopiert, neue Collection ohne Altbestand.
     _contactsKey,
     // Kontakt-Organisationen: org-skopiert, neue Collection ohne Altbestand.
@@ -231,6 +247,7 @@ class DatabaseService {
     _journalEntriesKey,
     _budgetsKey,
     _datevConfigKey,
+    _datevLohnConfigKey,
     _auditLogKey,
     _orgSettingsKey,
     // Zeitwirtschaft: Stempel-Sessions, org-skopiert (M3).
@@ -1101,6 +1118,29 @@ class DatabaseService {
     );
   }
 
+  static Future<DatevLohnConfig?> loadLocalDatevLohnConfig({
+    LocalStorageScope? scope,
+  }) async {
+    final list = await _loadCollection(
+      key: _datevLohnConfigKey,
+      scope: scope,
+      fromMap: DatevLohnConfig.fromMap,
+    );
+    return list.isEmpty ? null : list.first;
+  }
+
+  static Future<void> saveLocalDatevLohnConfig(
+    DatevLohnConfig config, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _datevLohnConfigKey,
+      scope: scope,
+      items: [config],
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   /// Org-weite operative Einstellungen (ein Objekt je Org, lokal gespiegelt für
   /// Local-/Hybrid-Modus). Gibt null zurück, wenn nichts hinterlegt ist —
   /// Aufrufer nutzt dann [OrgSettings.defaults].
@@ -1383,6 +1423,100 @@ class DatabaseService {
       key: _customerOrdersKey,
       scope: scope,
       items: orders,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  // --- Hermes-Paketshop: Pakete / Fächer / Kunden-Namensregister ----------
+
+  static Future<List<ParcelShipment>> loadLocalParcelShipments({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _parcelShipmentsKey,
+      scope: scope,
+      fromMap: ParcelShipment.fromMap,
+      compare: (a, b) => a.recipientNameLower.compareTo(b.recipientNameLower),
+    );
+  }
+
+  static Future<void> saveLocalParcelShipments(
+    List<ParcelShipment> shipments, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _parcelShipmentsKey,
+      scope: scope,
+      items: shipments,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<ShelfCompartment>> loadLocalShelfCompartments({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _shelfCompartmentsKey,
+      scope: scope,
+      fromMap: ShelfCompartment.fromMap,
+      compare: (a, b) => a.labelLower.compareTo(b.labelLower),
+    );
+  }
+
+  static Future<void> saveLocalShelfCompartments(
+    List<ShelfCompartment> compartments, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _shelfCompartmentsKey,
+      scope: scope,
+      items: compartments,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<List<ParcelCustomer>> loadLocalParcelCustomers({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _parcelCustomersKey,
+      scope: scope,
+      fromMap: ParcelCustomer.fromMap,
+      compare: (a, b) => a.nameLower.compareTo(b.nameLower),
+    );
+  }
+
+  static Future<void> saveLocalParcelCustomers(
+    List<ParcelCustomer> customers, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _parcelCustomersKey,
+      scope: scope,
+      items: customers,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  static Future<PaketshopSettings?> loadLocalPaketshopSettings({
+    LocalStorageScope? scope,
+  }) async {
+    final list = await _loadCollection(
+      key: _paketshopSettingsKey,
+      scope: scope,
+      fromMap: PaketshopSettings.fromMap,
+    );
+    return list.isEmpty ? null : list.first;
+  }
+
+  static Future<void> saveLocalPaketshopSettings(
+    PaketshopSettings settings, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _paketshopSettingsKey,
+      scope: scope,
+      items: [settings],
       toMap: (item) => item.toMap(),
     );
   }

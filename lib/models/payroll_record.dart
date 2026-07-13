@@ -27,6 +27,7 @@ class PayrollLine {
     this.svFrei = false,
     this.steuerfreiAnteilCents,
     this.svFreiAnteilCents,
+    this.mengeStunden,
     this.note,
   });
 
@@ -53,6 +54,12 @@ class PayrollLine {
   /// [svFrei]-Flag entscheidet.
   final int? svFreiAnteilCents;
 
+  /// **Mengengerüst in Stunden** (PERSONAL-1): zugrunde liegende Stundenzahl
+  /// einer Zuschlags-/Zusatzzeile (z. B. §3b-Stunden), damit der DATEV-Lohn-
+  /// Export (PERSONAL-2) `Personalnummer;Lohnart;Menge` liefern kann. `null` =
+  /// keine Stundenmenge (reine Betragszeile).
+  final double? mengeStunden;
+
   final String? note;
 
   /// Erzeugt eine §3b-Zuschlagszeile aus der reinen Aufteilung [Sfn3bAnteil]
@@ -63,6 +70,7 @@ class PayrollLine {
     required String name,
     String? lineTypeId,
     String? datevLohnartNr,
+    double? mengeStunden,
     String? note,
   }) {
     return PayrollLine(
@@ -75,6 +83,7 @@ class PayrollLine {
       svFrei: anteil.svPflichtigCents == 0,
       steuerfreiAnteilCents: anteil.steuerfreiCents,
       svFreiAnteilCents: anteil.svFreiCents,
+      mengeStunden: mengeStunden,
       note: note,
     );
   }
@@ -111,6 +120,7 @@ class PayrollLine {
       svFrei: parse.toBool(map['svFrei']) ?? false,
       steuerfreiAnteilCents: parse.toInt(map['steuerfreiAnteilCents']),
       svFreiAnteilCents: parse.toInt(map['svFreiAnteilCents']),
+      mengeStunden: parse.toDouble(map['mengeStunden']),
       note: map['note'] as String?,
     );
   }
@@ -126,6 +136,7 @@ class PayrollLine {
       svFrei: parse.toBool(map['sv_frei']) ?? false,
       steuerfreiAnteilCents: parse.toInt(map['steuerfrei_anteil_cents']),
       svFreiAnteilCents: parse.toInt(map['sv_frei_anteil_cents']),
+      mengeStunden: parse.toDouble(map['menge_stunden']),
       note: map['note'] as String?,
     );
   }
@@ -141,6 +152,7 @@ class PayrollLine {
       'svFrei': svFrei,
       'steuerfreiAnteilCents': steuerfreiAnteilCents,
       'svFreiAnteilCents': svFreiAnteilCents,
+      'mengeStunden': mengeStunden,
       'note': note,
     };
   }
@@ -156,6 +168,7 @@ class PayrollLine {
       'sv_frei': svFrei,
       'steuerfrei_anteil_cents': steuerfreiAnteilCents,
       'sv_frei_anteil_cents': svFreiAnteilCents,
+      'menge_stunden': mengeStunden,
       'note': note,
     };
   }
@@ -174,6 +187,8 @@ class PayrollLine {
     bool clearSteuerfreiAnteil = false,
     int? svFreiAnteilCents,
     bool clearSvFreiAnteil = false,
+    double? mengeStunden,
+    bool clearMengeStunden = false,
     String? note,
     bool clearNote = false,
   }) {
@@ -193,6 +208,8 @@ class PayrollLine {
       svFreiAnteilCents: clearSvFreiAnteil
           ? null
           : (svFreiAnteilCents ?? this.svFreiAnteilCents),
+      mengeStunden:
+          clearMengeStunden ? null : (mengeStunden ?? this.mengeStunden),
       note: clearNote ? null : (note ?? this.note),
     );
   }
@@ -309,6 +326,7 @@ class PayrollRecord {
     required this.periodYear,
     required this.periodMonth,
     this.grossCents = 0,
+    this.istMinutes,
     this.taxClass = TaxClass.i,
     this.churchTax = false,
     this.federalState,
@@ -348,6 +366,15 @@ class PayrollRecord {
   final int periodYear;
   final int periodMonth;
   final int grossCents;
+
+  /// **Abgerechnetes Ist in Minuten** (PERSONAL-1): das zum Zeitpunkt der
+  /// Erstellung/Freigabe abgerechnete Ist (geleistete Zeit + soll-angerechnete
+  /// bezahlte Abwesenheit, `countsAsIst`-Kette). Wird GoBD-freundlich im
+  /// Datensatz **eingefroren** — der DATEV-Lohn-Export (PERSONAL-2)
+  /// synthetisiert daraus + [grossCents] den Grundlohn-Satz, ohne Live-Daten
+  /// erneut zu aggregieren. `null` = Altdatensatz ohne Mengengerüst.
+  final int? istMinutes;
+
   final TaxClass taxClass;
   final bool churchTax;
   final String? federalState;
@@ -445,6 +472,7 @@ class PayrollRecord {
       periodYear: parse.toInt(map['periodYear']) ?? 0,
       periodMonth: parse.toInt(map['periodMonth']) ?? 1,
       grossCents: parse.toInt(map['grossCents']) ?? 0,
+      istMinutes: parse.toInt(map['istMinutes']),
       taxClass: TaxClassX.fromValue(map['taxClass']?.toString()),
       churchTax: parse.toBool(map['churchTax']) ?? false,
       federalState: map['federalState'] as String?,
@@ -491,6 +519,7 @@ class PayrollRecord {
       periodYear: parse.toInt(map['period_year']) ?? 0,
       periodMonth: parse.toInt(map['period_month']) ?? 1,
       grossCents: parse.toInt(map['gross_cents']) ?? 0,
+      istMinutes: parse.toInt(map['ist_minutes']),
       taxClass: TaxClassX.fromValue(map['tax_class']?.toString()),
       churchTax: parse.toBool(map['church_tax']) ?? false,
       federalState: map['federal_state'] as String?,
@@ -537,6 +566,7 @@ class PayrollRecord {
       'periodYear': periodYear,
       'periodMonth': periodMonth,
       'grossCents': grossCents,
+      'istMinutes': istMinutes,
       'taxClass': taxClass.value,
       'churchTax': churchTax,
       'federalState': federalState,
@@ -580,6 +610,7 @@ class PayrollRecord {
       'period_year': periodYear,
       'period_month': periodMonth,
       'gross_cents': grossCents,
+      'ist_minutes': istMinutes,
       'tax_class': taxClass.value,
       'church_tax': churchTax,
       'federal_state': federalState,
@@ -638,6 +669,8 @@ class PayrollRecord {
     int? periodYear,
     int? periodMonth,
     int? grossCents,
+    int? istMinutes,
+    bool clearIstMinutes = false,
     TaxClass? taxClass,
     bool? churchTax,
     String? federalState,
@@ -682,6 +715,7 @@ class PayrollRecord {
       periodYear: periodYear ?? this.periodYear,
       periodMonth: periodMonth ?? this.periodMonth,
       grossCents: grossCents ?? this.grossCents,
+      istMinutes: clearIstMinutes ? null : (istMinutes ?? this.istMinutes),
       taxClass: taxClass ?? this.taxClass,
       churchTax: churchTax ?? this.churchTax,
       federalState:

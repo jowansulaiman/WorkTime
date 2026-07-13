@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 import 'package:intl/intl.dart';
 
 import '../core/datev_export.dart';
@@ -950,27 +952,96 @@ class ExportService {
     await downloadPdfBytes(bytes: bytes, fileName: 'Finanzbericht_$year.pdf');
   }
 
-  /// DATEV-EXTF-Buchungsstapel (Format 700) als Datei. Encoding UTF-8 (von
-  /// aktuellen DATEV-Importen akzeptiert) – siehe [DatevExport.disclaimer].
-  static Future<void> exportDatevBuchungsstapel({
+  /// **DATEV-3:** Ergebnis eines DATEV-EXTF-Exports — Inhalt + Metadaten für die
+  /// Historie (Q2). Reproduzierbar über `generatedAt` (injizierbar) +
+  /// deterministische `(date, id)`-Ordnung im Builder.
+  static ({
+    String content,
+    String sha256,
+    int entryCount,
+    int sollCents,
+    int habenCents,
+    String fileName,
+  }) buildDatevExport({
     required List<JournalEntry> entries,
     required Map<String, CostCenter> centersById,
     required Map<String, CostType> typesById,
     required int year,
+    required DateTime generatedAt,
     DatevExportConfig config = const DatevExportConfig(),
-  }) async {
+  }) {
     final content = DatevExport.buildBuchungsstapel(
       entries: entries,
       centersById: centersById,
       typesById: typesById,
       year: year,
       config: config,
-      generatedAt: DateTime.now(),
+      generatedAt: generatedAt,
     );
+    final yearEntries =
+        entries.where((e) => e.date.year == year).toList(growable: false);
+    var soll = 0;
+    var haben = 0;
+    for (final e in yearEntries) {
+      // EXTF-Konvention (buildBuchungsstapel): amount >= 0 → Soll, sonst Haben.
+      if (e.amountCents >= 0) {
+        soll += e.amountCents;
+      } else {
+        haben += e.amountCents.abs();
+      }
+    }
+    final digest = sha256.convert(utf8.encode(content)).toString();
+    return (
+      content: content,
+      sha256: digest,
+      entryCount: yearEntries.length,
+      sollCents: soll,
+      habenCents: haben,
+      fileName: 'EXTF_Buchungsstapel_$year.csv',
+    );
+  }
+
+  /// SHA-256 (Hex) über den UTF-8-Bytestrom von [content] — für die
+  /// Export-Historie (Q2) reproduzierbar.
+  static String sha256Hex(String content) =>
+      sha256.convert(utf8.encode(content)).toString();
+
+  /// Lädt einen zuvor mit [buildDatevExport] erzeugten Inhalt herunter
+  /// (UTF-8; von aktuellen DATEV-Importen akzeptiert — siehe
+  /// [DatevExport.disclaimer]).
+  static Future<void> downloadDatevBuchungsstapel({
+    required String content,
+    required String fileName,
+  }) async {
     await downloadFileBytes(
       bytes: Uint8List.fromList(utf8.encode(content)),
-      fileName: 'EXTF_Buchungsstapel_$year.csv',
+      fileName: fileName,
       mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
+  /// DATEV-EXTF-Buchungsstapel (Format 700) als Datei — Build + Download in
+  /// einem Schritt (Convenience; die Historie-Schreibung läuft über
+  /// [buildDatevExport] + [downloadDatevBuchungsstapel]).
+  static Future<void> exportDatevBuchungsstapel({
+    required List<JournalEntry> entries,
+    required Map<String, CostCenter> centersById,
+    required Map<String, CostType> typesById,
+    required int year,
+    DatevExportConfig config = const DatevExportConfig(),
+    DateTime? generatedAt,
+  }) async {
+    final result = buildDatevExport(
+      entries: entries,
+      centersById: centersById,
+      typesById: typesById,
+      year: year,
+      generatedAt: generatedAt ?? DateTime.now(),
+      config: config,
+    );
+    await downloadDatevBuchungsstapel(
+      content: result.content,
+      fileName: result.fileName,
     );
   }
 }

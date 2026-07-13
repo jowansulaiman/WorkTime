@@ -111,6 +111,67 @@ void main() {
     expect(entry.isExpense, isTrue);
   });
 
+  test('Restschluss bucht nur den Wert der tatsächlich gelieferten Menge',
+      () async {
+    final (:inventory, :finance) = await wire();
+    final id = await inventory.savePurchaseOrder(
+      const PurchaseOrder(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        supplierId: 'sup-1',
+        status: PurchaseOrderStatus.ordered,
+        items: [
+          PurchaseOrderItem(
+            name: 'Feuerzeuge',
+            quantityOrdered: 100,
+            unitPriceCents: 50,
+          ),
+        ],
+      ),
+    );
+
+    await inventory.receiveOrder(
+      orderId: id,
+      receivedByItemIndex: const {0: 40},
+    );
+    expect(finance.journalEntries, isEmpty);
+
+    await inventory.closePurchaseOrderRemainder(
+      orderId: id,
+      reason: 'Rest nicht lieferbar',
+    );
+
+    expect(finance.journalEntries, hasLength(1));
+    final entry = finance.journalEntries.single;
+    expect(entry.id, 'po-$id');
+    expect(entry.amountCents, 2000);
+    expect(entry.date, inventory.purchaseOrders.single.closedAt);
+  });
+
+  test('Restschluss ohne Lieferwert erzeugt keine Journalbuchung', () async {
+    final (:inventory, :finance) = await wire();
+    final id = await inventory.savePurchaseOrder(
+      const PurchaseOrder(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        supplierId: 'sup-1',
+        status: PurchaseOrderStatus.ordered,
+        items: [PurchaseOrderItem(name: 'Gratisware', quantityOrdered: 10)],
+      ),
+    );
+
+    await inventory.receiveOrder(
+      orderId: id,
+      receivedByItemIndex: const {0: 4},
+    );
+    await inventory.closePurchaseOrderRemainder(
+      orderId: id,
+      reason: 'Rest nicht lieferbar',
+    );
+
+    expect(finance.journalEntries, isEmpty);
+  });
+
   test('ohne passende Kostenart wird nicht gebucht (keine Falschbuchung)',
       () async {
     final finance =

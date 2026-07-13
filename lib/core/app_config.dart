@@ -174,10 +174,20 @@ class AppConfig {
   /// eine deep-linkbare URL, die am Fernseher noch nicht funktioniert. Per
   /// `--dart-define=APP_SIGNAGE_ENABLED=true` an. **Kein Secret** — nur ein
   /// Sichtbarkeits-/Rollout-Schalter. Der Bild-Upload ist zusätzlich an echtes
-  /// Firebase (Storage) gebunden → im Offline-/Demo-Modus verwaltbar, aber ohne
-  /// Upload/Player.
+  /// Firebase (Storage) gebunden → im Offline-/Demo-Modus ohne Upload; der
+  /// Player bleibt dort mit den eingebauten Demo-Medien testbar.
   static const bool signageEnabled = bool.fromEnvironment(
     'APP_SIGNAGE_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Schaltet den **DATEV-Lohn-Export** (LODAS / Lohn&Gehalt Bewegungsdaten,
+  /// PERSONAL-2/3) frei. Default aus, bis Format + mandantenspezifische
+  /// Lohnartnummern vom Steuerberater bestätigt sind (offene Frage 1). Reiner
+  /// Sichtbarkeits-/Aktivierungs-Schalter — der Button erscheint nur bei
+  /// `datevLohnEnabled && isAdmin`. Per `--dart-define=APP_DATEV_LOHN_ENABLED=true`.
+  static const bool datevLohnEnabled = bool.fromEnvironment(
+    'APP_DATEV_LOHN_ENABLED',
     defaultValue: false,
   );
 

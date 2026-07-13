@@ -77,6 +77,9 @@ class LohnHerleitung {
       name: name ?? art.label,
       datevLohnartNr: datevLohnartNr,
       lineTypeId: lineTypeId,
+      // PERSONAL-1: Stundenmenge der Lage durchreichen (Mengengerüst für den
+      // DATEV-Lohn-Export: Personalnummer;Lohnart;Menge).
+      mengeStunden: dauer.inMinutes / 60.0,
     );
   }
 

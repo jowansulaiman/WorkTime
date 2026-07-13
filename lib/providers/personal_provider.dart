@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/employment_contract_resolver.dart';
+import '../core/local_demo_backoffice_data.dart';
+import '../core/local_demo_data.dart';
 import '../core/lohn_herleitung.dart';
 import '../core/payroll_calculator.dart';
 import '../core/urlaub_calculator.dart';
@@ -129,7 +131,8 @@ class PersonalProvider extends ChangeNotifier {
 
   // Binär-Seam für Personalakte-Dokumente (PA-3). Lazy in main.dart gesetzt
   // (nur wenn Firebase konfiguriert) — im Demo-/Local-/Test-Modus null, dann
-  // sind Upload/Download deaktiviert (Dokumente sind cloud-only).
+  // sind Upload/Download deaktiviert. Lokale Demo-Metadaten bleiben rein
+  // in-memory; zu ihnen wird keine Binärdatei vorgetäuscht.
   DocumentStorage? _documentStorage;
 
   // Stammdaten aus dem TeamProvider (org-weit, via updateReferenceData).
@@ -607,16 +610,20 @@ class PersonalProvider extends ChangeNotifier {
       pvChildless: _pvKinderlos(employee, hatKinder),
       healthAdditionalRateOverride: _kvZusatzOverride(employee),
     );
-    return result.buildRecord(
-      orgId: '',
-      userId: userId,
-      periodYear: year,
-      periodMonth: month,
-      taxClass: taxClass,
-      churchTax: churchTax,
-      federalState: federalState,
-      note: 'Automatisch beim Monatsabschluss erzeugt (Richtwert).',
-    );
+    return result
+        .buildRecord(
+          orgId: '',
+          userId: userId,
+          periodYear: year,
+          periodMonth: month,
+          taxClass: taxClass,
+          churchTax: churchTax,
+          federalState: federalState,
+          note: 'Automatisch beim Monatsabschluss erzeugt (Richtwert).',
+        )
+        // PERSONAL-1: das abgerechnete Ist wird im Datensatz eingefroren
+        // (Mengengerüst für den DATEV-Lohn-Export) statt verworfen.
+        .copyWith(istMinutes: istMinutes);
   }
 
   /// PV-Kinderlosenzuschlag (§ 55 Abs. 3 SGB XI): nur kinderlos UND nachweislich
@@ -1082,6 +1089,34 @@ class PersonalProvider extends ChangeNotifier {
         await DatabaseService.loadLocalUrlaubsanpassungen(scope: scope);
     _payLineTypes = await DatabaseService.loadLocalPayLineTypes(scope: scope);
     _absences = await DatabaseService.loadLocalAbsenceRequests(scope: scope);
+    _loadLocalDemoDocumentMetadata(_currentUser);
+  }
+
+  /// Stellt im lokalen Demo-Modus ausschließlich Personalakte-Metadaten für
+  /// Listen, Filter und Retention-Hinweise bereit. Sie werden bewusst weder in
+  /// SharedPreferences noch in Firestore geschrieben; Upload/Download bleiben
+  /// über [documentsAvailable] deaktiviert.
+  void _loadLocalDemoDocumentMetadata(AppUserProfile? user) {
+    _documents = [];
+    if (!LocalDemoData.isDemoUser(user)) return;
+
+    final demoDocuments = LocalDemoBackofficeData.employeeDocumentsForOrg(
+      orgId: user!.orgId,
+    );
+    if (user.isAdmin) {
+      _documents = demoDocuments;
+      return;
+    }
+
+    final demoAccount = LocalDemoData.accountForUid(user.uid) ??
+        LocalDemoData.accountForEmail(user.email);
+    final selfUid = demoAccount?.uid ?? user.uid;
+    _documents = demoDocuments
+        .where(
+          (document) =>
+              document.userId == selfUid && document.visibleToEmployee,
+        )
+        .toList(growable: false);
   }
 
   Future<void> _cancelSubscriptions() async {
@@ -1694,6 +1729,7 @@ class PersonalProvider extends ChangeNotifier {
     required String contentType,
     required Uint8List bytes,
     bool visibleToEmployee = true,
+    bool requiresAcknowledgement = false,
     String? note,
     DateTime? retentionUntil,
     void Function(double progress)? onProgress,
@@ -1722,6 +1758,9 @@ class PersonalProvider extends ChangeNotifier {
       storagePath: storagePath,
       note: note,
       visibleToEmployee: visibleToEmployee,
+      requiresAcknowledgement: requiresAcknowledgement,
+      // PERSONAL-4: Bereitstellung admin-seitig setzen, wenn sofort sichtbar.
+      visibleSince: visibleToEmployee ? now : null,
       retentionUntil: retention,
       uploadedByUid: _currentUser?.uid,
     );
@@ -1793,6 +1832,7 @@ class PersonalProvider extends ChangeNotifier {
     String? note,
     bool clearNote = false,
     bool? visibleToEmployee,
+    bool? requiresAcknowledgement,
     DateTime? retentionUntil,
     bool clearRetentionUntil = false,
   }) async {
@@ -1801,12 +1841,20 @@ class PersonalProvider extends ChangeNotifier {
     if (!_usesFirestore || document.id == null) {
       throw StateError('Bearbeiten benötigt den Cloud-Modus.');
     }
+    // PERSONAL-4: beim erstmaligen Sichtbarschalten die Bereitstellung
+    // (`visibleSince`) admin-seitig setzen (Fallback bleibt createdAt für
+    // Bestands-Dokumente).
+    final wirdSichtbar = visibleToEmployee == true &&
+        !document.visibleToEmployee &&
+        document.visibleSince == null;
     final updated = document.copyWith(
       title: title?.trim(),
       category: category,
       note: note,
       clearNote: clearNote,
       visibleToEmployee: visibleToEmployee,
+      requiresAcknowledgement: requiresAcknowledgement,
+      visibleSince: wirdSichtbar ? DateTime.now() : null,
       retentionUntil: retentionUntil,
       clearRetentionUntil: clearRetentionUntil,
     );
@@ -1838,6 +1886,63 @@ class PersonalProvider extends ChangeNotifier {
     if (orgId == null || !_usesFirestore || document.id == null) return;
     await _firestore.acknowledgeEmployeeDocument(
         orgId: orgId, docId: document.id!);
+    // PERSONAL-4: Audit-Lücke schließen (Erfolgs-Pfad).
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Personaldokument',
+      entityId: document.id,
+      summary: 'Dokument „${document.title}" bestätigt',
+    );
+  }
+
+  /// **PERSONAL-4:** Markiert das **bewusste Öffnen** (Viewer/Download) durch
+  /// den Mitarbeiter — idempotent (kein erneuter Write, wenn schon geöffnet und
+  /// kein neuer Download). NICHT beim bloßen Listen-Rendern aufrufen.
+  Future<void> markDocumentOpened(
+    EmployeeDocument document, {
+    bool alsoDownloaded = false,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null || !_usesFirestore || document.id == null) return;
+    // Idempotenz: nichts tun, wenn bereits geöffnet UND (kein Download nötig
+    // oder bereits heruntergeladen).
+    if (document.openedAt != null &&
+        (!alsoDownloaded || document.downloadedAt != null)) {
+      return;
+    }
+    await _firestore.markEmployeeDocumentOpened(
+      orgId: orgId,
+      docId: document.id!,
+      alsoDownloaded: alsoDownloaded,
+    );
+    // Bewusst KEIN Audit (Rauschen — reines Öffnen ist kein fachlicher Mutator;
+    // der Admin sieht openedAt am Dokument).
+  }
+
+  /// **PERSONAL-4:** Ablehnung durch den Mitarbeiter mit **Pflicht-Kommentar**;
+  /// räumt eine etwaige Bestätigung (`acknowledgedAt`). Wirft bei leerem
+  /// Kommentar (die Rules erzwingen `declineComment` mit `declinedAt`).
+  Future<void> declineDocument(
+    EmployeeDocument document, {
+    required String comment,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null || !_usesFirestore || document.id == null) return;
+    final trimmed = comment.trim();
+    if (trimmed.isEmpty) {
+      throw StateError('Bitte einen Ablehnungsgrund angeben.');
+    }
+    await _firestore.declineEmployeeDocument(
+      orgId: orgId,
+      docId: document.id!,
+      comment: trimmed,
+    );
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Personaldokument',
+      entityId: document.id,
+      summary: 'Dokument „${document.title}" abgelehnt',
+    );
   }
 
   // --- Sollzeit-Profile (Arbeitszeitmodelle, gültig-ab) --------------------

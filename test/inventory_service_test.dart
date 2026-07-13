@@ -243,5 +243,148 @@ void main() {
       expect(order.status, PurchaseOrderStatus.received);
       expect(order.items.first.quantityReceived, 10);
     });
+
+    test('closePurchaseOrderRemainder closes a partial delivery', () async {
+      final productId = await seedProduct(name: 'Feuerzeug');
+      final orderId = await service.savePurchaseOrder(
+        PurchaseOrder(
+          orgId: orgId,
+          siteId: 'site-1',
+          supplierId: 'sup-1',
+          status: PurchaseOrderStatus.ordered,
+          items: [
+            PurchaseOrderItem(
+              productId: productId,
+              name: 'Feuerzeug',
+              quantityOrdered: 10,
+              unitPriceCents: 50,
+            ),
+          ],
+        ),
+      );
+      await service.receivePurchaseOrder(
+        orgId: orgId,
+        orderId: orderId,
+        receivedByItemIndex: {0: 4},
+      );
+
+      final closed = await service.closePurchaseOrderRemainder(
+        orgId: orgId,
+        orderId: orderId,
+        reason: '  Lieferant kann den Rest nicht liefern  ',
+      );
+
+      expect(closed.status, PurchaseOrderStatus.received);
+      expect(closed.items.single.quantityReceived, 4);
+      expect(closed.closedAt, isNotNull);
+      expect(closed.closedReason, 'Lieferant kann den Rest nicht liefern');
+
+      final order = (await service.watchPurchaseOrders(orgId).first).single;
+      expect(order.status, PurchaseOrderStatus.received);
+      expect(order.items.single.quantityReceived, 4);
+      expect(order.items.single.outstandingQuantity, 6);
+      expect(order.closedAt, isNotNull);
+      expect(order.closedReason, 'Lieferant kann den Rest nicht liefern');
+      expect(order.deliveredTotalCents, 4 * 50);
+    });
+
+    test('closePurchaseOrderRemainder rejects invalid closing attempts',
+        () async {
+      final orderId = await service.savePurchaseOrder(
+        const PurchaseOrder(
+          orgId: orgId,
+          siteId: 'site-1',
+          supplierId: 'sup-1',
+          status: PurchaseOrderStatus.ordered,
+          items: [
+            PurchaseOrderItem(name: 'Feuerzeug', quantityOrdered: 10),
+          ],
+        ),
+      );
+
+      await expectLater(
+        service.closePurchaseOrderRemainder(
+          orgId: orgId,
+          orderId: orderId,
+          reason: '   ',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      await expectLater(
+        service.closePurchaseOrderRemainder(
+          orgId: orgId,
+          orderId: orderId,
+          reason: 'Nicht lieferbar',
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      final order = (await service.watchPurchaseOrders(orgId).first).single;
+      expect(order.status, PurchaseOrderStatus.ordered);
+      expect(order.closedAt, isNull);
+      expect(order.closedReason, isNull);
+    });
+
+    test('receivePurchaseOrder rejects receipts after remainder was closed',
+        () async {
+      final productId = await seedProduct(name: 'Feuerzeug');
+      final orderId = await service.savePurchaseOrder(
+        PurchaseOrder(
+          orgId: orgId,
+          siteId: 'site-1',
+          supplierId: 'sup-1',
+          status: PurchaseOrderStatus.ordered,
+          items: [
+            PurchaseOrderItem(
+              productId: productId,
+              name: 'Feuerzeug',
+              quantityOrdered: 10,
+            ),
+          ],
+        ),
+      );
+      await service.receivePurchaseOrder(
+        orgId: orgId,
+        orderId: orderId,
+        receivedByItemIndex: {0: 4},
+      );
+      await service.closePurchaseOrderRemainder(
+        orgId: orgId,
+        orderId: orderId,
+        reason: 'Rest nicht lieferbar',
+      );
+
+      await expectLater(
+        service.receivePurchaseOrder(
+          orgId: orgId,
+          orderId: orderId,
+          receivedByItemIndex: {0: 6},
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('geschlossen'),
+          ),
+        ),
+      );
+
+      final product = await firestore
+          .collection('organizations')
+          .doc(orgId)
+          .collection('products')
+          .doc(productId)
+          .get();
+      expect(product.data()!['currentStock'], 4);
+
+      final order = (await service.watchPurchaseOrders(orgId).first).single;
+      expect(order.status, PurchaseOrderStatus.received);
+      expect(order.items.single.quantityReceived, 4);
+      expect(order.closedAt, isNotNull);
+
+      final movements = await service.watchStockMovements(orgId).first;
+      expect(movements, hasLength(1));
+      expect(movements.single.quantityDelta, 4);
+    });
   });
 }

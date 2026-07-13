@@ -5,6 +5,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../../core/app_config.dart';
+import '../../core/local_demo_operations_data.dart';
 import '../../models/signage_display.dart';
 import 'signage_token_store.dart';
 
@@ -24,7 +26,7 @@ class PublicDisplayScreen extends StatefulWidget {
 }
 
 class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
-  Stream<DocumentSnapshot<Map<String, dynamic>>>? _stream;
+  Stream<PublicDisplayData?>? _stream;
 
   /// Aktiver Token (aus URL oder gemerkt). Null + [_resolving]==false ⇒ Pairing.
   String? _token;
@@ -82,7 +84,24 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
       _stream = FirebaseFirestore.instance
           .collection('publicDisplays')
           .doc(token)
-          .snapshots();
+          .snapshots()
+          .map(
+            (doc) =>
+                doc.exists && doc.data() != null
+                    ? PublicDisplayData.fromMap(doc.data()!)
+                    : null,
+          );
+      return;
+    }
+    if (AppConfig.disableAuthentication) {
+      // Im lokalen Demo-Modus bleibt der Player fuer die stabilen Demo-Codes
+      // testbar (inkl. pausierter/leerer Playlist und unbekanntem Code).
+      _stream = Stream<PublicDisplayData?>.value(
+        LocalDemoOperationsData.publicDisplayDataForToken(
+          orgId: AppConfig.defaultOrganizationId,
+          token: token,
+        ),
+      );
     }
   }
 
@@ -109,10 +128,11 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
   }
 
   void _onData(PublicDisplayData? data) {
-    final signature = data == null
-        ? ''
-        : '${data.isActive}|${data.fit.value}|'
-            '${data.slides.map((s) => '${s.url}@${s.seconds}').join(',')}';
+    final signature =
+        data == null
+            ? ''
+            : '${data.isActive}|${data.fit.value}|'
+                '${data.slides.map((s) => '${s.url}@${s.seconds}').join(',')}';
     final changed = signature != _signature;
     _data = data;
     _signature = signature;
@@ -182,14 +202,15 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
       return const _MessageScreen(
         icon: Icons.tv_off_outlined,
         title: 'Nicht verbunden',
-        message: 'Diese Seite ist hier nicht mit dem Backend verbunden. Sie '
+        message:
+            'Diese Seite ist hier nicht mit dem Backend verbunden. Sie '
             'funktioniert nur im echten Web-Build mit Firebase.',
       );
     }
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      body: StreamBuilder<PublicDisplayData?>(
         stream: _stream,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting &&
@@ -210,10 +231,7 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
             );
           }
 
-          final doc = snapshot.data;
-          final data = (doc != null && doc.exists && doc.data() != null)
-              ? PublicDisplayData.fromMap(doc.data()!)
-              : null;
+          final data = snapshot.data;
 
           // Neuen Stand übernehmen (Playlist-Änderung) — nach dem Build, damit
           // setState/Timer-Restart nicht mitten im Build läuft.
@@ -235,9 +253,10 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
             return _MessageScreen(
               icon: Icons.photo_library_outlined,
               title: data.name.isEmpty ? 'Anzeige' : data.name,
-              message: !data.isActive
-                  ? 'Diese Anzeige ist derzeit pausiert.'
-                  : 'Es ist noch keine Werbung hinterlegt.',
+              message:
+                  !data.isActive
+                      ? 'Diese Anzeige ist derzeit pausiert.'
+                      : 'Es ist noch keine Werbung hinterlegt.',
             );
           }
 
@@ -248,13 +267,15 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
           return SizedBox.expand(
             child: AnimatedSwitcher(
               // Harter Schnitt ≈ 1ms; sonst 700ms weicher Übergang.
-              duration: data.transition == SignageTransition.none
-                  ? const Duration(milliseconds: 1)
-                  : const Duration(milliseconds: 700),
+              duration:
+                  data.transition == SignageTransition.none
+                      ? const Duration(milliseconds: 1)
+                      : const Duration(milliseconds: 700),
               switchInCurve: Curves.easeOut,
               switchOutCurve: Curves.easeIn,
-              transitionBuilder: (child, animation) =>
-                  _buildTransition(data.transition, child, animation),
+              transitionBuilder:
+                  (child, animation) =>
+                      _buildTransition(data.transition, child, animation),
               child: _buildSlide(slide, fit, data.transition),
             ),
           );
@@ -278,11 +299,12 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
       width: double.infinity,
       height: double.infinity,
       gaplessPlayback: true,
-      errorBuilder: (context, error, stackTrace) => const _MessageScreen(
-        icon: Icons.broken_image_outlined,
-        title: 'Bild nicht ladbar',
-        message: '',
-      ),
+      errorBuilder:
+          (context, error, stackTrace) => const _MessageScreen(
+            icon: Icons.broken_image_outlined,
+            title: 'Bild nicht ladbar',
+            message: '',
+          ),
     );
 
     if (transition == SignageTransition.kenBurns) {
@@ -292,8 +314,9 @@ class _PublicDisplayScreenState extends State<PublicDisplayScreen> {
         tween: Tween<double>(begin: 1.0, end: 1.08),
         duration: Duration(seconds: seconds),
         curve: Curves.easeOut,
-        builder: (context, scale, child) =>
-            Transform.scale(scale: scale, child: child),
+        builder:
+            (context, scale, child) =>
+                Transform.scale(scale: scale, child: child),
         child: image,
       );
     }
@@ -433,7 +456,11 @@ class _PairingViewState extends State<_PairingView> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.cast_outlined, size: 64, color: Colors.white24),
+                const Icon(
+                  Icons.cast_outlined,
+                  size: 64,
+                  color: Colors.white24,
+                ),
                 const SizedBox(height: 20),
                 const Text(
                   'Display koppeln',

@@ -42,6 +42,7 @@ class SiteDefinition {
     this.weekdayHours = const [],
     this.staffingDemands = const [],
     this.thirdPartyCashTypes = const [],
+    this.thirdPartyCashInTill = false,
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
@@ -72,6 +73,16 @@ class SiteDefinition {
   /// §8.5).** Katalog UND Aktivierung in einem: leer = die Filiale bietet kein
   /// Fremdgeld (Zähl-Schritt entfällt). Siehe [ThirdPartyCashType].
   final List<ThirdPartyCashType> thirdPartyCashTypes;
+
+  /// **Fremdgeld-Kassenführung dieser Filiale (Dritte-Hand §8.5b).** `true` =
+  /// das Fremdgeld liegt in derselben Kassenlade wie das eigene Geld; beim
+  /// Zählen gibt man den **Gesamtbetrag inkl. Fremdgeld** ein und die eigene
+  /// Kasse wird per Subtraktion ermittelt. `false` (Default, bisheriges
+  /// Verhalten) = getrennte Töpfe, eigene Kasse und Fremdgeld separat gezählt.
+  /// Steuert nur die **Vorbelegung** des Umschalters im Zähl-Sheet — der/die
+  /// Zählende kann pro Zählung umschalten; gespeichert wird stets die eigene
+  /// Kasse netto (`CashCount.countedCents` enthält NIE Fremdgeld).
+  final bool thirdPartyCashInTill;
 
   /// Nur die aktiven Arten, nach [ThirdPartyCashType.sortOrder] sortiert
   /// (Anzeigereihenfolge im Zähl-Sheet).
@@ -154,6 +165,7 @@ class SiteDefinition {
       thirdPartyCashTypes: ((map['thirdPartyCashTypes'] as List?) ?? const [])
           .map((e) => ThirdPartyCashType.fromFirestore(parse.toMap(e)))
           .toList(growable: false),
+      thirdPartyCashInTill: parse.toBool(map['thirdPartyCashInTill']) ?? false,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -186,6 +198,8 @@ class SiteDefinition {
       thirdPartyCashTypes: ((map['third_party_cash_types'] as List?) ?? const [])
           .map((e) => ThirdPartyCashType.fromMap(parse.toMap(e)))
           .toList(growable: false),
+      thirdPartyCashInTill:
+          parse.toBool(map['third_party_cash_in_till']) ?? false,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -212,6 +226,7 @@ class SiteDefinition {
           staffingDemands.map((e) => e.toFirestoreMap()).toList(),
       'thirdPartyCashTypes':
           thirdPartyCashTypes.map((e) => e.toFirestoreMap()).toList(),
+      'thirdPartyCashInTill': thirdPartyCashInTill,
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -235,6 +250,7 @@ class SiteDefinition {
       'staffing_demands': staffingDemands.map((e) => e.toMap()).toList(),
       'third_party_cash_types':
           thirdPartyCashTypes.map((e) => e.toMap()).toList(),
+      'third_party_cash_in_till': thirdPartyCashInTill,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -257,6 +273,7 @@ class SiteDefinition {
     List<WeekdayHours>? weekdayHours,
     List<StaffingDemand>? staffingDemands,
     List<ThirdPartyCashType>? thirdPartyCashTypes,
+    bool? thirdPartyCashInTill,
     bool clearCode = false,
     bool clearStreet = false,
     bool clearPostalCode = false,
@@ -286,6 +303,7 @@ class SiteDefinition {
       weekdayHours: weekdayHours ?? this.weekdayHours,
       staffingDemands: staffingDemands ?? this.staffingDemands,
       thirdPartyCashTypes: thirdPartyCashTypes ?? this.thirdPartyCashTypes,
+      thirdPartyCashInTill: thirdPartyCashInTill ?? this.thirdPartyCashInTill,
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

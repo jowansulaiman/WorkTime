@@ -5,11 +5,14 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../core/datev_export.dart';
+import '../core/datev_export_check.dart';
+import '../models/datev_export_run.dart';
 import '../core/finance_analytics.dart';
 import '../core/money.dart';
 import '../models/finance_models.dart';
 import '../models/site_definition.dart';
 import '../providers/finance_provider.dart';
+import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
 import '../routing/shell_tab.dart';
 import '../services/export_service.dart';
@@ -50,6 +53,13 @@ class _FinanceScreenState extends State<FinanceScreen> {
       );
       return;
     }
+    if (kind == 'datev_history') {
+      showAppBottomSheet(
+        context: context,
+        builder: (_) => _DatevRunsSheet(year: _year),
+      );
+      return;
+    }
     final centersById = {
       for (final c in finance.costCenters)
         if (c.id != null) c.id!: c,
@@ -72,17 +82,90 @@ class _FinanceScreenState extends State<FinanceScreen> {
           totalCredits: finance.totalCredits(_year),
         );
       } else if (kind == 'datev') {
-        await ExportService.exportDatevBuchungsstapel(
+        // DATEV-2: Prüflauf VOR dem Export. Kassenabschlüsse nur im Cloud-/
+        // Hybrid-Modus verfügbar; im local-Modus null (≠ „keine Abschlüsse").
+        final inventory = context.read<InventoryProvider>();
+        final closings = finance.usesLocalStorage
+            ? null
+            : await inventory.loadCashClosings(
+                windowDays: 366,
+                asOf: DateTime(_year, 12, 31),
+              );
+        final findings = DatevExportCheck.run(
+          entries: finance.journalEntries,
+          centersById: centersById,
+          typesById: typesById,
+          config: finance.datevConfig,
+          year: _year,
+          closings: closings,
+        );
+        if (!context.mounted) return;
+        final proceed = await _confirmDatevGate(context, findings);
+        if (!proceed) return;
+
+        // DATEV-3: reproduzierbarer Build (fester generatedAt) + SHA-256.
+        final generatedAt = DateTime.now();
+        final result = ExportService.buildDatevExport(
           entries: finance.journalEntries,
           centersById: centersById,
           typesById: typesById,
           year: _year,
+          generatedAt: generatedAt,
           config: finance.datevConfig,
         );
+
+        // Q2-Offline-Semantik: hybrid-offline → blockieren; reiner local-Modus
+        // → erlaubt „ohne Historie". Reihenfolge: Run schreiben, DANN Download.
+        if (finance.supportsExportHistory) {
+          final acceptedWarnings = findings
+              .where((f) => f.isWarning)
+              .map((f) => f.code)
+              .toList();
+          final snapshot = _buildEntriesSnapshot(finance.journalEntries, _year);
+          final run = DatevExportRun(
+            orgId: '',
+            exportArt: DatevExportArt.finanz,
+            kind: 'extf_buchungsstapel',
+            periodYear: _year,
+            createdByUid: '',
+            entryCount: result.entryCount,
+            sollCents: result.sollCents,
+            habenCents: result.habenCents,
+            fileName: result.fileName,
+            fileSha256: result.sha256,
+            generatedAtMillis: generatedAt.millisecondsSinceEpoch,
+            configSnapshot: finance.datevConfig.toFirestoreMap(),
+            entriesSnapshot: snapshot.rows,
+            snapshotTruncated: snapshot.truncated,
+            snapshotRowCount: snapshot.rows.length,
+            acceptedWarningCodes: acceptedWarnings,
+            problemeAnzahl: findings.length,
+            overrideBestaetigt: acceptedWarnings.isNotEmpty,
+          );
+          try {
+            await finance.logDatevExportRun(run);
+          } catch (error) {
+            if (context.mounted) {
+              messenger.showSnackBar(const SnackBar(
+                content: Text('Export nicht möglich: die Historie kann offline '
+                    'nicht geschrieben werden. Erst wieder online exportieren.'),
+              ));
+            }
+            return; // Download blockieren — kein Export ohne Historie-Eintrag.
+          }
+        }
+
+        await ExportService.downloadDatevBuchungsstapel(
+          content: result.content,
+          fileName: result.fileName,
+        );
         messenger.showSnackBar(
-          const SnackBar(
-            content: Text('DATEV-Stapel erstellt — vor der Übergabe an den '
-                'Steuerberater fachlich prüfen.'),
+          SnackBar(
+            content: Text(finance.supportsExportHistory
+                ? 'DATEV-Stapel erstellt + in der Historie erfasst — vor der '
+                    'Übergabe an den Steuerberater fachlich prüfen.'
+                : 'DATEV-Stapel erstellt (ohne Historie im lokalen Modus) — '
+                    'vor der Übergabe fachlich prüfen.'),
           ),
         );
       } else {
@@ -98,6 +181,26 @@ class _FinanceScreenState extends State<FinanceScreen> {
         const SnackBar(content: Text('Export fehlgeschlagen.')),
       );
     }
+  }
+
+  /// **DATEV-2 Gate:** zeigt die Prüf-Befunde. Rückgabe `true` = exportieren.
+  /// Ohne Fehler/Warnung (nur Info oder gar nichts) → sofort `true` (kein
+  /// Sheet). Bei Fehlern blockiert das Sheet; bei reinen Warnungen bietet es
+  /// „Trotz Warnungen exportieren" an.
+  Future<bool> _confirmDatevGate(
+    BuildContext context,
+    List<DatevExportFinding> findings,
+  ) async {
+    final hasError = findings.any((f) => f.isError);
+    final hasWarning = findings.any((f) => f.isWarning);
+    if (!hasError && !hasWarning) {
+      return true; // nur Info-Befunde oder gar keine → direkt exportieren
+    }
+    final result = await showAppBottomSheet<bool>(
+      context: context,
+      builder: (_) => _DatevCheckSheet(findings: findings, hasError: hasError),
+    );
+    return result ?? false;
   }
 
   @override
@@ -156,6 +259,10 @@ class _FinanceScreenState extends State<FinanceScreen> {
                 PopupMenuItem(
                   value: 'datev',
                   child: Text('DATEV-Buchungsstapel (EXTF)'),
+                ),
+                PopupMenuItem(
+                  value: 'datev_history',
+                  child: Text('Erstellte Exporte …'),
                 ),
                 PopupMenuItem(
                   value: 'datev_config',
@@ -1406,6 +1513,10 @@ class _CostTypeEditorSheetState extends State<_CostTypeEditorSheet> {
                     controller: _number,
                     label: 'Sachkonto-Nr',
                     hint: 'z. B. 4100',
+                    // DATEV-2: nur Ziffern — ein nicht-numerischer Platzhalter
+                    // ergäbe im Export eine leere Konto-Spalte.
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Pflicht' : null,
                   ),
@@ -1668,6 +1779,259 @@ class _BudgetEditorSheetState extends State<_BudgetEditorSheet> {
         _showError(context, error);
       }
     }
+  }
+}
+
+/// Obergrenze des `entriesSnapshot` (Q2: kompakter kanonischer Snapshot;
+/// darüber nur Metadaten + „Neu aufbauen & vergleichen").
+const int _kEntriesSnapshotLimit = 2000;
+
+/// **DATEV-3:** kompakter kanonischer Snapshot der Journalzeilen eines Jahres
+/// (für die Reproduktion). Gekappt bei [_kEntriesSnapshotLimit].
+({List<Map<String, dynamic>> rows, bool truncated}) _buildEntriesSnapshot(
+  List<JournalEntry> entries,
+  int year,
+) {
+  final yearEntries = entries.where((e) => e.date.year == year).toList()
+    ..sort((a, b) {
+      final byDate = a.date.compareTo(b.date);
+      return byDate != 0 ? byDate : (a.id ?? '').compareTo(b.id ?? '');
+    });
+  final truncated = yearEntries.length > _kEntriesSnapshotLimit;
+  final capped = truncated
+      ? yearEntries.sublist(0, _kEntriesSnapshotLimit)
+      : yearEntries;
+  final rows = <Map<String, dynamic>>[
+    for (final e in capped)
+      {
+        'id': e.id,
+        'dateMillis': e.date.millisecondsSinceEpoch,
+        'costCenterId': e.costCenterId,
+        'costTypeId': e.costTypeId,
+        'amountCents': e.amountCents,
+        'description': e.description,
+        'reference': e.reference,
+      },
+  ];
+  return (rows: rows, truncated: truncated);
+}
+
+/// **DATEV-3:** „Erstellte Exporte" — die Finanz-Export-Historie (Q2) mit
+/// „Neu aufbauen & vergleichen". Rebuild aus dem LIVE-Journal + `configSnapshot`
+/// + `generatedAtMillis`; Hash-Vergleich gegen den festgehaltenen SHA-256.
+class _DatevRunsSheet extends StatelessWidget {
+  const _DatevRunsSheet({required this.year});
+
+  final int year;
+
+  @override
+  Widget build(BuildContext context) {
+    final finance = context.read<FinanceProvider>();
+    final spacing = context.spacing;
+    return AppBottomSheetScaffold(
+      title: 'Erstellte Exporte',
+      subtitle: 'DATEV-Buchungsstapel-Historie (revisionssicher)',
+      child: StreamBuilder<List<DatevExportRun>>(
+        stream: finance.watchDatevExportRuns(DatevExportArt.finanz),
+        builder: (context, snapshot) {
+          if (!finance.supportsExportHistory) {
+            return const AppStatusBanner(
+              icon: Icons.info_outline,
+              tone: AppStatusTone.info,
+              message: 'Im lokalen Modus wird keine Export-Historie geführt.',
+            );
+          }
+          final runs = snapshot.data ?? const [];
+          if (runs.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text('Noch keine Exporte erstellt.'),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final run in runs) ...[
+                _DatevRunTile(run: run),
+                SizedBox(height: spacing.sm),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DatevRunTile extends StatelessWidget {
+  const _DatevRunTile({required this.run});
+
+  final DatevExportRun run;
+
+  Future<void> _rebuildAndCompare(BuildContext context) async {
+    final finance = context.read<FinanceProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    final centersById = {
+      for (final c in finance.costCenters)
+        if (c.id != null) c.id!: c,
+    };
+    final typesById = {
+      for (final t in finance.costTypes)
+        if (t.id != null) t.id!: t,
+    };
+    // Rebuild aus LIVE-Journal + festgehaltener Config + generatedAt (Q2).
+    final config = run.configSnapshot == null
+        ? finance.datevConfig
+        : DatevExportConfig.fromFirestore('datev', run.configSnapshot!);
+    final generatedAt = DateTime.fromMillisecondsSinceEpoch(
+        run.generatedAtMillis ?? 0);
+    final result = ExportService.buildDatevExport(
+      entries: finance.journalEntries,
+      centersById: centersById,
+      typesById: typesById,
+      year: run.periodYear,
+      generatedAt: generatedAt,
+      config: config,
+    );
+    final matches = result.sha256 == run.fileSha256;
+    await ExportService.downloadDatevBuchungsstapel(
+      content: result.content,
+      fileName: run.fileName,
+    );
+    if (!context.mounted) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text(matches
+          ? 'Byte-identisch reproduziert (Hash stimmt überein).'
+          : 'Achtung: Journal seit Erstellung verändert — der neue Stapel '
+              'weicht vom ursprünglichen ab.'),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final df = DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+    final created = run.createdAt;
+    final soll = run.sollCents ?? 0;
+    final haben = run.habenCents ?? 0;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${run.periodYear} · ${run.entryCount} Zeilen',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                if (run.overrideBestaetigt)
+                  Icon(Icons.warning_amber_rounded,
+                      size: 18, color: appColors.warning),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              created == null ? 'Erstellt' : 'Erstellt am ${df.format(created)}',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            Text(
+              'Soll ${_euro(soll)} € · Haben ${_euro(haben)} €',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Neu aufbauen & vergleichen'),
+                onPressed: () => _rebuildAndCompare(context),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// **DATEV-2:** Befundliste vor dem Export. Fehler blockieren, Warnungen
+/// erfordern eine ausdrückliche Bestätigung; der [DatevExport.disclaimer]
+/// bleibt sichtbar.
+class _DatevCheckSheet extends StatelessWidget {
+  const _DatevCheckSheet({required this.findings, required this.hasError});
+
+  final List<DatevExportFinding> findings;
+  final bool hasError;
+
+  @override
+  Widget build(BuildContext context) {
+    final spacing = context.spacing;
+    final sorted = [
+      ...findings.where((f) => f.isError),
+      ...findings.where((f) => f.isWarning),
+      ...findings.where((f) => !f.isError && !f.isWarning),
+    ];
+    return AppBottomSheetScaffold(
+      title: 'DATEV-Prüflauf',
+      subtitle: hasError
+          ? 'Fehler gefunden — Export erst nach Korrektur möglich'
+          : 'Warnungen gefunden — bitte vor dem Export prüfen',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final f in sorted) ...[
+            AppStatusBanner(
+              icon: switch (f.severity) {
+                DatevFindingSeverity.error => Icons.error_outline,
+                DatevFindingSeverity.warning => Icons.warning_amber_rounded,
+                DatevFindingSeverity.info => Icons.info_outline,
+              },
+              tone: switch (f.severity) {
+                DatevFindingSeverity.error => AppStatusTone.error,
+                DatevFindingSeverity.warning => AppStatusTone.warning,
+                DatevFindingSeverity.info => AppStatusTone.info,
+              },
+              message: f.message,
+            ),
+            SizedBox(height: spacing.sm),
+          ],
+          SizedBox(height: spacing.xs),
+          const AppStatusBanner(
+            icon: Icons.info_outline,
+            tone: AppStatusTone.neutral,
+            message: DatevExport.disclaimer,
+          ),
+          SizedBox(height: spacing.md),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Abbrechen'),
+                ),
+              ),
+              if (!hasError) ...[
+                SizedBox(width: spacing.sm),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Trotz Warnungen exportieren'),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 

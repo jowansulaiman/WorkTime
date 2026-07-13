@@ -269,6 +269,18 @@ class _OfflineInventoryRepository implements InventoryRepository {
       _delegate.deletePurchaseOrder(orgId: orgId, orderId: orderId);
 
   @override
+  Future<PurchaseOrder> closePurchaseOrderRemainder({
+    required String orgId,
+    required String orderId,
+    required String reason,
+  }) =>
+      _delegate.closePurchaseOrderRemainder(
+        orgId: orgId,
+        orderId: orderId,
+        reason: reason,
+      );
+
+  @override
   Stream<List<CustomerOrder>> watchCustomerOrders(String orgId) =>
       _delegate.watchCustomerOrders(orgId);
 
@@ -708,6 +720,98 @@ void main() {
       );
     });
 
+    test(
+      'Rest schließen bewahrt Ist-Mengen und blockiert weiteren Wareneingang',
+      () async {
+        final provider = newLocalProvider();
+        await provider.updateSession(user);
+        await provider.saveProduct(
+          const Product(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Feuerzeug',
+            currentStock: 0,
+          ),
+        );
+        final productId = provider.products.single.id!;
+        final orderId = await provider.savePurchaseOrder(
+          PurchaseOrder(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            supplierId: 's1',
+            status: PurchaseOrderStatus.ordered,
+            items: [
+              PurchaseOrderItem(
+                productId: productId,
+                name: 'Feuerzeug',
+                quantityOrdered: 10,
+                unitPriceCents: 100,
+              ),
+            ],
+          ),
+        );
+
+        await provider.receiveOrder(
+          orderId: orderId,
+          receivedByItemIndex: const {0: 4},
+        );
+        await provider.closePurchaseOrderRemainder(
+          orderId: orderId,
+          reason: '  Lieferant kann den Rest nicht liefern  ',
+        );
+
+        final closed = provider.purchaseOrders.single;
+        expect(closed.status, PurchaseOrderStatus.received);
+        expect(closed.items.single.quantityReceived, 4);
+        expect(closed.closedAt, isNotNull);
+        expect(closed.closedReason, 'Lieferant kann den Rest nicht liefern');
+        expect(closed.receivedAt, isNull);
+        expect(closed.deliveredTotalCents, 400);
+        expect(provider.products.single.currentStock, 4);
+        expect(provider.recentMovements, hasLength(1));
+
+        await expectLater(
+          provider.receiveOrder(
+            orderId: orderId,
+            receivedByItemIndex: const {0: 6},
+          ),
+          throwsA(isA<StateError>()),
+        );
+        expect(provider.purchaseOrders.single.items.single.quantityReceived, 4);
+        expect(provider.products.single.currentStock, 4);
+        expect(provider.recentMovements, hasLength(1));
+      },
+    );
+
+    test('Rest schließen verlangt Begründung und mindestens einen Eingang',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final orderId = await provider.savePurchaseOrder(
+        const PurchaseOrder(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          supplierId: 's1',
+          status: PurchaseOrderStatus.ordered,
+          items: [PurchaseOrderItem(name: 'Ware', quantityOrdered: 10)],
+        ),
+      );
+
+      await expectLater(
+        provider.closePurchaseOrderRemainder(orderId: orderId, reason: '   '),
+        throwsA(isA<StateError>()),
+      );
+      await expectLater(
+        provider.closePurchaseOrderRemainder(
+          orderId: orderId,
+          reason: 'Nicht lieferbar',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(provider.purchaseOrders.single.status, PurchaseOrderStatus.ordered);
+      expect(provider.purchaseOrders.single.closedAt, isNull);
+    });
+
     test('abgeleitete Sichten: lowStockProducts, openOrders', () async {
       final provider = newLocalProvider();
       await provider.updateSession(user);
@@ -744,6 +848,190 @@ void main() {
       );
       expect(provider.openOrders, hasLength(1));
     });
+
+    test(
+      'unterwegs-Mengen beachten Status, Standort, Summierung und Mengen-Clamp',
+      () async {
+        final provider = newLocalProvider();
+        await provider.updateSession(user);
+        await provider.saveProduct(
+          const Product(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Teilgedeckt',
+            currentStock: 1,
+            minStock: 5,
+            targetStock: 10,
+          ),
+        );
+        await provider.saveProduct(
+          const Product(
+            orgId: 'org-1',
+            siteId: 'site-1',
+            name: 'Voll gedeckt',
+            currentStock: 1,
+            minStock: 5,
+            targetStock: 10,
+          ),
+        );
+        await provider.saveProduct(
+          const Product(
+            orgId: 'org-1',
+            siteId: 'site-2',
+            name: 'Anderer Standort',
+            currentStock: 1,
+            minStock: 5,
+            targetStock: 10,
+          ),
+        );
+        final partialId = provider.products
+            .firstWhere((product) => product.name == 'Teilgedeckt')
+            .id!;
+        final coveredId = provider.products
+            .firstWhere((product) => product.name == 'Voll gedeckt')
+            .id!;
+        final otherSiteId = provider.products
+            .firstWhere((product) => product.name == 'Anderer Standort')
+            .id!;
+
+        Future<void> saveOrder({
+          required String siteId,
+          required PurchaseOrderStatus status,
+          required List<PurchaseOrderItem> items,
+        }) =>
+            provider.savePurchaseOrder(
+              PurchaseOrder(
+                orgId: 'org-1',
+                siteId: siteId,
+                supplierId: 'sup-1',
+                status: status,
+                items: items,
+              ),
+            );
+
+        await saveOrder(
+          siteId: 'site-1',
+          status: PurchaseOrderStatus.ordered,
+          items: [
+            PurchaseOrderItem(
+              productId: partialId,
+              name: 'Teilgedeckt',
+              quantityOrdered: 4,
+              quantityReceived: 2,
+            ),
+            PurchaseOrderItem(
+              productId: coveredId,
+              name: 'Voll gedeckt',
+              quantityOrdered: 5,
+            ),
+            const PurchaseOrderItem(
+              productId: '',
+              name: 'Ohne ID',
+              quantityOrdered: 99,
+            ),
+            const PurchaseOrderItem(
+              name: 'Ohne Produktbezug',
+              quantityOrdered: 99,
+            ),
+            PurchaseOrderItem(
+              productId: partialId,
+              name: 'Überliefert',
+              quantityOrdered: 2,
+              quantityReceived: 7,
+            ),
+          ],
+        );
+        await saveOrder(
+          siteId: 'site-1',
+          status: PurchaseOrderStatus.partiallyReceived,
+          items: [
+            PurchaseOrderItem(
+              productId: partialId,
+              name: 'Teilgedeckt',
+              quantityOrdered: 3,
+              quantityReceived: 2,
+            ),
+            PurchaseOrderItem(
+              productId: coveredId,
+              name: 'Voll gedeckt',
+              quantityOrdered: 3,
+              quantityReceived: 1,
+            ),
+          ],
+        );
+        for (final status in [
+          PurchaseOrderStatus.draft,
+          PurchaseOrderStatus.received,
+          PurchaseOrderStatus.cancelled,
+        ]) {
+          await saveOrder(
+            siteId: 'site-1',
+            status: status,
+            items: [
+              PurchaseOrderItem(
+                productId: partialId,
+                name: 'Nicht unterwegs',
+                quantityOrdered: 50,
+              ),
+            ],
+          );
+        }
+        await saveOrder(
+          siteId: 'site-2',
+          status: PurchaseOrderStatus.ordered,
+          items: [
+            PurchaseOrderItem(
+              productId: otherSiteId,
+              name: 'Anderer Standort',
+              quantityOrdered: 7,
+            ),
+          ],
+        );
+
+        final allIncoming = provider.incomingQuantityByProductId();
+        final siteOneIncoming = provider.incomingQuantityByProductId(
+          siteId: 'site-1',
+        );
+        final siteTwoIncoming = provider.incomingQuantityByProductId(
+          siteId: 'site-2',
+        );
+
+        expect(allIncoming[partialId], 3);
+        expect(allIncoming[coveredId], 7);
+        expect(allIncoming[otherSiteId], 7);
+        expect(siteOneIncoming[partialId], 3);
+        expect(siteOneIncoming[coveredId], 7);
+        expect(siteOneIncoming, isNot(contains(otherSiteId)));
+        expect(siteTwoIncoming, {otherSiteId: 7});
+        expect(siteOneIncoming, isNot(contains('')));
+
+        final partial = provider.products.firstWhere(
+          (product) => product.id == partialId,
+        );
+        final covered = provider.products.firstWhere(
+          (product) => product.id == coveredId,
+        );
+        expect(provider.needsReorderAfterIncoming(partial), isTrue);
+        expect(provider.needsReorderAfterIncoming(covered), isFalse);
+        expect(provider.lowStockProducts(siteId: 'site-1').map((p) => p.id), [
+          partialId,
+        ]);
+        expect(provider.suggestedReorderQuantityAfterIncoming(partial), 6);
+        expect(provider.suggestedReorderQuantityAfterIncoming(covered), 0);
+
+        final fixedLotStillBelowThreshold = partial.copyWith(
+          currentStock: 0,
+          minStock: 10,
+          reorderQuantity: 3,
+        );
+        expect(
+          provider.suggestedReorderQuantityAfterIncoming(
+            fixedLotStillBelowThreshold,
+          ),
+          3,
+        );
+      },
+    );
 
     test('Warenwert/Marge: Aggregation gesamt und je Standort', () async {
       final provider = newLocalProvider();
@@ -1245,6 +1533,78 @@ void main() {
       expect(provider.errorMessage, isNull,
           reason: 'ein Korb-Teilausfall darf nicht die gesamte '
               'Warenwirtschaft als fehlerhaft markieren');
+    });
+  });
+
+  group('expectedDeliveries (WW-3)', () {
+    Future<InventoryProvider> providerWithOrders() async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      Future<void> save(PurchaseOrder order) =>
+          provider.savePurchaseOrder(order);
+
+      final today = DateTime.now();
+      final todayNoon =
+          DateTime(today.year, today.month, today.day, 12);
+      // offen + Termin heute (site-1)
+      await save(PurchaseOrder(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        supplierId: 'sup-1',
+        status: PurchaseOrderStatus.ordered,
+        expectedAt: todayNoon,
+        items: const [PurchaseOrderItem(name: 'A', quantityOrdered: 1)],
+      ));
+      // offen + Termin morgen (site-1)
+      await save(PurchaseOrder(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        supplierId: 'sup-1',
+        status: PurchaseOrderStatus.ordered,
+        expectedAt: todayNoon.add(const Duration(days: 1)),
+        items: const [PurchaseOrderItem(name: 'B', quantityOrdered: 1)],
+      ));
+      // offen + Termin heute (site-2)
+      await save(PurchaseOrder(
+        orgId: 'org-1',
+        siteId: 'site-2',
+        supplierId: 'sup-1',
+        status: PurchaseOrderStatus.ordered,
+        expectedAt: todayNoon,
+        items: const [PurchaseOrderItem(name: 'C', quantityOrdered: 1)],
+      ));
+      // Entwurf mit Termin heute → nicht pending
+      await save(PurchaseOrder(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        supplierId: 'sup-1',
+        status: PurchaseOrderStatus.draft,
+        expectedAt: todayNoon,
+        items: const [PurchaseOrderItem(name: 'D', quantityOrdered: 1)],
+      ));
+      return provider;
+    }
+
+    test('day-Filter liefert nur heutige offene Termine, site-gescoped',
+        () async {
+      final provider = await providerWithOrders();
+      final heuteSite1 = provider.expectedDeliveries(
+        day: DateTime.now(),
+        siteId: 'site-1',
+      );
+      // nur die „heute"-Bestellung von site-1 (nicht morgen, nicht site-2,
+      // nicht der Entwurf)
+      expect(heuteSite1, hasLength(1));
+      expect(heuteSite1.single.items.single.name, 'A');
+    });
+
+    test('ohne day-Filter alle offenen Termine, nach Datum sortiert', () async {
+      final provider = await providerWithOrders();
+      final alleSite1 = provider.expectedDeliveries(siteId: 'site-1');
+      expect(alleSite1.map((o) => o.items.single.name), ['A', 'B']);
+      // org-weit ohne site-Filter: A, C (heute) + B (morgen) = 3
+      final alle = provider.expectedDeliveries();
+      expect(alle, hasLength(3));
     });
   });
 }

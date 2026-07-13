@@ -17,6 +17,7 @@ import '../core/ean.dart';
 import '../core/expiry_warning.dart';
 import '../core/fridge_refill_shortfall.dart';
 import '../core/local_demo_data.dart';
+import '../core/local_demo_inventory_data.dart';
 import '../core/price_deviation.dart';
 import '../core/reorder_suggestion.dart';
 import '../core/sales_velocity.dart';
@@ -31,6 +32,8 @@ import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
+import '../models/pos_daily_stat.dart';
+import '../models/pos_receipt.dart';
 import '../models/price_history_entry.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
@@ -103,6 +106,14 @@ class InventoryProvider extends ChangeNotifier {
   bool _orderListsLoadFailed = false;
   List<FridgeRefillList> _fridgeLists = [];
   List<ScanEvent> _scanEvents = [];
+
+  // Cloud-only Kassenfakten fuer die lokale Demo-Session. Sie werden bewusst
+  // weder ueber [DatabaseService] geladen noch in SharedPreferences
+  // geschrieben. Ein Sessionwechsel verwirft auch lokale Demo-Mutationen.
+  List<PosReceipt> _localDemoPosReceipts = [];
+  List<PosDailyStat> _localDemoPosDailyStats = [];
+  List<CashCount> _localDemoCashCounts = [];
+  List<CashClosing> _localDemoCashClosings = [];
 
   /// Ob der lokale Telemetrie-Spiegel bereits geladen wurde. Anders als die
   /// uebrigen Collections gibt es fuer scanEvents KEINEN Stream, der die
@@ -209,6 +220,12 @@ class InventoryProvider extends ChangeNotifier {
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
   String? get _orgId => _currentUser?.orgId;
 
+  /// Strikte Ausnahme fuer die Demo: Ein Demo-Konto im Cloud-Modus benutzt
+  /// weiterhin ausschliesslich das Repository. Nur die lokale Demo-Session
+  /// darf auf die ephemeren Kassenfakten zugreifen.
+  bool get _usesLocalDemoFacts =>
+      usesLocalStorage && LocalDemoData.isDemoUser(_currentUser);
+
   /// Versucht eine Firestore-Mutation. Erfolg -> true (Aufrufer ist fertig).
   /// Im Hybrid-Modus bei Fehler -> false (Aufrufer faellt lokal zurueck, damit
   /// offline nichts verloren geht). Im Cloud-only-Modus wird der Fehler
@@ -301,10 +318,123 @@ class InventoryProvider extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  /// Artikel, die nachbestellt werden sollten (Bestand <= Meldebestand).
+  /// Offene, noch nicht gelieferte Bestellmenge je Artikel.
+  ///
+  /// Nur tatsächlich abgeschickte Bestellungen und Teillieferungen zählen als
+  /// „unterwegs". Entwürfe, gelieferte und stornierte Bestellungen bleiben
+  /// außen vor. Positionen ohne stabile Artikel-ID können nicht zugeordnet
+  /// werden und werden deshalb ignoriert.
+  Map<String, int> incomingQuantityByProductId({String? siteId}) {
+    final result = <String, int>{};
+    for (final order in _orders) {
+      if (order.status != PurchaseOrderStatus.ordered &&
+          order.status != PurchaseOrderStatus.partiallyReceived) {
+        continue;
+      }
+      if (siteId != null && siteId.isNotEmpty && order.siteId != siteId) {
+        continue;
+      }
+      for (final item in order.items) {
+        final productId = item.productId?.trim();
+        if (productId == null || productId.isEmpty) {
+          continue;
+        }
+        final outstanding = item.outstandingQuantity;
+        if (outstanding <= 0) {
+          continue;
+        }
+        result[productId] = (result[productId] ?? 0) + outstanding;
+      }
+    }
+    return result;
+  }
+
+  /// **WW-3:** Offene Bestellungen mit erwartetem Liefertermin (rein
+  /// clientseitig aus den gestreamten Orders — kein Query, kein Index).
+  ///
+  /// [day] filtert auf einen Kalendertag (Standard: alle offenen Termine),
+  /// [siteId] auf einen Laden. Nur [PurchaseOrder.isDeliveryPending]-Bestellungen
+  /// (offen, nicht geschlossen, mit `expectedAt`); sortiert nach Termin.
+  List<PurchaseOrder> expectedDeliveries({DateTime? day, String? siteId}) {
+    final result = <PurchaseOrder>[];
+    for (final order in _orders) {
+      if (!order.isDeliveryPending) continue;
+      if (siteId != null && siteId.isNotEmpty && order.siteId != siteId) {
+        continue;
+      }
+      if (day != null) {
+        final due = order.expectedAt!;
+        if (due.year != day.year ||
+            due.month != day.month ||
+            due.day != day.day) {
+          continue;
+        }
+      }
+      result.add(order);
+    }
+    result.sort((a, b) => a.expectedAt!.compareTo(b.expectedAt!));
+    return result;
+  }
+
+  /// Ob der Artikel auch unter Einrechnung bereits bestellter Ware den
+  /// Meldebestand erreicht oder unterschreitet.
+  bool needsReorderAfterIncoming(Product product) {
+    final incoming =
+        product.id == null
+            ? 0
+            : incomingQuantityByProductId(siteId: product.siteId)[product
+                    .id!] ??
+                0;
+    return _needsReorderAfterIncoming(product, incoming);
+  }
+
+  /// Konkrete Nachbestellmenge abzüglich bereits unterwegs befindlicher Ware.
+  ///
+  /// Die zugrunde liegende Produktlogik (explizite Bestellmenge bzw. Auffüllen
+  /// bis Zielbestand) bleibt erhalten; die offene Menge wird danach abgezogen.
+  /// Das Ergebnis ist 0, wenn der Meldebestand durch den Zulauf bereits gedeckt
+  /// ist. Bleibt der projizierte Bestand trotz einer vollständig angerechneten
+  /// festen Losgröße am Meldebestand, wird ein weiteres Los vorgeschlagen.
+  int suggestedReorderQuantityAfterIncoming(
+    Product product, {
+    int? incomingQuantity,
+  }) {
+    final resolvedIncoming =
+        incomingQuantity ??
+        (product.id == null
+            ? 0
+            : incomingQuantityByProductId(siteId: product.siteId)[product
+                    .id!] ??
+                0);
+    final incoming = resolvedIncoming > 0 ? resolvedIncoming : 0;
+    if (!_needsReorderAfterIncoming(product, incoming)) {
+      return 0;
+    }
+    final reduced = product.suggestedReorderQuantity - incoming;
+    if (reduced > 0) {
+      return reduced;
+    }
+    final configuredLotSize = product.reorderQuantity;
+    return configuredLotSize != null && configuredLotSize > 0
+        ? configuredLotSize
+        : 1;
+  }
+
+  bool _needsReorderAfterIncoming(Product product, int incoming) =>
+      product.isActive &&
+      product.minStock > 0 &&
+      product.currentStock + incoming <= product.minStock;
+
+  /// Artikel, die nach Einrechnung bestellter Ware weiterhin nachbestellt
+  /// werden sollten (`Bestand + unterwegs <= Meldebestand`).
   List<Product> lowStockProducts({String? siteId}) {
+    final incoming = incomingQuantityByProductId(siteId: siteId);
     return productsForSite(siteId)
-        .where((product) => product.isActive && product.needsReorder)
+        .where((product) {
+          final incomingQuantity =
+              product.id == null ? 0 : incoming[product.id!] ?? 0;
+          return _needsReorderAfterIncoming(product, incomingQuantity);
+        })
         .toList(growable: false);
   }
 
@@ -692,6 +822,8 @@ class InventoryProvider extends ChangeNotifier {
     _currentUser = user;
 
     await _cancelSubscriptions();
+    _seededLocalDemo = false;
+    _clearLocalDemoFacts();
     // Scan-Telemetrie ist nicht stream-gespeist -> beim Sessionwechsel
     // explizit zuruecksetzen, sonst koennten Events der alten Session in den
     // Spiegel der neuen geschrieben werden.
@@ -826,29 +958,104 @@ class InventoryProvider extends ChangeNotifier {
       return false;
     }
     _seededLocalDemo = true;
+    final demo = LocalDemoInventoryData.allForOrg(
+      orgId: user.orgId,
+      actorUid: user.uid,
+      now: DateTime.now(),
+    );
+
+    // Diese vier Collections bleiben absichtlich rein ephemer. Insbesondere
+    // duerfen sie nicht in [_persistAllLocal] aufgenommen werden.
+    _localDemoPosReceipts = List<PosReceipt>.of(demo.cloudPosReceipts);
+    _localDemoPosDailyStats = List<PosDailyStat>.of(demo.cloudPosDailyStats);
+    _localDemoCashCounts = List<CashCount>.of(demo.cloudCashCounts);
+    _localDemoCashClosings = List<CashClosing>.of(demo.cloudCashClosings);
+
     var seeded = false;
-    if (_suppliers.isEmpty) {
-      _suppliers = LocalDemoData.suppliersForOrg(
-        orgId: user.orgId,
-        createdByUid: user.uid,
-      );
+
+    List<T> withMissingDemoItems<T>(
+      List<T> current,
+      List<T> fixtures,
+      String? Function(T) idOf,
+    ) {
+      final knownIds = current.map(idOf).whereType<String>().toSet();
+      final missing = fixtures
+          .where((item) {
+            final id = idOf(item);
+            return id != null && !knownIds.contains(id);
+          })
+          .toList(growable: false);
+      if (missing.isEmpty) return current;
       seeded = true;
+      return [...current, ...missing];
     }
-    if (_products.isEmpty) {
-      _products = LocalDemoData.productsForOrg(
-        orgId: user.orgId,
-        createdByUid: user.uid,
-      );
-      seeded = true;
-    }
-    if (_customerOrders.isEmpty) {
-      _customerOrders = LocalDemoData.customerOrdersForOrg(
-        orgId: user.orgId,
-        createdByUid: user.uid,
-      );
-      seeded = true;
-    }
+
+    // Auch bereits verwendete Demo-Profile erhalten neue Fixture-Bereiche.
+    // Der Merge ueber stabile IDs erhaelt bestehende/veraenderte Datensaetze
+    // und fuegt bei spaeteren Releases nur noch fehlende Beispiele hinzu.
+    _suppliers = withMissingDemoItems(
+      _suppliers,
+      demo.suppliers,
+      (item) => item.id,
+    );
+    _products = withMissingDemoItems(
+      _products,
+      demo.products,
+      (item) => item.id,
+    );
+    _batches = withMissingDemoItems(
+      _batches,
+      demo.productBatches,
+      (item) => item.id,
+    );
+    _orders = withMissingDemoItems(
+      _orders,
+      demo.purchaseOrders,
+      (item) => item.id,
+    );
+    _movements = withMissingDemoItems(
+      _movements,
+      demo.stockMovements,
+      (item) => item.id,
+    );
+    _priceHistory = withMissingDemoItems(
+      _priceHistory,
+      demo.priceHistory,
+      (item) => item.id,
+    );
+    _customerOrders = withMissingDemoItems(
+      _customerOrders,
+      demo.customerOrders,
+      (item) => item.id,
+    );
+    _orderCarts = withMissingDemoItems(
+      _orderCarts,
+      demo.orderCarts,
+      (item) => item.id,
+    );
+    _weeklyLists = withMissingDemoItems(
+      _weeklyLists,
+      demo.weeklyOrderLists,
+      (item) => item.id,
+    );
+    _fridgeLists = withMissingDemoItems(
+      _fridgeLists,
+      demo.fridgeRefillLists,
+      (item) => item.id,
+    );
+    _scanEvents = withMissingDemoItems(
+      _scanEvents,
+      demo.scanEvents,
+      (item) => item.id,
+    );
     return seeded;
+  }
+
+  void _clearLocalDemoFacts() {
+    _localDemoPosReceipts = [];
+    _localDemoPosDailyStats = [];
+    _localDemoCashCounts = [];
+    _localDemoCashClosings = [];
   }
 
   void _resetData() {
@@ -865,6 +1072,7 @@ class InventoryProvider extends ChangeNotifier {
     _fridgeLists = [];
     _scanEvents = [];
     _scanEventsLoaded = false;
+    _clearLocalDemoFacts();
     _loading = false;
   }
 
@@ -1389,13 +1597,13 @@ class InventoryProvider extends ChangeNotifier {
     if (orgId == null) {
       throw StateError('Keine Organisation aktiv.');
     }
-    if (!_usesFirestore) {
+    if (!_usesFirestore && !_usesLocalDemoFacts) {
       throw StateError(
         'Der Preisabgleich benoetigt die Cloud-Anbindung (Kassen-Belege).',
       );
     }
     final now = DateTime.now();
-    final receipts = await _inventory.getPosReceiptsInRange(
+    final receipts = await _readPosReceiptsInRange(
       orgId,
       now.subtract(Duration(days: days)),
       now,
@@ -1556,8 +1764,9 @@ class InventoryProvider extends ChangeNotifier {
       windowDays: windowDays,
       asOf: asOf,
     );
-    final siteProducts =
-        _products.where((p) => p.siteId == siteId).toList(growable: false);
+    final siteProducts = _products
+        .where((p) => p.siteId == siteId)
+        .toList(growable: false);
     final leadBySupplier = <String, int>{
       for (final s in _suppliers)
         if (s.id != null && s.leadTimeDays != null) s.id!: s.leadTimeDays!,
@@ -1566,6 +1775,7 @@ class InventoryProvider extends ChangeNotifier {
       velocities: velocities,
       products: siteProducts,
       leadTimeDaysBySupplierId: leadBySupplier,
+      incomingByProductId: incomingQuantityByProductId(siteId: siteId),
       defaultLeadTimeDays: defaultLeadTimeDays,
       safetyDays: safetyDays,
       coverageDays: coverageDays,
@@ -1633,7 +1843,7 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return CashierAnomalyReport(
         stats: const [],
         siteRefundRateMean: 0,
@@ -1643,8 +1853,12 @@ class InventoryProvider extends ChangeNotifier {
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     return computeCashierAnomalies(
       receipts: receipts,
       minTransactions: minTransactions,
@@ -1662,13 +1876,17 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const [];
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     return computeDailyClosings(receipts);
   }
 
@@ -1684,6 +1902,105 @@ class InventoryProvider extends ChangeNotifier {
       '${date.year}-${date.month.toString().padLeft(2, '0')}-'
       '${date.day.toString().padLeft(2, '0')}';
 
+  bool _isInDemoDayRange(DateTime value, DateTime from, DateTime to) {
+    final day = _dayString(value);
+    return day.compareTo(_dayString(from)) >= 0 &&
+        day.compareTo(_dayString(to)) <= 0;
+  }
+
+  Future<List<PosReceipt>> _readPosReceiptsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) async {
+    if (!_usesLocalDemoFacts) {
+      return _inventory.getPosReceiptsInRange(orgId, from, to, siteId: siteId);
+    }
+    final result =
+        _localDemoPosReceipts.where((receipt) {
+          if (siteId != null && siteId.isNotEmpty && receipt.siteId != siteId) {
+            return false;
+          }
+          final at = receipt.transactionDate;
+          return at != null && _isInDemoDayRange(at, from, to);
+        }).toList();
+    result.sort((a, b) {
+      final left = a.transactionDate ?? DateTime(1970);
+      final right = b.transactionDate ?? DateTime(1970);
+      return right.compareTo(left);
+    });
+    return result;
+  }
+
+  Future<List<PosDailyStat>> _readPosDailyStatsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  }) async {
+    if (!_usesLocalDemoFacts) {
+      return _inventory.getPosDailyStatsInRange(
+        orgId,
+        fromDay,
+        toDay,
+        siteId: siteId,
+      );
+    }
+    final result =
+        _localDemoPosDailyStats.where((stat) {
+          return (siteId == null || siteId.isEmpty || stat.siteId == siteId) &&
+              stat.businessDay.compareTo(fromDay) >= 0 &&
+              stat.businessDay.compareTo(toDay) <= 0;
+        }).toList();
+    result.sort((a, b) => b.businessDay.compareTo(a.businessDay));
+    return result;
+  }
+
+  Future<List<CashCount>> _readCashCountsInRange(
+    String orgId,
+    DateTime from,
+    DateTime to, {
+    String? siteId,
+  }) async {
+    if (!_usesLocalDemoFacts) {
+      return _inventory.getCashCountsInRange(orgId, from, to, siteId: siteId);
+    }
+    final result =
+        _localDemoCashCounts.where((count) {
+          return (siteId == null || siteId.isEmpty || count.siteId == siteId) &&
+              _isInDemoDayRange(count.countedAt, from, to);
+        }).toList();
+    result.sort((a, b) => b.countedAt.compareTo(a.countedAt));
+    return result;
+  }
+
+  Future<List<CashClosing>> _readCashClosingsInRange(
+    String orgId,
+    String fromDay,
+    String toDay, {
+    String? siteId,
+  }) async {
+    if (!_usesLocalDemoFacts) {
+      return _inventory.getCashClosingsInRange(
+        orgId,
+        fromDay,
+        toDay,
+        siteId: siteId,
+      );
+    }
+    final result =
+        _localDemoCashClosings.where((closing) {
+          return (siteId == null ||
+                  siteId.isEmpty ||
+                  closing.siteId == siteId) &&
+              closing.businessDay.compareTo(fromDay) >= 0 &&
+              closing.businessDay.compareTo(toDay) <= 0;
+        }).toList();
+    result.sort((a, b) => b.businessDay.compareTo(a.businessDay));
+    return result;
+  }
+
   String _euro(int cents) {
     final sign = cents < 0 ? '-' : '';
     final abs = cents.abs();
@@ -1697,12 +2014,12 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const [];
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    return _inventory.getCashCountsInRange(orgId, from, now, siteId: siteId);
+    return _readCashCountsInRange(orgId, from, now, siteId: siteId);
   }
 
   /// **§4.2 — rechnerischer Kassenzustand** (Soll-Bargeld ab letzter Zählung).
@@ -1716,7 +2033,7 @@ class InventoryProvider extends ChangeNotifier {
     String? businessDay,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const CashState(
         sollCents: null,
         verankert: false,
@@ -1727,10 +2044,18 @@ class InventoryProvider extends ChangeNotifier {
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
-    final counts =
-        await _inventory.getCashCountsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
+    final counts = await _readCashCountsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     return computeCashState(
       receipts: receipts,
       counts: counts,
@@ -1746,12 +2071,12 @@ class InventoryProvider extends ChangeNotifier {
   /// hybrid-Fallback (Plan §6).
   Future<void> saveCashCount(CashCount count) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       throw StateError(_kasseLocalError);
     }
     final actorUid =
         count.createdByUid.isEmpty ? _currentUser?.uid : count.createdByUid;
-    final prepared = count.copyWith(
+    var prepared = count.copyWith(
       orgId: orgId,
       createdByUid: actorUid,
       // App-Pfad: die zählende Person IST der angemeldete Nutzer (ZV-4.1).
@@ -1759,12 +2084,23 @@ class InventoryProvider extends ChangeNotifier {
       // countedByUserId server-seitig aus der Session setzt.
       countedByUserId: count.countedByUserId ?? actorUid,
     );
+    if (_usesLocalDemoFacts) {
+      final now = DateTime.now();
+      prepared = prepared.copyWith(
+        id: prepared.id ?? 'demo-cash-count-$orgId-session-${_localSeq++}',
+        createdAt: prepared.createdAt ?? now,
+      );
+      _localDemoCashCounts = [prepared, ..._localDemoCashCounts];
+      _safeNotify();
+    } else {
     await _inventory.addCashCount(prepared);
+    }
     _audit?.call(
       action: AuditAction.created,
       entityType: 'Kassenzählung',
       entityId: prepared.siteId,
-      summary: 'Kassenzählung ${prepared.siteId} ${prepared.businessDay} '
+      summary:
+          'Kassenzählung ${prepared.siteId} ${prepared.businessDay} '
           'erfasst (${_euro(prepared.countedCents)}'
           '${prepared.countedByLabel == null ? '' : ', ${prepared.countedByLabel}'})',
     );
@@ -1779,12 +2115,12 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const [];
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    return _inventory.getCashClosingsInRange(
+    return _readCashClosingsInRange(
       orgId,
       _dayString(from),
       _dayString(now),
@@ -1797,21 +2133,42 @@ class InventoryProvider extends ChangeNotifier {
   /// UI + den Rules. Cloud-only Mutator wie [saveCashCount].
   Future<void> closeBusinessDay(CashClosing closing) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       throw StateError(_kasseLocalError);
     }
-    final prepared = closing.copyWith(
+    var prepared = closing.copyWith(
       orgId: orgId,
       closedByUid:
           closing.closedByUid.isEmpty ? _currentUser?.uid : closing.closedByUid,
     );
+    if (_usesLocalDemoFacts) {
+      final duplicate = _localDemoCashClosings.any(
+        (item) =>
+            item.siteId == prepared.siteId &&
+            item.businessDay == prepared.businessDay,
+      );
+      if (duplicate) {
+        throw StateError('Dieser Tag ist bereits abgeschlossen.');
+      }
+      prepared = prepared.copyWith(
+        id:
+            prepared.id ??
+            'demo-cash-closing-$orgId-session-'
+                '${CashClosing.docId(prepared.businessDay, prepared.siteId)}',
+        closedAt: prepared.closedAt ?? DateTime.now(),
+      );
+      _localDemoCashClosings = [prepared, ..._localDemoCashClosings];
+      _safeNotify();
+    } else {
     await _inventory.createCashClosing(prepared);
+    }
     final diff = prepared.cashDifferenceCents;
     _audit?.call(
       action: AuditAction.created,
       entityType: 'Kassenabschluss',
       entityId: CashClosing.docId(prepared.businessDay, prepared.siteId),
-      summary: 'Kassenabschluss ${prepared.siteId} ${prepared.businessDay} '
+      summary:
+          'Kassenabschluss ${prepared.siteId} ${prepared.businessDay} '
           'festgeschrieben '
           '(${diff == null ? 'ohne Zählung' : 'Differenz ${_euro(diff)}'})',
     );
@@ -1822,10 +2179,28 @@ class InventoryProvider extends ChangeNotifier {
   /// erlaubte Mutation (`bookedToFinance false→true`, §3.2).
   Future<void> markClosingBooked({required String closingId}) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       throw StateError(_kasseLocalError);
     }
-    await _inventory.markCashClosingBooked(orgId: orgId, closingId: closingId);
+    if (_usesLocalDemoFacts) {
+      final index = _localDemoCashClosings.indexWhere(
+        (item) =>
+            item.id == closingId ||
+            CashClosing.docId(item.businessDay, item.siteId) == closingId,
+      );
+      if (index < 0) {
+        throw StateError('Kassenabschluss wurde nicht gefunden.');
+      }
+      final next = [..._localDemoCashClosings];
+      next[index] = next[index].copyWith(bookedToFinance: true);
+      _localDemoCashClosings = next;
+      _safeNotify();
+    } else {
+      await _inventory.markCashClosingBooked(
+        orgId: orgId,
+        closingId: closingId,
+      );
+    }
     _audit?.call(
       action: AuditAction.updated,
       entityType: 'Kassenabschluss',
@@ -1849,19 +2224,23 @@ class InventoryProvider extends ChangeNotifier {
     int windowDays = 92,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const [];
     }
     final now = asOf ?? DateTime.now();
 
     // (1) Server-Aggregate über einen großzügigen Zeitraum laden — weit genug
     // zurück, um auch das Vorjahr des ältesten Buckets abzudecken (Δ Vorjahr).
-    final statsFrom = now.subtract(Duration(days: switch (granularity) {
+    final statsFrom = now.subtract(
+      Duration(
+        days: switch (granularity) {
       ReportGranularity.week => 500,
       ReportGranularity.month => 800,
       ReportGranularity.year => 1600,
-    }));
-    final serverStats = await _inventory.getPosDailyStatsInRange(
+        },
+      ),
+    );
+    final serverStats = await _readPosDailyStatsInRange(
       orgId,
       _dayString(statsFrom),
       _dayString(now),
@@ -1883,8 +2262,12 @@ class InventoryProvider extends ChangeNotifier {
     // (2) Fallback: Belege-Fenster ≤ 92 Tage clientseitig aggregieren.
     final cappedWindow = windowDays > 92 ? 92 : windowDays;
     final from = now.subtract(Duration(days: cappedWindow));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     final stats = dailyStatsFromReceipts(
       receipts,
       _products,
@@ -1915,13 +2298,17 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const BasketAnalysis(pairs: [], receiptsConsidered: 0);
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     return computeBasketAnalysis(
       receipts: receipts,
       minTogether: minTogether,
@@ -1940,7 +2327,7 @@ class InventoryProvider extends ChangeNotifier {
     bool purchasePricesIncludeVat = false,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return const AssortmentAnalysis(
         items: [],
         totalRevenueCents: 0,
@@ -1951,14 +2338,15 @@ class InventoryProvider extends ChangeNotifier {
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts = await _inventory.getPosReceiptsInRange(
+    final receipts = await _readPosReceiptsInRange(
       orgId,
       from,
       now,
       siteId: siteId,
     );
-    final siteProducts =
-        _products.where((p) => p.siteId == siteId).toList(growable: false);
+    final siteProducts = _products
+        .where((p) => p.siteId == siteId)
+        .toList(growable: false);
     return computeAssortmentAnalysis(
       receipts: receipts,
       products: siteProducts,
@@ -1975,8 +2363,10 @@ class InventoryProvider extends ChangeNotifier {
     int minSoldUnits = 1,
     DateTime? asOf,
   }) async {
-    final velocities =
-        await computeOrgVelocities(windowDays: windowDays, asOf: asOf);
+    final velocities = await computeOrgVelocities(
+      windowDays: windowDays,
+      asOf: asOf,
+    );
     return findListingGaps(
       velocities: velocities,
       products: _products,
@@ -1995,11 +2385,17 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) return const {};
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
+      return const {};
+    }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     return computeWeekdayDemandFactors(receipts);
   }
 
@@ -2014,7 +2410,7 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return StaffingProfile(
         siteId: siteId,
         cells: const [],
@@ -2023,8 +2419,12 @@ class InventoryProvider extends ChangeNotifier {
     }
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: siteId);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: siteId,
+    );
     return computeStaffingProfile(
       siteId: siteId,
       receipts: receipts,
@@ -2042,16 +2442,21 @@ class InventoryProvider extends ChangeNotifier {
     DateTime? asOf,
   }) async {
     final now = asOf ?? DateTime.now();
-    final day = evaluatedDay ??
+    final day =
+        evaluatedDay ??
         '${now.year}-${now.month.toString().padLeft(2, '0')}-'
             '${now.day.toString().padLeft(2, '0')}';
     final orgId = _orgId;
-    if (!_usesFirestore || orgId == null) {
+    if ((!_usesFirestore && !_usesLocalDemoFacts) || orgId == null) {
       return StoreBenchmark(evaluatedDay: day, perSite: const []);
     }
     final from = now.subtract(Duration(days: windowDays));
-    final receipts =
-        await _inventory.getPosReceiptsInRange(orgId, from, now, siteId: null);
+    final receipts = await _readPosReceiptsInRange(
+      orgId,
+      from,
+      now,
+      siteId: null,
+    );
     return computeStoreBenchmark(receipts: receipts, evaluatedDay: day);
   }
 
@@ -2102,11 +2507,30 @@ class InventoryProvider extends ChangeNotifier {
   }) async {
     final now = asOf ?? DateTime.now();
     final from = now.subtract(Duration(days: windowDays));
-    final movements = await _fetchMovementsInRange(siteId, from, now);
+    var movements = await _fetchMovementsInRange(siteId, from, now);
+    if (_usesLocalDemoFacts) {
+      final receipts = await _readPosReceiptsInRange(
+        _orgId!,
+        from,
+        now,
+        siteId: siteId,
+      );
+      movements = [
+        ...movements,
+        ..._demoReceiptIssueMovements(
+          receipts: receipts,
+          existingMovements: movements,
+          asOf: now,
+        ),
+      ];
+    }
 
-    final products = siteId == null
+    final products =
+        siteId == null
         ? _products
-        : _products.where((p) => p.siteId == siteId).toList(growable: false);
+            : _products
+                .where((p) => p.siteId == siteId)
+                .toList(growable: false);
     return computeProductVelocities(
       products: products,
       movements: movements,
@@ -2114,6 +2538,68 @@ class InventoryProvider extends ChangeNotifier {
       asOf: now,
       minReliableDays: minReliableDays,
     );
+  }
+
+  /// Der echte Sync materialisiert Verkaufszeilen als `issue`-Bewegungen. In
+  /// der lokalen Demo gibt es keinen Sync-Prozess; dieser Adapter bildet daher
+  /// dieselben Signale ephemer aus den Belegen. Bereits als OktoPOS-Bewegung
+  /// vorhandene (Beleg, Artikel)-Paare werden nicht doppelt gezaehlt.
+  List<StockMovement> _demoReceiptIssueMovements({
+    required List<PosReceipt> receipts,
+    required List<StockMovement> existingMovements,
+    required DateTime asOf,
+  }) {
+    final represented = <String>{
+      for (final movement in existingMovements)
+        if (movement.isFromPos &&
+            movement.externalRef != null &&
+            movement.externalRef!.isNotEmpty)
+          '${movement.externalRef}|${movement.productId}',
+    };
+    final productNames = <String, String>{
+      for (final product in _products)
+        if (product.id != null) product.id!: product.name,
+    };
+    final result = <StockMovement>[];
+    for (final receipt in receipts) {
+      if (!receipt.isRevenue || receipt.training) continue;
+      if ((receipt.type ?? '').toLowerCase() != 'sales') continue;
+      final quantityByProduct = <String, int>{};
+      for (final line in receipt.lines) {
+        final productId = line.productId;
+        if (productId == null || productId.isEmpty || line.quantity <= 0) {
+          continue;
+        }
+        quantityByProduct[productId] =
+            (quantityByProduct[productId] ?? 0) + line.quantity;
+      }
+      for (final entry in quantityByProduct.entries) {
+        final pair = '${receipt.referenceNumber}|${entry.key}';
+        if (represented.contains(pair)) continue;
+        var createdAt = receipt.transactionDate ?? asOf;
+        // Demo-Fakten eines Kalendertags sollen auch vor ihrer Beispiel-Uhrzeit
+        // sichtbar sein; die Pure-Funktion verwirft sonst ein Future-Signal.
+        if (createdAt.isAfter(asOf)) createdAt = asOf;
+        result.add(
+          StockMovement(
+            id:
+                'demo-derived-velocity-${receipt.id ?? receipt.referenceNumber}'
+                '-${entry.key}',
+            orgId: receipt.orgId,
+            siteId: receipt.siteId,
+            productId: entry.key,
+            productName: productNames[entry.key],
+            type: StockMovementType.issue,
+            quantityDelta: -entry.value,
+            reason: 'Verkauf ueber Demo-Kassenbeleg',
+            source: 'oktopos',
+            externalRef: receipt.referenceNumber,
+            createdAt: createdAt,
+          ),
+        );
+      }
+    }
+    return result;
   }
 
   /// Stösst den OktoPOS-Kassenabgleich für [siteId] an: die Cloud Function zieht
@@ -2974,6 +3460,105 @@ class InventoryProvider extends ChangeNotifier {
     await savePurchaseOrder(
       order.copyWith(status: PurchaseOrderStatus.cancelled),
     );
+  }
+
+  /// Schließt die nach einer Teillieferung verbleibende Restmenge.
+  ///
+  /// Der Bestellstatus wird explizit auf `received` gesetzt, ohne die offenen
+  /// Positionsmengen als geliefert auszugeben. Dadurch kann der Wareneinsatz
+  /// auf Basis der tatsächlich gelieferten Mengen gebucht werden.
+  Future<void> closePurchaseOrderRemainder({
+    required String orderId,
+    required String reason,
+  }) async {
+    final orgId = _orgId;
+    if (orgId == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final current = _purchaseOrderForId(orderId);
+    if (current == null) {
+      throw StateError('Bestellung wurde nicht gefunden.');
+    }
+    final trimmedReason = reason.trim();
+    _validateRemainderClosure(current, trimmedReason);
+
+    PurchaseOrder? closedByRepository;
+    if (_usesFirestore &&
+        await _tryFirestore('closePurchaseOrderRemainder', () async {
+          closedByRepository = await _inventory.closePurchaseOrderRemainder(
+            orgId: orgId,
+            orderId: orderId,
+            reason: trimmedReason,
+          );
+        })) {
+      final closed = closedByRepository!;
+      _audit?.call(
+        action: AuditAction.updated,
+        entityType: 'Bestellung',
+        entityId: orderId,
+        summary: 'Restmenge geschlossen: $trimmedReason',
+      );
+      await _bookPurchaseOrderCostIfNeeded(closed, current.status);
+      return;
+    }
+
+    final closed = _closedRemainderOrder(
+      current,
+      reason: trimmedReason,
+      closedAt: DateTime.now(),
+    );
+    final orderIndex = _orders.indexWhere((order) => order.id == orderId);
+    if (orderIndex < 0) {
+      throw StateError('Bestellung wurde nicht gefunden.');
+    }
+    _orders[orderIndex] = closed;
+    _orders = [..._orders];
+    await _persistOrders();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.updated,
+      entityType: 'Bestellung',
+      entityId: orderId,
+      summary: 'Restmenge geschlossen: $trimmedReason',
+    );
+    await _bookPurchaseOrderCostIfNeeded(closed, current.status);
+  }
+
+  PurchaseOrder _closedRemainderOrder(
+    PurchaseOrder order, {
+    required String reason,
+    required DateTime closedAt,
+  }) {
+    _validateRemainderClosure(order, reason);
+    return order.copyWith(
+      status: PurchaseOrderStatus.received,
+      closedAt: closedAt,
+      closedReason: reason,
+    );
+  }
+
+  void _validateRemainderClosure(PurchaseOrder order, String reason) {
+    if (reason.trim().isEmpty) {
+      throw StateError(
+        'Bitte eine Begründung für das Schließen der Restmenge angeben.',
+      );
+    }
+    if (order.closedAt != null) {
+      throw StateError('Die Restmenge wurde bereits geschlossen.');
+    }
+    if (order.status != PurchaseOrderStatus.ordered &&
+        order.status != PurchaseOrderStatus.partiallyReceived) {
+      throw StateError('Nur offene Bestellungen können geschlossen werden.');
+    }
+    if (!order.hasAnyReceipt) {
+      throw StateError(
+        'Der Rest kann erst nach mindestens einer Teillieferung geschlossen '
+        'werden.',
+      );
+    }
+    if (order.isFullyReceived) {
+      throw StateError('Die Bestellung ist bereits vollständig geliefert.');
+    }
   }
 
   Future<void> deletePurchaseOrder(String orderId) async {
@@ -3849,10 +4434,19 @@ class InventoryProvider extends ChangeNotifier {
       return;
     }
     final order = _orders[orderIndex];
+    if (order.closedAt != null) {
+      throw StateError(
+        'Für eine geschlossene Bestellung kann kein weiterer Wareneingang '
+        'gebucht werden.',
+      );
+    }
     final updatedItems = <PurchaseOrderItem>[];
     for (var i = 0; i < order.items.length; i++) {
       final item = order.items[i];
-      final qty = (receivedByItemIndex[i] ?? 0).clamp(0, item.outstandingQuantity);
+      final qty = (receivedByItemIndex[i] ?? 0).clamp(
+        0,
+        item.outstandingQuantity,
+      );
       if (qty > 0) {
         updatedItems.add(
           item.copyWith(quantityReceived: item.quantityReceived + qty),
@@ -3875,7 +4469,8 @@ class InventoryProvider extends ChangeNotifier {
     final newStatus = updatedOrder.deriveReceiptStatus();
     _orders[orderIndex] = updatedOrder.copyWith(
       status: newStatus,
-      receivedAt: newStatus == PurchaseOrderStatus.received
+      receivedAt:
+          newStatus == PurchaseOrderStatus.received
           ? (order.receivedAt ?? DateTime.now())
           : order.receivedAt,
     );

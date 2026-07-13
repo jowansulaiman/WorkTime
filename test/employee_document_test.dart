@@ -100,4 +100,80 @@ void main() {
       expect(acked.copyWith(clearAcknowledgedAt: true).acknowledged, isFalse);
     });
   });
+
+  group('PERSONAL-4: Workflow-Felder', () {
+    test('neue Felder round-trippen in beiden Formaten + clearX', () {
+      final full = doc.copyWith(
+        requiresAcknowledgement: true,
+        visibleSince: DateTime(2026, 7, 1, 9),
+        openedAt: DateTime(2026, 7, 2, 10),
+        downloadedAt: DateTime(2026, 7, 2, 11),
+        declinedAt: DateTime(2026, 7, 3, 12),
+        declineComment: 'passt nicht',
+      );
+      final local = EmployeeDocument.fromMap(full.toMap());
+      expect(local.requiresAcknowledgement, isTrue);
+      expect(local.visibleSince, DateTime(2026, 7, 1, 9));
+      expect(local.openedAt, DateTime(2026, 7, 2, 10));
+      expect(local.downloadedAt, DateTime(2026, 7, 2, 11));
+      expect(local.declinedAt, DateTime(2026, 7, 3, 12));
+      expect(local.declineComment, 'passt nicht');
+
+      final cloud =
+          EmployeeDocument.fromFirestore('doc-1', full.toFirestoreMap());
+      expect(cloud.requiresAcknowledgement, isTrue);
+      expect(cloud.declineComment, 'passt nicht');
+
+      // clearX-Flags.
+      final cleared = full.copyWith(
+        clearVisibleSince: true,
+        clearOpenedAt: true,
+        clearDownloadedAt: true,
+        clearDeclinedAt: true,
+        clearDeclineComment: true,
+      );
+      expect(cleared.visibleSince, isNull);
+      expect(cleared.openedAt, isNull);
+      expect(cleared.declinedAt, isNull);
+      expect(cleared.declineComment, isNull);
+    });
+
+    test('workflowStatus: abgeleitet, Ablehnung schlägt Bestätigung', () {
+      // offen: nicht sichtbar, keine Bereitstellung.
+      const offen = EmployeeDocument(
+        orgId: 'o',
+        userId: 'u',
+        title: 't',
+        storagePath: 'p',
+        visibleToEmployee: false,
+      );
+      expect(offen.workflowStatus, EmployeeDocumentWorkflowStatus.offen);
+
+      // bereitgestellt: sichtbar + visibleSince (bzw. createdAt-Fallback).
+      final bereit = doc.copyWith(visibleSince: DateTime(2026, 7, 1));
+      expect(bereit.workflowStatus,
+          EmployeeDocumentWorkflowStatus.bereitgestellt);
+
+      // geöffnet.
+      final geoeffnet = bereit.copyWith(openedAt: DateTime(2026, 7, 2));
+      expect(
+          geoeffnet.workflowStatus, EmployeeDocumentWorkflowStatus.geoeffnet);
+
+      // bestätigt.
+      final bestaetigt = geoeffnet.copyWith(acknowledgedAt: DateTime(2026, 7, 3));
+      expect(bestaetigt.workflowStatus,
+          EmployeeDocumentWorkflowStatus.bestaetigt);
+
+      // abgelehnt schlägt bestätigt (selbst wenn acknowledgedAt gesetzt wäre).
+      final abgelehnt = bestaetigt.copyWith(declinedAt: DateTime(2026, 7, 4));
+      expect(
+          abgelehnt.workflowStatus, EmployeeDocumentWorkflowStatus.abgelehnt);
+    });
+
+    test('effectiveVisibleSince fällt auf createdAt zurück (Q6-Migration)', () {
+      final bestand = doc.copyWith(createdAt: DateTime(2026, 1, 1));
+      expect(bestand.visibleSince, isNull);
+      expect(bestand.effectiveVisibleSince, DateTime(2026, 1, 1));
+    });
+  });
 }

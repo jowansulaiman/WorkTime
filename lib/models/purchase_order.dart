@@ -4,6 +4,10 @@ import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
 
 /// Status einer Bestellung.
+/// **WW-3:** Tages-Status des erwarteten Liefertermins (für die Badges/Filter
+/// in der Warenwirtschaft). [none] = kein offener Termin.
+enum ExpectedDeliveryDayState { none, overdue, today, upcoming }
+
 enum PurchaseOrderStatus {
   /// Entwurf, noch nicht beim Lieferanten bestellt.
   draft,
@@ -224,6 +228,8 @@ class PurchaseOrder {
     this.orderedAt,
     this.expectedAt,
     this.receivedAt,
+    this.closedAt,
+    this.closedReason,
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
@@ -244,6 +250,8 @@ class PurchaseOrder {
   final DateTime? orderedAt;
   final DateTime? expectedAt;
   final DateTime? receivedAt;
+  final DateTime? closedAt;
+  final String? closedReason;
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -258,6 +266,16 @@ class PurchaseOrder {
 
   int get totalCents =>
       items.fold(0, (total, item) => total + item.lineTotalCents);
+
+  /// Wert der tatsaechlich gelieferten Menge in Cent.
+  ///
+  /// Wie [totalCents] verwendet der Getter den erfassten Einzelpreis direkt;
+  /// eine gegebenenfalls enthaltene USt wird hier nicht umgerechnet.
+  int get deliveredTotalCents => items.fold(
+        0,
+        (total, item) =>
+            total + (item.quantityReceived * (item.unitPriceCents ?? 0)),
+      );
 
   /// Netto-Gesamtsumme in Cent. [priceIncludesVat] = Org-Schalter §3.4.
   int totalNetCents({required bool priceIncludesVat}) => items.fold(
@@ -294,6 +312,27 @@ class PurchaseOrder {
     return PurchaseOrderStatus.ordered;
   }
 
+  /// **WW-3:** Ob noch eine Lieferung erwartet wird — offener Status
+  /// (`ordered`/`partiallyReceived`), nicht geschlossen, mit hinterlegtem
+  /// [expectedAt].
+  bool get isDeliveryPending =>
+      closedAt == null &&
+      expectedAt != null &&
+      (status == PurchaseOrderStatus.ordered ||
+          status == PurchaseOrderStatus.partiallyReceived);
+
+  /// **WW-3:** Tages-Status des erwarteten Liefertermins relativ zu [today]
+  /// (Kalendertag). Nur sinnvoll bei [isDeliveryPending]; sonst
+  /// [ExpectedDeliveryDayState.none]. Pure — der Aufrufer reicht „heute" durch.
+  ExpectedDeliveryDayState expectedDeliveryState(DateTime today) {
+    if (!isDeliveryPending) return ExpectedDeliveryDayState.none;
+    final due = DateTime(expectedAt!.year, expectedAt!.month, expectedAt!.day);
+    final ref = DateTime(today.year, today.month, today.day);
+    if (due.isBefore(ref)) return ExpectedDeliveryDayState.overdue;
+    if (due.isAtSameMomentAs(ref)) return ExpectedDeliveryDayState.today;
+    return ExpectedDeliveryDayState.upcoming;
+  }
+
   factory PurchaseOrder.fromFirestore(String id, Map<String, dynamic> map) {
     return PurchaseOrder(
       id: id,
@@ -309,6 +348,8 @@ class PurchaseOrder {
       orderedAt: FirestoreDateParser.readDate(map['orderedAt']),
       expectedAt: FirestoreDateParser.readDate(map['expectedAt']),
       receivedAt: FirestoreDateParser.readDate(map['receivedAt']),
+      closedAt: FirestoreDateParser.readDate(map['closedAt']),
+      closedReason: map['closedReason'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -330,6 +371,8 @@ class PurchaseOrder {
       orderedAt: FirestoreDateParser.readLocalDate(map['ordered_at']),
       expectedAt: FirestoreDateParser.readLocalDate(map['expected_at']),
       receivedAt: FirestoreDateParser.readLocalDate(map['received_at']),
+      closedAt: FirestoreDateParser.readLocalDate(map['closed_at']),
+      closedReason: map['closed_reason'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -351,6 +394,8 @@ class PurchaseOrder {
       'orderedAt': _timestampOrNull(orderedAt),
       'expectedAt': _timestampOrNull(expectedAt),
       'receivedAt': _timestampOrNull(receivedAt),
+      'closedAt': _timestampOrNull(closedAt),
+      'closedReason': _trimmedOrNull(closedReason),
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -371,6 +416,8 @@ class PurchaseOrder {
       'ordered_at': orderedAt?.toIso8601String(),
       'expected_at': expectedAt?.toIso8601String(),
       'received_at': receivedAt?.toIso8601String(),
+      'closed_at': closedAt?.toIso8601String(),
+      'closed_reason': closedReason,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -391,12 +438,16 @@ class PurchaseOrder {
     DateTime? orderedAt,
     DateTime? expectedAt,
     DateTime? receivedAt,
+    DateTime? closedAt,
+    String? closedReason,
     bool clearSiteName = false,
     bool clearOrderNumber = false,
     bool clearNotes = false,
     bool clearOrderedAt = false,
     bool clearExpectedAt = false,
     bool clearReceivedAt = false,
+    bool clearClosedAt = false,
+    bool clearClosedReason = false,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -415,6 +466,9 @@ class PurchaseOrder {
       orderedAt: clearOrderedAt ? null : (orderedAt ?? this.orderedAt),
       expectedAt: clearExpectedAt ? null : (expectedAt ?? this.expectedAt),
       receivedAt: clearReceivedAt ? null : (receivedAt ?? this.receivedAt),
+      closedAt: clearClosedAt ? null : (closedAt ?? this.closedAt),
+      closedReason:
+          clearClosedReason ? null : (closedReason ?? this.closedReason),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

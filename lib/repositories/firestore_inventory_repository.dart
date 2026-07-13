@@ -758,6 +758,51 @@ class FirestoreInventoryRepository implements InventoryRepository {
     return _purchaseOrderCollection(orgId).doc(orderId).delete();
   }
 
+  @override
+  Future<PurchaseOrder> closePurchaseOrderRemainder({
+    required String orgId,
+    required String orderId,
+    required String reason,
+  }) async {
+    final normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty) {
+      throw StateError('Bitte geben Sie eine Begründung für den Abschluss an.');
+    }
+
+    final orderRef = _purchaseOrderCollection(orgId).doc(orderId);
+    return _firestore.runTransaction<PurchaseOrder>((transaction) async {
+      final orderSnap = await transaction.get(orderRef);
+      if (!orderSnap.exists) {
+        throw StateError('Bestellung wurde nicht gefunden.');
+      }
+      final order = PurchaseOrder.fromFirestore(orderSnap.id, orderSnap.data()!);
+      if (order.closedAt != null) {
+        throw StateError('Diese Bestellung wurde bereits geschlossen.');
+      }
+      if (order.status != PurchaseOrderStatus.ordered &&
+          order.status != PurchaseOrderStatus.partiallyReceived) {
+        throw StateError('Nur offene Bestellungen können geschlossen werden.');
+      }
+      if (!order.hasAnyReceipt) {
+        throw StateError(
+          'Die Bestellung kann erst nach einem Wareneingang geschlossen werden.',
+        );
+      }
+
+      transaction.update(orderRef, {
+        'status': PurchaseOrderStatus.received.value,
+        'closedAt': FieldValue.serverTimestamp(),
+        'closedReason': normalizedReason,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return order.copyWith(
+        status: PurchaseOrderStatus.received,
+        closedAt: DateTime.now(),
+        closedReason: normalizedReason,
+      );
+    });
+  }
+
   // Kundenbestellungen werden – wie Lieferantenbestellungen – nach createdAt
   // gelesen (immer gesetzt via serverTimestamp). Ein orderBy('pickupDate')
   // wuerde Bestellungen ohne Abholtermin verlieren; die Sortierung nach Termin
@@ -914,6 +959,11 @@ class FirestoreInventoryRepository implements InventoryRepository {
         throw StateError('Bestellung wurde nicht gefunden.');
       }
       final order = PurchaseOrder.fromFirestore(orderSnap.id, orderSnap.data()!);
+      if (order.closedAt != null) {
+        throw StateError(
+          'Diese Bestellung ist geschlossen. Weitere Wareneingänge sind nicht möglich.',
+        );
+      }
 
       // Effektive Mengen (nicht negativ, nicht ueber die offene Menge hinaus)
       // ermitteln und betroffene Artikel laden – alle Reads vor allen Writes.

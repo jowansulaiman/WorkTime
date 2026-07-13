@@ -125,10 +125,13 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     final inventory = context.read<InventoryProvider>();
     final expected = _cashState?.sollCents; // null ⇒ nicht verankert
     // Fremdgeld-Arten dieser Filiale (falls aktiviert) → getrennte Sektion.
+    // Zusätzlich die Kassenführung (Fremdgeld in der Lade?) als Umschalter-Default.
     List<ThirdPartyCashType> thirdPartyTypes = const [];
+    var thirdPartyInTill = false;
     for (final s in context.read<TeamProvider>().sites) {
       if (s.id == siteId) {
         thirdPartyTypes = s.activeThirdPartyCashTypes;
+        thirdPartyInTill = s.thirdPartyCashInTill;
         break;
       }
     }
@@ -136,6 +139,7 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
       context,
       expectedCents: expected,
       thirdPartyTypes: thirdPartyTypes,
+      thirdPartyInTill: thirdPartyInTill,
       subtitle: expected == null
           ? 'Noch keine Anker-Zählung — es wird nur der gezählte Betrag '
               'gespeichert.'
@@ -260,6 +264,15 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
       messenger.showSnackBar(SnackBar(
           content: Text('$n Zeile(n) für ${closing.businessDay} gebucht'
               '${diffBooked ? ' (inkl. Kassendifferenz)' : ''}.')));
+      // DATEV-2: USt-Sätze mit Umsatz aber ohne Erlöskonto NICHT still
+      // verschlucken — ehrlicher Hinweis, dass diese Beträge fehlen.
+      if (posting.skippedRates.isNotEmpty && mounted) {
+        messenger.showSnackBar(SnackBar(
+            content: Text(
+                'Nicht gebucht: kein Erlöskonto für '
+                '${posting.skippedRates.map((r) => '$r%').join(', ')} USt — '
+                'bitte Konto zuordnen.')));
+      }
       // Abschluss (falls vorhanden) als gebucht markieren — Gebucht-Badge der
       // Teamleitung liest cashClosings, nicht das admin-only Journal. Der
       // Markierungs-Schritt ist SEPARAT gekapselt: schlägt nur er fehl, ist

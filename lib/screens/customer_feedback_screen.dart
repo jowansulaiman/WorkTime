@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
-import '../core/app_config.dart';
+import '../core/local_demo_inventory_data.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/customer_feedback.dart';
@@ -19,9 +19,9 @@ import '../widgets/empty_state.dart';
 /// Kundenwünsche ist der Eingang NUR für Manager (canManageFeedback) sichtbar —
 /// Beschwerden können sensibel sein.
 ///
-/// Rückmeldungen sind reine Cloud-Daten (anonym von außen erzeugt), daher liest
-/// der Screen direkt per [FirestoreService]-Stream — kein Provider/lokaler
-/// Spiegel.
+/// Produktiv sind Rückmeldungen reine Cloud-Daten und werden direkt per
+/// [FirestoreService]-Stream gelesen. Der lokale Demo-Modus hält eine
+/// kurzlebige In-Memory-Liste, damit Filter und Bearbeitungsabläufe testbar sind.
 class CustomerFeedbackScreen extends StatefulWidget {
   const CustomerFeedbackScreen({
     super.key,
@@ -43,9 +43,13 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
       widget.firestoreService ?? FirestoreService();
 
   bool _showClosed = false;
+  String? _demoOrgId;
+  List<CustomerFeedback> _demoFeedback = const [];
 
-  static final DateFormat _dateTimeFormat =
-      DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+  static final DateFormat _dateTimeFormat = DateFormat(
+    'dd.MM.yyyy HH:mm',
+    'de_DE',
+  );
   static final DateFormat _dateFormat = DateFormat('dd.MM.yyyy', 'de_DE');
 
   @override
@@ -73,21 +77,12 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
       );
     }
 
-    // Rückmeldungen sind reine Cloud-Daten (öffentlicher /feedback-Schreibpfad).
-    // Im Demo-/Offline-Modus ist keine Firebase-App initialisiert → ein direkter
-    // Firestore-Stream-Aufbau würde hier synchron werfen (rote Seite). Daher
-    // gegated, statt zu crashen.
-    if (AppConfig.disableAuthentication) {
-      return Scaffold(
-        appBar: appBar,
-        body: const Center(
-          child: EmptyState(
-            icon: Icons.cloud_off_outlined,
-            title: 'Im Demo-Modus nicht verfügbar',
-            message:
-                'Kundenfeedback geht über die öffentliche Seite (/feedback) in der Cloud ein und ist nur mit aktiver Firebase-Verbindung sichtbar.',
-          ),
-        ),
+    final isLocalDemo = context.read<AuthProvider>().authDisabled;
+    if (isLocalDemo && _demoOrgId != profile.orgId) {
+      _demoOrgId = profile.orgId;
+      _demoFeedback = LocalDemoInventoryData.customerFeedbackForOrg(
+        orgId: profile.orgId,
+        handledByUid: profile.uid,
       );
     }
 
@@ -99,62 +94,68 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
-            child: StreamBuilder<List<CustomerFeedback>>(
-              stream: _service.watchCustomerFeedback(profile.orgId),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return const Center(
-                    child: Text('Feedback konnte nicht geladen werden.'),
-                  );
-                }
-                if (!snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                final all = snapshot.data!;
-                final visible = _showClosed
-                    ? all
-                    : all.where((item) => item.status.isOpen).toList();
-                final openCount =
-                    all.where((item) => item.status.isOpen).length;
-
-                return Column(
-                  children: [
-                    _buildHeader(context, openCount),
-                    Expanded(
-                      child: visible.isEmpty
-                          ? const Center(
-                              child: EmptyState(
-                                icon: Icons.inbox_outlined,
-                                title: 'Kein Feedback',
-                                message:
-                                    'Über die öffentliche Seite (/feedback) abgegebene Rückmeldungen erscheinen hier.',
-                              ),
-                            )
-                          : ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                              itemCount: visible.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 12),
-                              itemBuilder: (context, index) => _FeedbackCard(
-                                feedback: visible[index],
-                                dateTimeFormat: _dateTimeFormat,
-                                dateFormat: _dateFormat,
-                                onStatus: (status) =>
-                                    _updateStatus(visible[index], status),
-                                onDelete: () => _delete(visible[index]),
-                                onLinkContact: () =>
-                                    _linkContact(visible[index]),
-                              ),
+            child:
+                isLocalDemo
+                    ? _buildFeedbackList(_demoFeedback)
+                    : StreamBuilder<List<CustomerFeedback>>(
+                      stream: _service.watchCustomerFeedback(profile.orgId),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasError) {
+                          return const Center(
+                            child: Text(
+                              'Feedback konnte nicht geladen werden.',
                             ),
+                          );
+                        }
+                        if (!snapshot.hasData) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+                        return _buildFeedbackList(snapshot.data!);
+                      },
                     ),
-                  ],
-                );
-              },
-            ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildFeedbackList(List<CustomerFeedback> all) {
+    final visible =
+        _showClosed ? all : all.where((item) => item.status.isOpen).toList();
+    final openCount = all.where((item) => item.status.isOpen).length;
+    return Column(
+      children: [
+        _buildHeader(context, openCount),
+        Expanded(
+          child:
+              visible.isEmpty
+                  ? const Center(
+                    child: EmptyState(
+                      icon: Icons.inbox_outlined,
+                      title: 'Kein Feedback',
+                      message:
+                          'Über die öffentliche Seite (/feedback) abgegebene Rückmeldungen erscheinen hier.',
+                    ),
+                  )
+                  : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                    itemCount: visible.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    itemBuilder:
+                        (context, index) => _FeedbackCard(
+                          feedback: visible[index],
+                          dateTimeFormat: _dateTimeFormat,
+                          dateFormat: _dateFormat,
+                          onStatus:
+                              (status) => _updateStatus(visible[index], status),
+                          onDelete: () => _delete(visible[index]),
+                          onLinkContact: () => _linkContact(visible[index]),
+                        ),
+                  ),
+        ),
+      ],
     );
   }
 
@@ -194,12 +195,27 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
     // gesetzt, sonst umginge diese interne Manager-Aktion das Änderungsprotokoll.
     final audit = context.read<AuditProvider>();
     try {
-      await _service.updateCustomerFeedbackStatus(
-        orgId: feedback.orgId,
-        feedbackId: id,
-        status: status,
-        handledByUid: profile?.uid,
-      );
+      if (context.read<AuthProvider>().authDisabled) {
+        final now = DateTime.now();
+        setState(() {
+          final index = _demoFeedback.indexWhere((item) => item.id == id);
+          if (index >= 0) {
+            _demoFeedback[index] = feedback.copyWith(
+              status: status,
+              handledByUid: profile?.uid,
+              handledAt: now,
+              updatedAt: now,
+            );
+          }
+        });
+      } else {
+        await _service.updateCustomerFeedbackStatus(
+          orgId: feedback.orgId,
+          feedbackId: id,
+          status: status,
+          handledByUid: profile?.uid,
+        );
+      }
       audit.log(
         action: AuditAction.updated,
         entityType: 'Kundenfeedback',
@@ -222,13 +238,14 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
       return;
     }
     final audit = context.read<AuditProvider>();
+    final isLocalDemo = context.read<AuthProvider>().authDisabled;
     final selection = await showContactPicker(
       context,
       currentContactId: feedback.contactId,
       allowedTypes: const [ContactType.customer],
       emptyLabel: 'Kein Kontakt (Verknüpfung entfernen)',
     );
-    if (selection == null) {
+    if (!mounted || selection == null) {
       return; // abgebrochen
     }
     final contact = selection.contact;
@@ -236,18 +253,32 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
       return; // unverändert → kein Write/Audit für einen No-op
     }
     try {
-      await _service.updateCustomerFeedbackContact(
-        orgId: feedback.orgId,
-        feedbackId: id,
-        contactId: contact?.id,
-      );
+      if (isLocalDemo) {
+        setState(() {
+          final index = _demoFeedback.indexWhere((item) => item.id == id);
+          if (index >= 0) {
+            _demoFeedback[index] = feedback.copyWith(
+              contactId: contact?.id,
+              clearContactId: contact == null,
+              updatedAt: DateTime.now(),
+            );
+          }
+        });
+      } else {
+        await _service.updateCustomerFeedbackContact(
+          orgId: feedback.orgId,
+          feedbackId: id,
+          contactId: contact?.id,
+        );
+      }
       audit.log(
         action: AuditAction.updated,
         entityType: 'Kundenfeedback',
         entityId: id,
-        summary: contact == null
-            ? 'Rückmeldung ${feedback.referenceCode}: Kontakt-Verknüpfung entfernt'
-            : 'Rückmeldung ${feedback.referenceCode}: Kontakt „${contact.name}" verknüpft',
+        summary:
+            contact == null
+                ? 'Rückmeldung ${feedback.referenceCode}: Kontakt-Verknüpfung entfernt'
+                : 'Rückmeldung ${feedback.referenceCode}: Kontakt „${contact.name}" verknüpft',
       );
     } catch (_) {
       _snack('Kontakt konnte nicht verknüpft werden.');
@@ -260,29 +291,37 @@ class _CustomerFeedbackScreenState extends State<CustomerFeedbackScreen> {
       return;
     }
     final audit = context.read<AuditProvider>();
+    final isLocalDemo = context.read<AuthProvider>().authDisabled;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Rückmeldung löschen?'),
-        content: Text('Vorgang ${feedback.referenceCode} wird gelöscht.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Abbrechen'),
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Rückmeldung löschen?'),
+            content: Text('Vorgang ${feedback.referenceCode} wird gelöscht.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Abbrechen'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Löschen'),
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Löschen'),
-          ),
-        ],
-      ),
     );
-    if (confirmed != true) {
+    if (!mounted || confirmed != true) {
       return;
     }
     try {
-      await _service.deleteCustomerFeedback(
-          orgId: feedback.orgId, feedbackId: id);
+      if (isLocalDemo) {
+        setState(() => _demoFeedback.removeWhere((item) => item.id == id));
+      } else {
+        await _service.deleteCustomerFeedback(
+          orgId: feedback.orgId,
+          feedbackId: id,
+        );
+      }
       audit.log(
         action: AuditAction.deleted,
         entityType: 'Kundenfeedback',
@@ -329,9 +368,10 @@ class _FeedbackCard extends StatelessWidget {
     // wenn nicht verknüpft ODER der Kontakt (noch) nicht geladen/gelöscht ist.
     // Nur verknüpfte Karten abonnieren den ContactProvider (spart Rebuilds in
     // einem langen Eingang, wenn sich irgendwo ein Kontakt ändert).
-    final linkedContact = feedback.contactId == null
-        ? null
-        : context.watch<ContactProvider>().contactById(feedback.contactId);
+    final linkedContact =
+        feedback.contactId == null
+            ? null
+            : context.watch<ContactProvider>().contactById(feedback.contactId);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -368,32 +408,35 @@ class _FeedbackCard extends StatelessWidget {
                         onDelete();
                     }
                   },
-                  itemBuilder: (_) => [
-                    PopupMenuItem(
-                      value: _FeedbackAction.linkContact,
-                      child: Text(feedback.contactId == null
-                          ? 'Kontakt verknüpfen'
-                          : 'Kontakt ändern'),
-                    ),
-                    const PopupMenuDivider(),
-                    const PopupMenuItem(
-                      value: _FeedbackAction.seen,
-                      child: Text('Als gesehen markieren'),
-                    ),
-                    const PopupMenuItem(
-                      value: _FeedbackAction.done,
-                      child: Text('Als erledigt markieren'),
-                    ),
-                    const PopupMenuItem(
-                      value: _FeedbackAction.rejected,
-                      child: Text('Ablehnen'),
-                    ),
-                    const PopupMenuDivider(),
-                    const PopupMenuItem(
-                      value: _FeedbackAction.delete,
-                      child: Text('Löschen'),
-                    ),
-                  ],
+                  itemBuilder:
+                      (_) => [
+                        PopupMenuItem(
+                          value: _FeedbackAction.linkContact,
+                          child: Text(
+                            feedback.contactId == null
+                                ? 'Kontakt verknüpfen'
+                                : 'Kontakt ändern',
+                          ),
+                        ),
+                        const PopupMenuDivider(),
+                        const PopupMenuItem(
+                          value: _FeedbackAction.seen,
+                          child: Text('Als gesehen markieren'),
+                        ),
+                        const PopupMenuItem(
+                          value: _FeedbackAction.done,
+                          child: Text('Als erledigt markieren'),
+                        ),
+                        const PopupMenuItem(
+                          value: _FeedbackAction.rejected,
+                          child: Text('Ablehnen'),
+                        ),
+                        const PopupMenuDivider(),
+                        const PopupMenuItem(
+                          value: _FeedbackAction.delete,
+                          child: Text('Löschen'),
+                        ),
+                      ],
                 ),
               ],
             ),
@@ -432,15 +475,19 @@ class _FeedbackCard extends StatelessWidget {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  Icon(Icons.person_outline,
-                      size: 18, color: theme.colorScheme.onSurfaceVariant),
+                  Icon(
+                    Icons.person_outline,
+                    size: 18,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       [
                         if (feedback.customerName?.trim().isNotEmpty ?? false)
                           feedback.customerName!.trim(),
-                        if (feedback.customerContact?.trim().isNotEmpty ?? false)
+                        if (feedback.customerContact?.trim().isNotEmpty ??
+                            false)
                           feedback.customerContact!.trim(),
                       ].join(' · '),
                       style: theme.textTheme.bodyMedium,
@@ -474,8 +521,9 @@ class _FeedbackCard extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 'Eingegangen: ${dateTimeFormat.format(feedback.createdAt!.toLocal())}',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
           ],
@@ -497,20 +545,20 @@ class _TypeChip extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final (IconData icon, Color bg, Color fg) = switch (type) {
       FeedbackType.complaint => (
-          Icons.report_problem_outlined,
-          scheme.errorContainer,
-          scheme.onErrorContainer
-        ),
+        Icons.report_problem_outlined,
+        scheme.errorContainer,
+        scheme.onErrorContainer,
+      ),
       FeedbackType.suggestion => (
-          Icons.lightbulb_outline,
-          scheme.secondaryContainer,
-          scheme.onSecondaryContainer
-        ),
+        Icons.lightbulb_outline,
+        scheme.secondaryContainer,
+        scheme.onSecondaryContainer,
+      ),
       FeedbackType.praise => (
-          Icons.favorite_outline,
-          scheme.primaryContainer,
-          scheme.onPrimaryContainer
-        ),
+        Icons.favorite_outline,
+        scheme.primaryContainer,
+        scheme.onPrimaryContainer,
+      ),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -525,10 +573,10 @@ class _TypeChip extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             type.label,
-            style: Theme.of(context)
-                .textTheme
-                .labelMedium
-                ?.copyWith(color: fg, fontWeight: FontWeight.w600),
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: fg,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
@@ -546,21 +594,21 @@ class _StatusChip extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final (Color bg, Color fg) = switch (status) {
       FeedbackStatus.pending => (
-          scheme.primaryContainer,
-          scheme.onPrimaryContainer
-        ),
+        scheme.primaryContainer,
+        scheme.onPrimaryContainer,
+      ),
       FeedbackStatus.seen => (
-          scheme.secondaryContainer,
-          scheme.onSecondaryContainer
-        ),
+        scheme.secondaryContainer,
+        scheme.onSecondaryContainer,
+      ),
       FeedbackStatus.done => (
-          scheme.surfaceContainerHighest,
-          scheme.onSurfaceVariant
-        ),
+        scheme.surfaceContainerHighest,
+        scheme.onSurfaceVariant,
+      ),
       FeedbackStatus.rejected => (
-          scheme.errorContainer,
-          scheme.onErrorContainer
-        ),
+        scheme.errorContainer,
+        scheme.onErrorContainer,
+      ),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -570,10 +618,10 @@ class _StatusChip extends StatelessWidget {
       ),
       child: Text(
         status.label,
-        style: Theme.of(context)
-            .textTheme
-            .labelMedium
-            ?.copyWith(color: fg, fontWeight: FontWeight.w600),
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+          color: fg,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -601,10 +649,9 @@ class _InfoChip extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: Theme.of(context)
-                .textTheme
-                .labelMedium
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            style: Theme.of(
+              context,
+            ).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
       ),

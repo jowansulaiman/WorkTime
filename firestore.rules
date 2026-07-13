@@ -688,6 +688,47 @@ service cloud.firestore {
         allow write: if isAdmin() && sameOrg(orgId);
       }
 
+      // DATEV-1: DATEV-Export-/Lohn-Konfiguration (financeConfig/datev,
+      // financeConfig/datevLohn). BEWUSST eigene admin-only Collection statt
+      // des generischen config/-Blocks: Berater-/Mandantennummer (+ später
+      // Konten-Mapping) darf NICHT von allen Org-Mitgliedern lesbar sein
+      // (config/ ist sameOrg-read). read/create/update nur Admin + eigene Org
+      // + orgId-Pin; delete verboten (Historie/Reproduktion braucht die Config).
+      match /financeConfig/{configId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create, update: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId;
+        allow delete: if false;
+      }
+
+      // Q2: gemeinsame DATEV-Export-Historie (Finanz + Lohn). Append-only,
+      // immutabel — nur create durch Admins der eigenen Org. Gehärtet gegen
+      // Backdating (createdAt == request.time), Fremd-Akteur, kaputten Hash und
+      // unbekannte Felder (hasOnly-Allowlist = EXAKT DatevExportRun.toFirestoreMap).
+      match /datevExportRuns/{runId} {
+        allow read: if isAdmin() && sameOrg(orgId);
+        allow create: if isAdmin()
+            && sameOrg(orgId)
+            && request.resource.data.orgId == orgId
+            && request.resource.data.createdByUid == request.auth.uid
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.schemaVersion is int
+            && request.resource.data.exportArt in ['finanz', 'lohn']
+            && request.resource.data.fileSha256.matches('^[a-f0-9]{64}$')
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'schemaVersion', 'exportArt', 'kind',
+                 'periodYear', 'periodMonth', 'createdByUid', 'createdAt',
+                 'entryCount', 'sollCents', 'habenCents', 'summeCents',
+                 'fileName', 'fileSha256', 'generatedAtMillis',
+                 'configSnapshot', 'rowsSnapshot', 'entriesSnapshot',
+                 'snapshotTruncated', 'snapshotRowCount', 'subjectUserIds',
+                 'acceptedWarningCodes', 'problemeAnzahl',
+                 'monatFestgeschrieben', 'overrideBestaetigt', 'note'
+               ]);
+        allow update, delete: if false;
+      }
+
       // Push-Inbox (Plan push-benachrichtigungen-plan.md). Ein Doc je
       // Empfaenger; ausschliesslich serverseitig (Cloud Function, Admin SDK,
       // umgeht diese Rules) erzeugt/geloescht — analog posReceipts. Der Nutzer
@@ -1249,9 +1290,12 @@ service cloud.firestore {
       // Mitarbeiter selbst — aber NUR für ihn sichtbare Dokumente
       // (`visibleToEmployee`); interne Ablagen (z. B. Abmahnungs-Entwurf)
       // bleiben admin-only. Anlegen/Löschen admin-only. Update: Admin beliebig;
-      // der Mitarbeiter darf AUSSCHLIESSLICH `acknowledgedAt` (+ `updatedAt`)
-      // setzen (Lesebestätigung) — Feld-Allowlist wie notifications.readAt /
-      // products.fridgeStock. Kiosk-Gerätekonto nie.
+      // PERSONAL-4: der Mitarbeiter darf AUSSCHLIESSLICH die Workflow-Zeitstempel
+      // + Ablehnung setzen (`acknowledgedAt`/`openedAt`/`downloadedAt`/
+      // `declinedAt`/`declineComment` (+ `updatedAt`)) — Feld-Allowlist wie
+      // notifications.readAt. `visibleSince`/`requiresAcknowledgement`/`title`
+      // etc. bleiben admin-seitig (NICHT in der MA-Allowlist). `declineComment`
+      // nur ZUSAMMEN mit `declinedAt`. Kiosk-Gerätekonto nie.
       match /employeeDocuments/{docId} {
         allow read: if sameOrg(orgId)
             && !isKiosk()
@@ -1276,7 +1320,16 @@ service cloud.firestore {
                 && request.resource.data
                     .diff(resource.data)
                     .affectedKeys()
-                    .hasOnly(['acknowledgedAt', 'updatedAt'])
+                    .hasOnly(['acknowledgedAt', 'openedAt', 'downloadedAt',
+                              'declinedAt', 'declineComment', 'updatedAt'])
+                // declineComment nur zusammen mit declinedAt (kein Kommentar
+                // ohne Ablehnung).
+                && (
+                  !request.resource.data.diff(resource.data)
+                      .affectedKeys().hasAny(['declineComment'])
+                  || request.resource.data.diff(resource.data)
+                      .affectedKeys().hasAny(['declinedAt'])
+                )
               )
             );
       }

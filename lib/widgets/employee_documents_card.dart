@@ -145,7 +145,11 @@ class _DocumentTileState extends State<_DocumentTile> {
         doc.category.label,
         _formatBytes(doc.sizeBytes),
         if (!doc.visibleToEmployee) 'intern',
-        if (doc.acknowledged) 'bestätigt',
+        if (doc.requiresAcknowledgement) 'Bestätigung nötig',
+        // PERSONAL-4: abgeleiteter Workflow-Status (offen/…/bestätigt/abgelehnt).
+        doc.workflowStatus.label,
+        if (widget.canManage && doc.declineComment != null)
+          'Ablehnung: ${doc.declineComment}',
         if (widget.canManage && doc.retentionExpired(DateTime.now()))
           'Aufbewahrung abgelaufen',
       ].join(' · ')),
@@ -160,6 +164,16 @@ class _DocumentTileState extends State<_DocumentTile> {
                     icon: Icon(Icons.check_circle_outline, color: colors.success),
                     tooltip: 'Gelesen bestätigen',
                     onPressed: _acknowledge,
+                  ),
+                // PERSONAL-4: Ablehnen (MA), wenn Bestätigung nötig + noch offen.
+                if (!widget.canManage &&
+                    doc.requiresAcknowledgement &&
+                    doc.declinedAt == null)
+                  IconButton(
+                    icon: Icon(Icons.cancel_outlined,
+                        color: Theme.of(context).colorScheme.error),
+                    tooltip: 'Ablehnen',
+                    onPressed: _decline,
                   ),
                 if (_isViewable(doc.contentType))
                   IconButton(
@@ -205,6 +219,12 @@ class _DocumentTileState extends State<_DocumentTile> {
             : widget.doc.fileName,
         mimeType: widget.doc.contentType,
       );
+      // PERSONAL-4: bewusstes Öffnen/Download durch den MA (nicht beim
+      // Listen-Rendern; nur für den MA, nicht für die Admin-Sicht).
+      if (!widget.canManage) {
+        await widget.personal
+            .markDocumentOpened(widget.doc, alsoDownloaded: true);
+      }
     } catch (error) {
       if (mounted) {
         _snack(context, 'Download fehlgeschlagen: $error', isError: true);
@@ -223,6 +243,11 @@ class _DocumentTileState extends State<_DocumentTile> {
       if (bytes == null) {
         if (mounted) _snack(context, 'Datei nicht gefunden.', isError: true);
         return;
+      }
+      if (!mounted) return;
+      // PERSONAL-4: bewusstes Öffnen durch den MA vermerken.
+      if (!widget.canManage) {
+        await widget.personal.markDocumentOpened(widget.doc);
       }
       if (!mounted) return;
       await Navigator.of(context).push(
@@ -246,6 +271,49 @@ class _DocumentTileState extends State<_DocumentTile> {
     } catch (error) {
       if (mounted) {
         _snack(context, 'Bestätigung fehlgeschlagen: $error', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// PERSONAL-4: Ablehnung mit Pflicht-Kommentar.
+  Future<void> _decline() async {
+    final controller = TextEditingController();
+    final comment = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Dokument ablehnen'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: 2,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            labelText: 'Grund der Ablehnung *',
+            hintText: 'z. B. Inhalt ist nicht korrekt',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: const Text('Ablehnen'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (comment == null || comment.isEmpty || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await widget.personal.declineDocument(widget.doc, comment: comment);
+    } catch (error) {
+      if (mounted) {
+        _snack(context, 'Ablehnung fehlgeschlagen: $error', isError: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -309,6 +377,7 @@ class _DocumentUploadSheetState extends State<_DocumentUploadSheet> {
   final TextEditingController _note = TextEditingController();
   DocumentCategory _category = DocumentCategory.sonstiges;
   bool _visibleToEmployee = true;
+  bool _requiresAcknowledgement = false;
   bool _uploading = false;
   double _progress = 0;
 
@@ -379,6 +448,17 @@ class _DocumentUploadSheetState extends State<_DocumentUploadSheet> {
                 ? null
                 : (v) => setState(() => _visibleToEmployee = v),
           ),
+          // PERSONAL-4: Bestätigungspflicht (nur sinnvoll, wenn sichtbar).
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Bestätigung durch Mitarbeiter nötig'),
+            subtitle: const Text(
+                'Mitarbeiter muss das Dokument bestätigen oder ablehnen.'),
+            value: _requiresAcknowledgement && _visibleToEmployee,
+            onChanged: (_uploading || !_visibleToEmployee)
+                ? null
+                : (v) => setState(() => _requiresAcknowledgement = v),
+          ),
           SizedBox(height: spacing.md),
           if (_uploading) ...[
             LinearProgressIndicator(value: _progress == 0 ? null : _progress),
@@ -412,6 +492,8 @@ class _DocumentUploadSheetState extends State<_DocumentUploadSheet> {
         contentType: widget.contentType,
         bytes: Uint8List.fromList(widget.bytes),
         visibleToEmployee: _visibleToEmployee,
+        requiresAcknowledgement:
+            _requiresAcknowledgement && _visibleToEmployee,
         note: _note.text.trim().isEmpty ? null : _note.text.trim(),
         onProgress: (p) {
           if (mounted) setState(() => _progress = p);

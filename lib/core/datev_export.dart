@@ -1,8 +1,17 @@
 import '../models/finance_models.dart';
 
 /// Konfiguration des DATEV-EXTF-Exports (vom Steuerberater vorgegeben).
+///
+/// **DATEV-1:** org-weites Firestore-Singleton
+/// `organizations/{orgId}/financeConfig/datev` (admin-only laut Rules —
+/// bewusst EIGENE Collection statt des generischen `config/{configId}`-Blocks,
+/// dessen sameOrg-Read würde Berater-/Mandantennummer allen Org-Mitgliedern
+/// zeigen). Der lokale SharedPreferences-Spiegel (`datev_config`) bleibt
+/// Fallback bzw. Speicher im local-Modus. Dual serialisiert (Kopplung #1):
+/// [toFirestoreMap]/[fromFirestore] camelCase, [toMap]/[fromMap] snake_case.
 class DatevExportConfig {
   const DatevExportConfig({
+    this.schemaVersion = 1,
     this.consultantNumber = '',
     this.clientNumber = '',
     this.accountLength = 4,
@@ -10,6 +19,15 @@ class DatevExportConfig {
     this.designation = '',
     this.revenueAccountByRate = const {},
   });
+
+  /// Feste Doc-ID des Firestore-Singletons
+  /// `organizations/{orgId}/financeConfig/datev`.
+  static const String firestoreDocId = 'datev';
+
+  /// Schema-Version der persistierten Config (Leitplanke: persistierte
+  /// DATEV-Strukturen tragen `schemaVersion`, int ab 1; Leser parsen tolerant
+  /// mit Default 1) — hält spätere Format-Änderungen migrierbar.
+  final int schemaVersion;
 
   /// Berater-Nummer.
   final String consultantNumber;
@@ -31,7 +49,18 @@ class DatevExportConfig {
   /// Namens-Heuristik; persistiert, damit der Admin sie nur einmal setzt.
   final Map<int, String> revenueAccountByRate;
 
+  /// **DATEV-1:** Ob überhaupt fachliche Werte gepflegt sind (≠ reiner Default).
+  /// Steuert die Lokal→Cloud-Migration: ein unkonfiguriertes Gerät legt KEIN
+  /// leeres Cloud-Singleton an und überschreibt beim Adoptieren keinen bereits
+  /// konfigurierten lokalen Stand (verhindert stillen Verlust der Berater-/
+  /// Mandantennummer bei Mehr-Geräte-Login).
+  bool get isConfigured =>
+      consultantNumber.trim().isNotEmpty ||
+      clientNumber.trim().isNotEmpty ||
+      revenueAccountByRate.isNotEmpty;
+
   Map<String, dynamic> toMap() => {
+        'schema_version': schemaVersion,
         'consultant_number': consultantNumber,
         'client_number': clientNumber,
         'account_length': accountLength,
@@ -43,12 +72,58 @@ class DatevExportConfig {
       };
 
   factory DatevExportConfig.fromMap(Map<String, dynamic> map) {
-    final lengthRaw = map['account_length'];
-    final length = lengthRaw is int
-        ? lengthRaw
-        : int.tryParse('${lengthRaw ?? ''}') ?? 4;
+    return DatevExportConfig(
+      schemaVersion: _toIntOr(map['schema_version'], 1),
+      consultantNumber: (map['consultant_number'] ?? '').toString(),
+      clientNumber: (map['client_number'] ?? '').toString(),
+      accountLength: _toIntOr(map['account_length'], 4).clamp(4, 8),
+      defaultContraAccount:
+          (map['default_contra_account'] ?? '9000').toString(),
+      designation: (map['designation'] ?? '').toString(),
+      revenueAccountByRate: _parseRateMap(map['revenue_account_by_rate']),
+    );
+  }
+
+  /// camelCase-Spiegel für das Firestore-Singleton (DATEV-1). Das `orgId`-Feld
+  /// (Rules-Pin) und `updatedAt` schreibt der `FirestoreService` — die Config
+  /// selbst bleibt org-frei.
+  Map<String, dynamic> toFirestoreMap() => {
+        'schemaVersion': schemaVersion,
+        'consultantNumber': consultantNumber,
+        'clientNumber': clientNumber,
+        'accountLength': accountLength,
+        'defaultContraAccount': defaultContraAccount,
+        'designation': designation,
+        // Firestore-Map-Keys sind Strings -> Satz als String serialisieren.
+        'revenueAccountByRate':
+            revenueAccountByRate.map((k, v) => MapEntry('$k', v)),
+      };
+
+  /// Doc-ID kommt konventionsgemäß separat (wird hier nicht gespeichert —
+  /// das Singleton heißt immer [firestoreDocId]).
+  factory DatevExportConfig.fromFirestore(
+    String id,
+    Map<String, dynamic> map,
+  ) {
+    return DatevExportConfig(
+      schemaVersion: _toIntOr(map['schemaVersion'], 1),
+      consultantNumber: (map['consultantNumber'] ?? '').toString(),
+      clientNumber: (map['clientNumber'] ?? '').toString(),
+      accountLength: _toIntOr(map['accountLength'], 4).clamp(4, 8),
+      defaultContraAccount: (map['defaultContraAccount'] ?? '9000').toString(),
+      designation: (map['designation'] ?? '').toString(),
+      revenueAccountByRate: _parseRateMap(map['revenueAccountByRate']),
+    );
+  }
+
+  static int _toIntOr(Object? raw, int fallback) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse('${raw ?? ''}') ?? fallback;
+  }
+
+  static Map<int, String> _parseRateMap(Object? rawRates) {
     final rateMap = <int, String>{};
-    final rawRates = map['revenue_account_by_rate'];
     if (rawRates is Map) {
       rawRates.forEach((k, v) {
         final rate = int.tryParse('$k');
@@ -57,18 +132,11 @@ class DatevExportConfig {
         }
       });
     }
-    return DatevExportConfig(
-      consultantNumber: (map['consultant_number'] ?? '').toString(),
-      clientNumber: (map['client_number'] ?? '').toString(),
-      accountLength: length.clamp(4, 8),
-      defaultContraAccount:
-          (map['default_contra_account'] ?? '9000').toString(),
-      designation: (map['designation'] ?? '').toString(),
-      revenueAccountByRate: rateMap,
-    );
+    return rateMap;
   }
 
   DatevExportConfig copyWith({
+    int? schemaVersion,
     String? consultantNumber,
     String? clientNumber,
     int? accountLength,
@@ -77,6 +145,7 @@ class DatevExportConfig {
     Map<int, String>? revenueAccountByRate,
   }) {
     return DatevExportConfig(
+      schemaVersion: schemaVersion ?? this.schemaVersion,
       consultantNumber: consultantNumber ?? this.consultantNumber,
       clientNumber: clientNumber ?? this.clientNumber,
       accountLength: accountLength ?? this.accountLength,
@@ -156,8 +225,16 @@ class DatevExport {
     required DatevExportConfig config,
     required DateTime generatedAt,
   }) {
+    // DATEV-3 Deterministik-Fix: TOTALE Ordnung nach (date, id). Dart-`sort`
+    // ist instabil — bei gleichem Datum hinge die Reihenfolge sonst an der
+    // Eingangsreihenfolge und der SHA-256 der Datei wäre nicht reproduzierbar
+    // (falsche „Journal verändert"-Warnungen im Rebuild-Vergleich).
     final rows = entries.where((e) => e.date.year == year).toList()
-      ..sort((a, b) => a.date.compareTo(b.date));
+      ..sort((a, b) {
+        final byDate = a.date.compareTo(b.date);
+        if (byDate != 0) return byDate;
+        return (a.id ?? '').compareTo(b.id ?? '');
+      });
 
     final from = rows.isEmpty ? DateTime(year) : rows.first.date;
     final to = rows.isEmpty ? DateTime(year, 12, 31) : rows.last.date;

@@ -39,7 +39,7 @@ void main() {
 
   group('buildDailyClosingEntries (pure)', () {
     test('je USt-Satz eine Netto-Erlös-Zeile mit deterministischer ID', () {
-      final entries = buildDailyClosingEntries(
+      final result = buildDailyClosingEntries(
         closing(taxes: const [
           TaxBucket(ratePercent: 19, netCents: 1000, taxCents: 190, grossCents: 1190),
           TaxBucket(ratePercent: 7, netCents: 100, taxCents: 7, grossCents: 107),
@@ -48,31 +48,34 @@ void main() {
         costCenterId: 'cc-1',
         revenueCostTypeIdByRate: {19: 'ct19', 7: 'ct7'},
       );
-      expect(entries, hasLength(2));
-      final e19 = entries.firstWhere((e) => e.costTypeId == 'ct19');
+      expect(result.entries, hasLength(2));
+      expect(result.skippedRates, isEmpty);
+      final e19 = result.entries.firstWhere((e) => e.costTypeId == 'ct19');
       expect(e19.id, 'pos-2026-06-30-site-1-19');
       expect(e19.amountCents, -1000); // netto, negativ (Erlös)
       expect(e19.isCredit, isTrue);
       expect(e19.costCenterId, 'cc-1');
       expect(e19.reference, '2026-06-30');
-      final e7 = entries.firstWhere((e) => e.costTypeId == 'ct7');
+      final e7 = result.entries.firstWhere((e) => e.costTypeId == 'ct7');
       expect(e7.amountCents, -100);
     });
 
-    test('Satz ohne zugeordnetes Konto / unbekannter Satz / netto 0 wird übersprungen', () {
-      final entries = buildDailyClosingEntries(
+    test('DATEV-2: unmapped Satz mit Umsatz landet in skippedRates, unbekannt/'
+        'netto-0 nicht', () {
+      final result = buildDailyClosingEntries(
         closing(taxes: const [
           TaxBucket(ratePercent: 19, netCents: 1000, taxCents: 190, grossCents: 1190),
-          TaxBucket(ratePercent: 7, netCents: 100, taxCents: 7, grossCents: 107), // kein Konto
-          TaxBucket(ratePercent: null, netCents: 50, taxCents: 0, grossCents: 50),
-          TaxBucket(ratePercent: 0, netCents: 0, taxCents: 0, grossCents: 0),
+          TaxBucket(ratePercent: 7, netCents: 100, taxCents: 7, grossCents: 107), // kein Konto → skipped
+          TaxBucket(ratePercent: null, netCents: 50, taxCents: 0, grossCents: 50), // unbekannt → NICHT skipped
+          TaxBucket(ratePercent: 0, netCents: 0, taxCents: 0, grossCents: 0), // netto 0 → NICHT skipped
         ]),
         orgId: 'org-1',
         costCenterId: 'cc-1',
         revenueCostTypeIdByRate: {19: 'ct19'},
       );
-      expect(entries, hasLength(1));
-      expect(entries.single.costTypeId, 'ct19');
+      expect(result.entries, hasLength(1));
+      expect(result.entries.single.costTypeId, 'ct19');
+      expect(result.skippedRates, [7]);
     });
   });
 

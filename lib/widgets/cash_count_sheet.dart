@@ -29,12 +29,21 @@ class CashCountInput {
 /// angebotenen Fremdgeld-Arten. Leer = keine Fremdgeld-Sektion (Prozess wie
 /// bisher). Fremdgeld wird **immer** rein als Ist-Betrag erfasst (kein Soll,
 /// auch nicht für die Leitung — v1 Minimal-Variante).
+///
+/// [thirdPartyInTill] (§8.5b) belegt den Umschalter vor: `true` = Fremdgeld
+/// liegt in derselben Lade → man tippt den **Gesamtbetrag inkl. Fremdgeld** ein,
+/// die eigene Kasse wird per Subtraktion errechnet; `false` (Default) =
+/// getrennte Töpfe wie bisher. Der/die Zählende kann pro Zählung umschalten.
+/// **Unabhängig vom Modus wird stets die eigene Kasse netto zurückgegeben**
+/// ([CashCountInput.countedCents] enthält NIE Fremdgeld). Ohne
+/// [thirdPartyTypes] ist der Umschalter irrelevant und ausgeblendet.
 Future<CashCountInput?> showCashCountSheet(
   BuildContext context, {
   int? expectedCents,
   String title = 'Kasse zählen',
   String? subtitle,
   List<ThirdPartyCashType> thirdPartyTypes = const [],
+  bool thirdPartyInTill = false,
 }) {
   return showModalBottomSheet<CashCountInput>(
     context: context,
@@ -46,6 +55,7 @@ Future<CashCountInput?> showCashCountSheet(
       title: title,
       subtitle: subtitle,
       thirdPartyTypes: thirdPartyTypes,
+      thirdPartyInTill: thirdPartyInTill,
     ),
   );
 }
@@ -60,12 +70,17 @@ class CashCountSheet extends StatefulWidget {
     this.title = 'Kasse zählen',
     this.subtitle,
     this.thirdPartyTypes = const [],
+    this.thirdPartyInTill = false,
   });
 
   final int? expectedCents;
   final String title;
   final String? subtitle;
   final List<ThirdPartyCashType> thirdPartyTypes;
+
+  /// Vorbelegung des Umschalters (§8.5b): `true` = gezählter Betrag enthält das
+  /// Fremdgeld (eigene Kasse = Betrag − Fremdgeld); `false` = getrennt.
+  final bool thirdPartyInTill;
 
   @override
   State<CashCountSheet> createState() => _CashCountSheetState();
@@ -74,7 +89,14 @@ class CashCountSheet extends StatefulWidget {
 class _CashCountSheetState extends State<CashCountSheet> {
   final TextEditingController _amountCtrl = TextEditingController();
   final TextEditingController _noteCtrl = TextEditingController();
-  int? _countedCents;
+
+  /// Roh eingegebener Betrag in Cent (>= 0), sonst `null`. Bedeutung je Modus:
+  /// im inklusiven Modus = Gesamt in der Lade, sonst = eigene Kasse.
+  int? _enteredCents;
+
+  /// Umschalter: gezählter Betrag enthält das Fremdgeld (§8.5b). Nur bei
+  /// vorhandenen Fremdgeld-Arten relevant.
+  late bool _inclusive;
 
   /// Betrags-Controller je Fremdgeld-Art (nach sortOrder).
   late final List<ThirdPartyCashType> _types;
@@ -89,6 +111,8 @@ class _CashCountSheetState extends State<CashCountSheet> {
     _amountCtrl.addListener(_recompute);
     _types = [...widget.thirdPartyTypes]
       ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    // Ohne Fremdgeld-Arten ist der inklusive Modus bedeutungslos → immer aus.
+    _inclusive = _types.isNotEmpty && widget.thirdPartyInTill;
     for (final t in _types) {
       final ctrl = TextEditingController();
       ctrl.addListener(() => setState(() {}));
@@ -108,10 +132,10 @@ class _CashCountSheetState extends State<CashCountSheet> {
 
   void _recompute() {
     final parsed = Money.parseCents(_amountCtrl.text);
-    // Ein negativer Bargeldbestand ist fachlich unsinnig; 0 (leere Kasse) bleibt
+    // Ein negativer Eingabebetrag ist fachlich unsinnig; 0 (leere Lade) bleibt
     // gültig.
     setState(
-        () => _countedCents = (parsed != null && parsed >= 0) ? parsed : null);
+        () => _enteredCents = (parsed != null && parsed >= 0) ? parsed : null);
   }
 
   /// Betrag einer Fremdgeld-Art in Cent (0 bei leer/ungültig/negativ).
@@ -123,17 +147,35 @@ class _CashCountSheetState extends State<CashCountSheet> {
   int get _thirdPartyTotal =>
       _types.fold(0, (acc, t) => acc + _tpAmount(t.id));
 
+  /// Eigene Kasse **netto** (ohne Fremdgeld) — das ist der gespeicherte Wert.
+  /// Inklusiver Modus: Gesamt − Fremdgeld (kann negativ werden → ungültig).
+  /// Getrennter Modus: der eingegebene Betrag selbst.
+  int? get _ownCashCents {
+    final entered = _enteredCents;
+    if (entered == null) return null;
+    return _inclusive ? entered - _thirdPartyTotal : entered;
+  }
+
+  /// Im inklusiven Modus: Fremdgeld übersteigt den gezählten Gesamtbetrag →
+  /// negative eigene Kasse, blockiert das Speichern.
+  bool get _ownCashNegative {
+    final own = _ownCashCents;
+    return own != null && own < 0;
+  }
+
   /// Eine Pflicht-Art ist offen, wenn ihr Betrag 0 ist und der Nutzer die 0
   /// noch nicht quittiert hat.
   bool _requiredOpen(ThirdPartyCashType t) =>
       t.required && _tpAmount(t.id) == 0 && !_confirmedZero.contains(t.id);
 
   bool get _canSubmit =>
-      _countedCents != null && !_types.any(_requiredOpen);
+      _enteredCents != null &&
+      !_ownCashNegative &&
+      !_types.any(_requiredOpen);
 
   void _submit() {
-    final counted = _countedCents;
-    if (counted == null || !_canSubmit) return;
+    final own = _ownCashCents;
+    if (own == null || !_canSubmit) return;
     final note = _noteCtrl.text.trim();
     final thirdParty = <ThirdPartyAmount>[
       for (final t in _types)
@@ -145,7 +187,8 @@ class _CashCountSheetState extends State<CashCountSheet> {
     ];
     Navigator.of(context).pop(
       CashCountInput(
-        countedCents: counted,
+        // Stets die eigene Kasse netto — nie das Fremdgeld enthalten.
+        countedCents: own,
         note: note.isEmpty ? null : note,
         thirdParty: thirdParty,
       ),
@@ -156,10 +199,18 @@ class _CashCountSheetState extends State<CashCountSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final expected = widget.expectedCents;
-    final counted = _countedCents;
-    final diff =
-        (expected != null && counted != null) ? counted - expected : null;
+    final ownCash = _ownCashCents;
+    // Differenz immer gegen die eigene Kasse netto; bei negativer eigener Kasse
+    // (Fremdgeld > Gesamt) ist die Eingabe ungültig → keine Differenz zeigen.
+    final diff = (expected != null && ownCash != null && !_ownCashNegative)
+        ? ownCash - expected
+        : null;
     final hasThirdParty = _types.isNotEmpty;
+    final amountLabel = _inclusive
+        ? 'Gezähltes Bargeld gesamt (inkl. Fremdgeld)'
+        : (hasThirdParty
+            ? 'Eigene Kasse (ohne Fremdgeld)'
+            : 'Gezählter Bargeldbestand');
 
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -193,11 +244,13 @@ class _CashCountSheetState extends State<CashCountSheet> {
               ),
             ],
             const SizedBox(height: 20),
-            if (hasThirdParty)
-              Text('Eigene Kasse',
-                  style: theme.textTheme.labelLarge
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-            if (hasThirdParty) const SizedBox(height: 8),
+            if (hasThirdParty) ...[
+              _ThirdPartyModeSwitch(
+                inclusive: _inclusive,
+                onChanged: (v) => setState(() => _inclusive = v),
+              ),
+              const SizedBox(height: 12),
+            ],
             TextField(
               controller: _amountCtrl,
               autofocus: true,
@@ -205,10 +258,10 @@ class _CashCountSheetState extends State<CashCountSheet> {
                   const TextInputType.numberWithOptions(decimal: true),
               style: theme.textTheme.headlineMedium,
               textAlign: TextAlign.center,
-              decoration: const InputDecoration(
-                labelText: 'Gezählter Bargeldbestand',
+              decoration: InputDecoration(
+                labelText: amountLabel,
                 suffixText: '€',
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 16),
@@ -241,10 +294,18 @@ class _CashCountSheetState extends State<CashCountSheet> {
               ),
               const SizedBox(height: 20),
               _SummarySection(
-                countedCents: counted,
+                inclusive: _inclusive,
+                ownCashCents: ownCash,
                 types: _types,
                 amountOf: _tpAmount,
                 thirdPartyTotal: _thirdPartyTotal,
+              ),
+            ],
+            if (_ownCashNegative) ...[
+              const SizedBox(height: 12),
+              _NegativeOwnCashWarning(
+                thirdPartyTotal: _thirdPartyTotal,
+                enteredCents: _enteredCents ?? 0,
               ),
             ],
             const SizedBox(height: 24),
@@ -381,16 +442,59 @@ class _ThirdPartySection extends StatelessWidget {
   }
 }
 
-/// Zusammenfassung vor dem Abschluss: Kasse + jede Fremdgeld-Art + Gesamt.
+/// Umschalter: liegt das Fremdgeld in derselben Kassenlade (Betrag inkl.) oder
+/// wird es getrennt gezählt? Ein selbsterklärender Switch statt Segment-Button,
+/// damit die Beschriftung auf schmalen Handys nicht überläuft (§8.5b).
+class _ThirdPartyModeSwitch extends StatelessWidget {
+  const _ThirdPartyModeSwitch({
+    required this.inclusive,
+    required this.onChanged,
+  });
+
+  final bool inclusive;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: inclusive,
+        onChanged: onChanged,
+        title: const Text('Fremdgeld liegt in der Kassenlade'),
+        subtitle: Text(
+          inclusive
+              ? 'Gesamtbetrag inkl. Fremdgeld eingeben — die eigene Kasse wird '
+                  'automatisch abgezogen.'
+              : 'Eigene Kasse und Fremdgeld werden getrennt gezählt.',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+      ),
+    );
+  }
+}
+
+/// Zusammenfassung vor dem Abschluss. Getrennt-Modus: eigene Kasse + Fremdgeld
+/// = Geld in der Lade. Inklusiv-Modus: Geld in der Lade − Fremdgeld = eigene
+/// Kasse (Rest). In beiden Fällen gilt: Lade gesamt = eigene Kasse + Fremdgeld.
 class _SummarySection extends StatelessWidget {
   const _SummarySection({
-    required this.countedCents,
+    required this.inclusive,
+    required this.ownCashCents,
     required this.types,
     required this.amountOf,
     required this.thirdPartyTotal,
   });
 
-  final int? countedCents;
+  final bool inclusive;
+  final int? ownCashCents;
   final List<ThirdPartyCashType> types;
   final int Function(String typeId) amountOf;
   final int thirdPartyTotal;
@@ -398,23 +502,32 @@ class _SummarySection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final counted = countedCents ?? 0;
-    final grandTotal = counted + thirdPartyTotal;
-    Widget row(String label, String value, {bool bold = false}) => Padding(
+    final own = ownCashCents ?? 0;
+    final grandTotal = own + thirdPartyTotal;
+    Widget row(String label, String value,
+            {bool bold = false, bool muted = false}) =>
+        Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(label,
-                  style: bold
-                      ? theme.textTheme.titleMedium
-                      : theme.textTheme.bodyMedium),
+                  style: (bold
+                          ? theme.textTheme.titleMedium
+                          : theme.textTheme.bodyMedium)
+                      ?.copyWith(
+                          color: muted
+                              ? theme.colorScheme.onSurfaceVariant
+                              : null)),
               Text(value,
                   style: (bold
                           ? theme.textTheme.titleMedium
                           : theme.textTheme.bodyMedium)
                       ?.copyWith(
-                          fontWeight: bold ? FontWeight.w700 : null)),
+                          fontWeight: bold ? FontWeight.w700 : null,
+                          color: muted
+                              ? theme.colorScheme.onSurfaceVariant
+                              : null)),
             ],
           ),
         );
@@ -432,12 +545,62 @@ class _SummarySection extends StatelessWidget {
               style: theme.textTheme.labelLarge
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
           const SizedBox(height: 6),
-          row('Kasse (eigen)', Money.formatCents(counted)),
-          for (final t in types)
-            row(t.name, Money.formatCents(amountOf(t.id))),
-          const Divider(height: 16),
-          row('Geld in der Lade gesamt', Money.formatCents(grandTotal),
-              bold: true),
+          if (inclusive) ...[
+            row('Geld in der Lade gesamt', Money.formatCents(grandTotal)),
+            for (final t in types)
+              row('− ${t.name}', Money.formatCents(amountOf(t.id)),
+                  muted: true),
+            const Divider(height: 16),
+            row('Fremdgeld gesamt', Money.formatCents(thirdPartyTotal)),
+            row('Eigene Kasse (Rest)', Money.formatCents(own), bold: true),
+          ] else ...[
+            row('Kasse (eigen)', Money.formatCents(own)),
+            for (final t in types)
+              row(t.name, Money.formatCents(amountOf(t.id))),
+            const Divider(height: 16),
+            row('Geld in der Lade gesamt', Money.formatCents(grandTotal),
+                bold: true),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Warnung im Inklusiv-Modus, wenn das erfasste Fremdgeld den gezählten
+/// Gesamtbetrag übersteigt (eigene Kasse würde negativ) — blockiert Speichern.
+class _NegativeOwnCashWarning extends StatelessWidget {
+  const _NegativeOwnCashWarning({
+    required this.thirdPartyTotal,
+    required this.enteredCents,
+  });
+
+  final int thirdPartyTotal;
+  final int enteredCents;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.errorContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.error_outline, color: theme.colorScheme.onErrorContainer),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Das Fremdgeld (${Money.formatCents(thirdPartyTotal)}) übersteigt '
+              'den gezählten Gesamtbetrag (${Money.formatCents(enteredCents)}). '
+              'Bitte Beträge prüfen.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onErrorContainer),
+            ),
+          ),
         ],
       ),
     );

@@ -1,6 +1,34 @@
 {
   "indexes": [
     {
+      "collectionGroup": "datevExportRuns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "exportArt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "recipientUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "priceHistory",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

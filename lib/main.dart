@@ -28,6 +28,7 @@ import 'providers/inventory_provider.dart';
 import 'providers/notification_provider.dart';
 import 'providers/password_provider.dart';
 import 'providers/personal_provider.dart';
+import 'providers/management_dashboard_provider.dart';
 import 'providers/sales_insights_provider.dart';
 import 'providers/schedule_provider.dart';
 import 'providers/signage_provider.dart';
@@ -738,9 +739,11 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
         // gegated → im Demo-/local-Modus No-op.
         ChangeNotifierProxyProvider2<AuthProvider, StorageModeProvider,
             NotificationProvider>(
-          create: (_) => NotificationProvider(),
+          create: (_) =>
+              NotificationProvider(firestoreService: firestoreService),
           update: (_, auth, storage, provider) {
-            provider ??= NotificationProvider();
+            provider ??=
+                NotificationProvider(firestoreService: firestoreService);
             _dispatchProviderUpdate(
               provider.updateSession(
                 auth.profile,
@@ -748,6 +751,26 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'NotificationProvider.updateSession',
+            );
+            return provider;
+          },
+        ),
+        // Management-Dashboard-Read-State (REPORTING-3): komponiert die
+        // fertigen Engines der lebenden Provider (Zeitwirtschaft/Personal/
+        // Inventory/Schedule). Kein eigenes Cloud-Repo → ans Kettenende, NACH
+        // allen Quellen; getriggert von Auth (Org-Reset), Quellen via
+        // context.read (Muster SalesInsightsProvider, Kopplung #4).
+        ChangeNotifierProxyProvider<AuthProvider,
+            ManagementDashboardProvider>(
+          create: (_) => ManagementDashboardProvider(),
+          update: (context, auth, provider) {
+            provider ??= ManagementDashboardProvider();
+            provider.bind(
+              zeit: context.read<ZeitwirtschaftProvider>(),
+              personal: context.read<PersonalProvider>(),
+              inventory: context.read<InventoryProvider>(),
+              schedule: context.read<ScheduleProvider>(),
+              profile: auth.profile,
             );
             return provider;
           },

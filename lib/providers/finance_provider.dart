@@ -4,11 +4,16 @@ import 'package:flutter/foundation.dart';
 
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
+import '../core/retry.dart';
 import '../core/cash_difference_posting.dart';
 import '../core/daily_closing.dart';
 import '../core/daily_closing_posting.dart';
 import '../core/datev_export.dart';
+import '../core/datev_lohn_export.dart';
+import '../models/datev_export_run.dart';
 import '../core/finance_analytics.dart';
+import '../core/local_demo_backoffice_data.dart';
+import '../core/local_demo_data.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/cash_closing.dart';
@@ -58,6 +63,11 @@ class FinanceProvider extends ChangeNotifier {
   List<JournalEntry> _journalEntries = [];
   List<Budget> _budgets = [];
   DatevExportConfig _datevConfig = const DatevExportConfig();
+  DatevLohnConfig _datevLohnConfig = const DatevLohnConfig();
+  List<DatevExportRun> _localDemoDatevExportRuns = [];
+  final StreamController<int> _localDemoExportRunsChanged =
+      StreamController<int>.broadcast();
+  int _localDemoExportRunsRevision = 0;
 
   bool _loading = false;
   String? _errorMessage;
@@ -72,6 +82,7 @@ class FinanceProvider extends ChangeNotifier {
   List<JournalEntry> get journalEntries => _journalEntries;
   List<Budget> get budgets => _budgets;
   DatevExportConfig get datevConfig => _datevConfig;
+  DatevLohnConfig get datevLohnConfig => _datevLohnConfig;
   bool get loading => _loading;
   String? get errorMessage => _errorMessage;
 
@@ -80,6 +91,8 @@ class FinanceProvider extends ChangeNotifier {
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
   bool get isAdmin => _currentUser?.isAdmin ?? false;
+  bool get _supportsLocalDemoExportHistory =>
+      usesLocalStorage && LocalDemoData.isDemoUser(_currentUser);
 
   String? get _orgId => _currentUser?.orgId;
 
@@ -178,24 +191,199 @@ class FinanceProvider extends ChangeNotifier {
       return;
     }
 
-    // DATEV-Export-Konfiguration ist lokal/gerätegebunden – in jedem
-    // Speichermodus aus den SharedPreferences laden.
-    _datevConfig = await DatabaseService.loadLocalDatevConfig(scope: _localScope) ??
-        const DatevExportConfig();
+    // DATEV-1/PERSONAL-2: Configs zuerst aus dem lokalen Spiegel (Fallback +
+    // local-Modus).
+    _datevConfig =
+        await DatabaseService.loadLocalDatevConfig(scope: _localScope) ??
+            const DatevExportConfig();
+    _datevLohnConfig =
+        await DatabaseService.loadLocalDatevLohnConfig(scope: _localScope) ??
+            const DatevLohnConfig();
 
     if (_usesFirestore) {
+      _replaceLocalDemoExportRuns(const []);
+      // Cloud-first laden — ABER admin-gated: die financeConfig-Rules sind
+      // admin-only, ein Mitarbeiter-Read gäbe garantiert permission-denied.
+      if (user.isAdmin) {
+        await _loadDatevConfigFromCloud(user.orgId);
+        await _loadDatevLohnConfigFromCloud(user.orgId);
+      }
       _startFirestoreSubscriptions(user.orgId);
     } else {
       await _loadLocalData();
+      _loadLocalDemoExportRuns(user);
       _safeNotify();
     }
   }
 
-  /// Speichert die DATEV-Export-Konfiguration (lokal, admin-only).
+  /// DATEV-1: Lädt das org-weite Config-Singleton `financeConfig/datev`. Fehlt
+  /// es (Erstmigration), wird der bestehende lokale Stand einmalig als
+  /// Initial-Doc in die Cloud gehoben (mit Audit `created`). Fehler beim Laden
+  /// verschlucken wir NICHT still in den Datenbestand — sie bleiben der lokale
+  /// Fallback-Stand, werden aber geloggt.
+  Future<void> _loadDatevConfigFromCloud(String orgId) async {
+    try {
+      final cloud = await _firestore.fetchDatevConfig(orgId);
+      if (cloud != null) {
+        // Adoptieren — ABER einen bereits konfigurierten lokalen Stand NICHT
+        // durch ein (leeres) Default-Cloud-Singleton still überschreiben
+        // (Review-Befund: sonst geht die gerätelokal gepflegte Berater-/
+        // Mandantennummer bei Mehr-Geräte-Login verloren). Ist die Cloud
+        // unkonfiguriert, aber lokal konfiguriert, schieben wir den lokalen
+        // Stand nach oben statt ihn zu verlieren.
+        if (!cloud.isConfigured && _datevConfig.isConfigured) {
+          await _firestore.saveDatevConfig(orgId: orgId, config: _datevConfig);
+          _audit?.call(
+            action: AuditAction.updated,
+            entityType: 'datevConfig',
+            entityId: DatevExportConfig.firestoreDocId,
+            summary: 'DATEV-Export-Konfiguration aus lokalem Stand ergänzt',
+          );
+          return;
+        }
+        _datevConfig = cloud;
+        await DatabaseService.saveLocalDatevConfig(cloud, scope: _localScope);
+        _safeNotify();
+        return;
+      }
+      // Kein Cloud-Doc: Einmal-Migration NUR eines wirklich konfigurierten
+      // lokalen Stands (ein unkonfiguriertes Gerät legt kein leeres Singleton
+      // an, das später konfigurierte Geräte adoptieren würden).
+      if (!_datevConfig.isConfigured) return;
+      await _firestore.saveDatevConfig(orgId: orgId, config: _datevConfig);
+      _audit?.call(
+        action: AuditAction.created,
+        entityType: 'datevConfig',
+        entityId: DatevExportConfig.firestoreDocId,
+        summary: 'DATEV-Export-Konfiguration angelegt',
+      );
+    } catch (error) {
+      AppLogger.warning(
+        'FinanceProvider: DATEV-Config Cloud-Load fehlgeschlagen – '
+        'lokaler Stand bleibt aktiv',
+        error: error,
+      );
+    }
+  }
+
+  /// PERSONAL-2/3: Lädt `financeConfig/datevLohn` cloud-first (Spiegel-Logik +
+  /// isConfigured-Guard exakt wie [_loadDatevConfigFromCloud]).
+  Future<void> _loadDatevLohnConfigFromCloud(String orgId) async {
+    try {
+      final cloud = await _firestore.fetchDatevLohnConfig(orgId);
+      if (cloud != null) {
+        if (!cloud.isConfigured && _datevLohnConfig.isConfigured) {
+          await _firestore.saveDatevLohnConfig(
+              orgId: orgId, config: _datevLohnConfig);
+          _audit?.call(
+            action: AuditAction.updated,
+            entityType: 'datevLohnConfig',
+            entityId: DatevLohnConfig.firestoreDocId,
+            summary: 'DATEV-Lohn-Konfiguration aus lokalem Stand ergänzt',
+          );
+          return;
+        }
+        _datevLohnConfig = cloud;
+        await DatabaseService.saveLocalDatevLohnConfig(cloud, scope: _localScope);
+        _safeNotify();
+        return;
+      }
+      if (!_datevLohnConfig.isConfigured) return;
+      await _firestore.saveDatevLohnConfig(
+          orgId: orgId, config: _datevLohnConfig);
+      _audit?.call(
+        action: AuditAction.created,
+        entityType: 'datevLohnConfig',
+        entityId: DatevLohnConfig.firestoreDocId,
+        summary: 'DATEV-Lohn-Konfiguration angelegt',
+      );
+    } catch (error) {
+      AppLogger.warning(
+        'FinanceProvider: DATEV-Lohn-Config Cloud-Load fehlgeschlagen – '
+        'lokaler Stand bleibt aktiv',
+        error: error,
+      );
+    }
+  }
+
+  /// Speichert die DATEV-Export-Konfiguration (admin-only). Drei-Modi-Muster:
+  /// im local-Modus nur lokal; sonst Cloud-Singleton schreiben und lokal
+  /// spiegeln (hybrid-Cache). Audit `updated` auf jedem Erfolgs-Zweig.
   Future<void> saveDatevConfig(DatevExportConfig config) async {
     _assertAdmin();
+    void logUpdate() => _audit?.call(
+          action: AuditAction.updated,
+          entityType: 'datevConfig',
+          entityId: DatevExportConfig.firestoreDocId,
+          summary: 'DATEV-Export-Konfiguration geändert',
+        );
+
+    if (usesLocalStorage) {
+      _datevConfig = config;
+      await DatabaseService.saveLocalDatevConfig(config, scope: _localScope);
+      logUpdate();
+      _safeNotify();
+      return;
+    }
+
+    final orgId = _requireOrg();
+    try {
+      await _firestore.saveDatevConfig(orgId: orgId, config: config);
+    } catch (error) {
+      // Q1-Positivliste (via isTransientError): nur echte Offline-Fehler
+      // (unavailable/deadline-exceeded/Timeout) fallbacken lokal; Rules-Deny
+      // (permission-denied) & Co. scheitern sichtbar (rethrow, kein Audit).
+      if (_hybridStorageEnabled && isTransientError(error)) {
+        _datevConfig = config;
+        await DatabaseService.saveLocalDatevConfig(config, scope: _localScope);
+        logUpdate();
+        _safeNotify();
+        return;
+      }
+      rethrow;
+    }
     _datevConfig = config;
     await DatabaseService.saveLocalDatevConfig(config, scope: _localScope);
+    logUpdate();
+    _safeNotify();
+  }
+
+  /// Speichert die DATEV-Lohn-Konfiguration (admin-only). Drei-Modi-Muster +
+  /// Audit `updated`, exakt wie [saveDatevConfig].
+  Future<void> saveDatevLohnConfig(DatevLohnConfig config) async {
+    _assertAdmin();
+    void logUpdate() => _audit?.call(
+          action: AuditAction.updated,
+          entityType: 'datevLohnConfig',
+          entityId: DatevLohnConfig.firestoreDocId,
+          summary: 'DATEV-Lohn-Konfiguration geändert',
+        );
+
+    if (usesLocalStorage) {
+      _datevLohnConfig = config;
+      await DatabaseService.saveLocalDatevLohnConfig(config, scope: _localScope);
+      logUpdate();
+      _safeNotify();
+      return;
+    }
+
+    final orgId = _requireOrg();
+    try {
+      await _firestore.saveDatevLohnConfig(orgId: orgId, config: config);
+    } catch (error) {
+      if (_hybridStorageEnabled && isTransientError(error)) {
+        _datevLohnConfig = config;
+        await DatabaseService.saveLocalDatevLohnConfig(config,
+            scope: _localScope);
+        logUpdate();
+        _safeNotify();
+        return;
+      }
+      rethrow;
+    }
+    _datevLohnConfig = config;
+    await DatabaseService.saveLocalDatevLohnConfig(config, scope: _localScope);
+    logUpdate();
     _safeNotify();
   }
 
@@ -234,6 +422,23 @@ class FinanceProvider extends ChangeNotifier {
     _budgets = await DatabaseService.loadLocalBudgets(scope: scope);
   }
 
+  void _loadLocalDemoExportRuns(AppUserProfile user) {
+    if (!LocalDemoData.isDemoUser(user)) {
+      _replaceLocalDemoExportRuns(const []);
+      return;
+    }
+    _replaceLocalDemoExportRuns(
+      LocalDemoBackofficeData.datevExportRunsForOrg(orgId: user.orgId),
+    );
+  }
+
+  void _replaceLocalDemoExportRuns(List<DatevExportRun> runs) {
+    _localDemoDatevExportRuns = List<DatevExportRun>.unmodifiable(runs);
+    if (!_localDemoExportRunsChanged.isClosed) {
+      _localDemoExportRunsChanged.add(++_localDemoExportRunsRevision);
+    }
+  }
+
   Future<void> _cancelSubscriptions() async {
     await _costCentersSub?.cancel();
     await _costTypesSub?.cancel();
@@ -251,6 +456,8 @@ class FinanceProvider extends ChangeNotifier {
     _journalEntries = [];
     _budgets = [];
     _datevConfig = const DatevExportConfig();
+    _datevLohnConfig = const DatevLohnConfig();
+    _replaceLocalDemoExportRuns(const []);
     _loading = false;
   }
 
@@ -497,12 +704,15 @@ class FinanceProvider extends ChangeNotifier {
   /// Bucht den **Wareneinsatz** einer vollständig gelieferten Bestellung
   /// (H-A2). Kosten → positiver Betrag. Idempotent über `po-<id>`.
   Future<String?> postPurchaseOrderCost(PurchaseOrder order) async {
-    if (order.id == null || order.totalCents <= 0) return null;
+    final effectiveTotalCents = order.closedAt != null
+        ? order.deliveredTotalCents
+        : order.totalCents;
+    if (order.id == null || effectiveTotalCents <= 0) return null;
     return _postOrderJournal(
       journalId: 'po-${order.id}',
       siteId: order.siteId,
-      date: order.receivedAt ?? order.createdAt,
-      amountCents: order.totalCents,
+      date: order.closedAt ?? order.receivedAt ?? order.createdAt,
+      amountCents: effectiveTotalCents,
       description: 'Wareneinkauf ${order.orderNumber ?? order.id}',
       reference: order.id!,
       costType: _resolveCostTypeByNeedles(_goodsNeedles),
@@ -537,32 +747,45 @@ class FinanceProvider extends ChangeNotifier {
   /// hybriden Offline-Fallback, darf der Kassenabschluss NICHT cloud-seitig
   /// als `bookedToFinance` markiert werden (sonst gilt er als gebucht,
   /// obwohl das Journal nur lokal auf diesem Geraet existiert).
-  Future<({int entries, bool cloudComplete})> postDailyClosing(
+  Future<({int entries, bool cloudComplete, List<int> skippedRates})>
+      postDailyClosing(
     DailyClosing closing, {
     required Map<int, String> revenueCostTypeIdByRate,
   }) async {
-    if (!isAdmin || _orgId == null) return (entries: 0, cloudComplete: false);
+    if (!isAdmin || _orgId == null) {
+      return (entries: 0, cloudComplete: false, skippedRates: const <int>[]);
+    }
     final costCenter = _resolveSiteCostCenter(closing.siteId);
     if (costCenter?.id == null) {
       AppLogger.warning(
         'Tagesabschluss übersprungen: keine eindeutige Kostenstelle für '
         'Standort ${closing.siteId}.',
       );
-      return (entries: 0, cloudComplete: false);
+      return (entries: 0, cloudComplete: false, skippedRates: const <int>[]);
     }
-    final entries = buildDailyClosingEntries(
+    final built = buildDailyClosingEntries(
       closing,
       orgId: _orgId!,
       costCenterId: costCenter!.id!,
       revenueCostTypeIdByRate: revenueCostTypeIdByRate,
       createdByUid: _currentUser?.uid,
     );
+    if (built.skippedRates.isNotEmpty) {
+      AppLogger.warning(
+        'Tagesabschluss: USt-Sätze ohne Erlöskonto übersprungen: '
+        '${built.skippedRates.join(', ')} %.',
+      );
+    }
     var cloudComplete = true;
-    for (final entry in entries) {
+    for (final entry in built.entries) {
       final persisted = await saveJournalEntry(entry);
       cloudComplete = cloudComplete && persisted;
     }
-    return (entries: entries.length, cloudComplete: cloudComplete);
+    return (
+      entries: built.entries.length,
+      cloudComplete: cloudComplete,
+      skippedRates: built.skippedRates,
+    );
   }
 
   /// **Kassen-Modul M6 — Kassendifferenz buchen** (Plan §8a). Bucht die
@@ -814,6 +1037,136 @@ class FinanceProvider extends ChangeNotifier {
     return orgId;
   }
 
+  // ── DATEV-Export-Historie (Q2/DATEV-3) ───────────────────────────────────
+  /// Cloud-Historie oder flüchtige Historie im lokalen Demo-Modus verfügbar?
+  /// Normale lokale Nutzer bleiben bei der bisherigen Degradation ohne
+  /// Historie; Demo-Runs werden nie persistiert.
+  bool get supportsExportHistory =>
+      _usesFirestore || _supportsLocalDemoExportHistory;
+
+  /// Streamt die Export-Historie einer Art (neueste zuerst). Im normalen
+  /// local-Modus ein leerer Stream; nur die lokale Demo hat In-Memory-Runs.
+  Stream<List<DatevExportRun>> watchDatevExportRuns(DatevExportArt art) {
+    final orgId = _orgId;
+    if (_supportsLocalDemoExportHistory) {
+      return _watchLocalDemoExportRuns(art);
+    }
+    if (!_usesFirestore || orgId == null) {
+      return Stream<List<DatevExportRun>>.value(const []);
+    }
+    return _firestore.watchDatevExportRuns(orgId, art);
+  }
+
+  Stream<List<DatevExportRun>> _watchLocalDemoExportRuns(
+    DatevExportArt art,
+  ) async* {
+    yield _localDemoExportRunsFor(art);
+    yield* _localDemoExportRunsChanged.stream.map(
+      (_) => _localDemoExportRunsFor(art),
+    );
+  }
+
+  List<DatevExportRun> _localDemoExportRunsFor(DatevExportArt art) {
+    final runs = _localDemoDatevExportRuns
+        .where((run) => run.exportArt == art)
+        .toList(growable: false);
+    runs.sort((a, b) {
+      final byCreatedAt = (b.createdAt ?? DateTime(0))
+          .compareTo(a.createdAt ?? DateTime(0));
+      if (byCreatedAt != 0) return byCreatedAt;
+      return (b.id ?? '').compareTo(a.id ?? '');
+    });
+    return List<DatevExportRun>.unmodifiable(runs);
+  }
+
+  /// **DATEV-3/Q2:** Schreibt einen Export-Lauf in die gemeinsame Historie
+  /// (admin-only; Cloud immutabel, lokale Demo rein in-memory).
+  /// `orgId`/`createdByUid` werden hier gefüllt. **Kein Hybrid-Fallback** — die
+  /// Cloud-Historie ist append-only und darf nicht lokal divergieren: bei
+  /// Offline (`unavailable`) wirft die Methode und der Aufrufer blockiert den
+  /// Export (Q2-Offline-Semantik). Reihenfolge im Aufrufer: **Run schreiben,
+  /// DANN Download.** Gibt die Run-ID zurück.
+  Future<String> logDatevExportRun(DatevExportRun run) async {
+    _assertAdmin();
+    final orgId = _requireOrg();
+    if (_supportsLocalDemoExportHistory) {
+      final id = _nextLocalId('datev-run');
+      final localRun = DatevExportRun(
+        id: id,
+        orgId: orgId,
+        schemaVersion: run.schemaVersion,
+        exportArt: run.exportArt,
+        kind: run.kind,
+        periodYear: run.periodYear,
+        periodMonth: run.periodMonth,
+        createdByUid: _currentUser?.uid ?? run.createdByUid,
+        createdAt: DateTime.now(),
+        entryCount: run.entryCount,
+        sollCents: run.sollCents,
+        habenCents: run.habenCents,
+        summeCents: run.summeCents,
+        fileName: run.fileName,
+        fileSha256: run.fileSha256,
+        generatedAtMillis: run.generatedAtMillis,
+        configSnapshot: run.configSnapshot,
+        rowsSnapshot: run.rowsSnapshot,
+        entriesSnapshot: run.entriesSnapshot,
+        snapshotTruncated: run.snapshotTruncated,
+        snapshotRowCount: run.snapshotRowCount,
+        subjectUserIds: run.subjectUserIds,
+        acceptedWarningCodes: run.acceptedWarningCodes,
+        problemeAnzahl: run.problemeAnzahl,
+        monatFestgeschrieben: run.monatFestgeschrieben,
+        overrideBestaetigt: run.overrideBestaetigt,
+        note: run.note,
+      );
+      _replaceLocalDemoExportRuns([
+        localRun,
+        ..._localDemoDatevExportRuns,
+      ]);
+      // Demo-Historie bleibt vollständig flüchtig: weder Datenbank-Write noch
+      // Audit-Persistenz für diesen synthetischen Lauf.
+      _safeNotify();
+      return id;
+    }
+    final prepared = DatevExportRun(
+      orgId: orgId,
+      schemaVersion: run.schemaVersion,
+      exportArt: run.exportArt,
+      kind: run.kind,
+      periodYear: run.periodYear,
+      periodMonth: run.periodMonth,
+      createdByUid: _currentUser?.uid ?? run.createdByUid,
+      entryCount: run.entryCount,
+      sollCents: run.sollCents,
+      habenCents: run.habenCents,
+      summeCents: run.summeCents,
+      fileName: run.fileName,
+      fileSha256: run.fileSha256,
+      generatedAtMillis: run.generatedAtMillis,
+      configSnapshot: run.configSnapshot,
+      rowsSnapshot: run.rowsSnapshot,
+      entriesSnapshot: run.entriesSnapshot,
+      snapshotTruncated: run.snapshotTruncated,
+      snapshotRowCount: run.snapshotRowCount,
+      subjectUserIds: run.subjectUserIds,
+      acceptedWarningCodes: run.acceptedWarningCodes,
+      problemeAnzahl: run.problemeAnzahl,
+      monatFestgeschrieben: run.monatFestgeschrieben,
+      overrideBestaetigt: run.overrideBestaetigt,
+      note: run.note,
+    );
+    final id = await _firestore.createDatevExportRun(prepared);
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'datevExportRun',
+      entityId: id,
+      summary: '${run.exportArt.label} erstellt (${run.periodYear}, '
+          '${run.entryCount} Zeilen)',
+    );
+    return id;
+  }
+
   String _nextLocalId(String prefix) {
     _localSeq += 1;
     return 'local-$prefix-${DateTime.now().microsecondsSinceEpoch}-$_localSeq';
@@ -849,6 +1202,7 @@ class FinanceProvider extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _cancelSubscriptions();
+    _localDemoExportRunsChanged.close();
     super.dispose();
   }
 }

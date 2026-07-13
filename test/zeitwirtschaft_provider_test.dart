@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/clock_entry.dart';
 import 'package:worktime_app/models/user_settings.dart';
+import 'package:worktime_app/models/sollzeit_profile.dart';
 import 'package:worktime_app/models/work_entry.dart';
 import 'package:worktime_app/models/zeitkonto_snapshot.dart';
 import 'package:worktime_app/providers/zeitwirtschaft_provider.dart';
@@ -372,6 +373,87 @@ void main() {
       expect(capture.saved!.status, ClockStatus.ongoing);
       expect(capture.saved!.userId, 'emp-1');
       expect(capture.saved!.siteId, 'site-1');
+    });
+  });
+
+  group('loadOrgZeitKpis (REPORTING-2)', () {
+    const manager = AppUserProfile(
+      uid: 'mgr-1',
+      orgId: 'org-1',
+      email: 'mgr@example.com',
+      role: UserRole.admin,
+      isActive: true,
+      settings: UserSettings(name: 'Chef'),
+    );
+
+    SollzeitProfile profile(String userId) => SollzeitProfile(
+          orgId: 'org-1',
+          userId: userId,
+          gueltigAb: DateTime(2025, 1, 1),
+          montagMinutes: 480,
+          dienstagMinutes: 480,
+          mittwochMinutes: 480,
+          donnerstagMinutes: 480,
+          freitagMinutes: 480,
+          isMonatsarbeitszeit: true,
+          monatsarbeitszeitMinutes: 9000,
+        );
+
+    Future<ZeitwirtschaftProvider> providerFor(AppUserProfile user) async {
+      final provider = ZeitwirtschaftProvider(
+        firestoreService: FirestoreService(firestore: FakeFirebaseFirestore()),
+      );
+      await provider.updateSession(user, localStorageOnly: true);
+      return provider;
+    }
+
+    test('Gate: Mitarbeiter ohne canManageShifts erhält null', () async {
+      final provider = await providerFor(employee);
+      final kpis = await provider.loadOrgZeitKpis(
+        jahr: 2026,
+        monat: 6,
+        memberIds: const ['emp-1'],
+        profilesByUser: const {},
+      );
+      expect(kpis, isNull);
+    });
+
+    test('Manager: komponiert Org-Zeit-Kennzahlen aus lokalen Daten', () async {
+      final provider = await providerFor(manager);
+      await DatabaseService.saveLocalEntries(
+        [
+          WorkEntry(
+            orgId: 'org-1',
+            userId: 'a',
+            date: DateTime(2026, 6, 2),
+            startTime: DateTime(2026, 6, 2, 8),
+            endTime: DateTime(2026, 6, 2, 16), // 480 approved
+          ),
+          WorkEntry(
+            orgId: 'org-1',
+            userId: 'a',
+            date: DateTime(2026, 6, 3),
+            startTime: DateTime(2026, 6, 3, 8),
+            endTime: DateTime(2026, 6, 3, 12),
+            status: WorkEntryStatus.submitted,
+          ),
+        ],
+        scope: LocalStorageScope.fromUser(manager),
+      );
+
+      final kpis = await provider.loadOrgZeitKpis(
+        jahr: 2026,
+        monat: 6,
+        memberIds: const ['a'],
+        profilesByUser: {
+          'a': [profile('a')],
+        },
+      );
+      expect(kpis, isNotNull);
+      expect(kpis!.sollMinutes, 9000);
+      expect(kpis.istMinutes, 480); // nur approved
+      expect(kpis.offeneFreigaben, 1); // submitted
+      expect(kpis.mitarbeiterMitSoll, 1);
     });
   });
 }

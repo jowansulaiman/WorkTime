@@ -19,14 +19,21 @@ import 'package:worktime_app/services/firestore_service.dart';
 import 'package:worktime_app/theme/app_theme.dart';
 
 class _FakeAuthProvider extends AuthProvider {
-  _FakeAuthProvider({required super.firestoreService, AppUserProfile? profile})
-      : _profile = profile,
-        super(authService: AuthService());
+  _FakeAuthProvider({
+    required super.firestoreService,
+    AppUserProfile? profile,
+    this.localMode = false,
+  }) : _profile = profile,
+       super(authService: AuthService());
 
   final AppUserProfile? _profile;
+  final bool localMode;
 
   @override
   AppUserProfile? get profile => _profile;
+
+  @override
+  bool get authDisabled => localMode;
 }
 
 const _manager = AppUserProfile(
@@ -91,7 +98,11 @@ void main() {
     return id;
   }
 
-  Future<void> pumpScreen(WidgetTester tester, AppUserProfile profile) async {
+  Future<void> pumpScreen(
+    WidgetTester tester,
+    AppUserProfile profile, {
+    bool localMode = false,
+  }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(900, 1600);
     addTearDown(() {
@@ -99,14 +110,24 @@ void main() {
       tester.view.resetPhysicalSize();
     });
 
-    final auth = _FakeAuthProvider(firestoreService: service, profile: profile);
+    final auth = _FakeAuthProvider(
+      firestoreService: service,
+      profile: profile,
+      localMode: localMode,
+    );
     final team = TeamProvider(firestoreService: service);
     final inventory = InventoryProvider(
-        firestoreService: service, disableAuthentication: true);
-    final contacts =
-        ContactProvider(firestoreService: service, disableAuthentication: true);
-    final audit =
-        AuditProvider(firestoreService: service, disableAuthentication: true);
+      firestoreService: service,
+      disableAuthentication: true,
+    );
+    final contacts = ContactProvider(
+      firestoreService: service,
+      disableAuthentication: true,
+    );
+    final audit = AuditProvider(
+      firestoreService: service,
+      disableAuthentication: true,
+    );
     await team.updateSession(profile);
     await inventory.updateSession(profile);
     await contacts.updateSession(profile);
@@ -137,8 +158,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
   }
 
-  testWidgets(
-      'Filter: offene Wünsche sichtbar, erledigte erst über den '
+  testWidgets('Filter: offene Wünsche sichtbar, erledigte erst über den '
       '"Erledigte"-Chip', (tester) async {
     await seedWish(text: 'Spiegel Ausgabe 26');
     await seedWish(text: 'Stange Marlboro', status: CustomerWishStatus.done);
@@ -146,8 +166,11 @@ void main() {
     await pumpScreen(tester, _manager);
 
     expect(find.text('Spiegel Ausgabe 26'), findsOneWidget);
-    expect(find.text('Stange Marlboro'), findsNothing,
-        reason: 'erledigte Wünsche sind standardmaessig ausgeblendet');
+    expect(
+      find.text('Stange Marlboro'),
+      findsNothing,
+      reason: 'erledigte Wünsche sind standardmaessig ausgeblendet',
+    );
     expect(find.text('1 offener Wunsch'), findsOneWidget);
 
     await tester.tap(find.text('Erledigte'));
@@ -157,14 +180,18 @@ void main() {
     expect(find.text('Stange Marlboro'), findsOneWidget);
   });
 
-  testWidgets('Mitarbeiter ohne canManageInventory sieht kein Aktionen-Menü',
-      (tester) async {
+  testWidgets('Mitarbeiter ohne canManageInventory sieht kein Aktionen-Menü', (
+    tester,
+  ) async {
     await seedWish(text: 'Spiegel Ausgabe 26');
 
     await pumpScreen(tester, _employee);
 
-    expect(find.text('Spiegel Ausgabe 26'), findsOneWidget,
-        reason: 'aktive Mitglieder sehen den Eingang');
+    expect(
+      find.text('Spiegel Ausgabe 26'),
+      findsOneWidget,
+      reason: 'aktive Mitglieder sehen den Eingang',
+    );
     expect(find.byType(PopupMenuButton<dynamic>), findsNothing);
     expect(
       find.byWidgetPredicate((widget) => widget is PopupMenuButton),
@@ -173,8 +200,7 @@ void main() {
     );
   });
 
-  testWidgets(
-      'Manager markiert einen Wunsch als erledigt -> Status landet im '
+  testWidgets('Manager markiert einen Wunsch als erledigt -> Status landet im '
       'Firestore-Doc', (tester) async {
     final id = await seedWish(text: 'Spiegel Ausgabe 26');
 
@@ -186,13 +212,27 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
 
-    final doc = await firestore
-        .collection('organizations')
-        .doc('org-1')
-        .collection('customerWishes')
-        .doc(id)
-        .get();
+    final doc =
+        await firestore
+            .collection('organizations')
+            .doc('org-1')
+            .collection('customerWishes')
+            .doc(id)
+            .get();
     expect(doc.data()!['status'], 'erledigt');
     expect(doc.data()!['handledByUid'], 'owner-1');
+  });
+
+  testWidgets('lokaler Demo-Modus zeigt vollständigen Kundenwunsch-Eingang', (
+    tester,
+  ) async {
+    await pumpScreen(tester, _manager, localMode: true);
+
+    expect(find.text('8 offene Wünsche'), findsOneWidget);
+    expect(find.text('Im Demo-Modus nicht verfügbar'), findsNothing);
+    expect(
+      find.byWidgetPredicate((widget) => widget is PopupMenuButton),
+      findsWidgets,
+    );
   });
 }

@@ -144,17 +144,25 @@ Fuer UI-, Provider- und Workflow-Entwicklung kann die App komplett ohne Firebase
 flutter run --dart-define=APP_DISABLE_AUTH=true
 ```
 
-Im lokalen Modus stehen vier Demo-Logins bereit:
+Im lokalen Modus stehen Demo-Logins fuer Admin, Teamleitung, Inhaber/Planer
+und mehrere Mitarbeiter bereit. Das Passwort lautet jeweils `demo1234`, zum
+Beispiel:
 
 - `admin@demo.local` / `demo1234`
 - `peter@example.com` / `demo1234`
 - `maria@example.com` / `demo1234`
 - `lea.teamlead@example.com` / `demo1234`
 
-Zusatzlich werden zwei Dummy-Standorte automatisch angelegt:
+Zusaetzlich werden drei Kieler Demo-Standorte automatisch angelegt:
 
-- `Hauptstandort Berlin`
-- `Filiale Hamburg`
+- `Tabak Boerse`
+- `Strichmaennchen GmbH`
+- `Paketshop REWE Dietrichsdorf`
+
+Der lokale Seeder befuellt auch Dienstplanung, Zeitwirtschaft, Personal/Lohn,
+Warenwirtschaft, CRM, Finanzen, Kasse/POS-Auswertungen, Ladenaufgaben,
+Werbedisplays und Auditfaelle. Alle Logins und die vollstaendige
+Status-/Randfallabdeckung stehen in [docs/demo-daten.md](docs/demo-daten.md).
 
 Optional koennen im lokalen Modus noch diese Defines gesetzt werden:
 

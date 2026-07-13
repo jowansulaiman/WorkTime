@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worktime_app/core/datev_export.dart';
 import 'package:worktime_app/models/finance_models.dart';
+import 'package:worktime_app/services/export_service.dart';
 
 void main() {
   const center = CostCenter(
@@ -149,6 +150,113 @@ void main() {
         generatedAt: DateTime(2026, 6, 22),
       );
       expect(withOther.contains('Vorjahr'), isFalse);
+    });
+  });
+
+  group('DatevExportConfig Serialisierung (DATEV-1)', () {
+    const config = DatevExportConfig(
+      consultantNumber: '1234567',
+      clientNumber: '54321',
+      accountLength: 5,
+      defaultContraAccount: '9000',
+      designation: 'Stapel',
+      revenueAccountByRate: {19: '8400', 7: '8300'},
+    );
+
+    test('snake_case round-trippt (toMap/fromMap) inkl. schemaVersion', () {
+      final map = config.toMap();
+      expect(map['schema_version'], 1);
+      final restored = DatevExportConfig.fromMap(map);
+      expect(restored.consultantNumber, '1234567');
+      expect(restored.clientNumber, '54321');
+      expect(restored.accountLength, 5);
+      expect(restored.defaultContraAccount, '9000');
+      expect(restored.revenueAccountByRate, {19: '8400', 7: '8300'});
+      expect(restored.schemaVersion, 1);
+    });
+
+    test('camelCase round-trippt (toFirestoreMap/fromFirestore); '
+        'Map-Keys als Strings', () {
+      final fs = config.toFirestoreMap();
+      expect(fs['schemaVersion'], 1);
+      // int-Keys der Rate-Map MÜSSEN als String serialisiert sein.
+      expect((fs['revenueAccountByRate'] as Map).keys, containsAll(['19', '7']));
+      final cloud = DatevExportConfig.fromFirestore('datev', fs);
+      expect(cloud.consultantNumber, '1234567');
+      expect(cloud.accountLength, 5);
+      expect(cloud.revenueAccountByRate, {19: '8400', 7: '8300'});
+    });
+
+    test('fehlende schema_version defaultet tolerant auf 1', () {
+      final restored = DatevExportConfig.fromMap(const {
+        'consultant_number': '1',
+        'client_number': '2',
+      });
+      expect(restored.schemaVersion, 1);
+    });
+
+    test('firestoreDocId ist die feste Singleton-ID', () {
+      expect(DatevExportConfig.firestoreDocId, 'datev');
+    });
+  });
+
+  group('DATEV-3: Deterministik + buildDatevExport', () {
+    const center = CostCenter(id: 'c1', orgId: 'o', number: '1001', name: 'L');
+    const type = CostType(id: 't1', orgId: 'o', number: '4100', name: 'M');
+
+    // Drei Buchungen am GLEICHEN Tag mit unterschiedlichen IDs.
+    JournalEntry e(String id, int amount) => JournalEntry(
+          id: id,
+          orgId: 'o',
+          date: DateTime(2026, 3, 15),
+          costCenterId: 'c1',
+          costTypeId: 't1',
+          description: 'B$id',
+          amountCents: amount,
+        );
+
+    String buildFrom(List<JournalEntry> entries) =>
+        DatevExport.buildBuchungsstapel(
+          entries: entries,
+          centersById: const {'c1': center},
+          typesById: const {'t1': type},
+          year: 2026,
+          config: const DatevExportConfig(defaultContraAccount: '9000'),
+          generatedAt: DateTime(2026, 6, 22),
+        );
+
+    test('gleiches Datum: Reihenfolge der Eingabe ändert den Output NICHT', () {
+      final a = buildFrom([e('a', 100), e('b', 200), e('c', 300)]);
+      final b = buildFrom([e('c', 300), e('a', 100), e('b', 200)]);
+      expect(a, b, reason: 'totale (date,id)-Ordnung → stabiler Stapel');
+    });
+
+    test('buildDatevExport: sha256/entryCount/soll/haben + Reproduzierbarkeit',
+        () {
+      final r1 = ExportService.buildDatevExport(
+        entries: [e('a', 1000), e('b', -400)],
+        centersById: const {'c1': center},
+        typesById: const {'t1': type},
+        year: 2026,
+        generatedAt: DateTime(2026, 6, 22, 9),
+        config: const DatevExportConfig(defaultContraAccount: '9000'),
+      );
+      expect(r1.entryCount, 2);
+      expect(r1.sollCents, 1000); // amount >= 0
+      expect(r1.habenCents, 400); // |amount < 0|
+      expect(r1.sha256, matches(RegExp(r'^[a-f0-9]{64}$')));
+      expect(r1.fileName, 'EXTF_Buchungsstapel_2026.csv');
+
+      // Gleiche Eingaben + gleicher generatedAt → identischer Hash.
+      final r2 = ExportService.buildDatevExport(
+        entries: [e('b', -400), e('a', 1000)],
+        centersById: const {'c1': center},
+        typesById: const {'t1': type},
+        year: 2026,
+        generatedAt: DateTime(2026, 6, 22, 9),
+        config: const DatevExportConfig(defaultContraAccount: '9000'),
+      );
+      expect(r2.sha256, r1.sha256);
     });
   });
 }

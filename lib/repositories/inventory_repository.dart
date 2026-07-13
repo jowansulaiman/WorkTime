@@ -224,6 +224,13 @@ abstract interface class InventoryRepository {
     required String orderId,
   });
 
+  /// Schließt die offene Restmenge einer teilweise gelieferten Bestellung.
+  Future<PurchaseOrder> closePurchaseOrderRemainder({
+    required String orgId,
+    required String orderId,
+    required String reason,
+  });
+
   Stream<List<CustomerOrder>> watchCustomerOrders(String orgId);
 
   /// Speichert eine Kundenbestellung (Anlage oder Update) und gibt deren Id

@@ -351,6 +351,80 @@ void main() {
       expect(restored.totalCents, 50 * 45 + 10 * 200);
     });
 
+    test('round-trips closure fields through local and Firestore maps', () {
+      final closedAt = DateTime(2026, 7, 13, 14, 30);
+      final order = buildOrder(PurchaseOrderStatus.received).copyWith(
+        closedAt: closedAt,
+        closedReason: '  Restmenge nicht lieferbar  ',
+      );
+
+      final localMap = order.toMap();
+      expect(localMap['closed_at'], closedAt.toIso8601String());
+      expect(
+        localMap['closed_reason'],
+        '  Restmenge nicht lieferbar  ',
+      );
+      expect(localMap, isNot(contains('closedAt')));
+
+      final local = PurchaseOrder.fromMap(localMap);
+      expect(local.closedAt, closedAt);
+      expect(local.closedReason, '  Restmenge nicht lieferbar  ');
+
+      final firestoreMap = order.toFirestoreMap();
+      expect(
+        firestoreMap,
+        containsPair('closedReason', 'Restmenge nicht lieferbar'),
+      );
+      expect(firestoreMap, isNot(contains('closed_at')));
+
+      final cloud = PurchaseOrder.fromFirestore('po-1', firestoreMap);
+      expect(cloud.closedAt, closedAt);
+      expect(cloud.closedReason, 'Restmenge nicht lieferbar');
+    });
+
+    test('copyWith can clear closure fields independently', () {
+      final closed = buildOrder(PurchaseOrderStatus.received).copyWith(
+        closedAt: DateTime.utc(2026, 7, 13),
+        closedReason: 'Restmenge nicht lieferbar',
+      );
+
+      final withoutDate = closed.copyWith(clearClosedAt: true);
+      expect(withoutDate.closedAt, isNull);
+      expect(withoutDate.closedReason, 'Restmenge nicht lieferbar');
+
+      final withoutReason = closed.copyWith(clearClosedReason: true);
+      expect(withoutReason.closedAt, closed.closedAt);
+      expect(withoutReason.closedReason, isNull);
+    });
+
+    test('deliveredTotalCents values only quantities actually received', () {
+      final order = buildOrder(PurchaseOrderStatus.partiallyReceived).copyWith(
+        items: const [
+          PurchaseOrderItem(
+            name: 'Cola',
+            quantityOrdered: 10,
+            quantityReceived: 4,
+            unitPriceCents: 100,
+            taxRatePercent: 19,
+          ),
+          PurchaseOrderItem(
+            name: 'Zeitschrift',
+            quantityOrdered: 5,
+            quantityReceived: 2,
+            unitPriceCents: 250,
+          ),
+          PurchaseOrderItem(
+            name: 'Gratisprobe',
+            quantityOrdered: 3,
+            quantityReceived: 3,
+          ),
+        ],
+      );
+
+      expect(order.totalCents, 10 * 100 + 5 * 250);
+      expect(order.deliveredTotalCents, 4 * 100 + 2 * 250);
+    });
+
     test('deriveReceiptStatus reflects delivered quantities', () {
       final ordered = buildOrder(PurchaseOrderStatus.ordered);
       expect(ordered.deriveReceiptStatus(), PurchaseOrderStatus.ordered);

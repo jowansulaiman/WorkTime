@@ -2,8 +2,11 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/datev_export.dart';
+import 'package:worktime_app/core/datev_lohn_export.dart';
+import 'package:worktime_app/core/local_demo_data.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/cash_closing.dart';
+import 'package:worktime_app/models/datev_export_run.dart';
 import 'package:worktime_app/models/finance_models.dart';
 import 'package:worktime_app/models/user_settings.dart';
 import 'package:worktime_app/providers/finance_provider.dart';
@@ -246,6 +249,322 @@ void main() {
       expect(provider.costCenters.map((c) => c.id), contains('cc1'));
       expect(provider.costCenterById('cc1')!.name, 'Tabak Börse');
       expect(provider.totalExpenses(2026), 120000);
+    });
+  });
+
+  group('DATEV-1: financeConfig cloud-first', () {
+    Future<Map<String, dynamic>?> cloudDoc() async {
+      final snap = await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('financeConfig')
+          .doc('datev')
+          .get();
+      return snap.data();
+    }
+
+    test('lädt bestehendes Cloud-Singleton beim Login (admin)', () async {
+      await service.saveDatevConfig(
+        orgId: 'org-1',
+        config: const DatevExportConfig(
+          consultantNumber: '7777',
+          clientNumber: '11',
+          defaultContraAccount: '8400',
+        ),
+      );
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.datevConfig.consultantNumber, '7777');
+      expect(provider.datevConfig.defaultContraAccount, '8400');
+    });
+
+    test('Erstmigration: konfigurierter lokaler Stand wird angelegt + Audit '
+        'created', () async {
+      // Vorbedingung: ein wirklich konfigurierter gerätelokaler Stand.
+      await DatabaseService.saveLocalDatevConfig(
+        const DatevExportConfig(consultantNumber: '4242', clientNumber: '99'),
+        scope: LocalStorageScope.fromUser(_admin),
+      );
+      final audits = <String>[];
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      provider.setAuditSink(({
+        required action,
+        required entityType,
+        entityId,
+        required summary,
+      }) {
+        if (entityType == 'datevConfig') audits.add(action.name);
+      });
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      final doc = await cloudDoc();
+      expect(doc, isNotNull,
+          reason: 'konfigurierter lokaler Stand wird einmalig hochgehoben');
+      expect(doc?['consultantNumber'], '4242');
+      expect(audits, contains('created'));
+    });
+
+    test('unkonfiguriertes Gerät legt KEIN leeres Cloud-Singleton an', () async {
+      // Kein lokaler Stand (Default) → keine Migration, sonst würden später
+      // konfigurierte Geräte das leere Singleton adoptieren.
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+      expect(await cloudDoc(), isNull);
+    });
+
+    test('leeres Cloud-Singleton überschreibt konfigurierten Lokalstand NICHT',
+        () async {
+      // Cloud existiert, aber unkonfiguriert; lokal ist konfiguriert.
+      await service.saveDatevConfig(
+        orgId: 'org-1',
+        config: const DatevExportConfig(),
+      );
+      await DatabaseService.saveLocalDatevConfig(
+        const DatevExportConfig(consultantNumber: '4242'),
+        scope: LocalStorageScope.fromUser(_admin),
+      );
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(provider.datevConfig.consultantNumber, '4242',
+          reason: 'lokaler Stand bleibt erhalten');
+      final doc = await cloudDoc();
+      expect(doc?['consultantNumber'], '4242',
+          reason: 'lokaler Stand wird nach oben ergänzt');
+    });
+
+    test('save schreibt Cloud + spiegelt lokal + Audit updated', () async {
+      final audits = <String>[];
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      provider.setAuditSink(({
+        required action,
+        required entityType,
+        entityId,
+        required summary,
+      }) {
+        if (entityType == 'datevConfig' && action.name == 'updated') {
+          audits.add(summary);
+        }
+      });
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      await provider.saveDatevConfig(const DatevExportConfig(
+        consultantNumber: '9999',
+        defaultContraAccount: '8300',
+      ));
+
+      final doc = await cloudDoc();
+      expect(doc?['consultantNumber'], '9999');
+      expect(doc?['orgId'], 'org-1'); // Rules-Pin gesetzt
+      expect(audits, isNotEmpty);
+    });
+
+    test('Mitarbeiter löst KEINEN Cloud-Load aus (kein permission-Risiko)',
+        () async {
+      // Kein Cloud-Doc angelegt → wenn der Employee migrieren würde, entstünde
+      // eins. Es darf keins entstehen.
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_employee, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+      expect(await cloudDoc(), isNull);
+    });
+  });
+
+  group('PERSONAL-2/3: DatevLohnConfig', () {
+    test('local-Modus: save persistiert + admin-gated', () async {
+      final provider =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      expect(provider.datevLohnConfig.isConfigured, isFalse);
+
+      await provider.saveDatevLohnConfig(const DatevLohnConfig(
+        format: DatevLohnFormat.lohnUndGehalt,
+        beraterNr: '1234567',
+        mandantenNr: '99',
+        festeLohnartGrundlohn: '100',
+      ));
+      expect(provider.datevLohnConfig.beraterNr, '1234567');
+
+      // Persistenz über Neustart.
+      final reopened =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(reopened.dispose);
+      await reopened.updateSession(_admin, localStorageOnly: true);
+      expect(reopened.datevLohnConfig.beraterNr, '1234567');
+      expect(reopened.datevLohnConfig.format, DatevLohnFormat.lohnUndGehalt);
+
+      await reopened.updateSession(_employee, localStorageOnly: true);
+      await expectLater(
+        reopened.saveDatevLohnConfig(const DatevLohnConfig()),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('cloud: konfigurierter Stand wird als financeConfig/datevLohn '
+        'angelegt', () async {
+      await DatabaseService.saveLocalDatevLohnConfig(
+        const DatevLohnConfig(beraterNr: '4242'),
+        scope: LocalStorageScope.fromUser(_admin),
+      );
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      final snap = await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('financeConfig')
+          .doc('datevLohn')
+          .get();
+      expect(snap.data()?['beraterNr'], '4242');
+      expect(snap.data()?['orgId'], 'org-1');
+    });
+  });
+
+  group('DATEV-3: Export-Historie (Q2)', () {
+    test('logDatevExportRun schreibt Run + füllt orgId/createdByUid; watch '
+        'streamt zurück', () async {
+      final provider = FinanceProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, hybridStorageEnabled: true);
+      await Future<void>.delayed(Duration.zero);
+
+      final id = await provider.logDatevExportRun(const DatevExportRun(
+        orgId: '', // wird vom Provider gefüllt
+        exportArt: DatevExportArt.finanz,
+        kind: 'extf_buchungsstapel',
+        periodYear: 2026,
+        createdByUid: '',
+        entryCount: 3,
+        sollCents: 5000,
+        habenCents: 5000,
+        fileName: 'EXTF_Buchungsstapel_2026.csv',
+        fileSha256:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      ));
+      expect(id, isNotEmpty);
+
+      final runs =
+          await provider.watchDatevExportRuns(DatevExportArt.finanz).first;
+      expect(runs, hasLength(1));
+      expect(runs.single.orgId, 'org-1');
+      expect(runs.single.createdByUid, 'admin-1');
+      expect(runs.single.entryCount, 3);
+    });
+
+    test('local-Modus: supportsExportHistory false, watch liefert leer',
+        () async {
+      final provider =
+          FinanceProvider(firestoreService: service, disableAuthentication: true);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_admin, localStorageOnly: true);
+      expect(provider.supportsExportHistory, isFalse);
+      final runs =
+          await provider.watchDatevExportRuns(DatevExportArt.finanz).first;
+      expect(runs, isEmpty);
+    });
+
+    test('lokaler Demo-Modus streamt Seed-Runs und protokolliert nur in Memory',
+        () async {
+      const orgId = 'demo-org-datev-history';
+      final provider = FinanceProvider(
+        firestoreService: service,
+        disableAuthentication: true,
+      );
+      addTearDown(provider.dispose);
+      await provider.updateSession(
+        LocalDemoData.adminAccount.toProfile(orgId: orgId),
+        localStorageOnly: true,
+      );
+
+      expect(provider.supportsExportHistory, isTrue);
+      final initialFinanz =
+          await provider.watchDatevExportRuns(DatevExportArt.finanz).first;
+      final initialLohn =
+          await provider.watchDatevExportRuns(DatevExportArt.lohn).first;
+      expect(initialFinanz, hasLength(2));
+      expect(initialLohn, hasLength(2));
+      expect(
+        initialFinanz.map((run) => run.canRebuildByteIdentical).toSet(),
+        {true, false},
+      );
+      expect(
+        initialLohn.map((run) => run.canRebuildByteIdentical).toSet(),
+        {true, false},
+      );
+
+      final emissions = <List<DatevExportRun>>[];
+      final subscription = provider
+          .watchDatevExportRuns(DatevExportArt.finanz)
+          .listen(emissions.add);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(Duration.zero);
+
+      final id = await provider.logDatevExportRun(const DatevExportRun(
+        orgId: '',
+        exportArt: DatevExportArt.finanz,
+        kind: 'extf_buchungsstapel',
+        periodYear: 2026,
+        createdByUid: '',
+        entryCount: 1,
+        sollCents: 12500,
+        habenCents: 0,
+        fileName: 'EXTF_Demo_Neu.csv',
+        fileSha256:
+            'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        entriesSnapshot: [
+          {'amountCents': 12500}
+        ],
+        snapshotRowCount: 1,
+      ));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(id, startsWith('local-datev-run-'));
+      expect(emissions, hasLength(greaterThanOrEqualTo(2)));
+      expect(emissions.last, hasLength(initialFinanz.length + 1));
+      expect(emissions.last.first.id, id);
+      expect(emissions.last.first.orgId, orgId);
+      expect(
+        emissions.last.first.createdByUid,
+        LocalDemoData.adminAccount.uid,
+      );
+
+      final cloudRuns = await firestore
+          .collection('organizations')
+          .doc(orgId)
+          .collection('datevExportRuns')
+          .get();
+      expect(cloudRuns.docs, isEmpty);
+
+      // Neue Provider-Instanz startet wieder beim Factory-Seed: der manuelle
+      // Run wurde weder lokal noch in der Cloud persistiert.
+      final reopened = FinanceProvider(
+        firestoreService: service,
+        disableAuthentication: true,
+      );
+      addTearDown(reopened.dispose);
+      await reopened.updateSession(
+        LocalDemoData.adminAccount.toProfile(orgId: orgId),
+        localStorageOnly: true,
+      );
+      final reopenedRuns =
+          await reopened.watchDatevExportRuns(DatevExportArt.finanz).first;
+      expect(reopenedRuns, hasLength(initialFinanz.length));
+      expect(reopenedRuns.any((run) => run.id == id), isFalse);
     });
   });
 

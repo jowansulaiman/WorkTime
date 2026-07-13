@@ -25,6 +25,8 @@ import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
 import '../screens/inventur_screen.dart';
+import '../screens/kennzahlen_screen.dart';
+import '../screens/mitteilungen_screen.dart';
 import '../screens/kassenbericht_screen.dart';
 import '../screens/knowledge/knowledge_screen.dart';
 import '../screens/passwords_screen.dart';
@@ -151,6 +153,10 @@ GoRouter buildAppRouter({
       ),
 
       // ---- Hauptbereich-Routen (single canonical route je Screen) ----
+      _sectionRoute(AppRoutes.kennzahlen,
+          (c, s) => const KennzahlenScreen(parentLabel: 'Übersicht')),
+      _sectionRoute(AppRoutes.mitteilungen,
+          (c, s) => const MitteilungenScreen(parentLabel: 'Übersicht')),
       _sectionRoute(
         AppRoutes.inventory,
         // `?tab=korb` springt direkt in den Bestellkorb (Warenkorb-Knopf in der

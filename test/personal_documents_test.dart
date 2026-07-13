@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:worktime_app/core/local_demo_data.dart';
 import 'package:worktime_app/models/app_user.dart';
 import 'package:worktime_app/models/employee_document.dart';
 import 'package:worktime_app/models/user_settings.dart';
@@ -91,6 +92,60 @@ void main() {
   Uint8List bytes() => Uint8List.fromList(List<int>.filled(64, 7));
 
   group('PersonalProvider Dokumente (PA-3)', () {
+    test('lokaler Demo-Modus lädt nur Metadaten und respektiert Self-Read',
+        () async {
+      const orgId = 'org-local-doc-demo';
+      final provider = PersonalProvider(
+        firestoreService: service,
+        disableAuthentication: true,
+      );
+      addTearDown(provider.dispose);
+
+      await provider.updateSession(
+        LocalDemoData.adminAccount.toProfile(orgId: orgId),
+        localStorageOnly: true,
+      );
+
+      expect(provider.documents, hasLength(DocumentCategory.values.length));
+      expect(
+        provider.documents.map((document) => document.category).toSet(),
+        DocumentCategory.values.toSet(),
+      );
+      expect(provider.documentsAvailable, isFalse);
+      expect(
+        () => provider.downloadDocument(provider.documents.first),
+        throwsA(isA<StateError>()),
+      );
+
+      // Die Demo-Metadaten bleiben in-memory; lokal wird weder ein Binary noch
+      // ein Firestore-Metadokument angelegt.
+      final cloudDocuments = await firestore
+          .collection('organizations')
+          .doc(orgId)
+          .collection('employeeDocuments')
+          .get();
+      expect(cloudDocuments.docs, isEmpty);
+
+      final employee = LocalDemoData.employeeAccount.toProfile(orgId: orgId);
+      await provider.updateSession(employee, localStorageOnly: true);
+
+      expect(provider.documents, isNotEmpty);
+      expect(
+        provider.documents.every(
+          (document) =>
+              document.userId == employee.uid &&
+              document.visibleToEmployee &&
+              document.uploadedByUid == LocalDemoData.adminAccount.uid,
+        ),
+        isTrue,
+      );
+      expect(
+        provider.documents.length,
+        lessThan(DocumentCategory.values.length),
+      );
+      expect(provider.documentsAvailable, isFalse);
+    });
+
     test('Admin lädt hoch → Storage + Metadaten + Audit + Provider-Liste',
         () async {
       final storage = _FakeDocumentStorage();
@@ -308,6 +363,54 @@ void main() {
 
       final titles = provider.documents.map((d) => d.title).toList();
       expect(titles, ['Sichtbar']);
+    });
+
+    test('PERSONAL-4: markDocumentOpened + declineDocument (Workflow)',
+        () async {
+      await service.saveEmployeeDocument(const EmployeeDocument(
+        id: 'wf-1',
+        orgId: 'org-1',
+        userId: 'emp-1',
+        title: 'Betriebsvereinbarung',
+        storagePath: 'employee-documents/org-1/emp-1/wf-1',
+        visibleToEmployee: true,
+        requiresAcknowledgement: true,
+      ));
+      final provider = PersonalProvider(firestoreService: service);
+      addTearDown(provider.dispose);
+      await provider.updateSession(_employee);
+      await Future<void>.delayed(Duration.zero);
+      final doc = provider.documents.firstWhere((d) => d.id == 'wf-1');
+
+      // Öffnen + Download vermerken.
+      await provider.markDocumentOpened(doc, alsoDownloaded: true);
+      var snap = await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('employeeDocuments')
+          .doc('wf-1')
+          .get();
+      expect(snap.data()?['openedAt'], isNotNull);
+      expect(snap.data()?['downloadedAt'], isNotNull);
+
+      // Leerer Kommentar wird abgewiesen.
+      await expectLater(
+        provider.declineDocument(doc, comment: '   '),
+        throwsA(isA<StateError>()),
+      );
+
+      // Ablehnen mit Kommentar setzt declinedAt/declineComment.
+      await provider.declineDocument(doc, comment: 'nicht einverstanden');
+      snap = await firestore
+          .collection('organizations')
+          .doc('org-1')
+          .collection('employeeDocuments')
+          .doc('wf-1')
+          .get();
+      expect(snap.data()?['declinedAt'], isNotNull);
+      expect(snap.data()?['declineComment'], 'nicht einverstanden');
+      final reread = EmployeeDocument.fromFirestore('wf-1', snap.data()!);
+      expect(reread.workflowStatus, EmployeeDocumentWorkflowStatus.abgelehnt);
     });
   });
 }

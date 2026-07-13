@@ -198,6 +198,7 @@ class _KioskScreenState extends State<KioskScreen> {
                   siteName: site.name,
                   firestore: _firestore,
                   thirdPartyCashTypes: site.activeThirdPartyCashTypes,
+                  thirdPartyInTill: site.thirdPartyCashInTill,
                 ),
               ),
             ],
@@ -471,12 +472,14 @@ class _KioskBoard extends StatelessWidget {
     required this.siteName,
     required this.firestore,
     this.thirdPartyCashTypes = const [],
+    this.thirdPartyInTill = false,
   });
 
   final String? siteId;
   final String siteName;
   final FirestoreService firestore;
   final List<ThirdPartyCashType> thirdPartyCashTypes;
+  final bool thirdPartyInTill;
 
   @override
   Widget build(BuildContext context) {
@@ -488,7 +491,8 @@ class _KioskBoard extends StatelessWidget {
       _CashCountTile(
           siteId: siteId,
           firestore: firestore,
-          thirdPartyCashTypes: thirdPartyCashTypes),
+          thirdPartyCashTypes: thirdPartyCashTypes,
+          thirdPartyInTill: thirdPartyInTill),
       _FridgeTile(siteId: siteId),
       _ExpiryTile(siteId: siteId),
       _WishesTile(siteId: siteId, siteName: siteName, firestore: firestore),
@@ -841,10 +845,12 @@ class _CashCountTile extends StatefulWidget {
     required this.siteId,
     required this.firestore,
     this.thirdPartyCashTypes = const [],
+    this.thirdPartyInTill = false,
   });
   final String? siteId;
   final FirestoreService firestore;
   final List<ThirdPartyCashType> thirdPartyCashTypes;
+  final bool thirdPartyInTill;
 
   @override
   State<_CashCountTile> createState() => _CashCountTileState();
@@ -867,6 +873,7 @@ class _CashCountTileState extends State<_CashCountTile> {
       context,
       subtitle: 'Bitte das gesamte Bargeld in der Kasse zählen und eintragen.',
       thirdPartyTypes: widget.thirdPartyCashTypes,
+      thirdPartyInTill: widget.thirdPartyInTill,
     );
     if (input == null) return;
     controller.touch();

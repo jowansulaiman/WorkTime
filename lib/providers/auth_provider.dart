@@ -6,21 +6,22 @@ import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import '../core/app_config.dart';
+import '../core/app_logger.dart';
 import '../core/local_demo_data.dart';
 import '../firebase_options.dart';
 import '../models/app_user.dart';
 import '../models/notification_prefs.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
+import '../services/demo_data_seeder.dart';
 import '../services/firestore_service.dart';
-import '../core/app_logger.dart';
 
 class AuthProvider extends ChangeNotifier {
   AuthProvider({
     required AuthService authService,
     required FirestoreService firestoreService,
-  })  : _authService = authService,
-        _firestoreService = firestoreService;
+  }) : _authService = authService,
+       _firestoreService = firestoreService;
 
   final AuthService _authService;
   final FirestoreService _firestoreService;
@@ -40,9 +41,10 @@ class AuthProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   User? get firebaseUser => _firebaseUser;
   AppUserProfile? get profile => _profile;
-  bool get isAuthenticated => authDisabled
-      ? _profile != null
-      : _firebaseUser != null && _profile != null;
+  bool get isAuthenticated =>
+      authDisabled
+          ? _profile != null
+          : _firebaseUser != null && _profile != null;
 
   /// Push-Präferenzen des eigenen Profils setzen (M5). Optimistisch lokal
   /// übernommen (UI sofort), dann best-effort in die Cloud — im local-/Offline-
@@ -63,10 +65,14 @@ class AuthProvider extends ChangeNotifier {
         prefs.toFirestoreMap(),
       );
     } catch (error, stackTrace) {
-      AppLogger.error('Push-Präferenzen speichern fehlgeschlagen',
-          error: error, stackTrace: stackTrace);
+      AppLogger.error(
+        'Push-Präferenzen speichern fehlgeschlagen',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
+
   bool get isResolvingProfile =>
       !authDisabled &&
       _firebaseUser != null &&
@@ -93,10 +99,14 @@ class AuthProvider extends ChangeNotifier {
 
     if (authDisabled) {
       final localUserId = await DatabaseService.loadLocalAuthUserId();
-      _profile = LocalDemoData.profileForUid(
+      final profile = LocalDemoData.profileForUid(
         localUserId,
         orgId: AppConfig.defaultOrganizationId,
       );
+      if (profile != null) {
+        await DemoDataSeeder.seedForUser(profile);
+      }
+      _profile = profile;
       _initialized = true;
       _errorMessage = null;
       notifyListeners();
@@ -124,9 +134,7 @@ class AuthProvider extends ChangeNotifier {
     if (authDisabled) {
       return Future.value();
     }
-    return _runAction(
-      () => _authService.signInWithGoogle(),
-    );
+    return _runAction(() => _authService.signInWithGoogle());
   }
 
   Future<void> signInWithEmailPassword({
@@ -142,10 +150,11 @@ class AuthProvider extends ChangeNotifier {
         );
         if (profile == null) {
           throw StateError(
-            'Unbekannter Demo-Login. Nutze einen der Demo-Accounts mit dem Passwort demo1234: '
-            'admin@demo.local, peter@example.com, maria@example.com oder lea.teamlead@example.com.',
+            'Unbekannter Demo-Login. Nutze einen der angezeigten Demo-Accounts '
+            'mit dem Passwort demo1234.',
           );
         }
+        await DemoDataSeeder.seedForUser(profile);
         await DatabaseService.saveLocalAuthUserId(profile.uid);
         _firebaseUser = null;
         _profile = profile;
@@ -172,6 +181,7 @@ class AuthProvider extends ChangeNotifier {
       if (profile == null) {
         throw StateError('Das ausgewaehlte Demo-Profil wurde nicht gefunden.');
       }
+      await DemoDataSeeder.seedForUser(profile);
       await DatabaseService.saveLocalAuthUserId(profile.uid);
       _firebaseUser = null;
       _profile = profile;
@@ -187,12 +197,11 @@ class AuthProvider extends ChangeNotifier {
       return Future.value();
     }
     return _runAction(() async {
-      final hasPendingAccess =
-          await _firestoreService.hasPendingAccessForEmail(email);
+      final hasPendingAccess = await _firestoreService.hasPendingAccessForEmail(
+        email,
+      );
       if (!hasPendingAccess) {
-        throw StateError(
-          'Fuer diese E-Mail liegt keine aktive Einladung vor.',
-        );
+        throw StateError('Fuer diese E-Mail liegt keine aktive Einladung vor.');
       }
       await _authService.registerWithEmailPassword(
         email: email,
@@ -209,10 +218,7 @@ class AuthProvider extends ChangeNotifier {
         _profile = null;
       }, clearError: true);
     }
-    return _runAction(
-      () => _authService.signOut(),
-      clearError: true,
-    );
+    return _runAction(() => _authService.signOut(), clearError: true);
   }
 
   /// Anmelde-Anbieter des aktuellen Nutzers (`password`/`google.com`) — steuert,
@@ -279,14 +285,20 @@ class AuthProvider extends ChangeNotifier {
     try {
       await DatabaseService.wipeAllLocalData();
     } catch (error, stackTrace) {
-      AppLogger.warning('Lokaler Wipe nach Kontolöschung fehlgeschlagen',
-          error: error, stackTrace: stackTrace);
+      AppLogger.warning(
+        'Lokaler Wipe nach Kontolöschung fehlgeschlagen',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
     try {
       await _authService.signOut();
     } catch (error, stackTrace) {
-      AppLogger.warning('Sign-out nach Kontolöschung fehlgeschlagen',
-          error: error, stackTrace: stackTrace);
+      AppLogger.warning(
+        'Sign-out nach Kontolöschung fehlgeschlagen',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
     return true;
   }
@@ -348,8 +360,9 @@ class AuthProvider extends ChangeNotifier {
       var attempt = 0;
       for (;;) {
         try {
-          ensuredProfile =
-              await _firestoreService.ensureProfileForSignedInUser(user);
+          ensuredProfile = await _firestoreService.ensureProfileForSignedInUser(
+            user,
+          );
           break;
         } catch (error) {
           attempt += 1;
@@ -369,22 +382,26 @@ class AuthProvider extends ChangeNotifier {
 
       _profile = ensuredProfile;
       notifyListeners();
-      _profileSubscription =
-          _firestoreService.watchUserProfile(user.uid).listen((profile) async {
-        _profile = profile;
-        notifyListeners();
+      _profileSubscription = _firestoreService
+          .watchUserProfile(user.uid)
+          .listen(
+            (profile) async {
+              _profile = profile;
+              notifyListeners();
 
-        if (profile != null) {
-          await _firestoreService.migrateLegacyDataIfNeeded(
-            orgId: profile.orgId,
-            userId: profile.uid,
-            currentSettings: profile.settings,
+              if (profile != null) {
+                await _firestoreService.migrateLegacyDataIfNeeded(
+                  orgId: profile.orgId,
+                  userId: profile.uid,
+                  currentSettings: profile.settings,
+                );
+              }
+            },
+            onError: (Object error, StackTrace stackTrace) {
+              _errorMessage = _mapError(error);
+              notifyListeners();
+            },
           );
-        }
-      }, onError: (Object error, StackTrace stackTrace) {
-        _errorMessage = _mapError(error);
-        notifyListeners();
-      });
       _errorMessage = null;
     } catch (error) {
       if (executionId != _authChangeExecutionId) return;
@@ -427,8 +444,7 @@ class AuthProvider extends ChangeNotifier {
         'email-already-in-use' => 'Diese E-Mail ist bereits registriert.',
         'weak-password' => 'Das Passwort ist zu schwach.',
         'popup-closed-by-user' ||
-        'cancelled-popup-request' =>
-          'Die Google-Anmeldung wurde abgebrochen.',
+        'cancelled-popup-request' => 'Die Google-Anmeldung wurde abgebrochen.',
         'popup-blocked' =>
           'Das Anmelde-Popup wurde vom Browser blockiert. Bitte erlaube Popups fuer diese Seite.',
         'network-request-failed' =>
@@ -465,7 +481,8 @@ class AuthProvider extends ChangeNotifier {
     }
     if (error is PlatformException) {
       AppLogger.warning(
-          'PlatformException code: ${error.code}, message: ${error.message}');
+        'PlatformException code: ${error.code}, message: ${error.message}',
+      );
       if (error.code == 'sign_in_canceled') {
         return 'Die Google-Anmeldung wurde abgebrochen.';
       }

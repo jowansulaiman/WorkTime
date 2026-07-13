@@ -159,4 +159,46 @@ void main() {
       expect(updated.name, 'Tabak Börse');
     });
   });
+
+  group('SiteDefinition thirdPartyCashInTill (§8.5b Kassenführung)', () {
+    test('Default ist false (getrennte Töpfe)', () {
+      const s = SiteDefinition(orgId: 'org-1', name: 'Laden');
+      expect(s.thirdPartyCashInTill, isFalse);
+    });
+
+    test('Firestore-Roundtrip (camelCase) erhält das Flag', () {
+      const s = SiteDefinition(
+          orgId: 'org-1', name: 'Tabak Börse', thirdPartyCashInTill: true);
+      final back = SiteDefinition.fromFirestore('x', s.toFirestoreMap());
+      expect(back.thirdPartyCashInTill, isTrue);
+      expect(s.toFirestoreMap()['thirdPartyCashInTill'], isTrue);
+    });
+
+    test('lokaler Roundtrip (snake_case) erhält das Flag', () {
+      const s = SiteDefinition(
+          orgId: 'org-1', name: 'Tabak Börse', thirdPartyCashInTill: true);
+      final map = s.toMap();
+      expect(map['third_party_cash_in_till'], isTrue);
+      expect(SiteDefinition.fromMap(map).thirdPartyCashInTill, isTrue);
+    });
+
+    test('Altdaten ohne das Feld lesen als false', () {
+      final legacy = {'id': 'x', 'org_id': 'org-1', 'name': 'Alt'};
+      expect(SiteDefinition.fromMap(legacy).thirdPartyCashInTill, isFalse);
+      expect(
+          SiteDefinition.fromFirestore('x', {'orgId': 'org-1', 'name': 'Alt'})
+              .thirdPartyCashInTill,
+          isFalse);
+    });
+
+    test('copyWith überschreibt das Flag', () {
+      const s = SiteDefinition(orgId: 'org-1', name: 'Laden');
+      expect(s.copyWith(thirdPartyCashInTill: true).thirdPartyCashInTill,
+          isTrue);
+      // Ohne Argument bleibt der bestehende Wert erhalten.
+      const on =
+          SiteDefinition(orgId: 'org-1', name: 'L', thirdPartyCashInTill: true);
+      expect(on.copyWith(name: 'L2').thirdPartyCashInTill, isTrue);
+    });
+  });
 }

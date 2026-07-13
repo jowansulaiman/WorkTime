@@ -17,10 +17,17 @@ import 'daily_closing.dart';
 /// - Sätze **ohne** zugeordnetes Konto (oder mit netto 0 / unbekanntem Satz)
 ///   werden **übersprungen** (keine Falschbuchung); der Aufrufer kann warnen.
 ///
+/// **DATEV-2:** Rückgabe ist ein Record `({entries, skippedRates})` statt einer
+/// stillen `continue`-Schleife — [skippedRates] listet die USt-Sätze mit
+/// echtem Umsatz (netto ≠ 0), die MANGELS zugeordnetem Erlöskonto nicht gebucht
+/// wurden (Befund-Klasse `revenue_rate_unmapped`), damit der Tagesabschluss
+/// ehrlich warnen kann. Unbekannte Sätze (`ratePercent == null`) zählen nicht
+/// als „unmapped" (Datenlücke der Kasse, kein Konfigurationsfehler).
+///
 /// **Richtwert** — der DATEV-Export trägt bewusst keine Steuerschlüssel; der
 /// Steuerberater prüft vor der Verbuchung. Geld-/Steuerfelder der Kasse sind
 /// zudem noch Swagger-unverifiziert (P0).
-List<JournalEntry> buildDailyClosingEntries(
+({List<JournalEntry> entries, List<int> skippedRates}) buildDailyClosingEntries(
   DailyClosing closing, {
   required String orgId,
   required String costCenterId,
@@ -31,12 +38,18 @@ List<JournalEntry> buildDailyClosingEntries(
       DateTime.tryParse(closing.businessDay) ??
       DateTime(1970);
   final entries = <JournalEntry>[];
+  final skippedRates = <int>[];
   for (final bucket in closing.taxBuckets) {
     final rate = bucket.ratePercent;
     if (rate == null) continue; // unbekannter Satz -> nicht buchen
+    if (bucket.netCents == 0) continue; // kein Umsatz -> nichts zu buchen
     final costTypeId = revenueCostTypeIdByRate[rate];
-    if (costTypeId == null || costTypeId.isEmpty) continue; // kein Konto -> skip
-    if (bucket.netCents == 0) continue;
+    if (costTypeId == null || costTypeId.isEmpty) {
+      // Umsatz vorhanden, aber Satz keinem Erlöskonto zugeordnet -> nicht
+      // still verschlucken, sondern melden (revenue_rate_unmapped).
+      skippedRates.add(rate);
+      continue;
+    }
     entries.add(JournalEntry(
       id: 'pos-${closing.businessDay}-${closing.siteId}-$rate',
       orgId: orgId,
@@ -50,5 +63,5 @@ List<JournalEntry> buildDailyClosingEntries(
       createdByUid: createdByUid,
     ));
   }
-  return entries;
+  return (entries: entries, skippedRates: skippedRates);
 }

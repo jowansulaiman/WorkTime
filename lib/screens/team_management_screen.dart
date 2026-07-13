@@ -2671,6 +2671,10 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
   // Dritte-Hand-/Fremdgeld-Arten dieser Filiale (§8.5, v1 Minimal-Variante).
   final List<_ThirdPartyTypeRow> _thirdPartyRows = [];
 
+  // §8.5b: liegt das Fremdgeld in derselben Kassenlade (Betrag inkl.)? Belegt
+  // beim Zählen den Umschalter vor. Default false = getrennte Töpfe (bisher).
+  bool _thirdPartyInTill = false;
+
   @override
   void initState() {
     super.initState();
@@ -2694,6 +2698,7 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
     for (final t in sortedTypes) {
       _thirdPartyRows.add(_ThirdPartyTypeRow.fromType(t));
     }
+    _thirdPartyInTill = widget.site?.thirdPartyCashInTill ?? false;
   }
 
   /// Baut die Editor-Zeilen aus den vorhandenen Öffnungszeiten + Bedarfen.
@@ -3128,6 +3133,23 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
         const SizedBox(height: 8),
+        if (_thirdPartyRows.isNotEmpty)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _thirdPartyInTill,
+            onChanged: (v) => setState(() => _thirdPartyInTill = v),
+            title: const Text('Fremdgeld liegt in der Kassenlade'),
+            subtitle: Text(
+              _thirdPartyInTill
+                  ? 'Beim Zählen wird der Gesamtbetrag inkl. Fremdgeld '
+                      'eingegeben (eigene Kasse = Betrag − Fremdgeld). '
+                      'Umschaltbar pro Zählung.'
+                  : 'Eigene Kasse und Fremdgeld werden getrennt gezählt. '
+                      'Umschaltbar pro Zählung.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
         for (var i = 0; i < _thirdPartyRows.length; i++)
           Padding(
             key: ValueKey(_thirdPartyRows[i]),
@@ -3236,6 +3258,7 @@ class _SiteEditorSheetState extends State<_SiteEditorSheet> {
         weekdayHours: weekdayHours,
         staffingDemands: staffingDemands,
         thirdPartyCashTypes: _buildThirdPartyTypes(),
+        thirdPartyCashInTill: _thirdPartyInTill,
         createdByUid: widget.currentUser.uid,
       ),
     );

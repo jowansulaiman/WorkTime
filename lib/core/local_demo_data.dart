@@ -2,10 +2,12 @@ import '../models/app_user.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
 import '../models/employee_site_assignment.dart';
+import '../models/notification_prefs.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
 import '../models/site_schedule.dart';
 import '../models/supplier.dart';
+import '../models/third_party_cash.dart';
 import '../models/user_settings.dart';
 
 class LocalDemoAccount {
@@ -16,6 +18,7 @@ class LocalDemoAccount {
     required this.name,
     required this.role,
     required this.description,
+    this.notificationPrefs = const NotificationPrefs(),
   });
 
   final String uid;
@@ -24,6 +27,7 @@ class LocalDemoAccount {
   final String name;
   final UserRole role;
   final String description;
+  final NotificationPrefs notificationPrefs;
 
   AppUserProfile toProfile({required String orgId}) {
     return AppUserProfile(
@@ -39,6 +43,7 @@ class LocalDemoAccount {
         currency: 'EUR',
         vacationDays: 30,
       ),
+      notificationPrefs: notificationPrefs,
     );
   }
 }
@@ -63,6 +68,13 @@ class LocalDemoData {
     role: UserRole.employee,
     description:
         'Mitarbeiterprofil fuer Zeiterfassung, Schichten und Abwesenheiten.',
+    notificationPrefs: NotificationPrefs(
+      kundenwuensche: false,
+      bestand: false,
+      quietHoursEnabled: true,
+      quietStartMinutes: 21 * 60,
+      quietEndMinutes: 7 * 60,
+    ),
   );
 
   static const LocalDemoAccount employeeSecondAccount = LocalDemoAccount(
@@ -73,6 +85,7 @@ class LocalDemoData {
     role: UserRole.employee,
     description:
         'Zweites Mitarbeiterprofil fuer Tests mit mehreren Mitarbeitern.',
+    notificationPrefs: NotificationPrefs(masterEnabled: false),
   );
 
   static const LocalDemoAccount teamLeadAccount = LocalDemoAccount(
@@ -237,9 +250,44 @@ class LocalDemoData {
   }
 
   static List<AppUserProfile> profilesForOrg(String orgId) {
-    return accounts
-        .map((account) => account.toProfile(orgId: orgId))
-        .toList(growable: false);
+    return [
+      ...accounts.map((account) => account.toProfile(orgId: orgId)),
+      // Bewusst nicht als Login angeboten: Status-/Berechtigungsfaelle fuer
+      // Team- und Personalansichten, einschliesslich fehlender Folgedaten.
+      AppUserProfile(
+        uid: 'local-demo-inactive',
+        orgId: orgId,
+        email: 'archiv@demo.local',
+        role: UserRole.employee,
+        isActive: false,
+        settings: const UserSettings(
+          name: 'Chris Ausgeschieden',
+          hourlyRate: 15,
+          dailyHours: 8,
+          vacationDays: 24,
+        ),
+      ),
+      AppUserProfile(
+        uid: 'local-demo-restricted',
+        orgId: orgId,
+        email: 'aushilfe@demo.local',
+        role: UserRole.employee,
+        isActive: true,
+        settings: const UserSettings(
+          name: 'Kim Aushilfe',
+          hourlyRate: 14.5,
+          dailyHours: 4,
+          vacationDays: 20,
+        ),
+        permissions: const UserPermissions(
+          canViewSchedule: false,
+          canEditSchedule: false,
+          canViewTimeTracking: true,
+          canEditTimeEntries: false,
+          canViewReports: false,
+        ),
+      ),
+    ];
   }
 
   /// Drei echte Kieler Läden (Juli-2026-Plan) inkl. Öffnungszeiten +
@@ -313,6 +361,26 @@ class LocalDemoData {
         description: 'Tabakwaren + Paketshop am Blücherplatz.',
         weekdayHours: tabakWeekdayHours,
         staffingDemands: tabakDemands,
+        thirdPartyCashTypes: const [
+          ThirdPartyCashType(
+            id: 'lotto',
+            name: 'Lotto',
+            required: true,
+            hint: 'Lottokasse separat zählen',
+            sortOrder: 1,
+          ),
+          ThirdPartyCashType(
+            id: 'post',
+            name: 'Deutsche Post',
+            sortOrder: 2,
+          ),
+          ThirdPartyCashType(
+            id: 'kvg',
+            name: 'KVG-Tickets',
+            enabled: false,
+            sortOrder: 3,
+          ),
+        ],
         createdByUid: createdByUid,
       ),
       SiteDefinition(
@@ -330,6 +398,20 @@ class LocalDemoData {
         description: 'Schreibwaren/Spielwaren, Tabak, DHL & Lotto.',
         weekdayHours: strichWeekdayHours,
         staffingDemands: strichDemands,
+        thirdPartyCashTypes: const [
+          ThirdPartyCashType(
+            id: 'lotto',
+            name: 'Lotto',
+            required: true,
+            sortOrder: 1,
+          ),
+          ThirdPartyCashType(
+            id: 'dhl',
+            name: 'DHL/Paketshop',
+            hint: 'Nur Barbestand der Dritten Hand erfassen',
+            sortOrder: 2,
+          ),
+        ],
         createdByUid: createdByUid,
       ),
       SiteDefinition(
@@ -347,6 +429,19 @@ class LocalDemoData {
         description: 'Paketshop/Postfiliale im REWE Neumühlen-Dietrichsdorf.',
         weekdayHours: paketWeekdayHours,
         staffingDemands: paketDemands,
+        thirdPartyCashTypes: const [
+          ThirdPartyCashType(
+            id: 'hermes',
+            name: 'Hermes',
+            sortOrder: 1,
+          ),
+          ThirdPartyCashType(
+            id: 'post',
+            name: 'Deutsche Post',
+            required: true,
+            sortOrder: 2,
+          ),
+        ],
         createdByUid: createdByUid,
       ),
     ];

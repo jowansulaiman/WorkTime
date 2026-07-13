@@ -344,6 +344,15 @@ class AppUserProfile {
   /// Schichtleiter — analog zur Warenwirtschaft.
   bool get canManageContacts => isActive && (isAdmin || canManageShifts);
 
+  /// Hermes-Paketshop bedienen (Pakete annehmen/ausgeben, Fächer/Register)
+  /// darf jedes aktive Mitglied (Betreiber-Entscheidung §0 des Plans:
+  /// Tresenbetrieb; Personal ist organisatorisch aufs Post-/Datengeheimnis
+  /// verpflichtet). Gespiegelt in `firestore.rules` (canManageParcels) und
+  /// `RoutePermissions`. View == Manage in v1; getrennt gehalten, falls später
+  /// eine Read-only-Rolle nötig wird.
+  bool get canViewParcels => isActive;
+  bool get canManageParcels => isActive;
+
   /// Kundenfeedback (Beschwerden/Vorschlaege/Lob von der oeffentlichen
   /// /feedback-Seite) ansehen und bearbeiten duerfen NUR Manager (Admins und
   /// Schichtleiter) — Beschwerden koennen sensibel sein. Spiegelt

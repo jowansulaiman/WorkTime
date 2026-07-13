@@ -72,6 +72,16 @@ class _PublicFeedbackScreenState extends State<PublicFeedbackScreen> {
     // Firebase-Konfiguration) kann nicht geschrieben werden — ehrliche Meldung
     // statt "Internetverbindung prüfen".
     if (Firebase.apps.isEmpty) {
+      if (AppConfig.disableAuthentication) {
+        // Lokaler Demo-Erfolgspfad: alle Formular-/Bestätigungszustaende sind
+        // testbar, ohne einen anonymen Firebase-Nutzer anzulegen.
+        setState(() {
+          _resultCode = CustomerFeedback.generateReferenceCode();
+          _error = null;
+          _submitting = false;
+        });
+        return;
+      }
       _handleError(
         'Diese Seite ist hier nicht mit dem Backend verbunden '
         '(keine Firebase-Konfiguration). Sie funktioniert nur im echten '

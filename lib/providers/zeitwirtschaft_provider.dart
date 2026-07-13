@@ -8,12 +8,14 @@ import '../core/clock_service.dart';
 import '../core/dienst_abgleich.dart';
 import '../core/monats_festschreibung.dart';
 import '../core/monatsabschluss_service.dart';
+import '../core/org_zeit_kpis.dart';
 import '../models/absence_request.dart';
 import '../models/app_user.dart';
 import '../models/audit_log_entry.dart';
 import '../models/clock_entry.dart';
 import '../models/payroll_record.dart';
 import '../models/shift.dart';
+import '../models/sollzeit_profile.dart';
 import '../models/work_entry.dart';
 import '../models/zeitkonto_snapshot.dart';
 import '../services/database_service.dart';
@@ -697,6 +699,49 @@ class ZeitwirtschaftProvider extends ChangeNotifier {
           error: error);
       return const [];
     }
+  }
+
+  /// **REPORTING-2:** Org-weite Zeit-Kennzahlen eines Monats als Komposition der
+  /// bestehenden `loadOrg*`-Lesehelfer + der puren Engine [computeOrgZeitKpis].
+  ///
+  /// [memberIds] und [profilesByUser] (Sollzeit-Profile) reicht der Aufrufer aus
+  /// dem `PersonalProvider` durch — dieser Provider nimmt bewusst KEINE
+  /// Personal-Abhängigkeit auf (er kennt weder Mitgliederliste noch Sollzeiten).
+  ///
+  /// Gate: **`canManageShifts`** (schließt Admin ein — Freigeber-Recht, deckt die
+  /// org-weiten `workEntries`/`zeitkontoSnapshots`-Rules) UND **kein
+  /// Kiosk-Build** (das Geräte-Konto darf org-weite Zeiten nicht lesen). Gibt
+  /// `null` zurück, wenn nicht berechtigt oder kein Nutzer aktiv ist.
+  Future<OrgZeitKpis?> loadOrgZeitKpis({
+    required int jahr,
+    required int monat,
+    required List<String> memberIds,
+    required Map<String, List<SollzeitProfile>> profilesByUser,
+  }) async {
+    final user = _currentUser;
+    if (user == null || !user.canManageShifts) return null;
+    // Kiosk-Kontext ausschließen (Muster inventory_provider PA-4.4g).
+    if (AppConfig.kioskModeEnabled) return null;
+
+    final month = DateTime(jahr, monat);
+    final entries = await loadOrgWorkEntriesForMonth(month);
+    final absences = await loadOrgApprovedAbsencesForMonth(month);
+    final snaps = await loadOrgSnapshotsForMonth(jahr, monat);
+    final prevMonth = monat == 1 ? 12 : monat - 1;
+    final prevYear = monat == 1 ? jahr - 1 : jahr;
+    final prevSnaps = await loadOrgSnapshotsForMonth(prevYear, prevMonth);
+
+    return computeOrgZeitKpis(
+      orgId: user.orgId,
+      jahr: jahr,
+      monat: monat,
+      memberIds: memberIds,
+      profilesByUser: profilesByUser,
+      entries: entries,
+      approvedAbsences: absences,
+      currentMonthSnapshots: snaps,
+      previousMonthSnapshots: prevSnaps,
+    );
   }
 
   void _upsertYearSnapshot(ZeitkontoSnapshot snapshot) {

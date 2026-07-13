@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
-import '../core/app_config.dart';
+import '../core/local_demo_inventory_data.dart';
 import '../models/audit_log_entry.dart';
 import '../models/contact.dart';
 import '../models/customer_order.dart';
@@ -22,8 +22,9 @@ import '../widgets/empty_state.dart';
 /// Kundenwünsche. Aktive Mitglieder sehen den Eingang; Manager
 /// (canManageInventory) bearbeiten Status/löschen.
 ///
-/// Wünsche sind reine Cloud-Daten (anonym von außen erzeugt), daher liest der
-/// Screen direkt per [FirestoreService]-Stream — kein Provider/lokaler Spiegel.
+/// Produktiv sind Wünsche reine Cloud-Daten und werden direkt per
+/// [FirestoreService]-Stream gelesen. Der lokale Demo-Modus hält eine
+/// kurzlebige In-Memory-Liste, damit Filter und Bearbeitungsabläufe testbar sind.
 class CustomerWishesScreen extends StatefulWidget {
   const CustomerWishesScreen({
     super.key,
@@ -45,9 +46,13 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
       widget.firestoreService ?? FirestoreService();
 
   bool _showClosed = false;
+  String? _demoOrgId;
+  List<CustomerWish> _demoWishes = const [];
 
-  static final DateFormat _dateTimeFormat =
-      DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+  static final DateFormat _dateTimeFormat = DateFormat(
+    'dd.MM.yyyy HH:mm',
+    'de_DE',
+  );
   static final DateFormat _dateFormat = DateFormat('dd.MM.yyyy', 'de_DE');
 
   static IconData categoryIcon(CustomerWishCategory category) =>
@@ -81,25 +86,15 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
       );
     }
 
-    // Kundenwünsche sind reine Cloud-Daten (öffentlicher /wunsch-Schreibpfad).
-    // Im Demo-/Offline-Modus ist keine Firebase-App initialisiert → ein direkter
-    // Firestore-Stream-Aufbau würde hier synchron werfen (rote Seite). Daher
-    // gegated, statt zu crashen.
-    if (AppConfig.disableAuthentication) {
-      return Scaffold(
-        appBar: appBar,
-        body: const Center(
-          child: EmptyState(
-            icon: Icons.cloud_off_outlined,
-            title: 'Im Demo-Modus nicht verfügbar',
-            message:
-                'Kundenwünsche gehen über die öffentliche Seite (/wunsch) in der Cloud ein und sind nur mit aktiver Firebase-Verbindung sichtbar.',
-          ),
-        ),
+    final canManage = profile.canManageInventory;
+    final isLocalDemo = context.read<AuthProvider>().authDisabled;
+    if (isLocalDemo && _demoOrgId != profile.orgId) {
+      _demoOrgId = profile.orgId;
+      _demoWishes = LocalDemoInventoryData.customerWishesForOrg(
+        orgId: profile.orgId,
+        handledByUid: profile.uid,
       );
     }
-
-    final canManage = profile.canManageInventory;
 
     return Scaffold(
       appBar: appBar,
@@ -109,64 +104,73 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
-            child: StreamBuilder<List<CustomerWish>>(
-              stream: _service.watchCustomerWishes(profile.orgId),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return const Center(
-                    child: Text('Kundenwünsche konnten nicht geladen werden.'),
-                  );
-                }
-                if (!snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                final all = snapshot.data!;
-                final visible = _showClosed
-                    ? all
-                    : all.where((wish) => wish.status.isOpen).toList();
-                final openCount =
-                    all.where((wish) => wish.status.isOpen).length;
-
-                return Column(
-                  children: [
-                    _buildHeader(context, openCount),
-                    Expanded(
-                      child: visible.isEmpty
-                          ? const Center(
-                              child: EmptyState(
-                                icon: Icons.inbox_outlined,
-                                title: 'Keine Kundenwünsche',
-                                message:
-                                    'Über die öffentliche Seite (/wunsch) abgegebene Wünsche erscheinen hier.',
-                              ),
-                            )
-                          : ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
-                              itemCount: visible.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 14),
-                              itemBuilder: (context, index) => _WishCard(
-                                wish: visible[index],
-                                canManage: canManage,
-                                dateTimeFormat: _dateTimeFormat,
-                                dateFormat: _dateFormat,
-                                onStatus: (status) =>
-                                    _updateStatus(visible[index], status),
-                                onDelete: () => _delete(visible[index]),
-                                onConvert: () => _convertToOrder(visible[index]),
-                                onLinkContact: () =>
-                                    _linkContact(visible[index]),
-                              ),
+            child:
+                isLocalDemo
+                    ? _buildWishList(_demoWishes, canManage: canManage)
+                    : StreamBuilder<List<CustomerWish>>(
+                      stream: _service.watchCustomerWishes(profile.orgId),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasError) {
+                          return const Center(
+                            child: Text(
+                              'Kundenwünsche konnten nicht geladen werden.',
                             ),
+                          );
+                        }
+                        if (!snapshot.hasData) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+                        return _buildWishList(
+                          snapshot.data!,
+                          canManage: canManage,
+                        );
+                      },
                     ),
-                  ],
-                );
-              },
-            ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildWishList(List<CustomerWish> all, {required bool canManage}) {
+    final visible =
+        _showClosed ? all : all.where((wish) => wish.status.isOpen).toList();
+    final openCount = all.where((wish) => wish.status.isOpen).length;
+    return Column(
+      children: [
+        _buildHeader(context, openCount),
+        Expanded(
+          child:
+              visible.isEmpty
+                  ? const Center(
+                    child: EmptyState(
+                      icon: Icons.inbox_outlined,
+                      title: 'Keine Kundenwünsche',
+                      message:
+                          'Über die öffentliche Seite (/wunsch) abgegebene Wünsche erscheinen hier.',
+                    ),
+                  )
+                  : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+                    itemCount: visible.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 14),
+                    itemBuilder:
+                        (context, index) => _WishCard(
+                          wish: visible[index],
+                          canManage: canManage,
+                          dateTimeFormat: _dateTimeFormat,
+                          dateFormat: _dateFormat,
+                          onStatus:
+                              (status) => _updateStatus(visible[index], status),
+                          onDelete: () => _delete(visible[index]),
+                          onConvert: () => _convertToOrder(visible[index]),
+                          onLinkContact: () => _linkContact(visible[index]),
+                        ),
+                  ),
+        ),
+      ],
     );
   }
 
@@ -183,8 +187,11 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
               color: scheme.primaryContainer,
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Icon(Icons.inbox_outlined,
-                color: scheme.onPrimaryContainer, size: 22),
+            child: Icon(
+              Icons.inbox_outlined,
+              color: scheme.onPrimaryContainer,
+              size: 22,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -196,8 +203,9 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
                   openCount == 1
                       ? '1 offener Wunsch'
                       : '$openCount offene Wünsche',
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: scheme.onSurfaceVariant),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -226,12 +234,27 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
     // gesetzt, sonst umginge diese interne Manager-Aktion das Änderungsprotokoll.
     final audit = context.read<AuditProvider>();
     try {
-      await _service.updateCustomerWishStatus(
-        orgId: wish.orgId,
-        wishId: id,
-        status: status,
-        handledByUid: profile?.uid,
-      );
+      if (context.read<AuthProvider>().authDisabled) {
+        final now = DateTime.now();
+        setState(() {
+          final index = _demoWishes.indexWhere((item) => item.id == id);
+          if (index >= 0) {
+            _demoWishes[index] = wish.copyWith(
+              status: status,
+              handledByUid: profile?.uid,
+              handledAt: now,
+              updatedAt: now,
+            );
+          }
+        });
+      } else {
+        await _service.updateCustomerWishStatus(
+          orgId: wish.orgId,
+          wishId: id,
+          status: status,
+          handledByUid: profile?.uid,
+        );
+      }
       audit.log(
         action: AuditAction.updated,
         entityType: 'Kundenwunsch',
@@ -252,13 +275,14 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
       return;
     }
     final audit = context.read<AuditProvider>();
+    final isLocalDemo = context.read<AuthProvider>().authDisabled;
     final selection = await showContactPicker(
       context,
       currentContactId: wish.contactId,
       allowedTypes: const [ContactType.customer],
       emptyLabel: 'Kein Kontakt (Verknüpfung entfernen)',
     );
-    if (selection == null) {
+    if (!mounted || selection == null) {
       return; // abgebrochen
     }
     final contact = selection.contact;
@@ -266,18 +290,32 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
       return; // unverändert → kein Write/Audit für einen No-op
     }
     try {
-      await _service.updateCustomerWishContact(
-        orgId: wish.orgId,
-        wishId: id,
-        contactId: contact?.id,
-      );
+      if (isLocalDemo) {
+        setState(() {
+          final index = _demoWishes.indexWhere((item) => item.id == id);
+          if (index >= 0) {
+            _demoWishes[index] = wish.copyWith(
+              contactId: contact?.id,
+              clearContactId: contact == null,
+              updatedAt: DateTime.now(),
+            );
+          }
+        });
+      } else {
+        await _service.updateCustomerWishContact(
+          orgId: wish.orgId,
+          wishId: id,
+          contactId: contact?.id,
+        );
+      }
       audit.log(
         action: AuditAction.updated,
         entityType: 'Kundenwunsch',
         entityId: id,
-        summary: contact == null
-            ? 'Wunsch ${wish.referenceCode}: Kontakt-Verknüpfung entfernt'
-            : 'Wunsch ${wish.referenceCode}: Kontakt „${contact.name}" verknüpft',
+        summary:
+            contact == null
+                ? 'Wunsch ${wish.referenceCode}: Kontakt-Verknüpfung entfernt'
+                : 'Wunsch ${wish.referenceCode}: Kontakt „${contact.name}" verknüpft',
       );
     } catch (_) {
       _snack('Kontakt konnte nicht verknüpft werden.');
@@ -351,28 +389,29 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
     }
     return showDialog<String>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Standort der Bestellung'),
-        children: [
-          for (final s in sites)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(context).pop(s.id),
-              child: Row(
-                children: [
-                  Icon(
-                    s.id == preselect
-                        ? Icons.check_circle
-                        : Icons.store_outlined,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.primary,
+      builder:
+          (context) => SimpleDialog(
+            title: const Text('Standort der Bestellung'),
+            children: [
+              for (final s in sites)
+                SimpleDialogOption(
+                  onPressed: () => Navigator.of(context).pop(s.id),
+                  child: Row(
+                    children: [
+                      Icon(
+                        s.id == preselect
+                            ? Icons.check_circle
+                            : Icons.store_outlined,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(s.name)),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(child: Text(s.name)),
-                ],
-              ),
-            ),
-        ],
-      ),
+                ),
+            ],
+          ),
     );
   }
 
@@ -382,28 +421,34 @@ class _CustomerWishesScreenState extends State<CustomerWishesScreen> {
       return;
     }
     final audit = context.read<AuditProvider>();
+    final isLocalDemo = context.read<AuthProvider>().authDisabled;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Wunsch löschen?'),
-        content: Text('Wunsch ${wish.referenceCode} wird gelöscht.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Abbrechen'),
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Wunsch löschen?'),
+            content: Text('Wunsch ${wish.referenceCode} wird gelöscht.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Abbrechen'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Löschen'),
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Löschen'),
-          ),
-        ],
-      ),
     );
-    if (confirmed != true) {
+    if (!mounted || confirmed != true) {
       return;
     }
     try {
-      await _service.deleteCustomerWish(orgId: wish.orgId, wishId: id);
+      if (isLocalDemo) {
+        setState(() => _demoWishes.removeWhere((item) => item.id == id));
+      } else {
+        await _service.deleteCustomerWish(orgId: wish.orgId, wishId: id);
+      }
       audit.log(
         action: AuditAction.deleted,
         entityType: 'Kundenwunsch',
@@ -454,9 +499,10 @@ class _WishCard extends StatelessWidget {
     // wenn nicht verknüpft ODER der Kontakt (noch) nicht geladen/gelöscht ist.
     // Nur verknüpfte Karten abonnieren den ContactProvider (spart Rebuilds in
     // einem langen Eingang, wenn sich irgendwo ein Kontakt ändert).
-    final linkedContact = wish.contactId == null
-        ? null
-        : context.watch<ContactProvider>().contactById(wish.contactId);
+    final linkedContact =
+        wish.contactId == null
+            ? null
+            : context.watch<ContactProvider>().contactById(wish.contactId);
     return Container(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLowest,
@@ -478,8 +524,10 @@ class _WishCard extends StatelessWidget {
             Row(
               children: [
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
                   decoration: BoxDecoration(
                     color: scheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(8),
@@ -513,36 +561,39 @@ class _WishCard extends StatelessWidget {
                           onDelete();
                       }
                     },
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(
-                        value: _WishAction.convert,
-                        child: Text('In Bestellung übernehmen'),
-                      ),
-                      PopupMenuItem(
-                        value: _WishAction.linkContact,
-                        child: Text(wish.contactId == null
-                            ? 'Kontakt verknüpfen'
-                            : 'Kontakt ändern'),
-                      ),
-                      const PopupMenuDivider(),
-                      const PopupMenuItem(
-                        value: _WishAction.seen,
-                        child: Text('Als gesehen markieren'),
-                      ),
-                      const PopupMenuItem(
-                        value: _WishAction.done,
-                        child: Text('Als erledigt markieren'),
-                      ),
-                      const PopupMenuItem(
-                        value: _WishAction.rejected,
-                        child: Text('Ablehnen'),
-                      ),
-                      const PopupMenuDivider(),
-                      const PopupMenuItem(
-                        value: _WishAction.delete,
-                        child: Text('Löschen'),
-                      ),
-                    ],
+                    itemBuilder:
+                        (_) => [
+                          const PopupMenuItem(
+                            value: _WishAction.convert,
+                            child: Text('In Bestellung übernehmen'),
+                          ),
+                          PopupMenuItem(
+                            value: _WishAction.linkContact,
+                            child: Text(
+                              wish.contactId == null
+                                  ? 'Kontakt verknüpfen'
+                                  : 'Kontakt ändern',
+                            ),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: _WishAction.seen,
+                            child: Text('Als gesehen markieren'),
+                          ),
+                          const PopupMenuItem(
+                            value: _WishAction.done,
+                            child: Text('Als erledigt markieren'),
+                          ),
+                          const PopupMenuItem(
+                            value: _WishAction.rejected,
+                            child: Text('Ablehnen'),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: _WishAction.delete,
+                            child: Text('Löschen'),
+                          ),
+                        ],
                   ),
               ],
             ),
@@ -577,8 +628,11 @@ class _WishCard extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.person_outline,
-                        size: 18, color: scheme.onSurfaceVariant),
+                    Icon(
+                      Icons.person_outline,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -620,8 +674,9 @@ class _WishCard extends StatelessWidget {
               const SizedBox(height: 10),
               Text(
                 'Eingegangen: ${dateTimeFormat.format(wish.createdAt!.toLocal())}',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: scheme.onSurfaceVariant),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
             ],
           ],
@@ -643,21 +698,21 @@ class _StatusChip extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final (Color bg, Color fg) = switch (status) {
       CustomerWishStatus.pending => (
-          scheme.primaryContainer,
-          scheme.onPrimaryContainer
-        ),
+        scheme.primaryContainer,
+        scheme.onPrimaryContainer,
+      ),
       CustomerWishStatus.seen => (
-          scheme.secondaryContainer,
-          scheme.onSecondaryContainer
-        ),
+        scheme.secondaryContainer,
+        scheme.onSecondaryContainer,
+      ),
       CustomerWishStatus.done => (
-          scheme.surfaceContainerHighest,
-          scheme.onSurfaceVariant
-        ),
+        scheme.surfaceContainerHighest,
+        scheme.onSurfaceVariant,
+      ),
       CustomerWishStatus.rejected => (
-          scheme.errorContainer,
-          scheme.onErrorContainer
-        ),
+        scheme.errorContainer,
+        scheme.onErrorContainer,
+      ),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -667,10 +722,10 @@ class _StatusChip extends StatelessWidget {
       ),
       child: Text(
         status.label,
-        style: Theme.of(context)
-            .textTheme
-            .labelMedium
-            ?.copyWith(color: fg, fontWeight: FontWeight.w600),
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+          color: fg,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -698,10 +753,9 @@ class _InfoChip extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: Theme.of(context)
-                .textTheme
-                .labelMedium
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            style: Theme.of(
+              context,
+            ).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
       ),

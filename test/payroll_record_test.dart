@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:worktime_app/models/pay_line_type.dart';
 import 'package:worktime_app/models/payroll_record.dart';
 
 void main() {
@@ -107,6 +108,26 @@ void main() {
       expect(cleared.federalState, isNull);
     });
 
+    test('PERSONAL-1: istMinutes round-trippt (beide Formate) + clear-Flag', () {
+      final withIst = record.copyWith(istMinutes: 9600);
+      expect(withIst.istMinutes, 9600);
+
+      expect(withIst.toMap()['ist_minutes'], 9600);
+      expect(PayrollRecord.fromMap(withIst.toMap()).istMinutes, 9600);
+
+      expect(withIst.toFirestoreMap()['istMinutes'], 9600);
+      expect(
+        PayrollRecord.fromFirestore('u1-2026-06', withIst.toFirestoreMap())
+            .istMinutes,
+        9600,
+      );
+
+      // Altdatensatz ohne Mengengerüst bleibt null.
+      expect(record.istMinutes, isNull);
+      expect(PayrollRecord.fromMap(record.toMap()).istMinutes, isNull);
+      expect(withIst.copyWith(clearIstMinutes: true).istMinutes, isNull);
+    });
+
     test('Status: Default Entwurf, Enum-Mapping + fromValue-Default', () {
       expect(record.status, PayrollStatus.entwurf);
       expect(PayrollStatus.freigegeben.value, 'freigegeben');
@@ -163,6 +184,31 @@ void main() {
       expect(reverted.status, PayrollStatus.entwurf);
       expect(reverted.finalizedByUid, isNull);
       expect(reverted.finalizedAt, isNull);
+    });
+  });
+
+  group('PayrollLine.mengeStunden (PERSONAL-1)', () {
+    const line = PayrollLine(
+      name: 'Nachtzuschlag',
+      amountCents: 5000,
+      kind: PayLineKind.zuschlag3b,
+      mengeStunden: 8.5,
+    );
+
+    test('round-trippt in beiden Formaten + clear-Flag', () {
+      expect(line.toMap()['menge_stunden'], 8.5);
+      expect(PayrollLine.fromMap(line.toMap()).mengeStunden, 8.5);
+
+      expect(line.toFirestoreMap()['mengeStunden'], 8.5);
+      expect(PayrollLine.fromFirestore(line.toFirestoreMap()).mengeStunden, 8.5);
+
+      expect(line.copyWith(clearMengeStunden: true).mengeStunden, isNull);
+    });
+
+    test('null bei reiner Betragszeile bleibt null', () {
+      const plain = PayrollLine(name: 'VwL', amountCents: -4000);
+      expect(plain.mengeStunden, isNull);
+      expect(PayrollLine.fromMap(plain.toMap()).mengeStunden, isNull);
     });
   });
 }

@@ -26,11 +26,22 @@ class ReorderSuggestion {
     required this.currentMinStock,
     required this.currentTargetStock,
     required this.isReliable,
+    this.currentStock = 0,
+    this.incomingQuantity = 0,
   });
 
   final String productId;
   final String siteId;
   final double dailyVelocity;
+
+  /// Aktueller Bestand des Artikels zum Berechnungszeitpunkt.
+  final int currentStock;
+
+  /// **WW-1 — unterwegs-Menge:** bereits bestellte, noch nicht gelieferte
+  /// Menge (Summe `outstandingQuantity` offener Bestellungen). Senkt die
+  /// konkrete Nachbestellmenge [suggestedOrderQuantity] — NICHT die
+  /// Schwellen-Vorschläge (s. dort).
+  final int incomingQuantity;
 
   /// Verwendete Lieferzeit in Tagen (aus Lieferant oder Default).
   final int leadTimeDays;
@@ -56,6 +67,20 @@ class ReorderSuggestion {
 
   /// Mindestens eine Schwelle weicht ab.
   bool get hasChange => minStockChanged || targetStockChanged;
+
+  /// **WW-1 — konkrete Nachbestellmenge, unterwegs-verrechnet:** Auffüllen bis
+  /// zum vorgeschlagenen Zielbestand, wobei die bereits offene Bestellmenge
+  /// ([incomingQuantity]) den Vorschlag senkt — was schon unterwegs ist, muss
+  /// nicht erneut bestellt werden. Nie negativ.
+  ///
+  /// Bewusst wird NUR diese Bestellmenge verrechnet, nicht
+  /// [suggestedMinStock]/[suggestedTargetStock]: die Schwellen sind
+  /// nachfragegetriebene Dauerwerte, die der Inhaber am Artikel PERSISTIERT —
+  /// eine transiente unterwegs-Menge darf sie nicht dauerhaft verfälschen.
+  int get suggestedOrderQuantity {
+    final delta = suggestedTargetStock - currentStock - incomingQuantity;
+    return delta > 0 ? delta : 0;
+  }
 }
 
 /// Berechnet [ReorderSuggestion] je Artikel aus den Velocity-Read-Models.
@@ -64,6 +89,10 @@ class ReorderSuggestion {
 ///   und Lieferverzug).
 /// - [coverageDays]: gewünschte Eindeckung zwischen zwei Bestellungen (bestimmt
 ///   den Abstand Zielbestand↔Meldebestand).
+/// - [incomingByProductId] (WW-1, optional): offene Bestellmengen („unterwegs",
+///   `productId → Summe outstandingQuantity`) — senken die konkrete
+///   Nachbestellmenge [ReorderSuggestion.suggestedOrderQuantity], bewusst NICHT
+///   die Schwellen-Vorschläge. Bleibt injiziert (pure, kein Provider-Zugriff).
 /// - Artikel ohne Absatz (`dailyVelocity == 0`, Ladenhüter) bekommen Schwellen 0
 ///   (nicht nachbestellen) — das setzt totes Kapital frei. **Ausnahme:** neue
 ///   Artikel ([ProductVelocity.isNewProduct], erst im Fenster angelegt) sind zu
@@ -74,6 +103,7 @@ List<ReorderSuggestion> computeReorderSuggestions({
   required List<ProductVelocity> velocities,
   required List<Product> products,
   Map<String, int> leadTimeDaysBySupplierId = const {},
+  Map<String, int> incomingByProductId = const {},
   int defaultLeadTimeDays = 3,
   int safetyDays = 3,
   int coverageDays = 14,
@@ -107,6 +137,8 @@ List<ReorderSuggestion> computeReorderSuggestions({
         productId: v.productId,
         siteId: v.siteId,
         dailyVelocity: daily,
+        currentStock: v.currentStock,
+        incomingQuantity: math.max(0, incomingByProductId[v.productId] ?? 0),
         leadTimeDays: leadTimeDays,
         suggestedMinStock: suggestedMin,
         suggestedTargetStock: suggestedTarget,

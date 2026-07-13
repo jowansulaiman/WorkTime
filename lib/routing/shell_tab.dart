@@ -47,8 +47,11 @@ abstract final class AppRoutes {
   static const String kiosk = '/arbeitsmodus';
 
   // Hauptbereich-Routen (über die Shell gepusht, single canonical route je Screen).
+  static const String kennzahlen = '/kennzahlen'; // Management-Dashboard (REPORTING-4)
+  static const String mitteilungen = '/mitteilungen'; // Inbox (PERSONAL-9/Q4)
   static const String inventory = '/warenwirtschaft';
   static const String customerOrders = '/bestellungen';
+  static const String paketshop = '/paketshop'; // Hermes-Paketshop (Plan §7.6)
   static const String personal = '/personal';
   // Mitarbeiter-Detail (AllTec-1:1): deep-linkbare Top-Level-Route mit
   // Path-Parameter `:id` (uid). Bau siehe plan/personal-alltec-1zu1.md.

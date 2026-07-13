@@ -103,6 +103,26 @@ extension DocumentCategoryX on DocumentCategory {
 /// Die Binärdatei selbst liegt in Firebase Storage unter [storagePath]; dieses
 /// Doc trägt nur Metadaten (org-skopiert). Bewusst **cloud-only** (keine
 /// SharedPreferences-Spiegelung — eine Datei ohne Binärinhalt ist wertlos).
+/// **PERSONAL-4:** abgeleiteter Bearbeitungsstand eines Dokuments (kein
+/// persistiertes Feld — s. [EmployeeDocument.workflowStatus]).
+enum EmployeeDocumentWorkflowStatus {
+  offen,
+  bereitgestellt,
+  geoeffnet,
+  bestaetigt,
+  abgelehnt,
+}
+
+extension EmployeeDocumentWorkflowStatusX on EmployeeDocumentWorkflowStatus {
+  String get label => switch (this) {
+        EmployeeDocumentWorkflowStatus.offen => 'Offen',
+        EmployeeDocumentWorkflowStatus.bereitgestellt => 'Bereitgestellt',
+        EmployeeDocumentWorkflowStatus.geoeffnet => 'Geöffnet',
+        EmployeeDocumentWorkflowStatus.bestaetigt => 'Bestätigt',
+        EmployeeDocumentWorkflowStatus.abgelehnt => 'Abgelehnt',
+      };
+}
+
 class EmployeeDocument {
   const EmployeeDocument({
     this.id,
@@ -116,7 +136,13 @@ class EmployeeDocument {
     required this.storagePath,
     this.note,
     this.visibleToEmployee = true,
+    this.requiresAcknowledgement = false,
+    this.visibleSince,
+    this.openedAt,
+    this.downloadedAt,
     this.acknowledgedAt,
+    this.declinedAt,
+    this.declineComment,
     this.retentionUntil,
     this.uploadedByUid,
     this.createdAt,
@@ -142,9 +168,32 @@ class EmployeeDocument {
   /// Storage-Rules) und die Push-Benachrichtigung.
   final bool visibleToEmployee;
 
-  /// Zeitpunkt der Lesebestätigung durch den Mitarbeiter (optional, PA-3.4) —
-  /// das EINZIGE Feld, das der Mitarbeiter selbst schreiben darf.
+  /// **PERSONAL-4:** Ob der Mitarbeiter das Dokument aktiv bestätigen muss
+  /// (steuert Erinnerungen + Workflow-Status). Default false = reine Ablage.
+  final bool requiresAcknowledgement;
+
+  /// **PERSONAL-4:** Zeitpunkt der **Bereitstellung** (admin-seitig beim
+  /// Sichtbarschalten/Upload gesetzt — NICHT vom MA). Leser/Nightly nutzen
+  /// `visibleSince ?? createdAt` (Bestands-Dokumente ohne Feld, Q6).
+  final DateTime? visibleSince;
+
+  /// **PERSONAL-4:** Zeitpunkt des **bewussten Öffnens** durch den MA (Viewer-/
+  /// Download-Aktion — NICHT das bloße Rendern der Dokumentliste).
+  final DateTime? openedAt;
+
+  /// **PERSONAL-4:** optionaler Download-Zeitpunkt durch den MA.
+  final DateTime? downloadedAt;
+
+  /// Zeitpunkt der Lesebestätigung durch den Mitarbeiter (optional, PA-3.4).
   final DateTime? acknowledgedAt;
+
+  /// **PERSONAL-4:** Zeitpunkt der **Ablehnung** durch den MA (schlägt eine
+  /// Bestätigung — s. [workflowStatus]).
+  final DateTime? declinedAt;
+
+  /// **PERSONAL-4:** Pflicht-Kommentar zur Ablehnung (nur zusammen mit
+  /// [declinedAt] — Rules erzwingen das).
+  final String? declineComment;
 
   /// Ende der Aufbewahrungsfrist (PA-8) — aus [DocumentCategory.defaultRetentionYears]
   /// vorbelegt, überschreibbar. `null` = keine Frist gesetzt.
@@ -155,6 +204,24 @@ class EmployeeDocument {
   final DateTime? updatedAt;
 
   bool get acknowledged => acknowledgedAt != null;
+
+  /// **PERSONAL-4:** Bereitstellungszeitpunkt für Leser/Erinnerungen —
+  /// `visibleSince ?? createdAt` (Bestands-Dokumente ohne `visibleSince`, Q6).
+  DateTime? get effectiveVisibleSince => visibleSince ?? createdAt;
+
+  /// **PERSONAL-4:** ABGELEITETER Workflow-Status (kein persistiertes Enum →
+  /// keine Drift). Reihenfolge: eine **Ablehnung schlägt** eine Bestätigung.
+  EmployeeDocumentWorkflowStatus get workflowStatus {
+    if (declinedAt != null) return EmployeeDocumentWorkflowStatus.abgelehnt;
+    if (acknowledgedAt != null) {
+      return EmployeeDocumentWorkflowStatus.bestaetigt;
+    }
+    if (openedAt != null) return EmployeeDocumentWorkflowStatus.geoeffnet;
+    if (visibleToEmployee && effectiveVisibleSince != null) {
+      return EmployeeDocumentWorkflowStatus.bereitgestellt;
+    }
+    return EmployeeDocumentWorkflowStatus.offen;
+  }
 
   /// Aufbewahrungsfrist am [now] abgelaufen (PA-8.1)? `false`, wenn keine Frist
   /// gesetzt ist (`retentionUntil == null` = unbefristet aufbewahren).
@@ -181,7 +248,14 @@ class EmployeeDocument {
       storagePath: (map['storagePath'] ?? '').toString(),
       note: map['note'] as String?,
       visibleToEmployee: parse.toBool(map['visibleToEmployee']) ?? true,
+      requiresAcknowledgement:
+          parse.toBool(map['requiresAcknowledgement']) ?? false,
+      visibleSince: FirestoreDateParser.readDate(map['visibleSince']),
+      openedAt: FirestoreDateParser.readDate(map['openedAt']),
+      downloadedAt: FirestoreDateParser.readDate(map['downloadedAt']),
       acknowledgedAt: FirestoreDateParser.readDate(map['acknowledgedAt']),
+      declinedAt: FirestoreDateParser.readDate(map['declinedAt']),
+      declineComment: map['declineComment'] as String?,
       retentionUntil: FirestoreDateParser.readDate(map['retentionUntil']),
       uploadedByUid: map['uploadedByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
@@ -203,7 +277,14 @@ class EmployeeDocument {
       storagePath: (map['storage_path'] ?? '').toString(),
       note: map['note'] as String?,
       visibleToEmployee: parse.toBool(map['visible_to_employee']) ?? true,
+      requiresAcknowledgement:
+          parse.toBool(map['requires_acknowledgement']) ?? false,
+      visibleSince: FirestoreDateParser.readLocalDate(map['visible_since']),
+      openedAt: FirestoreDateParser.readLocalDate(map['opened_at']),
+      downloadedAt: FirestoreDateParser.readLocalDate(map['downloaded_at']),
       acknowledgedAt: FirestoreDateParser.readLocalDate(map['acknowledged_at']),
+      declinedAt: FirestoreDateParser.readLocalDate(map['declined_at']),
+      declineComment: map['decline_comment'] as String?,
       retentionUntil: FirestoreDateParser.readLocalDate(map['retention_until']),
       uploadedByUid: map['uploaded_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
@@ -223,8 +304,16 @@ class EmployeeDocument {
       'storagePath': storagePath,
       'note': note,
       'visibleToEmployee': visibleToEmployee,
+      'requiresAcknowledgement': requiresAcknowledgement,
+      'visibleSince':
+          visibleSince == null ? null : Timestamp.fromDate(visibleSince!),
+      'openedAt': openedAt == null ? null : Timestamp.fromDate(openedAt!),
+      'downloadedAt':
+          downloadedAt == null ? null : Timestamp.fromDate(downloadedAt!),
       'acknowledgedAt':
           acknowledgedAt == null ? null : Timestamp.fromDate(acknowledgedAt!),
+      'declinedAt': declinedAt == null ? null : Timestamp.fromDate(declinedAt!),
+      'declineComment': declineComment,
       'retentionUntil': _dateOnly(retentionUntil) == null
           ? null
           : Timestamp.fromDate(_dateOnly(retentionUntil)!),
@@ -247,7 +336,13 @@ class EmployeeDocument {
       'storage_path': storagePath,
       'note': note,
       'visible_to_employee': visibleToEmployee,
+      'requires_acknowledgement': requiresAcknowledgement,
+      'visible_since': visibleSince?.toIso8601String(),
+      'opened_at': openedAt?.toIso8601String(),
+      'downloaded_at': downloadedAt?.toIso8601String(),
       'acknowledged_at': acknowledgedAt?.toIso8601String(),
+      'declined_at': declinedAt?.toIso8601String(),
+      'decline_comment': declineComment,
       'retention_until': _dateOnly(retentionUntil)?.toIso8601String(),
       'uploaded_by_uid': uploadedByUid,
       'created_at': createdAt?.toIso8601String(),
@@ -268,8 +363,19 @@ class EmployeeDocument {
     String? note,
     bool clearNote = false,
     bool? visibleToEmployee,
+    bool? requiresAcknowledgement,
+    DateTime? visibleSince,
+    bool clearVisibleSince = false,
+    DateTime? openedAt,
+    bool clearOpenedAt = false,
+    DateTime? downloadedAt,
+    bool clearDownloadedAt = false,
     DateTime? acknowledgedAt,
     bool clearAcknowledgedAt = false,
+    DateTime? declinedAt,
+    bool clearDeclinedAt = false,
+    String? declineComment,
+    bool clearDeclineComment = false,
     DateTime? retentionUntil,
     bool clearRetentionUntil = false,
     String? uploadedByUid,
@@ -288,8 +394,19 @@ class EmployeeDocument {
       storagePath: storagePath ?? this.storagePath,
       note: clearNote ? null : (note ?? this.note),
       visibleToEmployee: visibleToEmployee ?? this.visibleToEmployee,
+      requiresAcknowledgement:
+          requiresAcknowledgement ?? this.requiresAcknowledgement,
+      visibleSince:
+          clearVisibleSince ? null : (visibleSince ?? this.visibleSince),
+      openedAt: clearOpenedAt ? null : (openedAt ?? this.openedAt),
+      downloadedAt:
+          clearDownloadedAt ? null : (downloadedAt ?? this.downloadedAt),
       acknowledgedAt:
           clearAcknowledgedAt ? null : (acknowledgedAt ?? this.acknowledgedAt),
+      declinedAt: clearDeclinedAt ? null : (declinedAt ?? this.declinedAt),
+      declineComment: clearDeclineComment
+          ? null
+          : (declineComment ?? this.declineComment),
       retentionUntil:
           clearRetentionUntil ? null : (retentionUntil ?? this.retentionUntil),
       uploadedByUid: uploadedByUid ?? this.uploadedByUid,
