@@ -131,6 +131,11 @@ abstract final class RoutePermissions {
       // KpiPermissions zusätzlich aus (z. B. Lohn/EK nur Admin).
       case AppRoutes.kennzahlen:
         return (p?.isAdmin ?? false) || (p?.canManageShifts ?? false);
+      // Standortvergleich (REPORTING-6): erster Schnitt ADMIN-ONLY (der
+      // Teamlead-Pfad kollidiert mit REPORTING-7 — loadKassenbericht liest
+      // posDailyStats direkt; teamlead-Variante erst nach REPORTING-7).
+      case AppRoutes.standortvergleich:
+        return p?.isAdmin ?? false;
       case AppRoutes.monthReport:
       case AppRoutes.statistics:
         return p?.canViewReports ?? false;

@@ -850,6 +850,17 @@ class _HomeScreenState extends State<HomeScreen> {
                         await context.push(AppRoutes.kennzahlen);
                       },
                     ),
+                  // REPORTING-6: Standortvergleich (admin-only).
+                  if (currentUser?.isAdmin ?? false)
+                    _QuickActionListTile(
+                      icon: Icons.compare_arrows_outlined,
+                      title: 'Standortvergleich',
+                      subtitle: 'Läden nebeneinander: Umsatz, Rohertrag, Lohn',
+                      onTap: () async {
+                        Navigator.of(sheetContext).pop();
+                        await context.push(AppRoutes.standortvergleich);
+                      },
+                    ),
                   // PERSONAL-9/Q4: Mitteilungs-Inbox (jeder Nutzer).
                   _QuickActionListTile(
                     icon: Icons.notifications_none_outlined,

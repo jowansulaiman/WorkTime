@@ -28,6 +28,7 @@ import '../screens/paketshop_screen.dart';
 import '../screens/inventur_screen.dart';
 import '../screens/kennzahlen_screen.dart';
 import '../screens/mitteilungen_screen.dart';
+import '../screens/standortvergleich_screen.dart';
 import '../screens/kassenbericht_screen.dart';
 import '../screens/knowledge/knowledge_screen.dart';
 import '../screens/passwords_screen.dart';
@@ -158,6 +159,8 @@ GoRouter buildAppRouter({
           (c, s) => const KennzahlenScreen(parentLabel: 'Übersicht')),
       _sectionRoute(AppRoutes.mitteilungen,
           (c, s) => const MitteilungenScreen(parentLabel: 'Übersicht')),
+      _sectionRoute(AppRoutes.standortvergleich,
+          (c, s) => const StandortvergleichScreen(parentLabel: 'Übersicht')),
       _sectionRoute(
         AppRoutes.inventory,
         // `?tab=korb` springt direkt in den Bestellkorb (Warenkorb-Knopf in der

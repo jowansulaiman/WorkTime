@@ -48,6 +48,7 @@ abstract final class AppRoutes {
 
   // Hauptbereich-Routen (über die Shell gepusht, single canonical route je Screen).
   static const String kennzahlen = '/kennzahlen'; // Management-Dashboard (REPORTING-4)
+  static const String standortvergleich = '/standortvergleich'; // REPORTING-6
   static const String mitteilungen = '/mitteilungen'; // Inbox (PERSONAL-9/Q4)
   static const String inventory = '/warenwirtschaft';
   static const String customerOrders = '/bestellungen';

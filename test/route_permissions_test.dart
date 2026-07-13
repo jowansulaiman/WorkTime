@@ -66,6 +66,33 @@ void main() {
           isTrue);
     });
 
+    test('REPORTING: /kennzahlen (Admin+Leitung), /standortvergleich admin-only',
+        () {
+      // Kennzahlen: Admin + Schichtleitung.
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.kennzahlen, _admin),
+          isTrue);
+      expect(
+          RoutePermissions.isLocationAllowed(AppRoutes.kennzahlen, _teamlead),
+          isTrue);
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.kennzahlen, _employee),
+          isFalse);
+      // Standortvergleich: erster Schnitt admin-only (Teamlead NICHT).
+      expect(
+          RoutePermissions.isLocationAllowed(
+              AppRoutes.standortvergleich, _admin),
+          isTrue);
+      expect(
+          RoutePermissions.isLocationAllowed(
+              AppRoutes.standortvergleich, _teamlead),
+          isFalse);
+      // Mitteilungen: jeder angemeldete Nutzer.
+      expect(
+          RoutePermissions.isLocationAllowed(AppRoutes.mitteilungen, _employee),
+          isTrue);
+      expect(RoutePermissions.isLocationAllowed(AppRoutes.mitteilungen, null),
+          isFalse);
+    });
+
     test('Werbe-Displays (/werbung): nie für Nicht-Admins; Admin nur bei Flag',
         () {
       // Nicht-Admins sind IMMER gesperrt (unabhängig vom Feature-Flag).
