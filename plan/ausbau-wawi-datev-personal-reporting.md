@@ -19,7 +19,7 @@ Vier Ausbau-Pakete auf bestehender, verifizierter Substanz — kein Neubau:
 
 ## Q — Querschnitts-Bausteine (VOR bzw. quer zu den Bereichen)
 
-### Q0: Commit-Hygiene + Sammel-Deploy (Vorbedingung für alles) — Status: offen
+### Q0: Commit-Hygiene + Sammel-Deploy (Vorbedingung für alles) — Status: TEILWEISE (Welle-1+2-Code committet 93859ee + firestore:indexes/rules auf taskmaster-ebcez deployt; offen: alter functions/hosting-Stau)
 Der bekannte Deploy-Stau ist die größte Einzelabhängigkeit: neue Rules-/Index-abhängige Features laufen sonst im hybrid-Modus still in den lokalen Fallback (`_tryFirestore` wertet `permission-denied` als offline).
 - Uncommittete Arbeit des Branches `probleme-abarbeitung-2026-07-12` committen, Branch mergen/pushen.
 - `plan/deploy-checkliste.md` abarbeiten: `firebase deploy --only firestore:indexes` → `firestore:rules` → `storage` → `functions` → `hosting` (genau diese Reihenfolge; functions-Deploy ist wegen `overtimeMinutes`/destruktivem `toFirestoreShift` der dringendste Posten; danach `rebuildPosDailyStats`-Backfill für die Reporting-Trends).
@@ -50,10 +50,10 @@ Die Bereichs-Designs planten zwei konkurrierende Collections (`datevExportRuns` 
 ### Q3: Push-Kategorie-Kopplung (für alle neuen Nightlies) — Status: offen
 WW-5, PERSONAL-5 und PERSONAL-7 legen neue Push-Kategorien an. Jede neue Kategorie braucht **immer dieses Kopplungs-Set** (vom Prüfer als Lücke belegt): `functions/push_notifications.js` (Notification-Builder + `channelIdForType`-Case) ↔ `lib/services/push_messaging_service.dart` `_channelIdForType` (deckungsgleicher Dart-Spiegel inkl. Android-Channel) ↔ `lib/models/notification_prefs.dart` (neuer Kanal-Bool, dual serialisiert) ↔ Prefs-Checkbox in den Benachrichtigungs-Einstellungen.
 
-### Q4: Mitteilungs-Inbox (PERSONAL-9, vorgezogen als Querschnitts-Baustein) — Status: offen
+### Q4: Mitteilungs-Inbox (PERSONAL-9, vorgezogen als Querschnitts-Baustein) — Status: ERLEDIGT (= PERSONAL-9)
 Ohne Inbox-Leser sind ALLE server-erzeugten Erinnerungen (Lieferung WW-5, Dokumente PERSONAL-5, Quali PERSONAL-7, bestehendes MHD) für Nutzer ohne aktiviertes Push unsichtbar (`APP_PUSH_ENABLED` Default aus). Details unter PERSONAL-9 — hier nur die Einordnung: **vor bzw. parallel zu den ersten Nightlies bauen.**
 
-### Q5: Rollen-/Rechte-SSoT fürs Reporting — Status: offen
+### Q5: Rollen-/Rechte-SSoT fürs Reporting — Status: ERLEDIGT (= REPORTING-1 KpiPermissions)
 `KpiPermissions` (REPORTING-1) ist der gemeinsame Sichtbarkeits-Katalog für Dashboard, Detail-Screens und Home-Kacheln — **permission-basiert** (`canViewReports`, `canManageShifts`, `isAdmin`), nicht rollenbasiert (Prüf-Befund: die bestehenden Gates sind Flag-basiert und per User überschreibbar).
 
 ### Q6: Migrations-/Backfill-Matrix (Review-Befund: bisher nur verstreut) — Status: offen
