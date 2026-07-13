@@ -10,6 +10,7 @@ void main() {
           orgId: 'org-1',
           siteId: 'site-tb',
           siteName: 'Tabak Börse',
+          carrier: 'DHL',
           trackingCode: 'H0001234567890',
           recipientFirstName: 'Max',
           recipientLastName: 'Müller',
@@ -27,7 +28,7 @@ void main() {
       expect(restored.orgId, 'org-1');
       expect(restored.siteId, 'site-tb');
       expect(restored.siteName, 'Tabak Börse');
-      expect(restored.carrier, 'hermes');
+      expect(restored.carrier, 'DHL');
       expect(restored.trackingCode, 'H0001234567890');
       expect(restored.recipientFirstName, 'Max');
       expect(restored.recipientLastName, 'Müller');
@@ -45,6 +46,7 @@ void main() {
 
       expect(restored.recipientFirstName, 'Max');
       expect(restored.recipientLastName, 'Müller');
+      expect(restored.carrier, 'DHL');
       expect(restored.senderName, 'Amazon');
       expect(restored.parcelCustomerId, 'cust-9');
       expect(restored.compartmentId, 'fach-a2');
@@ -93,6 +95,7 @@ void main() {
     test('copyWith clear flags empty nullable fields', () {
       final s = sample();
       expect(s.copyWith(clearSenderName: true).senderName, isNull);
+      expect(s.copyWith(clearCarrier: true).carrier, isNull);
       expect(s.copyWith(clearTrackingCode: true).trackingCode, isNull);
       expect(
         s.copyWith(clearParcelCustomerId: true).parcelCustomerId,

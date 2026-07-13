@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../models/app_user.dart';
 import '../theme/theme_extensions.dart';
-import '../ui/app_hero_card.dart';
-import '../ui/app_quick_action.dart';
 
 /// Inhalt des Slide-in-Navigationsmenüs (Signal-Teal-Redesign / V2). Wird im
 /// `HomeScreen` als `Scaffold.drawer` (mobil, von links) und `Scaffold.endDrawer`
@@ -14,9 +12,10 @@ import '../ui/app_quick_action.dart';
 /// Aktionen als Callbacks. So ist das Menü isoliert (ohne Provider-Stack)
 /// testbar; die Shell liefert Daten + Drawer-schließen-dann-pushen-Verhalten.
 ///
-/// Gruppierung (behebt die zuvor flache, ununterscheidbare Kachel-Verteilung):
-/// **Auswertungen** (`canViewReports`) · **Verwaltung** (Team `isAdmin`, Waren
-/// `canViewInventory`) · **App** (Einstellungen, immer) · Footer Abmelden.
+/// Klare Hierarchie statt einer langen Folge gleich gewichteter Karten:
+/// **Arbeitsbereiche** · **Laden & Bestand** · **Verwaltung** ·
+/// **Auswertungen** · **Konto & Hilfe**. Abmelden bleibt unabhängig von der
+/// Scrollposition erreichbar.
 class AppNavMenu extends StatelessWidget {
   const AppNavMenu({
     super.key,
@@ -42,6 +41,8 @@ class AppNavMenu extends StatelessWidget {
     this.siteName,
     this.dailyHours,
     this.vacationDays,
+    this.selectedArea,
+    this.onClose,
   });
 
   final AppUserProfile? user;
@@ -73,9 +74,9 @@ class AppNavMenu extends StatelessWidget {
   final VoidCallback? onOpenKnowledge;
   final VoidCallback onOpenSettings;
 
-  /// Ob der Scanner-Eintrag gezeigt wird. Die „nur Handy"-Entscheidung
-  /// (Plattform + Breite) trifft die Shell und reicht das Ergebnis hier herein —
-  /// das Menü bleibt rein präsentational.
+  /// Ob der Scanner-Eintrag gezeigt wird. Die Berechtigungsentscheidung trifft
+  /// die Shell und reicht das Ergebnis hier herein — das Menü bleibt rein
+  /// präsentational.
   final bool showScanner;
 
   /// Ob die Gruppe „Bereiche" (Zeit/Kontakte/Laden) gezeigt wird. Diese Tabs
@@ -92,6 +93,13 @@ class AppNavMenu extends StatelessWidget {
   /// Jahres-Urlaubstage; `null` blendet den Chip aus.
   final int? vacationDays;
 
+  /// Aktiver Hauptbereich im mobilen Drawer (z. B. „Laden"). Rein visuell;
+  /// die Navigation bleibt vollständig callback-gesteuert.
+  final String? selectedArea;
+
+  /// Optionaler expliziter Schließen-Knopf im Drawer-Kopf.
+  final VoidCallback? onClose;
+
   @override
   Widget build(BuildContext context) {
     final spacing = context.spacing;
@@ -105,39 +113,39 @@ class AppNavMenu extends StatelessWidget {
     // „Bereiche": die aus der mobilen Bottomnav (Heute · Plan · Scanner ·
     // Anfragen · Mehr) ausgelagerten Tabs. Jeder Eintrag wechselt den Shell-
     // Branch; Sichtbarkeit folgt denselben Rechten wie der jeweilige Tab.
-    final areaItems = <Widget>[
+    final areaItems = <_MenuDestination>[
       if (canViewTimeTracking)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.schedule_outlined,
           title: 'Zeit',
           subtitle: 'Arbeitszeiten erfassen & Stempeluhr',
           onTap: onOpenTime,
         ),
       if (canViewContacts)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.contacts_outlined,
           title: 'Kontakte',
           subtitle: 'Kunden, Lieferanten & Partner',
           onTap: onOpenContacts,
         ),
       if (canViewInventory)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.storefront_outlined,
           title: 'Laden',
-          subtitle: 'Laden-Übersicht & Geschäftsbereiche',
+          subtitle: 'Tagesgeschäft, Kasse & Verwaltung',
           onTap: onOpenShop,
         ),
     ];
 
-    final reportItems = <Widget>[
+    final reportItems = <_MenuDestination>[
       if (canViewReports) ...[
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.description_outlined,
           title: 'Monatsbericht',
           subtitle: 'Eigene Stunden oder Team-Bericht als PDF',
           onTap: onOpenMonthReport,
         ),
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.analytics_outlined,
           title: 'Statistiken',
           subtitle: 'Monats- und Jahresauswertungen einsehen',
@@ -146,100 +154,121 @@ class AppNavMenu extends StatelessWidget {
       ],
     ];
 
-    final manageItems = <Widget>[
-      if (isAdmin)
-        AppQuickActionTile(
-          icon: Icons.badge_outlined,
-          title: 'Personal',
-          subtitle: 'Aufträge, Gehälter, Finanzen & Statistiken',
-          onTap: onOpenPersonal,
-        ),
-      if (isAdmin)
-        AppQuickActionTile(
-          icon: Icons.account_balance_outlined,
-          title: 'Buchhaltung',
-          subtitle: 'Kostenstellen, Buchungen, Budgets & DATEV',
-          onTap: onOpenFinance,
-        ),
+    final shopItems = <_MenuDestination>[
       if (canViewInventory)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.inventory_2_outlined,
           title: 'Warenwirtschaft',
           subtitle: 'Bestand, Lieferanten und Bestellungen',
           onTap: onOpenInventory,
         ),
       if (showScanner && canManageInventory)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.qr_code_scanner_outlined,
           title: 'Scanner',
           subtitle: 'Artikel per Barcode finden und buchen',
           onTap: onOpenScanner,
         ),
       if (canViewInventory)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.shopping_bag_outlined,
           title: 'Kundenbestellungen',
-          subtitle: 'Sonderbestellungen von Kunden verwalten',
+          subtitle: 'Sonderbestellungen verwalten',
           onTap: onOpenCustomerOrders,
         ),
       if (canViewInventory)
-        AppQuickActionTile(
+        _MenuDestination(
           icon: Icons.insights_outlined,
           title: 'Bestell-Auswertung',
-          subtitle: 'Wie oft welcher Artikel bestellt wird',
+          subtitle: 'Bestellhäufigkeit nach Zeitraum',
           onTap: onOpenOrderAnalytics,
         ),
     ];
 
+    final manageItems = <_MenuDestination>[
+      if (isAdmin)
+        _MenuDestination(
+          icon: Icons.badge_outlined,
+          title: 'Personal',
+          subtitle: 'Aufträge, Gehälter, Finanzen & Statistiken',
+          onTap: onOpenPersonal,
+        ),
+      if (isAdmin)
+        _MenuDestination(
+          icon: Icons.account_balance_outlined,
+          title: 'Buchhaltung',
+          subtitle: 'Kostenstellen, Buchungen, Budgets & DATEV',
+          onTap: onOpenFinance,
+        ),
+    ];
+
+    final accountItems = <_MenuDestination>[
+      if (onOpenMeineAkte != null)
+        _MenuDestination(
+          icon: Icons.account_box_outlined,
+          title: 'Meine Akte',
+          subtitle: 'Stammdaten, Urlaub & Dokumente',
+          onTap: onOpenMeineAkte!,
+        ),
+      _MenuDestination(
+        icon: Icons.settings_outlined,
+        title: 'Einstellungen',
+        subtitle: 'Profil, Darstellung und Standardwerte',
+        onTap: onOpenSettings,
+      ),
+      if (onOpenKnowledge != null)
+        _MenuDestination(
+          icon: Icons.menu_book_outlined,
+          title: 'Wissen & Hilfe',
+          subtitle: 'Anleitungen zu allen Bereichen',
+          onTap: onOpenKnowledge!,
+        ),
+    ];
+
     return SafeArea(
-      child: ListView(
-        padding: EdgeInsets.all(spacing.md),
+      child: Column(
         children: [
           _ProfileHeader(
             user: user,
             siteName: siteName,
             dailyHours: dailyHours,
             vacationDays: vacationDays,
+            onClose: onClose,
           ),
-          SizedBox(height: spacing.lg),
-          if (showAreas && areaItems.isNotEmpty) ...[
-            _MenuGroup(title: 'Bereiche', children: areaItems),
-            SizedBox(height: spacing.md),
-          ],
-          if (reportItems.isNotEmpty) ...[
-            _MenuGroup(title: 'Auswertungen', children: reportItems),
-            SizedBox(height: spacing.md),
-          ],
-          if (manageItems.isNotEmpty) ...[
-            _MenuGroup(title: 'Verwaltung', children: manageItems),
-            SizedBox(height: spacing.md),
-          ],
-          _MenuGroup(
-            title: 'App',
-            children: [
-              if (onOpenMeineAkte != null)
-                AppQuickActionTile(
-                  icon: Icons.badge_outlined,
-                  title: 'Meine Akte',
-                  subtitle: 'Eigene Stammdaten, Urlaub & Dokumente',
-                  onTap: onOpenMeineAkte!,
-                ),
-              AppQuickActionTile(
-                icon: Icons.settings_outlined,
-                title: 'Einstellungen',
-                subtitle: 'Profil, Theme und Standardwerte ändern',
-                onTap: onOpenSettings,
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(
+                spacing.md,
+                spacing.xs,
+                spacing.md,
+                spacing.lg,
               ),
-              if (onOpenKnowledge != null)
-                AppQuickActionTile(
-                  icon: Icons.menu_book_outlined,
-                  title: 'Wissen & Hilfe',
-                  subtitle: 'Anleitungen zu jedem Bereich der App',
-                  onTap: onOpenKnowledge!,
-                ),
-            ],
+              children: [
+                if (showAreas && areaItems.isNotEmpty) ...[
+                  _MenuGroup(
+                    title: 'Arbeitsbereiche',
+                    items: areaItems,
+                    selectedTitle: selectedArea,
+                    emphasized: true,
+                  ),
+                  SizedBox(height: spacing.lg),
+                ],
+                if (shopItems.isNotEmpty) ...[
+                  _MenuGroup(title: 'Laden & Bestand', items: shopItems),
+                  SizedBox(height: spacing.lg),
+                ],
+                if (manageItems.isNotEmpty) ...[
+                  _MenuGroup(title: 'Verwaltung', items: manageItems),
+                  SizedBox(height: spacing.lg),
+                ],
+                if (reportItems.isNotEmpty) ...[
+                  _MenuGroup(title: 'Auswertungen', items: reportItems),
+                  SizedBox(height: spacing.lg),
+                ],
+                _MenuGroup(title: 'Konto & Hilfe', items: accountItems),
+              ],
+            ),
           ),
-          SizedBox(height: spacing.lg),
           _SignOutButton(authDisabled: authDisabled, onSignOut: onSignOut),
         ],
       ),
@@ -253,12 +282,14 @@ class _ProfileHeader extends StatelessWidget {
     required this.siteName,
     required this.dailyHours,
     required this.vacationDays,
+    required this.onClose,
   });
 
   final AppUserProfile? user;
   final String? siteName;
   final double? dailyHours;
   final int? vacationDays;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -268,112 +299,113 @@ class _ProfileHeader extends StatelessWidget {
     final name = user?.displayName ?? 'Profil';
     final initial = name.isEmpty ? '?' : name.characters.first.toUpperCase();
 
-    return AppHeroCard(
-      tone: AppHeroTone.accent,
+    final hasWorkDetails = dailyHours != null || vacationDays != null;
+    final workDetails = <String>[
+      if (dailyHours != null)
+        '${dailyHours!.toStringAsFixed(1).replaceAll('.', ',')} h Soll/Tag',
+      if (vacationDays != null) '$vacationDays Urlaubstage',
+    ].join(' · ');
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        spacing.md,
+        spacing.md,
+        spacing.md,
+        spacing.s12,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              CircleAvatar(
-                radius: 26,
-                backgroundColor: colorScheme.primary,
-                foregroundColor: colorScheme.onPrimary,
-                child: Text(
-                  initial,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    color: colorScheme.onPrimary,
-                    fontWeight: FontWeight.bold,
+              Expanded(
+                child: Semantics(
+                  header: true,
+                  child: Text(
+                    'Menü',
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
               ),
-              SizedBox(width: spacing.md),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    SizedBox(height: spacing.xxs),
-                    Text(
-                      user?.role.label ?? '',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: spacing.md),
-          Wrap(
-            spacing: spacing.sm,
-            runSpacing: spacing.sm,
-            children: [
-              _HeaderChip(
-                icon: Icons.storefront_outlined,
-                label: (siteName == null || siteName!.trim().isEmpty)
-                    ? 'Kein Stammstandort'
-                    : siteName!,
-              ),
-              if (dailyHours != null)
-                _HeaderChip(
-                  icon: Icons.schedule_outlined,
-                  label: '${dailyHours!.toStringAsFixed(1)} h Soll/Tag',
-                ),
-              if (vacationDays != null)
-                _HeaderChip(
-                  icon: Icons.beach_access_outlined,
-                  label: '$vacationDays Urlaubstage',
+              if (onClose != null)
+                IconButton(
+                  tooltip: 'Menü schließen',
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close_rounded),
                 ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Pillen-Chip wie [InfoChip], aber mit ellipsierendem Text (`Flexible`) — der
-/// Profil-Header steht im schmalen Drawer (~270–304px), wo lange Standortnamen
-/// sonst überlaufen. `Flexible` ist hier sicher, da der Chip ausschliesslich im
-/// `Wrap` (gebundene maxWidth) verwendet wird.
-class _HeaderChip extends StatelessWidget {
-  const _HeaderChip({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHigh.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: colorScheme.primary),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelLarge?.copyWith(
-                fontWeight: FontWeight.w600,
+          SizedBox(height: spacing.s12),
+          Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(spacing.s12),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(context.radii.lg),
+              border: Border.all(
+                color: colorScheme.outlineVariant.withValues(alpha: 0.6),
               ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                CircleAvatar(
+                  radius: 22,
+                  backgroundColor: colorScheme.primaryContainer,
+                  foregroundColor: colorScheme.onPrimaryContainer,
+                  child: Text(
+                    initial,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: colorScheme.onPrimaryContainer,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                SizedBox(width: spacing.s12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      SizedBox(height: spacing.xxs),
+                      Text(
+                        [
+                          if ((user?.role.label ?? '').isNotEmpty)
+                            user!.role.label,
+                          (siteName ?? '').trim().isEmpty
+                              ? 'Kein Stammstandort'
+                              : siteName!.trim(),
+                        ].join(' · '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      if (hasWorkDetails) ...[
+                        SizedBox(height: spacing.xs),
+                        Text(
+                          workDetails,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -382,15 +414,37 @@ class _HeaderChip extends StatelessWidget {
   }
 }
 
+class _MenuDestination {
+  const _MenuDestination({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+}
+
 class _MenuGroup extends StatelessWidget {
-  const _MenuGroup({required this.title, required this.children});
+  const _MenuGroup({
+    required this.title,
+    required this.items,
+    this.selectedTitle,
+    this.emphasized = false,
+  });
 
   final String title;
-  final List<Widget> children;
+  final List<_MenuDestination> items;
+  final String? selectedTitle;
+  final bool emphasized;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final spacing = context.spacing;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -406,11 +460,95 @@ class _MenuGroup extends StatelessWidget {
             ),
           ),
         ),
-        for (var i = 0; i < children.length; i++) ...[
-          if (i > 0) SizedBox(height: spacing.sm),
-          children[i],
-        ],
+        Container(
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color:
+                emphasized
+                    ? colorScheme.primaryContainer.withValues(alpha: 0.18)
+                    : colorScheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(context.radii.lg),
+            border: Border.all(
+              color: colorScheme.outlineVariant.withValues(alpha: 0.6),
+            ),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: Column(
+              children: [
+                for (var i = 0; i < items.length; i++) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 1,
+                      indent: spacing.md + 40,
+                      endIndent: spacing.s12,
+                    ),
+                  _MenuTile(
+                    item: items[i],
+                    selected: items[i].title == selectedTitle,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ],
+    );
+  }
+}
+
+class _MenuTile extends StatelessWidget {
+  const _MenuTile({required this.item, required this.selected});
+
+  final _MenuDestination item;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    return ListTile(
+      selected: selected,
+      selectedTileColor: colorScheme.secondaryContainer.withValues(alpha: 0.65),
+      contentPadding: EdgeInsets.symmetric(horizontal: spacing.s12),
+      minVerticalPadding: spacing.sm,
+      onTap: item.onTap,
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color:
+              selected
+                  ? colorScheme.primary
+                  : colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(context.radii.md),
+        ),
+        child: Icon(
+          item.icon,
+          color:
+              selected ? colorScheme.onPrimary : colorScheme.onSurfaceVariant,
+          size: context.iconSizes.sm,
+        ),
+      ),
+      title: Text(
+        item.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.titleSmall?.copyWith(
+          fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
+        ),
+      ),
+      subtitle: Text(
+        item.subtitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Icon(
+        selected ? Icons.check_circle_rounded : Icons.chevron_right_rounded,
+        color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
+        size: context.iconSizes.sm,
+      ),
     );
   }
 }
@@ -424,15 +562,24 @@ class _SignOutButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return SizedBox(
+    final spacing = context.spacing;
+    return Container(
       width: double.infinity,
-      child: FilledButton.icon(
+      padding: EdgeInsets.all(spacing.md),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(
+            color: colorScheme.outlineVariant.withValues(alpha: 0.6),
+          ),
+        ),
+      ),
+      child: OutlinedButton.icon(
         onPressed: onSignOut,
-        icon: const Icon(Icons.logout),
+        icon: const Icon(Icons.logout_rounded),
         label: Text(authDisabled ? 'Profil wechseln' : 'Abmelden'),
-        style: FilledButton.styleFrom(
-          backgroundColor: colorScheme.errorContainer,
-          foregroundColor: colorScheme.onErrorContainer,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: colorScheme.error,
+          side: BorderSide(color: colorScheme.error.withValues(alpha: 0.5)),
         ),
       ),
     );

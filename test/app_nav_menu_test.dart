@@ -49,6 +49,8 @@ Future<void> _pump(
   VoidCallback? onOpenTime,
   VoidCallback? onOpenContacts,
   VoidCallback? onOpenShop,
+  String? selectedArea,
+  VoidCallback? onClose,
 }) async {
   // Hoher Viewport, damit die (lazy) ListView alle Menue-Eintraege baut.
   tester.view.devicePixelRatio = 1;
@@ -69,6 +71,8 @@ Future<void> _pump(
           siteName: 'Strichmaennchen',
           dailyHours: 8,
           vacationDays: 30,
+          selectedArea: selectedArea,
+          onClose: onClose,
           onSignOut: onSignOut ?? () {},
           onOpenTime: onOpenTime ?? () {},
           onOpenContacts: onOpenContacts ?? () {},
@@ -96,7 +100,8 @@ void main() {
     await _pump(tester, user: _admin);
 
     expect(find.text('Sandra'), findsOneWidget); // Name im Header
-    expect(find.text('Admin'), findsOneWidget); // Rollen-Label
+    expect(find.textContaining('Admin ·'), findsOneWidget); // Rolle + Standort
+    expect(find.text('Laden & Bestand'), findsOneWidget);
     expect(find.text('Auswertungen'), findsOneWidget);
     expect(find.text('Monatsbericht'), findsOneWidget);
     expect(find.text('Statistiken'), findsOneWidget);
@@ -109,26 +114,30 @@ void main() {
     expect(find.text('Abmelden'), findsOneWidget);
   });
 
-  testWidgets('Mitarbeiter ohne Reports: keine Auswertungen/Personal',
-      (tester) async {
+  testWidgets('Mitarbeiter ohne Reports: keine Auswertungen/Personal', (
+    tester,
+  ) async {
     await _pump(tester, user: _employeeNoReports);
 
     expect(find.text('Peter'), findsOneWidget);
-    expect(find.text('Mitarbeiter'), findsOneWidget);
+    expect(find.textContaining('Mitarbeiter ·'), findsOneWidget);
     expect(find.text('Auswertungen'), findsNothing);
     expect(find.text('Monatsbericht'), findsNothing);
     expect(find.text('Statistiken'), findsNothing);
     expect(find.text('Teamverwaltung'), findsNothing);
     // Personal ist Admin-only -> fuer Mitarbeiter ausgeblendet.
     expect(find.text('Personal'), findsNothing);
-    // Verwaltung-Gruppe bleibt: Warenwirtschaft darf jedes aktive Mitglied.
+    // Fachmodule sind jetzt klar von der Admin-Verwaltung getrennt.
     expect(find.text('Warenwirtschaft'), findsOneWidget);
+    expect(find.text('Laden & Bestand'), findsOneWidget);
+    expect(find.text('Verwaltung'), findsNothing);
     expect(find.text('Einstellungen'), findsOneWidget);
     expect(find.text('Abmelden'), findsOneWidget);
   });
 
-  testWidgets('Scanner-Eintrag: nur bei showScanner UND Verwalter-Recht',
-      (tester) async {
+  testWidgets('Scanner-Eintrag: nur bei showScanner UND Verwalter-Recht', (
+    tester,
+  ) async {
     // showScanner=false (z.B. Desktop/Web/Tablet) -> kein Scanner.
     await _pump(tester, user: _admin);
     expect(find.text('Scanner'), findsNothing);
@@ -192,16 +201,17 @@ void main() {
     expect(opened, isTrue);
   });
 
-  testWidgets('Bereiche-Gruppe: nur bei showAreas (mobiler Drawer)',
-      (tester) async {
-    // Default (Rail/endDrawer): keine Bereiche-Gruppe.
+  testWidgets('Arbeitsbereiche: nur bei showAreas (mobiler Drawer)', (
+    tester,
+  ) async {
+    // Default (Rail/endDrawer): keine Arbeitsbereiche-Gruppe.
     await _pump(tester, user: _admin);
-    expect(find.text('Bereiche'), findsNothing);
+    expect(find.text('Arbeitsbereiche'), findsNothing);
 
     // Mobiler Drawer: Zeit/Kontakte/Laden sind die aus der Bottomnav
     // ausgelagerten Tabs und tauchen hier auf.
     await _pump(tester, user: _admin, showAreas: true);
-    expect(find.text('Bereiche'), findsOneWidget);
+    expect(find.text('Arbeitsbereiche'), findsOneWidget);
     expect(find.text('Zeit'), findsOneWidget);
     expect(find.text('Kontakte'), findsOneWidget);
     expect(find.text('Laden'), findsOneWidget);
@@ -220,5 +230,29 @@ void main() {
     await tester.tap(find.text('Zeit'));
     await tester.pump();
     expect(opened, isTrue);
+  });
+
+  testWidgets('aktiver Arbeitsbereich wird markiert und Menü ist schließbar', (
+    tester,
+  ) async {
+    var closed = false;
+    await _pump(
+      tester,
+      user: _admin,
+      showAreas: true,
+      selectedArea: 'Laden',
+      onClose: () => closed = true,
+    );
+
+    final ladenTile = find.ancestor(
+      of: find.text('Laden'),
+      matching: find.byType(ListTile),
+    );
+    expect(ladenTile, findsOneWidget);
+    expect(tester.widget<ListTile>(ladenTile).selected, isTrue);
+
+    await tester.tap(find.byTooltip('Menü schließen'));
+    await tester.pump();
+    expect(closed, isTrue);
   });
 }

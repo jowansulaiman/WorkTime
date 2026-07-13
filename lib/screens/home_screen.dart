@@ -19,8 +19,10 @@ import '../models/site_definition.dart';
 import '../models/shift.dart';
 import '../models/work_entry.dart';
 import '../providers/auth_provider.dart';
+import '../providers/notification_provider.dart';
 import '../providers/connectivity_status_provider.dart';
 import '../providers/inventory_provider.dart';
+import '../providers/parcel_provider.dart';
 import '../providers/schedule_provider.dart';
 import '../providers/storage_mode_provider.dart';
 import '../providers/team_provider.dart';
@@ -264,7 +266,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 drawerEdgeDragWidth: useV2 ? 24 : null,
                 appBar: (useV2 && !useRail)
                     ? _V2MenuTopBar(
-                        user: currentUser,
                         onOpenMenu: () =>
                             _scaffoldKey.currentState?.openDrawer(),
                         showCart: currentUser?.canViewInventory ?? false,
@@ -836,6 +837,31 @@ class _HomeScreenState extends State<HomeScreen> {
                       await context.push(AppRoutes.personal);
                     },
                   ),
+                  // REPORTING-4: Management-Kennzahlen (Admin + Schichtleitung).
+                  if ((currentUser?.isAdmin ?? false) ||
+                      (currentUser?.canManageShifts ?? false))
+                    _QuickActionListTile(
+                      icon: Icons.insights_outlined,
+                      title: 'Kennzahlen',
+                      subtitle:
+                          'Org-weite Zeit-, Bestands- und Umsatz-Kennzahlen',
+                      onTap: () async {
+                        Navigator.of(sheetContext).pop();
+                        await context.push(AppRoutes.kennzahlen);
+                      },
+                    ),
+                  // PERSONAL-9/Q4: Mitteilungs-Inbox (jeder Nutzer).
+                  _QuickActionListTile(
+                    icon: Icons.notifications_none_outlined,
+                    title: context.read<NotificationProvider>().unreadCount > 0
+                        ? 'Mitteilungen (${context.read<NotificationProvider>().unreadCount})'
+                        : 'Mitteilungen',
+                    subtitle: 'Erinnerungen und Systemnachrichten',
+                    onTap: () async {
+                      Navigator.of(sheetContext).pop();
+                      await context.push(AppRoutes.mitteilungen);
+                    },
+                  ),
                   if (currentUser?.canViewReports ?? false)
                     _QuickActionListTile(
                       icon: Icons.description_outlined,
@@ -947,6 +973,18 @@ class _HomeScreenState extends State<HomeScreen> {
                       );
                     },
                   ),
+                  // PERSONAL-9/Q4: Mitteilungs-Inbox (jeder Nutzer).
+                  _QuickActionListTile(
+                    icon: Icons.notifications_none_outlined,
+                    title: context.read<NotificationProvider>().unreadCount > 0
+                        ? 'Mitteilungen (${context.read<NotificationProvider>().unreadCount})'
+                        : 'Mitteilungen',
+                    subtitle: 'Erinnerungen und Systemnachrichten',
+                    onTap: () async {
+                      Navigator.of(sheetContext).pop();
+                      await context.push(AppRoutes.mitteilungen);
+                    },
+                  ),
                 ],
               ),
             ),
@@ -1009,6 +1047,10 @@ class _HomeScreenState extends State<HomeScreen> {
             siteName: siteName,
             dailyHours: work.settings.dailyHours,
             vacationDays: work.settings.vacationDays,
+            selectedArea: _destinationMeta(
+              ShellTab.values[_shell.currentIndex],
+            ).label,
+            onClose: _closeAppMenu,
             onSignOut: () {
               _closeAppMenu();
               context.read<AuthProvider>().signOut();
@@ -1244,18 +1286,16 @@ class _ShellScope extends InheritedWidget {
       canGoBack != oldWidget.canGoBack;
 }
 
-/// Schlanke V2-Top-Bar im Bottom-Nav-Modus: ein Avatar-Button links öffnet das
-/// Slide-in-Menü. Bewusst ohne Titel — den Abschnittstitel liefert weiterhin der
-/// `SectionHeader` jedes Tabs (kein Doppel-Header).
+/// Schlanke V2-Top-Bar im Bottom-Nav-Modus: ein eindeutiger Menü-Button links
+/// öffnet das Slide-in-Menü. Bewusst ohne Titel — den Abschnittstitel liefert
+/// weiterhin der `SectionHeader` jedes Tabs (kein Doppel-Header).
 class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
   const _V2MenuTopBar({
-    required this.user,
     required this.onOpenMenu,
     required this.showCart,
     required this.onOpenCart,
   });
 
-  final AppUserProfile? user;
   final VoidCallback onOpenMenu;
 
   /// Ob der Warenkorb-Knopf oben rechts gezeigt wird (nur mit Waren-Recht).
@@ -1267,9 +1307,6 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final initial = _initialFor(user?.displayName);
     return AppBar(
       backgroundColor: Colors.transparent,
       elevation: 0,
@@ -1278,20 +1315,13 @@ class _V2MenuTopBar extends StatelessWidget implements PreferredSizeWidget {
       leadingWidth: 64,
       leading: Padding(
         padding: const EdgeInsets.only(left: 12),
-        child: IconButton(
-          tooltip: 'Menü',
-          onPressed: onOpenMenu,
-          icon: CircleAvatar(
-            radius: 16,
-            backgroundColor: colorScheme.primary,
-            foregroundColor: colorScheme.onPrimary,
-            child: Text(
-              initial,
-              style: theme.textTheme.labelLarge?.copyWith(
-                color: colorScheme.onPrimary,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+        child: Semantics(
+          button: true,
+          label: 'Menü öffnen',
+          child: IconButton(
+            tooltip: 'Menü',
+            onPressed: onOpenMenu,
+            icon: const Icon(Icons.menu_rounded),
           ),
         ),
       ),
@@ -1861,8 +1891,6 @@ class _QuickActionCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
-    this.badge,
-    this.badgeTone = AppStatusTone.neutral,
   });
 
   final IconData icon;
@@ -1870,18 +1898,11 @@ class _QuickActionCard extends StatelessWidget {
   final String subtitle;
   final VoidCallback onTap;
 
-  /// Optionaler Live-Status (z. B. knappe Bestaende, offene Bestellungen).
-  /// `null`/leer = kein Pill. Bewusst optional: alle bestehenden Aufrufstellen
-  /// (inkl. _ProfileHubTab) bleiben dadurch unveraendert.
-  final String? badge;
-  final AppStatusTone badgeTone;
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final spacing = context.spacing;
-    final hasBadge = badge != null && badge!.isNotEmpty;
 
     // [AppCard] liefert die einheitliche Karten-Optik (surfaceContainerLow,
     // Hairline-Rand aus dem CardTheme, weicher Schatten, geclippte Ripple) —
@@ -1936,93 +1957,8 @@ class _QuickActionCard extends StatelessWidget {
               height: 1.3,
             ),
           ),
-          if (hasBadge) ...[
-            SizedBox(height: spacing.sm + spacing.xxs),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: AppStatusBadge(label: badge!, tone: badgeTone),
-            ),
-          ],
         ],
       ),
-    );
-  }
-}
-
-/// Kachel-Raster mit ausgewogener Spaltenzahl und zeilenweise gleicher Hoehe.
-///
-/// Bewusst eigenstaendig statt der gemeinsamen [AdaptiveCardGrid] (deren
-/// `gridColumns` auf 4 clamped und so bei 5 Kacheln eine 4+1-Waisenzeile
-/// erzeugt):
-/// - Die Spaltenzahl wird so gewaehlt, dass keine Zeile mit nur EINER Kachel
-///   uebrig bleibt (5 Items bei Platz fuer 3 Spalten ⇒ 3+2 statt 4+1).
-/// - Jede Zeile liegt in einem [IntrinsicHeight] mit
-///   [CrossAxisAlignment.stretch] ⇒ alle Karten einer Zeile sind gleich hoch
-///   und schliessen buendig ab (keine ausgefranste Unterkante).
-/// - Die letzte unvollstaendige Zeile wird mit unsichtbaren Platzhaltern auf
-///   die Spaltenbreite aufgefuellt, damit die Karten gleich breit und
-///   linksbuendig bleiben.
-class _BalancedTileGrid extends StatelessWidget {
-  const _BalancedTileGrid({required this.children});
-
-  final List<Widget> children;
-
-  /// Mindestbreite je Kachel (⇒ 2 Spalten auf dem Handy, bis zu [_maxColumns]
-  /// auf breiten Layouts).
-  static const double _minItemWidth = 160;
-
-  /// Spalten-Obergrenze: bei 5 Kacheln eine ausgewogene 3+2-Aufteilung statt
-  /// kleiner 4+1-Kacheln mit Waisenzeile.
-  static const int _maxColumns = 3;
-
-  int _balancedColumns(double width) {
-    final n = children.length;
-    if (n <= 1) return 1;
-    final fit = (width / _minItemWidth).floor().clamp(1, _maxColumns);
-    if (fit <= 1) return 1;
-    var cols = fit > n ? n : fit;
-    // Vermeide eine Zeile mit nur einer Kachel: Spalten reduzieren, bis der
-    // Rest (n % cols) 0 oder >= 2 ist (⇒ 3+2 statt 4+1).
-    while (cols > 1 && n % cols == 1) {
-      cols -= 1;
-    }
-    return cols;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final spacing = context.spacing;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final cols = _balancedColumns(constraints.maxWidth);
-        final rows = <Widget>[];
-        for (var i = 0; i < children.length; i += cols) {
-          final end = (i + cols) < children.length ? i + cols : children.length;
-          final slice = children.sublist(i, end);
-          final cells = <Widget>[];
-          for (var c = 0; c < cols; c++) {
-            if (c > 0) cells.add(SizedBox(width: spacing.md));
-            cells.add(
-              Expanded(
-                child: c < slice.length ? slice[c] : const SizedBox.shrink(),
-              ),
-            );
-          }
-          if (rows.isNotEmpty) rows.add(SizedBox(height: spacing.md));
-          rows.add(
-            IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: cells,
-              ),
-            ),
-          );
-        }
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: rows,
-        );
-      },
     );
   }
 }
@@ -2871,15 +2807,11 @@ class _PlannedActualStatCard extends StatelessWidget {
   }
 }
 
-/// "Laden"-Tab: ein gebuendelter Einstieg in die Geschaefts-Module
-/// (Warenwirtschaft, Kundenbestellungen, Personal). Bewusst als Hub mit
-/// Schnellzugriff-Karten – die Module sind selbst Tab-Screens, echte Unter-Tabs
-/// waeren Tabs-in-Tabs. Oeffnet die Vollbild-Screens per Navigator.push.
+/// "Laden"-Tab: ein gebündelter Einstieg in die Geschäftsmodule. Der wichtigste
+/// Arbeitsbereich steht prominent oben; alle weiteren Ziele sind nach Aufgabe
+/// gruppiert. Die Module bleiben eigenständige, gepushte Screens (Back → Hub).
 class _ShopHubTab extends StatelessWidget {
-  const _ShopHubTab({
-    required this.canNavigateBack,
-    this.onNavigateBack,
-  });
+  const _ShopHubTab({required this.canNavigateBack, this.onNavigateBack});
 
   final bool canNavigateBack;
   final VoidCallback? onNavigateBack;
@@ -2890,6 +2822,7 @@ class _ShopHubTab extends StatelessWidget {
     final canViewInventory = currentUser?.canViewInventory ?? false;
     final isAdmin = currentUser?.isAdmin ?? false;
     final canManageFeedback = currentUser?.canManageFeedback ?? false;
+    final canViewParcels = currentUser?.canViewParcels ?? false;
     final screenPad = MobileBreakpoints.screenPadding(context);
 
     // Live-Status fuer die Warenwirtschafts-Kacheln: knappe Bestaende +
@@ -2902,6 +2835,96 @@ class _ShopHubTab extends StatelessWidget {
       lowStockCount = inventory.lowStockProducts().length;
       openCustomerOrderCount = inventory.openCustomerOrders.length;
     }
+
+    // Paketshop-Status: offene + überfällige Pakete (nur In-Memory,
+    // leer ⇒ 0, also offline/Demo-sicher).
+    var openParcelCount = 0;
+    var overdueParcelCount = 0;
+    if (canViewParcels) {
+      final parcel = context.watch<ParcelProvider>();
+      openParcelCount = parcel.openParcels.length;
+      overdueParcelCount = parcel.overdueParcels(DateTime.now()).length;
+    }
+
+    final dailyDestinations = <_ShopDestination>[
+      if (canViewInventory)
+        _ShopDestination(
+          icon: Icons.shopping_bag_outlined,
+          title: 'Kundenbestellungen',
+          subtitle: 'Sonderbestellungen von Kunden verwalten',
+          badge:
+              openCustomerOrderCount > 0
+                  ? '$openCustomerOrderCount offen'
+                  : null,
+          badgeTone: AppStatusTone.info,
+          onTap: () => context.push(AppRoutes.customerOrders),
+        ),
+      if (canViewParcels)
+        _ShopDestination(
+          icon: Icons.local_shipping_outlined,
+          title: 'Paketshop',
+          subtitle: 'Pakete sortieren, wiederfinden und ausgeben',
+          badge:
+              overdueParcelCount > 0
+                  ? '$overdueParcelCount überfällig'
+                  : (openParcelCount > 0 ? '$openParcelCount offen' : null),
+          badgeTone:
+              overdueParcelCount > 0
+                  ? AppStatusTone.warning
+                  : AppStatusTone.info,
+          onTap: () => context.push(AppRoutes.paketshop),
+        ),
+    ];
+
+    final reportDestinations = <_ShopDestination>[
+      if (canViewInventory)
+        _ShopDestination(
+          icon: Icons.insights_outlined,
+          title: 'Bestell-Auswertung',
+          subtitle: 'Bestellhäufigkeit nach Woche und Monat auswerten',
+          onTap: () => context.push(AppRoutes.orderAnalytics),
+        ),
+      if (isAdmin)
+        _ShopDestination(
+          icon: Icons.receipt_long_outlined,
+          title: 'Kassenbericht',
+          subtitle: 'Umsatz, Käufe und Gewinn nach Zeitraum prüfen',
+          onTap: () => context.push(AppRoutes.kassenbericht),
+        ),
+    ];
+
+    final managementDestinations = <_ShopDestination>[
+      if (isAdmin)
+        _ShopDestination(
+          icon: Icons.badge_outlined,
+          title: 'Personal',
+          subtitle: 'Aufträge, Lohn-Richtwerte, Finanzen und Statistik',
+          onTap: () => context.push(AppRoutes.personal),
+        ),
+      if (canManageFeedback)
+        _ShopDestination(
+          icon: Icons.feedback_outlined,
+          title: 'Kundenfeedback',
+          subtitle: 'Beschwerden, Vorschläge und Lob bearbeiten',
+          onTap: () => context.push(AppRoutes.feedbackInbox),
+        ),
+      if (isAdmin && AppConfig.signageEnabled)
+        _ShopDestination(
+          icon: Icons.slideshow_outlined,
+          title: 'Displays & Werbung',
+          subtitle: 'Inhalte auf den Laden-Fernsehern verwalten',
+          onTap: () => context.push(AppRoutes.signage),
+        ),
+      if (isAdmin)
+        _ShopDestination(
+          icon: Icons.history_outlined,
+          title: 'Änderungsprotokoll',
+          subtitle: 'Änderungen an Lohn, Kontakten und Preisen prüfen',
+          onTap: () => context.push(AppRoutes.auditLog),
+        ),
+    ];
+
+    final spacing = context.spacing;
 
     return SafeArea(
       child: Align(
@@ -2917,86 +2940,370 @@ class _ShopHubTab extends StatelessWidget {
               SectionHeader(
                 title: 'Laden',
                 subtitle:
-                    'Warenwirtschaft, Kundenbestellungen und Personal an einem Ort.',
+                    'Tagesgeschäft, Auswertungen und Verwaltung – klar nach Aufgaben sortiert.',
                 breadcrumbs: const [BreadcrumbItem(label: 'Laden')],
                 onBack: canNavigateBack ? onNavigateBack : null,
               ),
-              const SizedBox(height: 20),
-              _BalancedTileGrid(
-                children: [
-                  if (canViewInventory)
-                    _QuickActionCard(
-                      icon: Icons.inventory_2_outlined,
-                      title: 'Warenwirtschaft',
-                      subtitle:
-                          'Bestand, Lieferanten und Bestellungen verwalten',
-                      badge: lowStockCount > 0 ? '$lowStockCount knapp' : null,
-                      badgeTone: AppStatusTone.warning,
-                      onTap: () => context.push(AppRoutes.inventory),
-                    ),
-                  if (canViewInventory)
-                    _QuickActionCard(
-                      icon: Icons.shopping_bag_outlined,
-                      title: 'Kundenbestellungen',
-                      subtitle: 'Sonderbestellungen von Kunden verwalten',
-                      badge: openCustomerOrderCount > 0
-                          ? '$openCustomerOrderCount offen'
-                          : null,
-                      badgeTone: AppStatusTone.info,
-                      onTap: () => context.push(AppRoutes.customerOrders),
-                    ),
-                  if (canViewInventory)
-                    _QuickActionCard(
-                      icon: Icons.insights_outlined,
-                      title: 'Bestell-Auswertung',
-                      subtitle:
-                          'Wie oft welcher Artikel bestellt wird (Woche/Monat)',
-                      onTap: () => context.push(AppRoutes.orderAnalytics),
-                    ),
-                  if (isAdmin)
-                    _QuickActionCard(
-                      icon: Icons.receipt_long_outlined,
-                      title: 'Kassenbericht',
-                      subtitle:
-                          'Umsatz, Käufe & Gewinn pro Woche/Monat/Jahr',
-                      onTap: () => context.push(AppRoutes.kassenbericht),
-                    ),
-                  if (isAdmin)
-                    _QuickActionCard(
-                      icon: Icons.badge_outlined,
-                      title: 'Personal',
-                      subtitle:
-                          'Auftraege, Lohn-Richtwerte, Finanzen und Statistik',
-                      onTap: () => context.push(AppRoutes.personal),
-                    ),
-                  if (canManageFeedback)
-                    _QuickActionCard(
-                      icon: Icons.feedback_outlined,
-                      title: 'Kundenfeedback',
-                      subtitle:
-                          'Beschwerden, Vorschlaege und Lob von der Webseite',
-                      onTap: () => context.push(AppRoutes.feedbackInbox),
-                    ),
-                  if (isAdmin && AppConfig.signageEnabled)
-                    _QuickActionCard(
-                      icon: Icons.slideshow_outlined,
-                      title: 'Displays & Werbung',
-                      subtitle:
-                          'Werbung auf den Laden-Fernsehern zentral verwalten',
-                      onTap: () => context.push(AppRoutes.signage),
-                    ),
-                  if (isAdmin)
-                    _QuickActionCard(
-                      icon: Icons.history_outlined,
-                      title: 'Änderungsprotokoll',
-                      subtitle:
-                          'Wer hat wann was geaendert (Lohn, Kontakte, Preise)',
-                      onTap: () => context.push(AppRoutes.auditLog),
-                    ),
-                ],
-              ),
+              SizedBox(height: spacing.lg),
+              if (canViewInventory)
+                _ShopInventoryHero(
+                  lowStockCount: lowStockCount,
+                  openCustomerOrderCount: openCustomerOrderCount,
+                  openParcelCount: canViewParcels ? openParcelCount : null,
+                  overdueParcelCount:
+                      canViewParcels ? overdueParcelCount : null,
+                  onTap: () => context.push(AppRoutes.inventory),
+                ),
+              if (dailyDestinations.isNotEmpty) ...[
+                SizedBox(height: spacing.xl),
+                _ShopSection(
+                  icon: Icons.storefront_outlined,
+                  title: 'Tagesgeschäft',
+                  subtitle: 'Aufträge und Services für den laufenden Betrieb',
+                  destinations: dailyDestinations,
+                ),
+              ],
+              if (reportDestinations.isNotEmpty) ...[
+                SizedBox(height: spacing.xl),
+                _ShopSection(
+                  icon: Icons.query_stats_outlined,
+                  title: 'Auswertungen & Kasse',
+                  subtitle: 'Bestellungen, Umsatz und Entwicklung im Blick',
+                  destinations: reportDestinations,
+                ),
+              ],
+              if (managementDestinations.isNotEmpty) ...[
+                SizedBox(height: spacing.xl),
+                _ShopSection(
+                  icon: Icons.admin_panel_settings_outlined,
+                  title: 'Verwaltung',
+                  subtitle: 'Team, Kommunikation und Systeme organisieren',
+                  destinations: managementDestinations,
+                ),
+              ],
+              SizedBox(height: spacing.xl),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ShopDestination {
+  const _ShopDestination({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.badge,
+    this.badgeTone = AppStatusTone.neutral,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final String? badge;
+  final AppStatusTone badgeTone;
+}
+
+class _ShopInventoryHero extends StatelessWidget {
+  const _ShopInventoryHero({
+    required this.lowStockCount,
+    required this.openCustomerOrderCount,
+    required this.openParcelCount,
+    required this.overdueParcelCount,
+    required this.onTap,
+  });
+
+  final int lowStockCount;
+  final int openCustomerOrderCount;
+  final int? openParcelCount;
+  final int? overdueParcelCount;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+
+    Widget content({required bool compact}) {
+      final copy = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Warenwirtschaft',
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          SizedBox(height: spacing.xs),
+          Text(
+            'Bestände, Lieferanten und Bestellungen zentral bearbeiten.',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          SizedBox(height: spacing.md),
+          Wrap(
+            spacing: spacing.sm,
+            runSpacing: spacing.sm,
+            children: [
+              AppStatusBadge(
+                icon:
+                    lowStockCount > 0
+                        ? Icons.warning_amber_rounded
+                        : Icons.check_circle_outline_rounded,
+                label:
+                    lowStockCount > 0
+                        ? '$lowStockCount Artikel knapp'
+                        : 'Bestand ohne Warnung',
+                tone:
+                    lowStockCount > 0
+                        ? AppStatusTone.warning
+                        : AppStatusTone.success,
+                filled: true,
+              ),
+              AppStatusBadge(
+                icon: Icons.shopping_bag_outlined,
+                label: '$openCustomerOrderCount Bestellungen offen',
+                tone:
+                    openCustomerOrderCount > 0
+                        ? AppStatusTone.info
+                        : AppStatusTone.neutral,
+                filled: true,
+              ),
+              if ((overdueParcelCount ?? 0) > 0)
+                AppStatusBadge(
+                  icon: Icons.schedule_rounded,
+                  label: '$overdueParcelCount Pakete überfällig',
+                  tone: AppStatusTone.warning,
+                  filled: true,
+                )
+              else if ((openParcelCount ?? 0) > 0)
+                AppStatusBadge(
+                  icon: Icons.local_shipping_outlined,
+                  label: '$openParcelCount Pakete offen',
+                  tone: AppStatusTone.info,
+                  filled: true,
+                ),
+            ],
+          ),
+        ],
+      );
+
+      final action = FilledButton.icon(
+        onPressed: onTap,
+        icon: const Icon(Icons.arrow_forward_rounded),
+        label: const Text('Warenwirtschaft öffnen'),
+      );
+
+      if (compact) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [copy, SizedBox(height: spacing.lg), action],
+        );
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [Expanded(child: copy), SizedBox(width: spacing.xl), action],
+      );
+    }
+
+    return AppHeroCard(
+      tone: AppHeroTone.accent,
+      padding: EdgeInsets.all(spacing.lg),
+      child: LayoutBuilder(
+        builder:
+            (context, constraints) =>
+                content(compact: constraints.maxWidth < 640),
+      ),
+    );
+  }
+}
+
+class _ShopSection extends StatelessWidget {
+  const _ShopSection({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.destinations,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final List<_ShopDestination> destinations;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: EdgeInsets.all(spacing.sm),
+              decoration: BoxDecoration(
+                color: colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(context.radii.md),
+              ),
+              child: Icon(
+                icon,
+                color: colorScheme.onSecondaryContainer,
+                size: context.iconSizes.sm,
+              ),
+            ),
+            SizedBox(width: spacing.s12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      title,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  SizedBox(height: spacing.xxs),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: spacing.md),
+        _ShopTileGrid(destinations: destinations),
+      ],
+    );
+  }
+}
+
+class _ShopTileGrid extends StatelessWidget {
+  const _ShopTileGrid({required this.destinations});
+
+  final List<_ShopDestination> destinations;
+
+  @override
+  Widget build(BuildContext context) {
+    final gap = context.spacing.md;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns =
+            constraints.maxWidth >= 840
+                ? 3
+                : constraints.maxWidth >= 600
+                ? 2
+                : 1;
+        final tileWidth =
+            (constraints.maxWidth - gap * (columns - 1)) / columns;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: [
+            for (final destination in destinations)
+              SizedBox(
+                width: tileWidth,
+                child: _ShopModuleTile(destination: destination),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ShopModuleTile extends StatelessWidget {
+  const _ShopModuleTile({required this.destination});
+
+  final _ShopDestination destination;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final spacing = context.spacing;
+    final hasBadge = destination.badge?.isNotEmpty ?? false;
+    return Semantics(
+      button: true,
+      label: [
+        destination.title,
+        destination.subtitle,
+        if (hasBadge) destination.badge!,
+      ].join(', '),
+      child: AppCard(
+        onTap: destination.onTap,
+        padding: EdgeInsets.all(spacing.md),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: EdgeInsets.all(spacing.s12),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(context.radii.md),
+              ),
+              child: Icon(
+                destination.icon,
+                color: colorScheme.onPrimaryContainer,
+                size: context.iconSizes.md,
+              ),
+            ),
+            SizedBox(width: spacing.s12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    destination.title,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  SizedBox(height: spacing.xs),
+                  Text(
+                    destination.subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (hasBadge) ...[
+                    SizedBox(height: spacing.s12),
+                    AppStatusBadge(
+                      label: destination.badge!,
+                      tone: destination.badgeTone,
+                      icon:
+                          destination.badgeTone == AppStatusTone.warning
+                              ? Icons.warning_amber_rounded
+                              : Icons.info_outline_rounded,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            SizedBox(width: spacing.xs),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: colorScheme.onSurfaceVariant,
+              size: context.iconSizes.sm,
+            ),
+          ],
         ),
       ),
     );

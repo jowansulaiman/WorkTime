@@ -63,7 +63,7 @@ class AppNavRail extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final spacing = context.spacing;
-    final width = expandedLabels ? 188.0 : 112.0;
+    final width = expandedLabels ? 216.0 : 104.0;
 
     return Container(
       width: width,
@@ -90,34 +90,93 @@ class AppNavRail extends StatelessWidget {
           vertical: spacing.md,
         ),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _Brand(expanded: expandedLabels),
             SizedBox(height: spacing.md),
             if (onSearch != null) ...[
-              IconButton(
-                tooltip: 'Suchen',
-                icon: const Icon(Icons.search_rounded),
-                onPressed: onSearch,
+              _RailUtilityButton(
+                icon: Icons.search_rounded,
+                label: 'Suchen',
+                expanded: expandedLabels,
+                onTap: onSearch!,
               ),
-              SizedBox(height: spacing.sm),
+              SizedBox(height: spacing.s12),
             ],
             if (themeAction != null) ...[
               themeAction!,
-              SizedBox(height: spacing.sm),
+              SizedBox(height: spacing.s12),
             ],
-            for (var i = 0; i < items.length; i++) ...[
-              if (i > 0) SizedBox(height: spacing.xs),
-              _RailItem(
-                item: items[i],
-                selected: i == selectedIndex,
-                onTap: () => onSelected(i),
+            if (expandedLabels) ...[
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  spacing.s12,
+                  spacing.xs,
+                  spacing.s12,
+                  spacing.sm,
+                ),
+                child: Text(
+                  'BEREICHE',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.8,
+                  ),
+                ),
               ),
             ],
-            const Spacer(),
+            Expanded(
+              child: ListView.separated(
+                padding: EdgeInsets.zero,
+                itemCount: items.length,
+                separatorBuilder: (_, _) => SizedBox(height: spacing.xs),
+                itemBuilder:
+                    (context, index) => _RailItem(
+                      item: items[index],
+                      selected: index == selectedIndex,
+                      expanded: expandedLabels,
+                      onTap: () => onSelected(index),
+                    ),
+              ),
+            ),
             SizedBox(height: spacing.sm),
-            _AccountButton(user: user, onTap: onOpenMenu),
+            _AccountButton(
+              user: user,
+              expanded: expandedLabels,
+              onTap: onOpenMenu,
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _RailUtilityButton extends StatelessWidget {
+  const _RailUtilityButton({
+    required this.icon,
+    required this.label,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!expanded) {
+      return IconButton(tooltip: label, icon: Icon(icon), onPressed: onTap);
+    }
+    return OutlinedButton.icon(
+      onPressed: onTap,
+      icon: Icon(icon, size: context.iconSizes.sm),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        alignment: Alignment.centerLeft,
+        padding: EdgeInsets.symmetric(horizontal: context.spacing.s12),
       ),
     );
   }
@@ -149,11 +208,13 @@ class _RailItem extends StatelessWidget {
   const _RailItem({
     required this.item,
     required this.selected,
+    required this.expanded,
     required this.onTap,
   });
 
   final AppNavRailItem item;
   final bool selected;
+  final bool expanded;
   final VoidCallback onTap;
 
   @override
@@ -163,9 +224,33 @@ class _RailItem extends StatelessWidget {
     final spacing = context.spacing;
     final radius = BorderRadius.circular(context.radii.lg);
 
-    final fg = selected
-        ? colorScheme.onSecondaryContainer
-        : colorScheme.onSurfaceVariant;
+    final fg = selected ? colorScheme.primary : colorScheme.onSurfaceVariant;
+    final icon =
+        item.badgeCount > 0
+            ? Badge(
+              label: Text('${item.badgeCount}'),
+              child: Icon(
+                selected ? item.selectedIcon : item.icon,
+                color: fg,
+                size: context.iconSizes.md,
+              ),
+            )
+            : Icon(
+              selected ? item.selectedIcon : item.icon,
+              color: fg,
+              size: context.iconSizes.md,
+            );
+
+    final label = Text(
+      item.label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: expanded ? TextAlign.start : TextAlign.center,
+      style: theme.textTheme.labelLarge?.copyWith(
+        color: selected ? colorScheme.onSurface : fg,
+        fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+      ),
+    );
 
     return Semantics(
       selected: selected,
@@ -180,59 +265,42 @@ class _RailItem extends StatelessWidget {
             duration: context.motion.short,
             curve: context.motion.standard,
             width: double.infinity,
-            padding: EdgeInsets.symmetric(vertical: spacing.sm + spacing.xs),
+            padding: EdgeInsets.symmetric(
+              horizontal: expanded ? spacing.s12 : spacing.xs,
+              vertical: spacing.s12,
+            ),
             decoration: BoxDecoration(
-              gradient: selected
-                  ? LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        colorScheme.secondaryContainer,
-                        colorScheme.primaryContainer.withValues(alpha: 0.7),
+              color:
+                  selected
+                      ? colorScheme.secondaryContainer.withValues(alpha: 0.72)
+                      : Colors.transparent,
+              borderRadius: radius,
+              border:
+                  selected
+                      ? Border.all(
+                        color: colorScheme.primary.withValues(alpha: 0.22),
+                      )
+                      : null,
+            ),
+            child:
+                expanded
+                    ? Row(
+                      children: [
+                        icon,
+                        SizedBox(width: spacing.s12),
+                        Expanded(child: label),
+                        if (selected)
+                          Icon(
+                            Icons.circle,
+                            size: 8,
+                            color: colorScheme.primary,
+                          ),
                       ],
                     )
-                  : null,
-              borderRadius: radius,
-              boxShadow: selected
-                  ? [
-                      BoxShadow(
-                        color: colorScheme.primary.withValues(alpha: 0.18),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
-                      ),
-                    ]
-                  : null,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                item.badgeCount > 0
-                    ? Badge(
-                        label: Text('${item.badgeCount}'),
-                        child: Icon(
-                          selected ? item.selectedIcon : item.icon,
-                          color: fg,
-                          size: context.iconSizes.md,
-                        ),
-                      )
-                    : Icon(
-                        selected ? item.selectedIcon : item.icon,
-                        color: fg,
-                        size: context.iconSizes.md,
-                      ),
-                SizedBox(height: spacing.xs),
-                Text(
-                  item.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    color: fg,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
+                    : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [icon, SizedBox(height: spacing.xs), label],
+                    ),
           ),
         ),
       ),
@@ -241,9 +309,14 @@ class _RailItem extends StatelessWidget {
 }
 
 class _AccountButton extends StatelessWidget {
-  const _AccountButton({required this.user, required this.onTap});
+  const _AccountButton({
+    required this.user,
+    required this.expanded,
+    required this.onTap,
+  });
 
   final AppUserProfile? user;
+  final bool expanded;
   final VoidCallback onTap;
 
   @override
@@ -274,68 +347,101 @@ class _AccountButton extends StatelessWidget {
                 color: colorScheme.outlineVariant.withValues(alpha: 0.5),
               ),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Avatar mit weichem Gradient-Ring (Teal → Tertiär).
-                Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [colorScheme.primary, colorScheme.tertiary],
-                    ),
-                  ),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundColor: colorScheme.primaryContainer,
-                    foregroundColor: colorScheme.onPrimaryContainer,
-                    child: Text(
-                      initial,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        color: colorScheme.onPrimaryContainer,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-                SizedBox(height: spacing.xs),
-                Text(
-                  user?.role.label ?? 'Profil',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                SizedBox(height: spacing.xxs),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.unfold_more_rounded,
-                      size: 14,
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 2),
-                    Flexible(
-                      child: Text(
-                        'Menü',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w600,
+            child:
+                expanded
+                    ? Row(
+                      children: [
+                        _AccountAvatar(initial: initial),
+                        SizedBox(width: spacing.s12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.labelLarge?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              SizedBox(height: spacing.xxs),
+                              Text(
+                                user?.role.label ?? 'Profil',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
+                        Icon(
+                          Icons.chevron_right_rounded,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ],
+                    )
+                    : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _AccountAvatar(initial: initial),
+                        SizedBox(height: spacing.xs),
+                        Text(
+                          user?.role.label ?? 'Profil',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        SizedBox(height: spacing.xxs),
+                        Text(
+                          'Menü',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ],
-            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AccountAvatar extends StatelessWidget {
+  const _AccountAvatar({required this.initial});
+
+  final String initial;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [colorScheme.primary, colorScheme.tertiary],
+        ),
+      ),
+      child: CircleAvatar(
+        radius: 18,
+        backgroundColor: colorScheme.primaryContainer,
+        foregroundColor: colorScheme.onPrimaryContainer,
+        child: Text(
+          initial,
+          style: theme.textTheme.titleSmall?.copyWith(
+            color: colorScheme.onPrimaryContainer,
+            fontWeight: FontWeight.bold,
           ),
         ),
       ),

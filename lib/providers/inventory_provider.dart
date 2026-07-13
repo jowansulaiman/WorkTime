@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/assortment_analysis.dart';
+import '../core/hybrid_write_fallback.dart';
 import '../core/assortment_gap.dart';
 import '../core/basket_analysis.dart';
 import '../core/cash_state.dart';
@@ -53,7 +54,7 @@ import 'audit_sink.dart';
 /// (Offline-Cache aktiv). Im lokalen Entwicklungsmodus ([AppConfig.disableAuthentication]
 /// bzw. localStorageOnly) werden sie im Speicher gehalten, damit die App auch
 /// ohne Firebase nutzbar bleibt.
-class InventoryProvider extends ChangeNotifier {
+class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   InventoryProvider({
     required FirestoreService firestoreService,
     InventoryRepository? inventoryRepository,
@@ -216,6 +217,7 @@ class InventoryProvider extends ChangeNotifier {
 
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get _usesFirestore => !usesLocalStorage;
+  @override
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
   String? get _orgId => _currentUser?.orgId;
@@ -230,24 +232,15 @@ class InventoryProvider extends ChangeNotifier {
   /// Im Hybrid-Modus bei Fehler -> false (Aufrufer faellt lokal zurueck, damit
   /// offline nichts verloren geht). Im Cloud-only-Modus wird der Fehler
   /// durchgereicht.
+  // Q1: zentrale Offline-Positivliste (HybridWriteFallback).
+  @override
+  String get hybridFallbackLabel => 'Inventory';
+
   Future<bool> _tryFirestore(
     String label,
     Future<void> Function() action,
-  ) async {
-    try {
-      await action();
-      return true;
-    } catch (error) {
-      if (!usesHybridStorage) {
-        rethrow;
-      }
-      AppLogger.warning(
-        'Inventory: $label offline – lokaler Fallback aktiv',
-        error: error,
-      );
-      return false;
-    }
-  }
+  ) =>
+      tryFirestoreWrite(label, action);
 
   LocalStorageScope? get _localScope {
     final user = _currentUser;

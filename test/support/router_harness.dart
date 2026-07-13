@@ -11,6 +11,8 @@ import 'package:worktime_app/providers/connectivity_status_provider.dart';
 import 'package:worktime_app/providers/contact_provider.dart';
 import 'package:worktime_app/providers/feature_flag_provider.dart';
 import 'package:worktime_app/providers/inventory_provider.dart';
+import 'package:worktime_app/providers/notification_provider.dart';
+import 'package:worktime_app/providers/parcel_provider.dart';
 import 'package:worktime_app/providers/personal_provider.dart';
 import 'package:worktime_app/providers/schedule_provider.dart';
 import 'package:worktime_app/providers/storage_mode_provider.dart';
@@ -135,6 +137,7 @@ Future<AppHarness> pumpApp(
   final team = TeamProvider(firestoreService: firestoreService);
   final schedule = ScheduleProvider(firestoreService: firestoreService);
   final inventory = InventoryProvider(firestoreService: firestoreService);
+  final parcel = ParcelProvider(firestoreService: firestoreService);
   final contact = ContactProvider(firestoreService: firestoreService);
   final audit = AuditProvider(firestoreService: firestoreService);
   final personal = PersonalProvider(firestoreService: firestoreService);
@@ -142,12 +145,15 @@ Future<AppHarness> pumpApp(
   work.updateScheduleProvider(schedule);
   final zeitwirtschaft =
       ZeitwirtschaftProvider(firestoreService: firestoreService);
+  final notification =
+      NotificationProvider(firestoreService: firestoreService);
 
   if (profile != null) {
     await flags.updateSession(profile, localStorageOnly: false);
     await team.updateSession(profile);
     await schedule.updateSession(profile);
     await inventory.updateSession(profile);
+    await parcel.updateSession(profile);
     await contact.updateSession(profile);
     await audit.updateSession(profile);
     await personal.updateSession(profile);
@@ -180,12 +186,14 @@ Future<AppHarness> pumpApp(
         ChangeNotifierProvider<TeamProvider>.value(value: team),
         ChangeNotifierProvider<ScheduleProvider>.value(value: schedule),
         ChangeNotifierProvider<InventoryProvider>.value(value: inventory),
+        ChangeNotifierProvider<ParcelProvider>.value(value: parcel),
         ChangeNotifierProvider<ContactProvider>.value(value: contact),
         ChangeNotifierProvider<AuditProvider>.value(value: audit),
         ChangeNotifierProvider<PersonalProvider>.value(value: personal),
         ChangeNotifierProvider<WorkProvider>.value(value: work),
         ChangeNotifierProvider<ZeitwirtschaftProvider>.value(
             value: zeitwirtschaft),
+        ChangeNotifierProvider<NotificationProvider>.value(value: notification),
       ],
       child: MaterialApp.router(
         theme: AppTheme.resolveLight(useV2: flagOn),
@@ -212,11 +220,13 @@ Future<AppHarness> pumpApp(
       // pending Timer der WorkProvider übrig bleiben.
       await tester.pumpWidget(const SizedBox());
       router.dispose();
+      notification.dispose();
       zeitwirtschaft.dispose();
       work.dispose();
       personal.dispose();
       audit.dispose();
       contact.dispose();
+      parcel.dispose();
       inventory.dispose();
       schedule.dispose();
       team.dispose();

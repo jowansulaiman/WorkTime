@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/firestore_date_parser.dart';
 import '../core/firestore_num_parser.dart' as parse;
 
-/// Ein festes Fach/Regalplatz im Hermes-Paketshop mit **eigenem Bin-Barcode**.
+/// Ein festes Fach/Regalplatz im Paketshop mit **eigenem Bin-Barcode**.
 ///
 /// Die Belegung wird NICHT hier gespeichert (kein `occupied`-Feld), sondern aus
 /// den offenen `ParcelShipment.compartmentId` abgeleitet — dadurch trägt ein

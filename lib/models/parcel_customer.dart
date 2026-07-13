@@ -14,7 +14,7 @@ String parcelNameLower(String firstName, String lastName) {
   return '$last $first'.trim();
 }
 
-/// Dauerhaftes, **name-only** Kunden-Namensregister des Hermes-Paketshops
+/// Dauerhaftes, **name-only** Kunden-Namensregister des Paketshops
 /// (Betreiber-Entscheidung §0). Speist den Namens-Typeahead über Besuche
 /// hinweg. Enthält bewusst KEINE Adresse/Telefon/E-Mail und keinen
 /// Abholverlauf (Datenminimierung, Plan §6.3/§13). Löschung nur manuell auf

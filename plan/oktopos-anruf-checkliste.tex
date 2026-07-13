@@ -1,0 +1,212 @@
+% OktoPOS anrufen – einfache Checkliste (für Nicht-Techniker)
+% Kompilieren:  pdflatex oktopos-anruf-checkliste.tex
+% Nur Standardpakete (TeX Live / MiKTeX), keine Sonderinstallation nötig.
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[ngerman]{babel}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{amssymb}      % \square (Ankreuzkästchen)
+\usepackage{enumitem}
+\usepackage{array}
+\usepackage[table]{xcolor}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+\usepackage{textcomp}     % \texteuro
+\usepackage{titlesec}
+
+% --- Farben ---
+\definecolor{akzent}{HTML}{0F766E}   % Signal-Teal
+\definecolor{hellgrau}{HTML}{F2F2F2}
+\definecolor{sagenblau}{HTML}{E6F2F1}
+\definecolor{dunkelgrau}{HTML}{555555}
+
+% --- Ankreuzkästchen ---
+\newcommand{\cb}{{\Large$\square$}\ }
+
+% --- Code / technische Adresse in Monospace ---
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+% --- Grauer Hinweiskasten ---
+\newcommand{\hinweis}[1]{%
+  \par\vspace{4pt}%
+  \noindent\colorbox{hellgrau}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep}%
+      \small #1%
+    \end{minipage}}%
+  \par\vspace{6pt}%
+}
+
+% --- "So sage ich es am Telefon"-Kasten ---
+\newcommand{\sagen}[1]{%
+  \par\vspace{3pt}%
+  \noindent\colorbox{sagenblau}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep}%
+      \small\textbf{\color{akzent}So sage ich es am Telefon:}\\[1pt] #1%
+    \end{minipage}}%
+  \par\vspace{5pt}%
+}
+
+% --- Kleine graue Techniker-Notiz ---
+\newcommand{\techniker}[1]{{\footnotesize\color{dunkelgrau}#1}}
+
+% --- Kopf-/Fußzeile ---
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small\color{akzent}\textbf{OktoPOS anrufen}}
+\rhead{\small Kasse mit App verbinden}
+\cfoot{\small Seite \thepage\ von \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% --- Abschnittsformat ---
+\titleformat{\section}{\large\bfseries\color{akzent}}{}{0pt}{}
+\setlist[itemize]{leftmargin=1.6em, itemsep=6pt, topsep=4pt}
+
+\begin{document}
+
+% ===================== Titel =====================
+\begin{center}
+  {\LARGE\bfseries\color{akzent} OktoPOS anrufen – einfache Checkliste}\\[5pt]
+  {\large Was ich brauche, damit meine Kasse mit meiner App zusammenarbeitet}\\[8pt]
+\end{center}
+
+\hinweis{%
+  \textbf{Worum geht es? (in einfachen Worten)}\\
+  Meine \textbf{Kasse} (die Software „OktoPOS") und meine \textbf{App} sollen miteinander „reden"
+  können. Dann werden meine \textbf{Verkäufe automatisch in die App übernommen} – ich muss den
+  Lagerbestand nicht mehr von Hand nachtragen.\\[3pt]
+  Die App ist dafür schon \textbf{fertig programmiert}. Ich brauche von OktoPOS nur noch die
+  \textbf{Erlaubnis} und ein paar \textbf{Zugangsdaten}. Genau die hole ich mit diesem Anruf.%
+}
+
+\sagen{%
+  „Ich möchte meine \textbf{OktoPOS-Kasse mit meinem Warenwirtschaftssystem verbinden}, damit meine
+  \textbf{Verkäufe automatisch übernommen} werden. Wie bekomme ich dafür den \textbf{Zugang zu Ihrer
+  Schnittstelle} (Zugangsschlüssel, die Internet-Adresse meiner Kasse und die Kassen-Nummern)?"%
+}
+
+% ===================== Die 4 Dinge =====================
+\section{Die 4 Dinge, die ich unbedingt bekommen muss}
+Ohne diese vier Dinge funktioniert es nicht. Am besten der Reihe nach abhaken:
+
+\begin{itemize}
+
+  %--- 1. Schlüssel ---
+  \item[\cb] \textbf{1. Der Zugangs-Schlüssel}
+        \techniker{(Fachwort: „API-Key", steht im Header \code{X-API-KEY})}\\[2pt]
+        \emph{Einfach erklärt:} Wie ein \textbf{Passwort oder Schlüssel}, mit dem sich meine App bei
+        der Kasse anmeldet. Es gibt \textbf{keinen Benutzernamen/Login} – nur diesen einen Schlüssel.\\
+        \textbf{Wichtige Frage:} Bekomme ich \emph{einen} Schlüssel für \textbf{beide Läden}
+        oder \textbf{je Laden einen eigenen}?\\
+        {\small\color{red}$\triangle$ Der Schlüssel ist geheim: bitte \textbf{nicht} einfach per normaler E-Mail schicken,
+        nie an Fremde weitergeben. Ich hinterlege ihn sicher.}
+
+  %--- 2. Adresse ---
+  \item[\cb] \textbf{2. Die Internet-Adresse meiner Kasse}
+        \techniker{(Fachwort: „Basis-URL", sieht aus wie \code{https://\dots/v1})}\\[2pt]
+        \emph{Einfach erklärt:} So etwas wie die \textbf{Adresse eines Hauses} – nur eben im Internet.
+        Darüber findet meine App meine Kasse. Diese Adresse ist \textbf{bei jedem Kunden anders} und
+        steht \textbf{nicht} in irgendeiner öffentlichen Anleitung – die muss OktoPOS mir sagen.\\
+        \textbf{Wichtig:} Sie muss mit \code{https} beginnen (die sichere, verschlüsselte Variante).
+
+  %--- 3. Kassennummer ---
+  \item[\cb] \textbf{3. Die Nummer(n) meiner Kasse(n)}
+        \techniker{(Fachwort: „cash-register")}\\[2pt]
+        \emph{Einfach erklärt:} Jede Kasse hat eine \textbf{eigene Nummer}, wie eine Hausnummer.
+        Damit weiß die App, \textbf{aus welchem Laden} ein Verkauf kommt.\\
+        Welche Nummer gehört zu welchem Laden?
+        \begin{itemize}
+          \item[] Strichmännchen \;=\; Kassen-Nr. \underline{\hspace{4.5cm}}
+          \item[] Tabak Börse \;\;\;\;\;=\; Kassen-Nr. \underline{\hspace{4.5cm}}
+        \end{itemize}
+        {\small\color{red}$\triangle$ Bei zwei Läden ist das wichtig: Ohne eigene Nummer je Laden könnte ein Verkauf
+        sonst im \textbf{falschen Laden} verbucht werden.}
+
+  %--- 4. Freischalten ---
+  \item[\cb] \textbf{4. Die Schnittstelle freischalten lassen}\\[2pt]
+        \emph{Einfach erklärt:} „Schnittstelle" ist nur das \textbf{Fenster/die Klappe}, durch die meine
+        App und die Kasse Daten austauschen. OktoPOS muss diese Klappe für mich \textbf{öffnen}.
+        Welche genau, steht im nächsten Abschnitt.
+
+\end{itemize}
+
+% ===================== Schnittstellen =====================
+\section{Was sie für mich freischalten sollen}
+
+\begin{itemize}
+  \item[\cb] \textbf{Verkäufe abrufen} \emph{(das Wichtigste!)}\\[2pt]
+        Meine App fragt: „Welche Verkäufe gab es in diesem Zeitraum?" und bucht sie vom Bestand ab.
+        \textbf{Es wird dabei nichts an der Kasse verändert} – nur \textbf{gelesen}.\\
+        \techniker{Falls der Techniker die genaue Adresse braucht:\\
+        \code{GET /v1/transactions/from/\{von\}/until/\{bis\}/page/\{seite\}/size/\{größe\}/cash-register/\{kasse\}}}
+
+  \item[\cb] \textbf{Artikel \& Preise in die Kasse schreiben} \emph{(kann auch später)}\\[2pt]
+        Damit ich \textbf{Artikel, Preise und Barcodes} aus meiner App in die Kasse übertragen kann.\\
+        \techniker{Genaue Adressen: \code{POST /v1/articles}, \code{.../change-prices}, \code{.../add-barcodes},
+        \code{GET /v1/articles/units}, \code{GET /v1/articles/distribution-channels}}
+
+  \item[\cb] \textbf{Kunden in die Kasse schreiben} \emph{(freiwillig, nicht dringend)}\\[2pt]
+        Damit mein \textbf{Kundenstamm} aus der App auch in der Kasse landet.\\
+        \techniker{Genaue Adressen: \code{GET /v1/customers/findByExternalIdentifier/\{id\}}, \code{POST /v1/customers}}
+\end{itemize}
+
+\hinweis{\textbf{Wenn ich klein anfangen will:} Es reicht schon der \textbf{erste Punkt (Verkäufe abrufen)},
+damit die Verkäufe automatisch in den Bestand wandern. Artikel und Kunden kann ich jederzeit später dazuschalten.}
+
+% ===================== Gut zu fragen =====================
+\section{Gut, das noch kurz zu fragen}
+\begin{itemize}
+  \item[\cb] \textbf{Steht bei jedem Verkauf der Barcode dabei?}
+        Also die Zahl vom \textbf{gescannten Strichcode/EAN}? Nur dann kann meine App den Verkauf
+        automatisch dem \textbf{richtigen Artikel} zuordnen.
+  \item[\cb] \textbf{Kommt der Preis als normale Zahl} (z.\,B. \code{3.50}\,\texteuro) – nicht in Cent?
+  \item[\cb] \textbf{Sind Test-/Übungsbons erkennbar} und getrennt, damit sie meinen echten Bestand nicht verfälschen?
+  \item[\cb] \textbf{Gibt es eine Grenze}, wie oft ich pro Tag abfragen darf?
+        \emph{(Ich frage nur einmal nachts + bei Bedarf – sollte kein Problem sein.)}
+  \item[\cb] \textbf{Gibt es einen Test-Zugang} zum gefahrlosen Ausprobieren?
+  \item[\cb] \textbf{Welche Version} der Schnittstelle ist bei mir aktiv?
+        \techniker{(In der Anleitung standen zwei Angaben: 1.0.1 und 1.3.0 – bitte kurz bestätigen, welche stimmt.)}
+\end{itemize}
+
+% ===================== Geld & Orga =====================
+\section{Geld \& Organisation}
+\begin{itemize}
+  \item[\cb] \textbf{Kostet das etwas?} Einmalig und/oder monatlich?
+  \item[\cb] \textbf{Ab wann kann ich es nutzen?} (Wie lange dauert die Freischaltung?)
+  \item[\cb] \textbf{Ansprechpartner / Vorgangsnummer} für Rückfragen notieren: \underline{\hspace{6cm}}
+\end{itemize}
+
+% ===================== Notizfeld =====================
+\section{Zum Ausfüllen während des Anrufs}
+\renewcommand{\arraystretch}{1.9}
+\noindent
+\begin{tabular}{|>{\raggedright\arraybackslash}p{6.4cm}|p{9.2cm}|}
+  \hline
+  \rowcolor{hellgrau}\textbf{Angabe} & \textbf{Wert} \\ \hline
+  Zugangs-Schlüssel & \emph{\small(sicher separat notieren, nicht hier)} \\ \hline
+  Internet-Adresse (\code{https://\dots/v1}) & \\ \hline
+  Kassen-Nr. Strichmännchen & \\ \hline
+  Kassen-Nr. Tabak Börse & \\ \hline
+  Ein Schlüssel für beide / je Laden? & \\ \hline
+  Was wurde freigeschaltet? & \\ \hline
+  Version der Schnittstelle & \\ \hline
+  Kosten & \\ \hline
+  Ansprechpartner / Vorgangs-Nr. & \\ \hline
+\end{tabular}
+
+% ===================== Nachbereitung =====================
+\section{Was danach passiert (kümmert die Kasse nicht)}
+Das ist nur meine To-do-Liste für hinterher – muss ich am Telefon \textbf{nicht} ansprechen:
+\begin{enumerate}[leftmargin=1.6em]
+  \item Zugangs-Schlüssel sicher hinterlegen – \textbf{nie} in der App selbst.
+  \item In der App unter \textbf{Warenwirtschaft $\rightarrow$ „Kasse" $\rightarrow$ Einstellungen}
+        die Internet-Adresse und die Kassen-Nummern eintragen.
+  \item Die Verbindung einschalten und einen \textbf{Testlauf} machen:
+        „Verkäufe aus Kasse übernehmen" $\rightarrow$ Bestand prüfen.
+  \item Läuft danach jede Nacht (gegen 03:30 Uhr) automatisch.
+\end{enumerate}
+
+\end{document}

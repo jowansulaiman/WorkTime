@@ -15,7 +15,7 @@ import '../services/database_service.dart';
 import '../services/firestore_service.dart';
 import 'audit_sink.dart';
 
-/// Verwaltet den Hermes-Paketshop: Pakete, Fächer und das Kunden-Namensregister
+/// Verwaltet den Paketshop: Pakete, Fächer und das Kunden-Namensregister
 /// eines Standorts.
 ///
 /// Wie [InventoryProvider] drei Speichermodi: **cloud** (Firestore-Streams),
@@ -652,6 +652,10 @@ class ParcelProvider extends ChangeNotifier {
     _loading = false;
     _safeNotify();
   }
+
+  /// Fehler aus der fire-and-forget `updateSession` (Proxy-Kette) sichtbar
+  /// machen — verdrahtet in main.dart via `_dispatchProviderUpdate(onError:)`.
+  void surfaceSessionError(Object error) => _setError(error);
 
   void _safeNotify() {
     if (!_disposed) {

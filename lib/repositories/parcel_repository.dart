@@ -3,7 +3,7 @@ import '../models/parcel_customer.dart';
 import '../models/parcel_shipment.dart';
 import '../models/shelf_compartment.dart';
 
-/// Abstraktion über den Datenzugriff des Hermes-Paketshops (Pakete, Fächer,
+/// Abstraktion über den Datenzugriff des Paketshops (Pakete, Fächer,
 /// Kunden-Namensregister).
 ///
 /// Wie [InventoryRepository] hängt die High-Level-Schicht (`ParcelProvider`)
@@ -43,7 +43,7 @@ abstract interface class ParcelRepository {
 
   // --- Config-Singleton (config/paketshopSettings) -----------------------
 
-  /// Liest die Paketshop-Einstellungen (überfällig-Frist, hermesSiteId, …).
+  /// Liest die Paketshop-Einstellungen (überfällig-Frist, paketshopSiteId, …).
   /// `null`, wenn das Config-Doc (noch) nicht existiert → Aufrufer nimmt
   /// [PaketshopSettings.defaults].
   Future<PaketshopSettings?> fetchSettings(String orgId);

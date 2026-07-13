@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../core/app_config.dart';
 import '../core/app_logger.dart';
 import '../core/employment_contract_resolver.dart';
+import '../core/hybrid_write_fallback.dart';
 import '../core/local_demo_backoffice_data.dart';
 import '../core/local_demo_data.dart';
 import '../core/lohn_herleitung.dart';
@@ -83,7 +84,7 @@ class AbsenceStats {
 /// Speicher-Verhalten analog [InventoryProvider]: Cloud/Hybrid über
 /// Firestore-Streams (Offline-Cache), local über SharedPreferences. Schreibende
 /// Operationen fallen im Hybrid-Modus offline lokal zurück.
-class PersonalProvider extends ChangeNotifier {
+class PersonalProvider extends ChangeNotifier with HybridWriteFallback {
   PersonalProvider({
     required FirestoreService firestoreService,
     bool? disableAuthentication,
@@ -214,6 +215,7 @@ class PersonalProvider extends ChangeNotifier {
 
   bool get usesLocalStorage => _forceLocalStorage || _localStorageOnly;
   bool get _usesFirestore => !usesLocalStorage;
+  @override
   bool get usesHybridStorage =>
       !_forceLocalStorage && !_localStorageOnly && _hybridStorageEnabled;
   bool get isAdmin => _currentUser?.isAdmin ?? false;
@@ -2640,22 +2642,15 @@ class PersonalProvider extends ChangeNotifier {
 
   /// Versucht eine Firestore-Mutation. Erfolg -> true. Im Hybrid-Modus bei
   /// Fehler -> false (lokaler Fallback), sonst rethrow.
+  // Q1: zentrale Offline-Positivliste (HybridWriteFallback).
+  @override
+  String get hybridFallbackLabel => 'Personal';
+
   Future<bool> _tryFirestore(
     String label,
     Future<void> Function() action,
-  ) async {
-    try {
-      await action();
-      return true;
-    } catch (error) {
-      if (!usesHybridStorage) rethrow;
-      AppLogger.warning(
-        'Personal: $label offline – lokaler Fallback aktiv',
-        error: error,
-      );
-      return false;
-    }
-  }
+  ) =>
+      tryFirestoreWrite(label, action);
 
   void _assertAdmin() {
     if (!isAdmin) {

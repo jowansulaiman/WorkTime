@@ -1,4 +1,5 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/absence_request.dart';
@@ -34,18 +35,18 @@ class _FailingPayrollConfigService extends FirestoreService {
 
   @override
   Future<void> saveOrgPayrollSettings(OrgPayrollSettings config) async =>
-      throw StateError('offline');
+      throw FirebaseException(plugin: 'firestore', code: 'unavailable');
 
   @override
   Future<void> savePayLineType(PayLineType type) async =>
-      throw StateError('offline');
+      throw FirebaseException(plugin: 'firestore', code: 'unavailable');
 
   @override
   Future<void> deleteOrgPayrollSettings({
     required String orgId,
     required int jahr,
   }) async =>
-      throw StateError('offline');
+      throw FirebaseException(plugin: 'firestore', code: 'unavailable');
 }
 
 const _admin = AppUserProfile(

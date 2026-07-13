@@ -25,6 +25,7 @@ import 'providers/contact_provider.dart';
 import 'providers/feature_flag_provider.dart';
 import 'providers/finance_provider.dart';
 import 'providers/inventory_provider.dart';
+import 'providers/parcel_provider.dart';
 import 'providers/notification_provider.dart';
 import 'providers/password_provider.dart';
 import 'providers/personal_provider.dart';
@@ -521,6 +522,29 @@ class _WorkTimeAppState extends State<WorkTimeApp> {
                 hybridStorageEnabled: storage.isHybrid,
               ),
               'ContactProvider.updateSession',
+              onError: provider.surfaceSessionError,
+            );
+            return provider;
+          },
+        ),
+        // Paketshop (Pakete / Fächer / Kunden-Namensregister). Auth/
+        // Storage/Audit wie ContactProvider; alle aktiven Mitarbeiter bedienen
+        // (Betreiber-Entscheidung §0). Lazy Cloud-Repo, drei Storage-Modi.
+        ChangeNotifierProxyProvider3<AuthProvider, StorageModeProvider,
+            AuditProvider, ParcelProvider>(
+          create: (_) => ParcelProvider(
+            firestoreService: firestoreService,
+          ),
+          update: (_, auth, storage, audit, provider) {
+            provider ??= ParcelProvider(firestoreService: firestoreService);
+            provider.setAuditSink(audit.log);
+            _dispatchProviderUpdate(
+              provider.updateSession(
+                auth.profile,
+                localStorageOnly: storage.isLocalOnly,
+                hybridStorageEnabled: storage.isHybrid,
+              ),
+              'ParcelProvider.updateSession',
               onError: provider.surfaceSessionError,
             );
             return provider;

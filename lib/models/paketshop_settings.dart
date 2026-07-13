@@ -1,8 +1,8 @@
 import '../core/firestore_num_parser.dart' as parse;
 
-/// Operative Einstellungen des Hermes-Paketshops (Config-Singleton
+/// Operative Einstellungen des Paketshops (Config-Singleton
 /// `config/paketshopSettings`, ein Datensatz je Org). Enthält die
-/// konfigurierbaren Schwellen und den aktiven Hermes-Standort.
+/// konfigurierbaren Schwellen und den aktiven Paketshop-Standort.
 ///
 /// Kein `id`/`orgId` (über den Doc-Pfad identifiziert). Konservative Defaults,
 /// wenn das Doc/Feld fehlt (Plan §6.6). Die Auto-Anonymisierung ist in v1
@@ -12,7 +12,7 @@ class PaketshopSettings {
     this.overdueFristTage = 6,
     this.anonymisierungAktiv = false,
     this.anonymisierungFristTage = 14,
-    this.hermesSiteId,
+    this.paketshopSiteId,
   });
 
   /// Kalendertage im Fach, ab denen ein offenes Paket intern als überfällig
@@ -25,8 +25,8 @@ class PaketshopSettings {
   /// Frist der Vorgangs-Anonymisierung, nur wirksam wenn [anonymisierungAktiv].
   final int anonymisierungFristTage;
 
-  /// Aktiver Hermes-Standort (Tabak Börse) → siteId-Auflösung (P-3).
-  final String? hermesSiteId;
+  /// Aktiver Paketshop-Standort (z. B. Tabak Börse) → siteId-Auflösung (P-3).
+  final String? paketshopSiteId;
 
   factory PaketshopSettings.defaults() => const PaketshopSettings();
 
@@ -36,7 +36,7 @@ class PaketshopSettings {
       anonymisierungAktiv: parse.toBool(map['anonymisierungAktiv']) ?? false,
       anonymisierungFristTage:
           parse.toInt(map['anonymisierungFristTage']) ?? 14,
-      hermesSiteId: map['hermesSiteId'] as String?,
+      paketshopSiteId: map['paketshopSiteId'] as String?,
     );
   }
 
@@ -46,7 +46,7 @@ class PaketshopSettings {
       anonymisierungAktiv: parse.toBool(map['anonymisierung_aktiv']) ?? false,
       anonymisierungFristTage:
           parse.toInt(map['anonymisierung_frist_tage']) ?? 14,
-      hermesSiteId: map['hermes_site_id'] as String?,
+      paketshopSiteId: map['paketshop_site_id'] as String?,
     );
   }
 
@@ -55,7 +55,7 @@ class PaketshopSettings {
       'overdueFristTage': overdueFristTage,
       'anonymisierungAktiv': anonymisierungAktiv,
       'anonymisierungFristTage': anonymisierungFristTage,
-      'hermesSiteId': hermesSiteId,
+      'paketshopSiteId': paketshopSiteId,
     };
   }
 
@@ -64,7 +64,7 @@ class PaketshopSettings {
       'overdue_frist_tage': overdueFristTage,
       'anonymisierung_aktiv': anonymisierungAktiv,
       'anonymisierung_frist_tage': anonymisierungFristTage,
-      'hermes_site_id': hermesSiteId,
+      'paketshop_site_id': paketshopSiteId,
     };
   }
 
@@ -72,15 +72,15 @@ class PaketshopSettings {
     int? overdueFristTage,
     bool? anonymisierungAktiv,
     int? anonymisierungFristTage,
-    String? hermesSiteId,
-    bool clearHermesSiteId = false,
+    String? paketshopSiteId,
+    bool clearPaketshopSiteId = false,
   }) {
     return PaketshopSettings(
       overdueFristTage: overdueFristTage ?? this.overdueFristTage,
       anonymisierungAktiv: anonymisierungAktiv ?? this.anonymisierungAktiv,
       anonymisierungFristTage:
           anonymisierungFristTage ?? this.anonymisierungFristTage,
-      hermesSiteId: clearHermesSiteId ? null : (hermesSiteId ?? this.hermesSiteId),
+      paketshopSiteId: clearPaketshopSiteId ? null : (paketshopSiteId ?? this.paketshopSiteId),
     );
   }
 }

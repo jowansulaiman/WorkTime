@@ -77,7 +77,7 @@ abstract final class RoutePermissions {
       case AppRoutes.customerWishes:
       case AppRoutes.orderAnalytics:
         return p?.canViewInventory ?? false;
-      // Hermes-Paketshop (Plan §7.6): alle aktiven Mitarbeiter (Betreiber §0).
+      // Paketshop (Plan §7.6): alle aktiven Mitarbeiter (Betreiber §0).
       // Gespiegelt in app_user.canViewParcels + firestore.rules canManageParcels.
       case AppRoutes.paketshop:
         return p?.canViewParcels ?? false;

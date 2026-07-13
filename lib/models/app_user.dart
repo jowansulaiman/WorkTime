@@ -344,7 +344,7 @@ class AppUserProfile {
   /// Schichtleiter — analog zur Warenwirtschaft.
   bool get canManageContacts => isActive && (isAdmin || canManageShifts);
 
-  /// Hermes-Paketshop bedienen (Pakete annehmen/ausgeben, Fächer/Register)
+  /// Paketshop bedienen (Pakete annehmen/ausgeben, Fächer/Register)
   /// darf jedes aktive Mitglied (Betreiber-Entscheidung §0 des Plans:
   /// Tresenbetrieb; Personal ist organisatorisch aufs Post-/Datengeheimnis
   /// verpflichtet). Gespiegelt in `firestore.rules` (canManageParcels) und

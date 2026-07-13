@@ -1,4 +1,5 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/core/daily_closing.dart';
@@ -175,5 +176,5 @@ class _JournalFailingFirestoreService extends FirestoreService {
 
   @override
   Future<void> saveJournalEntry(JournalEntry entry) async =>
-      throw Exception('offline');
+      throw FirebaseException(plugin: 'firestore', code: 'unavailable');
 }

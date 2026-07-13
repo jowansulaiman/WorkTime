@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/firestore_date_parser.dart';
 import 'parcel_customer.dart' show parcelNameLower;
 
-/// Status eines Pakets im Hermes-Paketshop. Serialisiert über [value]
+/// Status eines Pakets im Paketshop. Serialisiert über [value]
 /// (snake_case), Anzeige über [label].
 ///
 /// „Überfällig" ist **kein** Status, sondern ein abgeleiteter Zustand
@@ -45,8 +45,8 @@ extension ShipmentStatusX on ShipmentStatus {
       };
 }
 
-/// Ein Paket im Hermes-Paketshop — internes Sortier-/Wiederfinde-Register,
-/// parallel zum offiziellen Hermes-Gerät (ersetzt es nicht).
+/// Ein Paket im Paketshop — internes Sortier-/Wiederfinde-Register,
+/// parallel zum offiziellen Gerät des Paketdiensts (ersetzt es nicht).
 ///
 /// Der Empfängername ist als **Snapshot** am Vorgang gespeichert
 /// ([recipientFirstName]/[recipientLastName]); die persistente
@@ -59,7 +59,7 @@ class ParcelShipment {
     required this.orgId,
     required this.siteId,
     this.siteName,
-    this.carrier = 'hermes',
+    this.carrier,
     this.trackingCode,
     required this.recipientFirstName,
     required this.recipientLastName,
@@ -79,9 +79,10 @@ class ParcelShipment {
   final String siteId;
   final String? siteName;
 
-  /// v1 fix `hermes`; als freier String gehalten, damit später Multi-Carrier
-  /// additiv möglich ist (Plan §4/§6.1).
-  final String carrier;
+  /// Optionaler Paketdienst (z. B. „DHL", „Hermes", „DPD", „GLS", „UPS").
+  /// Freier String — carrier-agnostisch, kein Enum-Zwang; `null` = nicht
+  /// angegeben.
+  final String? carrier;
 
   /// Roher Scan-String des Paket-Barcodes, ohne Formatvalidierung. `null`,
   /// wenn ohne Barcode erfasst.
@@ -142,7 +143,9 @@ class ParcelShipment {
       orgId: (map['orgId'] ?? '').toString(),
       siteId: (map['siteId'] ?? '').toString(),
       siteName: map['siteName'] as String?,
-      carrier: (map['carrier'] ?? 'hermes').toString(),
+      carrier: (map['carrier'] as String?)?.trim().isEmpty ?? true
+          ? null
+          : (map['carrier'] as String).trim(),
       trackingCode: map['trackingCode'] as String?,
       recipientFirstName: (map['recipientFirstName'] ?? '').toString(),
       recipientLastName: (map['recipientLastName'] ?? '').toString(),
@@ -166,7 +169,9 @@ class ParcelShipment {
       orgId: (map['org_id'] ?? '').toString(),
       siteId: (map['site_id'] ?? '').toString(),
       siteName: map['site_name'] as String?,
-      carrier: (map['carrier'] ?? 'hermes').toString(),
+      carrier: (map['carrier'] as String?)?.trim().isEmpty ?? true
+          ? null
+          : (map['carrier'] as String).trim(),
       trackingCode: map['tracking_code'] as String?,
       recipientFirstName: (map['recipient_first_name'] ?? '').toString(),
       recipientLastName: (map['recipient_last_name'] ?? '').toString(),
@@ -191,7 +196,7 @@ class ParcelShipment {
       'orgId': orgId,
       'siteId': siteId,
       'siteName': _trimmedOrNull(siteName),
-      'carrier': carrier.trim().isEmpty ? 'hermes' : carrier.trim(),
+      'carrier': _trimmedOrNull(carrier),
       'trackingCode': _trimmedOrNull(trackingCode),
       'recipientFirstName': recipientFirstName.trim(),
       'recipientLastName': recipientLastName.trim(),
@@ -250,6 +255,7 @@ class ParcelShipment {
     DateTime? returnedAt,
     DateTime? createdAt,
     bool clearSiteName = false,
+    bool clearCarrier = false,
     bool clearTrackingCode = false,
     bool clearSenderName = false,
     bool clearParcelCustomerId = false,
@@ -263,7 +269,7 @@ class ParcelShipment {
       orgId: orgId ?? this.orgId,
       siteId: siteId ?? this.siteId,
       siteName: clearSiteName ? null : (siteName ?? this.siteName),
-      carrier: carrier ?? this.carrier,
+      carrier: clearCarrier ? null : (carrier ?? this.carrier),
       trackingCode:
           clearTrackingCode ? null : (trackingCode ?? this.trackingCode),
       recipientFirstName: recipientFirstName ?? this.recipientFirstName,

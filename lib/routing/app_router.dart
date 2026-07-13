@@ -24,6 +24,7 @@ import '../screens/finance_screen.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/inventory_screen.dart';
+import '../screens/paketshop_screen.dart';
 import '../screens/inventur_screen.dart';
 import '../screens/kennzahlen_screen.dart';
 import '../screens/mitteilungen_screen.dart';
@@ -173,6 +174,8 @@ GoRouter buildAppRouter({
       ),
       _sectionRoute(AppRoutes.customerOrders,
           (c, s) => const CustomerOrderScreen(parentLabel: 'Laden')),
+      _sectionRoute(AppRoutes.paketshop,
+          (c, s) => const PaketshopHubScreen(parentLabel: 'Laden')),
       _sectionRoute(AppRoutes.personal,
           (c, s) => const PersonalScreen(parentLabel: 'Laden')),
       // Mitarbeiter-Detail (AllTec-1:1): deep-linkbare Route mit Path-Parameter
