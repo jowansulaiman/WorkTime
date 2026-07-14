@@ -308,10 +308,19 @@ class JournalEntry {
     required this.description,
     this.amountCents = 0,
     this.reference,
+    this.taxRatePercent,
+    this.paymentMethod,
+    this.systemKind,
     this.createdByUid,
     this.createdAt,
     this.updatedAt,
   });
+
+  /// **DATEV-5:** Wert von [systemKind] für kassennahe Zahlart-Transitzeilen —
+  /// reine Export-/Abstimmungsbuchungen (Zahlungseingang je Zahlart), die im
+  /// DATEV-Stapel erscheinen, aber NICHT in Umsatz-/Kostenanalysen einfließen
+  /// (sonst Doppelzählung mit der Erlöszeile).
+  static const String systemKindPaymentTransit = 'payment_transit';
 
   final String? id;
   final String orgId;
@@ -325,12 +334,31 @@ class JournalEntry {
 
   /// Externe Belegnummer/-referenz (optional).
   final String? reference;
+
+  /// **DATEV-5 Plan-Metadatum** — USt-Satz (ganze Prozent) der Buchung; Quelle
+  /// für den BU-Schlüssel im EXTF-Export (`taxKeyByRate[taxRatePercent]`).
+  /// `null` = kein Satz zugeordnet (BU-Spalte bleibt leer, abwärtskompatibel).
+  final int? taxRatePercent;
+
+  /// **DATEV-5 Plan-Metadatum** — Original-Zahlart-Token (bar/Karte/…) einer
+  /// Zahlart-Transitzeile; nur zur Nachvollziehbarkeit gespeichert.
+  final String? paymentMethod;
+
+  /// **DATEV-5 Plan-Metadatum** — Typ einer systemtechnischen Buchung
+  /// (z. B. [systemKindPaymentTransit]). `null` = fachliche Buchung.
+  final String? systemKind;
+
   final String? createdByUid;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
   bool get isExpense => amountCents > 0;
   bool get isCredit => amountCents < 0;
+
+  /// **DATEV-5:** Systemtechnische Buchung (z. B. Zahlart-Transit) — von allen
+  /// Finanz-Auswertungen (Umsatz/Kosten/Kostenstellen) ausgeschlossen, aber im
+  /// DATEV-Export enthalten. Fachliche Buchungen haben [systemKind] == null.
+  bool get isSystemBooking => (systemKind ?? '').isNotEmpty;
 
   factory JournalEntry.fromFirestore(String id, Map<String, dynamic> map) {
     return JournalEntry(
@@ -342,6 +370,9 @@ class JournalEntry {
       description: (map['description'] ?? '').toString(),
       amountCents: parse.toInt(map['amountCents']) ?? 0,
       reference: map['reference'] as String?,
+      taxRatePercent: parse.toInt(map['taxRatePercent']),
+      paymentMethod: map['paymentMethod'] as String?,
+      systemKind: map['systemKind'] as String?,
       createdByUid: map['createdByUid'] as String?,
       createdAt: FirestoreDateParser.readDate(map['createdAt']),
       updatedAt: FirestoreDateParser.readDate(map['updatedAt']),
@@ -358,6 +389,9 @@ class JournalEntry {
       description: (map['description'] ?? '').toString(),
       amountCents: parse.toInt(map['amount_cents']) ?? 0,
       reference: map['reference'] as String?,
+      taxRatePercent: parse.toInt(map['tax_rate_percent']),
+      paymentMethod: map['payment_method'] as String?,
+      systemKind: map['system_kind'] as String?,
       createdByUid: map['created_by_uid'] as String?,
       createdAt: FirestoreDateParser.readLocalDate(map['created_at']),
       updatedAt: FirestoreDateParser.readLocalDate(map['updated_at']),
@@ -373,6 +407,9 @@ class JournalEntry {
       'description': description.trim(),
       'amountCents': amountCents,
       'reference': _clean(reference),
+      'taxRatePercent': taxRatePercent,
+      'paymentMethod': _clean(paymentMethod),
+      'systemKind': _clean(systemKind),
       'createdByUid': createdByUid,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -388,6 +425,9 @@ class JournalEntry {
       'description': description,
       'amount_cents': amountCents,
       'reference': reference,
+      'tax_rate_percent': taxRatePercent,
+      'payment_method': paymentMethod,
+      'system_kind': systemKind,
       'created_by_uid': createdByUid,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -404,6 +444,12 @@ class JournalEntry {
     int? amountCents,
     String? reference,
     bool clearReference = false,
+    int? taxRatePercent,
+    bool clearTaxRatePercent = false,
+    String? paymentMethod,
+    bool clearPaymentMethod = false,
+    String? systemKind,
+    bool clearSystemKind = false,
     String? createdByUid,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -417,6 +463,11 @@ class JournalEntry {
       description: description ?? this.description,
       amountCents: amountCents ?? this.amountCents,
       reference: clearReference ? null : (reference ?? this.reference),
+      taxRatePercent:
+          clearTaxRatePercent ? null : (taxRatePercent ?? this.taxRatePercent),
+      paymentMethod:
+          clearPaymentMethod ? null : (paymentMethod ?? this.paymentMethod),
+      systemKind: clearSystemKind ? null : (systemKind ?? this.systemKind),
       createdByUid: createdByUid ?? this.createdByUid,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

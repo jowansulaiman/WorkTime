@@ -1729,6 +1729,39 @@ class FirestoreService {
     return id is String ? id : null;
   }
 
+  /// Schichttausch am Kiosk (Kollegen-Schritt): die an den Session-Mitarbeiter
+  /// gerichteten, noch offenen Tauschanfragen (`getKioskIncomingSwaps`). Das
+  /// niedrig-privilegierte Geräte-Konto darf fremde `shiftSwapRequests` nicht
+  /// lesen — der Server liefert sie server-authoritativ aus der Session-`sid`.
+  /// Die Callable liefert die Anfragen im **snake_case**-Format ([toMap]).
+  Future<List<ShiftSwapRequest>> getKioskIncomingSwaps(String sid) async {
+    final raw = await _callCloudFunction('getKioskIncomingSwaps', {'sid': sid});
+    final list = _callableResultData(raw)['requests'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => ShiftSwapRequest.fromMap(
+              e.map((key, value) => MapEntry(key.toString(), value)),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Session-Mitarbeiter nimmt eine Tauschanfrage an ([accept] == true) oder
+  /// lehnt sie ab (`kioskRespondSwap`). Server-seitig (Admin SDK) autorisiert
+  /// über die Session-`sid`: prüft `targetUid == Session-Mitarbeiter` + Status
+  /// `pending` und setzt `accepted_by_colleague`/`declined_by_colleague`.
+  Future<void> kioskRespondSwap({
+    required String sid,
+    required String requestId,
+    required bool accept,
+  }) async {
+    await _callCloudFunction('kioskRespondSwap', {
+      'sid': sid,
+      'requestId': requestId,
+      'accept': accept,
+    });
+  }
+
   // === Passwortmanager (§9) — Callable-Bridge ==============================
   // Alle Pfade laufen über Callables (kein Direkt-Read/-Write). snake_case
   // Payloads; Metadaten kommen server-gefiltert über listPasswordEntries.

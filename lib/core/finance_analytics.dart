@@ -44,6 +44,11 @@ class MonthBucket {
 ///
 /// **Vorzeichen-Konvention** (wie [JournalEntry]): `amountCents > 0` = Kosten,
 /// `< 0` = Gutschrift. Alle Auswertungen leiten sich allein daraus ab.
+///
+/// **DATEV-5 Auswertungs-Schutz:** systemtechnische Buchungen
+/// ([JournalEntry.isSystemBooking], z. B. Zahlart-Transit) sind reine Export-/
+/// Abstimmungszeilen und werden von JEDER Auswertung hier **explizit
+/// ausgeschlossen** — sonst zählten sie doppelt zur Erlöszeile.
 class FinanceAnalytics {
   const FinanceAnalytics._();
 
@@ -56,6 +61,7 @@ class FinanceAnalytics {
   }) {
     var sum = 0;
     for (final e in entries) {
+      if (e.isSystemBooking) continue; // DATEV-5: Transit nicht mitzählen
       if (e.costCenterId != costCenterId) continue;
       if (e.date.year != year) continue;
       if (costTypeId != null && e.costTypeId != costTypeId) continue;
@@ -99,7 +105,10 @@ class FinanceAnalytics {
       final actual = actualForCostCenter(entries, id, year);
       final planned = plannedForCostCenter(budgets, center, year);
       final count = entries
-          .where((e) => e.costCenterId == id && e.date.year == year)
+          .where((e) =>
+              !e.isSystemBooking &&
+              e.costCenterId == id &&
+              e.date.year == year)
           .length;
       reports.add(CostCenterReport(
         center: center,
@@ -120,6 +129,7 @@ class FinanceAnalytics {
     final expense = List<int>.filled(12, 0);
     final credit = List<int>.filled(12, 0);
     for (final e in entries) {
+      if (e.isSystemBooking) continue; // DATEV-5: Transit ausschließen
       if (e.date.year != year) continue;
       final i = e.date.month - 1;
       if (i < 0 || i > 11) continue;
@@ -143,6 +153,7 @@ class FinanceAnalytics {
   static int totalExpenses(List<JournalEntry> entries, int year) {
     var sum = 0;
     for (final e in entries) {
+      if (e.isSystemBooking) continue; // DATEV-5: Transit ausschließen
       if (e.date.year == year && e.amountCents > 0) sum += e.amountCents;
     }
     return sum;
@@ -152,6 +163,7 @@ class FinanceAnalytics {
   static int totalCredits(List<JournalEntry> entries, int year) {
     var sum = 0;
     for (final e in entries) {
+      if (e.isSystemBooking) continue; // DATEV-5: Transit ausschließen
       if (e.date.year == year && e.amountCents < 0) sum += -e.amountCents;
     }
     return sum;
@@ -161,6 +173,7 @@ class FinanceAnalytics {
   static int totalActual(List<JournalEntry> entries, int year) {
     var sum = 0;
     for (final e in entries) {
+      if (e.isSystemBooking) continue; // DATEV-5: Transit ausschließen
       if (e.date.year == year) sum += e.amountCents;
     }
     return sum;

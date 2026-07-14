@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/employee_document.dart';
 import '../models/employee_qualification.dart';
+import '../providers/feature_flag_provider.dart';
 import '../providers/personal_provider.dart';
 import '../services/download_service.dart';
 import '../ui/ui.dart';
@@ -74,6 +75,9 @@ class _QualiTileState extends State<_QualiTile> {
   Widget build(BuildContext context) {
     final quali = widget.quali;
     final personal = context.watch<PersonalProvider>();
+    // PERSONAL-7: Warn-Vorlauf aus den Org-Einstellungen statt hart 30.
+    final warnTage =
+        context.watch<FeatureFlagProvider>().qualiWarnVorlaufTage;
 
     // Verknüpften Nachweis unter den eigenen sichtbaren Dokumenten suchen.
     EmployeeDocument? nachweis;
@@ -87,7 +91,7 @@ class _QualiTileState extends State<_QualiTile> {
     }
     final nachweisFehlt = quali.documentId != null && nachweis == null;
 
-    final badge = switch (quali.gueltigkeitStatus(widget.now)) {
+    final badge = switch (quali.gueltigkeitStatus(widget.now, warnTage: warnTage)) {
       QualiGueltigkeit.abgelaufen => const AppStatusBadge(
           label: 'Abgelaufen',
           tone: AppStatusTone.error,

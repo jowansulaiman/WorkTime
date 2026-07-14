@@ -75,6 +75,7 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
   late TextEditingController _shiftMinutesCtrl;
   late TextEditingController _breakMinutesCtrl;
   late TextEditingController _requiredCountCtrl;
+  late TextEditingController _qualiVorlaufCtrl;
   bool _saving = false;
   bool _initialized = false;
 
@@ -93,6 +94,8 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
         TextEditingController(text: settings.defaultBreakMinutes.toString());
     _requiredCountCtrl =
         TextEditingController(text: settings.defaultRequiredCount.toString());
+    _qualiVorlaufCtrl =
+        TextEditingController(text: settings.qualiWarnVorlaufTage.toString());
     _initialized = true;
   }
 
@@ -101,6 +104,7 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
     _shiftMinutesCtrl.dispose();
     _breakMinutesCtrl.dispose();
     _requiredCountCtrl.dispose();
+    _qualiVorlaufCtrl.dispose();
     super.dispose();
   }
 
@@ -177,6 +181,17 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
               ),
               secondary: const Icon(Icons.receipt_long_outlined),
             ),
+            const Divider(height: 32),
+            TextFormField(
+              controller: _qualiVorlaufCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Vorlauf Qualifikations-Ablauf (Tage)',
+                helperText:
+                    'Ab wie vielen Tagen vor Ablauf gewarnt wird (Standard 30)',
+                prefixIcon: Icon(Icons.workspace_premium_outlined),
+              ),
+            ),
             const SizedBox(height: 16),
             Align(
               alignment: Alignment.centerRight,
@@ -208,6 +223,8 @@ class _OrgAutoPlanSettingsCardState extends State<_OrgAutoPlanSettingsCard> {
       defaultBreakMinutes: int.tryParse(_breakMinutesCtrl.text.trim()) ?? 30,
       defaultRequiredCount: int.tryParse(_requiredCountCtrl.text.trim()) ?? 1,
       purchasePricesIncludeVat: _purchasePricesIncludeVat,
+      qualiWarnVorlaufTage:
+          int.tryParse(_qualiVorlaufCtrl.text.trim())?.clamp(0, 3650) ?? 30,
     );
     try {
       await featureFlags.saveOrgSettings(updated);

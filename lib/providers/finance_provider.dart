@@ -631,7 +631,8 @@ class FinanceProvider extends ChangeNotifier with HybridWriteFallback {
     if (!isAdmin || _orgId == null) return null;
     if (record.employerTotalCents <= 0) return null;
     final costCenter = _resolveSiteCostCenter(primarySiteId);
-    final costType = _resolveCostTypeByNeedles(_personnelNeedles);
+    final costType = _resolveMappedCostType(
+        _datevConfig.personnelCostTypeId, _personnelNeedles, 'Personalkosten');
     if (costCenter?.id == null || costType?.id == null) {
       AppLogger.warning(
         'Personalkosten-Buchung übersprungen: Kostenstelle/-art nicht '
@@ -678,6 +679,36 @@ class FinanceProvider extends ChangeNotifier with HybridWriteFallback {
     return null;
   }
 
+  /// **DATEV-5:** Löst eine Kostenart PRIMÄR über die explizit konfigurierte
+  /// [configuredId] (aus dem DATEV-Mapping) auf; fehlt sie oder verweist sie
+  /// ins Leere/Inaktive, fällt es auf die Namens-Heuristik [needles] zurück und
+  /// protokolliert eine [AppLogger.warning] (der Admin soll die explizite
+  /// Zuordnung nachtragen). [zweck] beschreibt die Buchung für das Log.
+  CostType? _resolveMappedCostType(
+    String? configuredId,
+    List<String> needles,
+    String zweck,
+  ) {
+    if (configuredId != null && configuredId.isNotEmpty) {
+      final byId = costTypeById(configuredId);
+      if (byId != null && byId.isActive) return byId;
+      AppLogger.warning(
+        'DATEV-Mapping: konfigurierte Kostenart für $zweck nicht gefunden/'
+        'inaktiv — Rückfall auf Namens-Heuristik.',
+        fields: {'costTypeId': configuredId},
+      );
+    }
+    final byNeedle = _resolveCostTypeByNeedles(needles);
+    if (byNeedle != null &&
+        (configuredId == null || configuredId.isEmpty)) {
+      AppLogger.warning(
+        'DATEV-Mapping: keine explizite Kostenart für $zweck konfiguriert — '
+        'Namens-Heuristik verwendet. Bitte im DATEV-Mapping festlegen.',
+      );
+    }
+    return byNeedle;
+  }
+
   static const List<String> _personnelNeedles = [
     'personal',
     'lohn',
@@ -717,7 +748,8 @@ class FinanceProvider extends ChangeNotifier with HybridWriteFallback {
       amountCents: effectiveTotalCents,
       description: 'Wareneinkauf ${order.orderNumber ?? order.id}',
       reference: order.id!,
-      costType: _resolveCostTypeByNeedles(_goodsNeedles),
+      costType: _resolveMappedCostType(
+          _datevConfig.wareneinsatzCostTypeId, _goodsNeedles, 'Wareneinsatz'),
     );
   }
 
@@ -803,7 +835,10 @@ class FinanceProvider extends ChangeNotifier with HybridWriteFallback {
       return false;
     }
     final costCenter = _resolveSiteCostCenter(closing.siteId);
-    final costType = _resolveCostTypeByNeedles(_cashDiffNeedles);
+    final costType = _resolveMappedCostType(
+        _datevConfig.cashDifferenceCostTypeId,
+        _cashDiffNeedles,
+        'Kassendifferenz');
     if (costCenter?.id == null || costType?.id == null) {
       AppLogger.warning(
         'Kassendifferenz übersprungen: keine eindeutige Kostenstelle/-art '

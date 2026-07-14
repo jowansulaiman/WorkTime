@@ -12,6 +12,7 @@ import '../../core/fridge_refill_shortfall.dart';
 import '../../models/app_user.dart';
 import '../../models/cash_count.dart';
 import '../../models/customer_wish.dart';
+import '../../models/shift_swap_request.dart';
 import '../../models/site_definition.dart';
 import '../../models/third_party_cash.dart';
 import '../../models/store_task.dart';
@@ -28,6 +29,7 @@ import '../../widgets/cash_count_sheet.dart';
 import 'kiosk_clock_service.dart';
 import 'kiosk_controller.dart';
 import 'kiosk_pin_service.dart';
+import 'kiosk_swap_service.dart';
 import 'store_task_editor_sheet.dart';
 
 /// **Arbeitsmodus / Laden-Tablet (Kiosk).** Vollbild-Board für das geteilte
@@ -487,6 +489,7 @@ class _KioskBoard extends StatelessWidget {
     final tiles = <Widget>[
       _ClockTile(siteId: siteId, siteName: siteName),
       _PresenceTile(firestore: firestore),
+      const _SwapTile(),
       _StoreTasksTile(siteId: siteId, siteName: siteName),
       _CashCountTile(
           siteId: siteId,
@@ -830,6 +833,238 @@ class _PresenceTile extends StatelessWidget {
                 ),
         );
       },
+    );
+  }
+}
+
+// ---- Schichttausch (Kollegen-Schritt) --------------------------------------
+
+/// Zeigt dem angemeldeten Session-Mitarbeiter die an ihn gerichteten, noch
+/// offenen Tauschanfragen und lässt ihn sie **annehmen/ablehnen** (der
+/// Kollegen-Schritt; der Chef bestätigt/vollzieht den Tausch weiter in der App).
+///
+/// Bewusst NUR nach Anmeldung sichtbar — Tauschanfragen sind personenbezogen
+/// und gehören nicht aufs kundensichtbare Leerlauf-Board. Datenquelle ist der
+/// session-gebundene [KioskSwapService] (Dev: lokal; Echt: `getKioskIncomingSwaps`/
+/// `kioskRespondSwap`-Callable), NICHT der ScheduleProvider — das Geräte-Konto
+/// darf fremde Tauschanfragen nicht lesen.
+class _SwapTile extends StatefulWidget {
+  const _SwapTile();
+
+  @override
+  State<_SwapTile> createState() => _SwapTileState();
+}
+
+class _SwapTileState extends State<_SwapTile> {
+  final KioskSwapService _service = KioskSwapService.resolve();
+  String? _sessionUid;
+  List<ShiftSwapRequest>? _requests;
+  bool _busy = false;
+  String? _fehler;
+
+  Future<void> _load(AppUserProfile employee, String? sid) async {
+    try {
+      final items = await _service.incomingPending(employee, sid: sid);
+      if (mounted && employee.uid == _sessionUid) {
+        setState(() {
+          _requests = items;
+          _fehler = null;
+        });
+      }
+    } catch (_) {
+      if (mounted && employee.uid == _sessionUid) {
+        setState(() => _fehler =
+            'Keine Verbindung — Tauschanfragen konnten nicht geladen werden.');
+      }
+    }
+  }
+
+  Future<void> _respond(
+    KioskController controller,
+    AppUserProfile employee,
+    ShiftSwapRequest request,
+    bool accept,
+  ) async {
+    if (_busy) return;
+    final id = request.id;
+    if (id == null) return;
+    controller.touch();
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await _service.respond(
+        employee,
+        requestId: id,
+        accept: accept,
+        sid: controller.sessionId,
+      );
+      controller.touch();
+      await _load(employee, controller.sessionId);
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(accept
+              ? 'Tauschanfrage angenommen – wartet auf Freigabe durch die Leitung.'
+              : 'Tauschanfrage abgelehnt.'),
+        ));
+      }
+    } catch (_) {
+      if (mounted) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text('Aktion nicht möglich — bitte erneut versuchen.'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<KioskController>();
+    final employee = controller.employee;
+
+    // Session-Wechsel → Anfragen (neu) laden.
+    if (employee?.uid != _sessionUid) {
+      _sessionUid = employee?.uid;
+      _requests = null;
+      _fehler = null;
+      if (employee != null) {
+        final sid = controller.sessionId;
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _load(employee, sid));
+      }
+    }
+
+    final requests = _requests;
+    Widget body;
+    if (employee == null) {
+      body = const _KioskEmpty(
+          'Zum Ansehen deiner Tauschanfragen oben „Anmelden" antippen.');
+    } else if (_fehler != null) {
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(_fehler!, style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Erneut versuchen'),
+            onPressed: _busy
+                ? null
+                : () {
+                    setState(() => _fehler = null);
+                    _load(employee, controller.sessionId);
+                  },
+          ),
+        ],
+      );
+    } else if (requests == null) {
+      body = const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    } else if (requests.isEmpty) {
+      body = const _KioskEmpty('Keine offenen Tauschanfragen für dich.');
+    } else {
+      body = Column(
+        children: [
+          for (final request in requests.take(6))
+            _SwapRow(
+              request: request,
+              busy: _busy,
+              onAccept: () => _respond(controller, employee, request, true),
+              onDecline: () => _respond(controller, employee, request, false),
+            ),
+        ],
+      );
+    }
+
+    return _KioskTile(
+      icon: Icons.swap_horiz,
+      title: 'Tauschanfragen',
+      badge: (requests == null || requests.isEmpty)
+          ? null
+          : requests.length.toString(),
+      badgeColor: Theme.of(context).colorScheme.primary,
+      child: body,
+    );
+  }
+}
+
+class _SwapRow extends StatelessWidget {
+  const _SwapRow({
+    required this.request,
+    required this.busy,
+    required this.onAccept,
+    required this.onDecline,
+  });
+
+  final ShiftSwapRequest request;
+  final bool busy;
+  final VoidCallback onAccept;
+  final VoidCallback onDecline;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final fmt = DateFormat('EEE, dd.MM. HH:mm', 'de_DE');
+    final shiftLine = request.requesterShiftLabel ??
+        fmt.format(request.requesterShiftStart);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.swap_horiz, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Von ${request.requesterName}',
+                  style: theme.textTheme.titleSmall,
+                ),
+              ),
+              Text(
+                request.kind.label,
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Abgegeben: $shiftLine',
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          if (request.note != null && request.note!.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                request.note!,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              OutlinedButton(
+                onPressed: busy ? null : onDecline,
+                child: const Text('Ablehnen'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: busy ? null : onAccept,
+                child: const Text('Annehmen'),
+              ),
+            ],
+          ),
+          const Divider(height: 16),
+        ],
+      ),
     );
   }
 }

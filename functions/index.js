@@ -2093,6 +2093,130 @@ exports.kioskSaveCashCount = callable(
   },
 );
 
+// === Kiosk-Schichttausch (Kollegen-Schritt) ================================
+// Der Session-Mitarbeiter sieht am Laden-Tablet die an ihn gerichteten, offenen
+// Tauschanfragen und nimmt sie an / lehnt sie ab. Beide Callables laufen ALS der
+// Mitarbeiter (Admin SDK), autorisiert ueber die Session-`sid` — das niedrig-
+// privilegierte Geraete-Konto darf fremde `shiftSwapRequests` per Rules weder
+// lesen noch aendern. Umbuchung/Bestaetigung macht weiterhin der Chef in der App.
+
+// Serialisiert eine Tauschanfrage ins snake_case-Format, das der Dart-Client
+// (ShiftSwapRequest.fromMap) erwartet — Datumsfelder als ISO-8601-Strings
+// (Callable-Payload-Konvention, nicht Firestore-Timestamps ueber die Leitung).
+// `tsToIso` (Timestamp→ISO) ist der gemeinsame Helfer weiter unten (gehoisted).
+function serializeSwapForKiosk(id, d) {
+  return {
+    id,
+    org_id: d.orgId || "",
+    requester_uid: d.requesterUid || "",
+    requester_name: d.requesterName || "",
+    requester_shift_id: d.requesterShiftId || "",
+    target_uid: d.targetUid || "",
+    target_name: d.targetName || "",
+    target_shift_id: d.targetShiftId || null,
+    kind: d.kind || "exchange",
+    status: d.status || "pending",
+    reviewed_by_uid: d.reviewedByUid || null,
+    overridden_compliance: d.overriddenCompliance === true,
+    note: d.note || null,
+    requester_shift_start: tsToIso(d.requesterShiftStart),
+    target_shift_start: tsToIso(d.targetShiftStart),
+    requester_shift_label: d.requesterShiftLabel || null,
+    target_shift_label: d.targetShiftLabel || null,
+    created_at: tsToIso(d.createdAt),
+    updated_at: tsToIso(d.updatedAt),
+  };
+}
+
+exports.getKioskIncomingSwaps = callable(
+  "getKioskIncomingSwaps",
+  {region: REGION, enforceAppCheck: true},
+  async (request) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request); // Geraete-Konto
+    const sid = stringOrNull(request.data?.sid);
+    const session = await requireKioskSession(caller, sid);
+    const orgId = session.orgId;
+    const employeeId = session.employeeId;
+    // Nur der Einzelfeld-Filter targetUid (Auto-Index) — der pending-Filter
+    // laeuft in JS, damit KEIN Composite-Index noetig ist (die Menge je
+    // Mitarbeiter ist klein).
+    const snap = await organizationCollection(orgId, "shiftSwapRequests")
+      .where("targetUid", "==", employeeId)
+      .get();
+    const requests = snap.docs
+      .filter((doc) => (doc.data() || {}).status === "pending")
+      .map((doc) => serializeSwapForKiosk(doc.id, doc.data() || {}))
+      .sort((a, b) => String(b.created_at || "")
+        .localeCompare(String(a.created_at || "")));
+    return {requests};
+  },
+);
+
+exports.kioskRespondSwap = callable(
+  "kioskRespondSwap",
+  {region: REGION, enforceAppCheck: true},
+  async (request, ctx) => {
+    assertSupportedVersion(request);
+    const caller = await loadCallerProfile(request); // Geraete-Konto
+    const sid = stringOrNull(request.data?.sid);
+    const requestId = stringOrNull(request.data?.requestId);
+    const accept = request.data?.accept === true;
+    if (!requestId) {
+      throw new HttpsError("invalid-argument", "requestId fehlt.");
+    }
+    const session = await requireKioskSession(caller, sid);
+    const orgId = session.orgId;
+    const employeeId = session.employeeId;
+    const ref = organizationCollection(orgId, "shiftSwapRequests")
+      .doc(requestId);
+    const nextStatus = accept ?
+      "accepted_by_colleague" :
+      "declined_by_colleague";
+    let requesterName = "";
+    // Transaktion: Ziel + Status atomar pruefen und umsetzen (verhindert die
+    // Race mit einer parallelen Chef-Bestaetigung/Ruecknahme).
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        throw new HttpsError("not-found", "Tauschanfrage nicht gefunden.");
+      }
+      const data = snap.data() || {};
+      if (data.targetUid !== employeeId) {
+        throw new HttpsError(
+          "permission-denied",
+          "Nur der angefragte Kollege kann annehmen oder ablehnen.",
+        );
+      }
+      if (data.status !== "pending") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Diese Anfrage ist nicht mehr offen.",
+        );
+      }
+      requesterName = data.requesterName || "";
+      tx.update(ref, {
+        status: nextStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+    await writeAudit({
+      orgId,
+      action: "updated",
+      entityType: "Schichttausch",
+      entityId: requestId,
+      summary: accept ?
+        `Tauschanfrage von ${requesterName} angenommen (Laden-Tablet)` :
+        `Tauschanfrage von ${requesterName} abgelehnt (Laden-Tablet)`,
+      actorUid: employeeId,
+      sessionId: sid,
+      deviceId: session.deviceId || null,
+      requestId: ctx.requestId,
+    });
+    return {ok: true, status: nextStatus};
+  },
+);
+
 // === Passwortmanager (§9) ===================================================
 // Serverseitige Envelope-Verschlüsselung (Cloud KMS wrappt den pro-Eintrag-DEK).
 // Der Klartext verlässt den Prozess NUR über den autorisierten + auditierten

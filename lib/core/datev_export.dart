@@ -18,11 +18,24 @@ class DatevExportConfig {
     this.defaultContraAccount = '9000',
     this.designation = '',
     this.revenueAccountByRate = const {},
+    this.paymentAccountByMethod = const {},
+    this.taxKeyByRate = const {},
+    this.contraAccountBySiteId = const {},
+    this.skrProfile = '',
+    this.cashDifferenceCostTypeId,
+    this.personnelCostTypeId,
+    this.wareneinsatzCostTypeId,
   });
 
   /// Feste Doc-ID des Firestore-Singletons
   /// `organizations/{orgId}/financeConfig/datev`.
   static const String firestoreDocId = 'datev';
+
+  /// **DATEV-5:** Vorschlags-BU-Schlüssel je USt-Satz — reine **Vorbelegung**
+  /// der Admin-UI, NICHT der Default-Wert von [taxKeyByRate] (der bleibt leer).
+  /// Die Zuordnung ist steuerlich anzunehmen (SKR03/04: 19 % → '3', 7 % → '2')
+  /// und **vom Steuerberater zu bestätigen**.
+  static const Map<int, String> taxKeySuggestions = {19: '3', 7: '2'};
 
   /// Schema-Version der persistierten Config (Leitplanke: persistierte
   /// DATEV-Strukturen tragen `schemaVersion`, int ab 1; Leser parsen tolerant
@@ -49,6 +62,35 @@ class DatevExportConfig {
   /// Namens-Heuristik; persistiert, damit der Admin sie nur einmal setzt.
   final Map<int, String> revenueAccountByRate;
 
+  /// **DATEV-5** — Zahlart-Token (bar/Karte/…) → CostType-/Konto-ID für die
+  /// Zahlart-Transitzeilen (`buildPaymentTransitEntries`). Leer = kein
+  /// Transit-Mapping (Feature aus). Map-Keys sind bereits Strings.
+  final Map<String, String> paymentAccountByMethod;
+
+  /// **DATEV-5** — USt-Satz (ganze Prozent) → DATEV-BU-Schlüssel (Steuerschlüssel)
+  /// für die BU-Spalte des EXTF-Exports. Leer = keine BU-Schlüssel (Spalte
+  /// bleibt leer, abwärtskompatibel). Vorschläge in [taxKeySuggestions].
+  final Map<int, String> taxKeyByRate;
+
+  /// **DATEV-5** — Standort (`SiteDefinition.id`) → Gegenkonto für die
+  /// Gegenkonto-Spalte des EXTF-Exports. Ohne Treffer greift
+  /// [defaultContraAccount]. Map-Keys sind bereits Strings.
+  final Map<String, String> contraAccountBySiteId;
+
+  /// **DATEV-5** — SKR-Profil (z. B. „SKR03"/„SKR04") als reines Metadatum
+  /// (Doku/Prüfung, fließt nicht in den Export).
+  final String skrProfile;
+
+  /// **DATEV-5** — explizite Kostenart-ID für Kassendifferenz-Buchungen
+  /// (Primärquelle statt Namens-Heuristik). `null` = Heuristik-Fallback.
+  final String? cashDifferenceCostTypeId;
+
+  /// **DATEV-5** — explizite Kostenart-ID für Personalkosten-Buchungen.
+  final String? personnelCostTypeId;
+
+  /// **DATEV-5** — explizite Kostenart-ID für Wareneinsatz-Buchungen.
+  final String? wareneinsatzCostTypeId;
+
   /// **DATEV-1:** Ob überhaupt fachliche Werte gepflegt sind (≠ reiner Default).
   /// Steuert die Lokal→Cloud-Migration: ein unkonfiguriertes Gerät legt KEIN
   /// leeres Cloud-Singleton an und überschreibt beim Adoptieren keinen bereits
@@ -57,7 +99,14 @@ class DatevExportConfig {
   bool get isConfigured =>
       consultantNumber.trim().isNotEmpty ||
       clientNumber.trim().isNotEmpty ||
-      revenueAccountByRate.isNotEmpty;
+      revenueAccountByRate.isNotEmpty ||
+      paymentAccountByMethod.isNotEmpty ||
+      taxKeyByRate.isNotEmpty ||
+      contraAccountBySiteId.isNotEmpty ||
+      skrProfile.trim().isNotEmpty ||
+      (cashDifferenceCostTypeId ?? '').isNotEmpty ||
+      (personnelCostTypeId ?? '').isNotEmpty ||
+      (wareneinsatzCostTypeId ?? '').isNotEmpty;
 
   Map<String, dynamic> toMap() => {
         'schema_version': schemaVersion,
@@ -69,6 +118,14 @@ class DatevExportConfig {
         // JSON-Keys sind Strings -> Satz als String serialisieren.
         'revenue_account_by_rate':
             revenueAccountByRate.map((k, v) => MapEntry('$k', v)),
+        'payment_account_by_method': Map<String, String>.from(paymentAccountByMethod),
+        'tax_key_by_rate': taxKeyByRate.map((k, v) => MapEntry('$k', v)),
+        'contra_account_by_site_id':
+            Map<String, String>.from(contraAccountBySiteId),
+        'skr_profile': skrProfile,
+        'cash_difference_cost_type_id': cashDifferenceCostTypeId,
+        'personnel_cost_type_id': personnelCostTypeId,
+        'wareneinsatz_cost_type_id': wareneinsatzCostTypeId,
       };
 
   factory DatevExportConfig.fromMap(Map<String, dynamic> map) {
@@ -81,6 +138,13 @@ class DatevExportConfig {
           (map['default_contra_account'] ?? '9000').toString(),
       designation: (map['designation'] ?? '').toString(),
       revenueAccountByRate: _parseRateMap(map['revenue_account_by_rate']),
+      paymentAccountByMethod: _parseStringMap(map['payment_account_by_method']),
+      taxKeyByRate: _parseRateMap(map['tax_key_by_rate']),
+      contraAccountBySiteId: _parseStringMap(map['contra_account_by_site_id']),
+      skrProfile: (map['skr_profile'] ?? '').toString(),
+      cashDifferenceCostTypeId: _cleanId(map['cash_difference_cost_type_id']),
+      personnelCostTypeId: _cleanId(map['personnel_cost_type_id']),
+      wareneinsatzCostTypeId: _cleanId(map['wareneinsatz_cost_type_id']),
     );
   }
 
@@ -97,6 +161,14 @@ class DatevExportConfig {
         // Firestore-Map-Keys sind Strings -> Satz als String serialisieren.
         'revenueAccountByRate':
             revenueAccountByRate.map((k, v) => MapEntry('$k', v)),
+        'paymentAccountByMethod': Map<String, String>.from(paymentAccountByMethod),
+        'taxKeyByRate': taxKeyByRate.map((k, v) => MapEntry('$k', v)),
+        'contraAccountBySiteId':
+            Map<String, String>.from(contraAccountBySiteId),
+        'skrProfile': skrProfile,
+        'cashDifferenceCostTypeId': cashDifferenceCostTypeId,
+        'personnelCostTypeId': personnelCostTypeId,
+        'wareneinsatzCostTypeId': wareneinsatzCostTypeId,
       };
 
   /// Doc-ID kommt konventionsgemäß separat (wird hier nicht gespeichert —
@@ -113,6 +185,13 @@ class DatevExportConfig {
       defaultContraAccount: (map['defaultContraAccount'] ?? '9000').toString(),
       designation: (map['designation'] ?? '').toString(),
       revenueAccountByRate: _parseRateMap(map['revenueAccountByRate']),
+      paymentAccountByMethod: _parseStringMap(map['paymentAccountByMethod']),
+      taxKeyByRate: _parseRateMap(map['taxKeyByRate']),
+      contraAccountBySiteId: _parseStringMap(map['contraAccountBySiteId']),
+      skrProfile: (map['skrProfile'] ?? '').toString(),
+      cashDifferenceCostTypeId: _cleanId(map['cashDifferenceCostTypeId']),
+      personnelCostTypeId: _cleanId(map['personnelCostTypeId']),
+      wareneinsatzCostTypeId: _cleanId(map['wareneinsatzCostTypeId']),
     );
   }
 
@@ -120,6 +199,12 @@ class DatevExportConfig {
     if (raw is int) return raw;
     if (raw is num) return raw.toInt();
     return int.tryParse('${raw ?? ''}') ?? fallback;
+  }
+
+  /// `null`/leer -> null (nullable ID-Felder tolerant lesen).
+  static String? _cleanId(Object? raw) {
+    final s = (raw ?? '').toString().trim();
+    return s.isEmpty ? null : s;
   }
 
   static Map<int, String> _parseRateMap(Object? rawRates) {
@@ -135,6 +220,20 @@ class DatevExportConfig {
     return rateMap;
   }
 
+  /// String→String-Map tolerant lesen (leere Werte werden verworfen).
+  static Map<String, String> _parseStringMap(Object? raw) {
+    final out = <String, String>{};
+    if (raw is Map) {
+      raw.forEach((k, v) {
+        final key = '$k';
+        if (key.isNotEmpty && v != null && '$v'.isNotEmpty) {
+          out[key] = '$v';
+        }
+      });
+    }
+    return out;
+  }
+
   DatevExportConfig copyWith({
     int? schemaVersion,
     String? consultantNumber,
@@ -143,6 +242,16 @@ class DatevExportConfig {
     String? defaultContraAccount,
     String? designation,
     Map<int, String>? revenueAccountByRate,
+    Map<String, String>? paymentAccountByMethod,
+    Map<int, String>? taxKeyByRate,
+    Map<String, String>? contraAccountBySiteId,
+    String? skrProfile,
+    String? cashDifferenceCostTypeId,
+    bool clearCashDifferenceCostTypeId = false,
+    String? personnelCostTypeId,
+    bool clearPersonnelCostTypeId = false,
+    String? wareneinsatzCostTypeId,
+    bool clearWareneinsatzCostTypeId = false,
   }) {
     return DatevExportConfig(
       schemaVersion: schemaVersion ?? this.schemaVersion,
@@ -152,6 +261,21 @@ class DatevExportConfig {
       defaultContraAccount: defaultContraAccount ?? this.defaultContraAccount,
       designation: designation ?? this.designation,
       revenueAccountByRate: revenueAccountByRate ?? this.revenueAccountByRate,
+      paymentAccountByMethod:
+          paymentAccountByMethod ?? this.paymentAccountByMethod,
+      taxKeyByRate: taxKeyByRate ?? this.taxKeyByRate,
+      contraAccountBySiteId:
+          contraAccountBySiteId ?? this.contraAccountBySiteId,
+      skrProfile: skrProfile ?? this.skrProfile,
+      cashDifferenceCostTypeId: clearCashDifferenceCostTypeId
+          ? null
+          : (cashDifferenceCostTypeId ?? this.cashDifferenceCostTypeId),
+      personnelCostTypeId: clearPersonnelCostTypeId
+          ? null
+          : (personnelCostTypeId ?? this.personnelCostTypeId),
+      wareneinsatzCostTypeId: clearWareneinsatzCostTypeId
+          ? null
+          : (wareneinsatzCostTypeId ?? this.wareneinsatzCostTypeId),
     );
   }
 }
@@ -279,7 +403,11 @@ class DatevExport {
       cols[1] = e.amountCents >= 0 ? 'S' : 'H';
       cols[2] = 'EUR';
       cols[6] = _digits(type?.number ?? '');
-      cols[7] = _digits(config.defaultContraAccount);
+      // DATEV-5: Gegenkonto standortabhängig (CostCenter→Site→Mapping), sonst
+      // festes Default-Gegenkonto (abwärtskompatibel).
+      cols[7] = _digits(_contraAccountFor(center?.siteId, config));
+      // DATEV-5: BU-Schlüssel je USt-Satz (leer, wenn kein Satz/kein Mapping).
+      cols[8] = _taxKeyFor(e.taxRatePercent, config);
       cols[9] = _ddmm(e.date);
       cols[10] = _truncate(e.reference ?? '', 36);
       cols[13] = _truncate(e.description, 60);
@@ -293,6 +421,24 @@ class DatevExport {
     }
 
     return buf.toString();
+  }
+
+  /// DATEV-5: Gegenkonto einer Zeile — standortspezifisch (via
+  /// `contraAccountBySiteId`), sonst das feste [DatevExportConfig.defaultContraAccount].
+  static String _contraAccountFor(String? siteId, DatevExportConfig config) {
+    if (siteId != null) {
+      final mapped = config.contraAccountBySiteId[siteId];
+      if (mapped != null && mapped.trim().isNotEmpty) return mapped;
+    }
+    return config.defaultContraAccount;
+  }
+
+  /// DATEV-5: BU-Schlüssel (Steuerschlüssel) einer Zeile aus `taxKeyByRate`;
+  /// ohne Satz oder ohne Mapping bleibt die BU-Spalte leer (abwärtskompatibel).
+  static String _taxKeyFor(int? taxRatePercent, DatevExportConfig config) {
+    if (taxRatePercent == null) return '';
+    final key = config.taxKeyByRate[taxRatePercent];
+    return (key ?? '').trim();
   }
 
   static String _formatCell(int index, String value) {

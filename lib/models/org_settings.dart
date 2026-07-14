@@ -16,6 +16,7 @@ class OrgSettings {
     this.defaultBreakMinutes = 30,
     this.defaultRequiredCount = 1,
     this.purchasePricesIncludeVat = false,
+    this.qualiWarnVorlaufTage = 30,
   });
 
   /// Feste, deterministische Doc-ID (genau ein Dokument je Org).
@@ -50,6 +51,12 @@ class OrgSettings {
   /// Default `false` = EK-Preise sind netto (B2B-üblich). Gilt org-weit.
   final bool purchasePricesIncludeVat;
 
+  /// **PERSONAL-7:** Vorlauf in Tagen, ab dem eine ablaufende Qualifikation
+  /// gewarnt wird (Client-Badges + `qualiExpiryNightly`). Default 30. Volle
+  /// Tage; ein Wert ≤ 0 wird von der Warn-Engine auf 0 (nur abgelaufen)
+  /// geklemmt.
+  final int qualiWarnVorlaufTage;
+
   /// Org-Standardwerte (ohne hinterlegtes Remote-/Local-Dokument).
   factory OrgSettings.defaults(String orgId) => OrgSettings(orgId: orgId);
 
@@ -63,6 +70,7 @@ class OrgSettings {
       defaultRequiredCount: parse.toInt(map['defaultRequiredCount']) ?? 1,
       purchasePricesIncludeVat:
           parse.toBool(map['purchasePricesIncludeVat']) ?? false,
+      qualiWarnVorlaufTage: parse.toInt(map['qualiWarnVorlaufTage']) ?? 30,
     );
   }
 
@@ -76,6 +84,7 @@ class OrgSettings {
       defaultRequiredCount: parse.toInt(map['default_required_count']) ?? 1,
       purchasePricesIncludeVat:
           parse.toBool(map['purchase_prices_include_vat']) ?? false,
+      qualiWarnVorlaufTage: parse.toInt(map['quali_warn_vorlauf_tage']) ?? 30,
     );
   }
 
@@ -87,6 +96,7 @@ class OrgSettings {
       'defaultBreakMinutes': defaultBreakMinutes,
       'defaultRequiredCount': defaultRequiredCount,
       'purchasePricesIncludeVat': purchasePricesIncludeVat,
+      'qualiWarnVorlaufTage': qualiWarnVorlaufTage,
     };
   }
 
@@ -99,6 +109,7 @@ class OrgSettings {
       'default_break_minutes': defaultBreakMinutes,
       'default_required_count': defaultRequiredCount,
       'purchase_prices_include_vat': purchasePricesIncludeVat,
+      'quali_warn_vorlauf_tage': qualiWarnVorlaufTage,
     };
   }
 
@@ -110,6 +121,7 @@ class OrgSettings {
     int? defaultBreakMinutes,
     int? defaultRequiredCount,
     bool? purchasePricesIncludeVat,
+    int? qualiWarnVorlaufTage,
   }) {
     return OrgSettings(
       id: id ?? this.id,
@@ -120,6 +132,7 @@ class OrgSettings {
       defaultRequiredCount: defaultRequiredCount ?? this.defaultRequiredCount,
       purchasePricesIncludeVat:
           purchasePricesIncludeVat ?? this.purchasePricesIncludeVat,
+      qualiWarnVorlaufTage: qualiWarnVorlaufTage ?? this.qualiWarnVorlaufTage,
     );
   }
 }

@@ -68,6 +68,9 @@ class FeatureFlagProvider extends ChangeNotifier {
   /// MwSt enthalten (brutto) und für Rohertrag/Wareneinsatz normalisiert werden.
   bool get purchasePricesIncludeVat => orgSettings.purchasePricesIncludeVat;
 
+  /// Bequemer Zugriff (PERSONAL-7): Vorlauf in Tagen für Quali-Ablauf-Warnungen.
+  int get qualiWarnVorlaufTage => orgSettings.qualiWarnVorlaufTage;
+
   Future<void> updateSession(
     AppUserProfile? user, {
     bool localStorageOnly = false,
