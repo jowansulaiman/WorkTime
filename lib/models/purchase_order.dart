@@ -73,10 +73,18 @@ class PurchaseReceiptLine {
     this.receivedUnitPriceCents,
     this.expiryDate,
     this.batchNote,
+    this.allowOverdelivery = false,
   });
 
-  /// Zusätzlich gelieferte Menge (wird beim Buchen auf den offenen Rest geklemmt).
+  /// Zusätzlich gelieferte Menge (wird beim Buchen auf den offenen Rest geklemmt
+  /// — außer bei [allowOverdelivery]).
   final int quantity;
+
+  /// **WW-7:** erlaubt eine Mehrlieferung über die offene Menge hinaus (nur die
+  /// untere Schranke 0 greift). Der geteilte Clamp [effectiveReceiptQuantity]
+  /// wertet dieses Flag an BEIDEN Buchungsstellen (Cloud-Repo + lokaler Spiegel)
+  /// aus — beendet die frühere Clamp-Divergenz-Gefahr strukturell.
+  final bool allowOverdelivery;
 
   /// Tatsächlicher Einkaufspreis der Lieferung in Cent (Ist-EK). `null` = kein
   /// abweichender Preis erfasst (dann bleibt der bestellte Preis maßgeblich).
@@ -91,6 +99,26 @@ class PurchaseReceiptLine {
   /// Ob aus dieser Position eine Warencharge angelegt wird (nur mit MHD — eine
   /// Charge ohne MHD ist nicht speicherbar, analog `showGoodsReceiptSheet`).
   bool get hasBatch => expiryDate != null;
+}
+
+/// **WW-7 — der EINE Clamp für den Wareneingang.** Bestimmt die effektiv zu
+/// buchende Eingangsmenge aus [line] gegen die Position [item].
+///
+/// Früher klemmte JEDE Buchungsstelle (Cloud-Repo + lokaler Spiegel) die Menge
+/// selbst per `line.quantity.clamp(0, item.outstandingQuantity)` — zwei Kopien
+/// derselben Regel, die auseinanderlaufen konnten. Dieser reine Helfer ist die
+/// gemeinsame Quelle für BEIDE Stellen.
+///
+/// - Ohne [PurchaseReceiptLine.allowOverdelivery]: geklemmt auf `[0, offen]`
+///   (Standard — keine Überlieferung, keine Negativmenge).
+/// - Mit [PurchaseReceiptLine.allowOverdelivery]: nur untere Schranke 0 — eine
+///   bewusst erfasste Mehrlieferung über den offenen Rest hinaus wird gebucht
+///   (führt zu `quantityReceived > quantityOrdered`, was das
+///   Abweichungsprotokoll ausweist).
+int effectiveReceiptQuantity(PurchaseReceiptLine line, PurchaseOrderItem item) {
+  if (line.quantity <= 0) return 0;
+  if (line.allowOverdelivery) return line.quantity;
+  return line.quantity.clamp(0, item.outstandingQuantity);
 }
 
 /// Eine Position innerhalb einer Bestellung (eingebettet, kein eigenes Dokument).

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/receipt_deviation.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
@@ -735,6 +736,7 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ],
+                _buildDeviationProtocol(context, order),
                 const SizedBox(height: 12),
                 Text(
                   'Positionen',
@@ -792,6 +794,75 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// **WW-7 — Wareneingangs-Protokoll.** Zeigt Menge-/Preis-Abweichungen der
+  /// gelieferten Positionen. Nur sichtbar, sobald mindestens eine Position
+  /// (teilweise) geliefert wurde UND eine Abweichung besteht — sonst nichts.
+  Widget _buildDeviationProtocol(BuildContext context, PurchaseOrder order) {
+    final anyReceived = order.items.any((i) => i.quantityReceived > 0);
+    if (!anyReceived) return const SizedBox.shrink();
+    final report = computeReceiptDeviations(order);
+    if (!report.hasDeviations) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Card(
+        color: appColors.warningContainer,
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.rule, size: 18, color: appColors.warning),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Wareneingangs-Protokoll',
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(report.summary, style: theme.textTheme.bodySmall),
+              const SizedBox(height: 8),
+              for (final dev in report.deviations)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    _deviationLine(dev),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _deviationLine(ReceiptDeviation dev) {
+    final buffer = StringBuffer('• ${dev.itemName}: ');
+    final parts = <String>[];
+    if (dev.hasQuantityDeviation) {
+      final sign = dev.quantityDelta > 0 ? '+' : '';
+      parts.add('${dev.quantityReceived}/${dev.quantityOrdered} ${dev.unit} '
+          '($sign${dev.quantityDelta})');
+    }
+    final priceDelta = dev.priceDeltaCents;
+    if (dev.hasPriceDeviation && priceDelta != null) {
+      final sign = priceDelta > 0 ? '+' : '−';
+      parts.add('EK $sign${formatCents(priceDelta.abs())}');
+    }
+    buffer.write(parts.join('  ·  '));
+    return buffer.toString();
   }
 
   Future<void> _onMenu(

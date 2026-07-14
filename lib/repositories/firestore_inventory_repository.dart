@@ -1028,7 +1028,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
           continue;
         }
         final item = order.items[index];
-        final qty = entry.value.quantity.clamp(0, item.outstandingQuantity);
+        final qty = effectiveReceiptQuantity(entry.value, item); // WW-7: geteilter Clamp
         if (qty <= 0) {
           continue;
         }

@@ -59,6 +59,7 @@ class _PurchaseReceiptSheetState extends State<_PurchaseReceiptSheet> {
   final Map<int, DateTime?> _expiry = {};
   late final List<int> _openIndices;
   bool _updatePurchasePrice = false;
+  bool _allowOverdelivery = false;
 
   @override
   void initState() {
@@ -136,6 +137,7 @@ class _PurchaseReceiptSheetState extends State<_PurchaseReceiptSheet> {
         receivedUnitPriceCents: _inputToCents(_ek[i]!.text),
         expiryDate: _expiry[i],
         batchNote: lot.isEmpty ? null : lot,
+        allowOverdelivery: _allowOverdelivery,
       );
     }
     final note = _deliveryNoteController.text.trim();
@@ -205,6 +207,16 @@ class _PurchaseReceiptSheetState extends State<_PurchaseReceiptSheet> {
                 subtitle: const Text(
                   'Übernimmt einen abweichenden Ist-EK als neuen Artikel-'
                   'Einkaufspreis (mit Preis-Historie).',
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _allowOverdelivery,
+                onChanged: (v) => setState(() => _allowOverdelivery = v),
+                title: const Text('Mehrlieferung zulassen?'),
+                subtitle: const Text(
+                  'Bucht auch Mengen über den offenen Rest hinaus. Die '
+                  'Abweichung erscheint im Wareneingangs-Protokoll.',
                 ),
               ),
             ],

@@ -3879,7 +3879,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       if (index < 0 || index >= before.items.length) continue;
       final line = entry.value;
       final item = before.items[index];
-      final effectiveQty = line.quantity.clamp(0, item.outstandingQuantity);
+      final effectiveQty = effectiveReceiptQuantity(line, item); // WW-7: geteilter Clamp
       if (effectiveQty <= 0) continue;
       final productId = item.productId;
       if (productId == null || productId.isEmpty) continue;
@@ -4745,10 +4745,9 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     for (var i = 0; i < order.items.length; i++) {
       final item = order.items[i];
       final line = receivedByItemIndex[i];
-      final qty = (line?.quantity ?? 0).clamp(
-        0,
-        item.outstandingQuantity,
-      );
+      final qty = line == null // WW-7: geteilter Clamp (Überlieferung via allowOverdelivery)
+          ? 0
+          : effectiveReceiptQuantity(line, item);
       if (qty > 0) {
         updatedItems.add(
           // Ist-EK (WW-6) nur setzen, wenn erfasst — sonst bleibt der bestellte
