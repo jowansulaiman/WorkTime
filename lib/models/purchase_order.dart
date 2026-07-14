@@ -61,6 +61,38 @@ extension PurchaseOrderStatusX on PurchaseOrderStatus {
       };
 }
 
+/// **WW-6:** Übergabetyp für den geführten Wareneingang gegen eine Bestellung.
+///
+/// Reines DTO (NICHT persistiert): trägt pro Bestellposition die zusätzlich
+/// gelieferte Menge und – optional – den tatsächlichen Ist-Einkaufspreis, das
+/// Mindesthaltbarkeitsdatum und eine Chargen-/Losnummer. Die Buchung
+/// (`receivePurchaseOrder` + Chargen-/Preis-Nachlauf) macht der Provider.
+class PurchaseReceiptLine {
+  const PurchaseReceiptLine({
+    required this.quantity,
+    this.receivedUnitPriceCents,
+    this.expiryDate,
+    this.batchNote,
+  });
+
+  /// Zusätzlich gelieferte Menge (wird beim Buchen auf den offenen Rest geklemmt).
+  final int quantity;
+
+  /// Tatsächlicher Einkaufspreis der Lieferung in Cent (Ist-EK). `null` = kein
+  /// abweichender Preis erfasst (dann bleibt der bestellte Preis maßgeblich).
+  final int? receivedUnitPriceCents;
+
+  /// Mindesthaltbarkeitsdatum der Lieferung (optional — nur Ware mit MHD).
+  final DateTime? expiryDate;
+
+  /// Chargen-/Losnummer (optional, landet in `ProductBatch.note`).
+  final String? batchNote;
+
+  /// Ob aus dieser Position eine Warencharge angelegt wird (nur mit MHD — eine
+  /// Charge ohne MHD ist nicht speicherbar, analog `showGoodsReceiptSheet`).
+  bool get hasBatch => expiryDate != null;
+}
+
 /// Eine Position innerhalb einer Bestellung (eingebettet, kein eigenes Dokument).
 class PurchaseOrderItem {
   const PurchaseOrderItem({
@@ -71,6 +103,7 @@ class PurchaseOrderItem {
     required this.quantityOrdered,
     this.quantityReceived = 0,
     this.unitPriceCents,
+    this.receivedUnitPriceCents,
     this.taxRatePercent,
   });
 
@@ -84,6 +117,11 @@ class PurchaseOrderItem {
   /// Einzelpreis in Cent — als **Netto**-Einkaufspreis interpretiert
   /// (B2B-Konvention: Lieferantenrechnungen weisen netto + USt getrennt aus).
   final int? unitPriceCents;
+
+  /// **WW-6:** Tatsächlich gelieferter Einkaufspreis (Ist-EK) in Cent, beim
+  /// Wareneingang erfasst. `null` = kein abweichender Preis erfasst. Der
+  /// Wareneinsatz ([deliveredTotalCents]) bevorzugt diesen vor [unitPriceCents].
+  final int? receivedUnitPriceCents;
 
   /// **Kassen-Modul M6 — USt-Satz der Position** in ganzen Prozent (7/19),
   /// `null` = ohne ausgewiesene Steuer (dann netto = brutto). Macht die
@@ -143,6 +181,8 @@ class PurchaseOrderItem {
           parse.toInt(map['quantityReceived'] ?? map['quantity_received']) ?? 0,
       unitPriceCents:
           parse.toInt(map['unitPriceCents'] ?? map['unit_price_cents']),
+      receivedUnitPriceCents: parse.toInt(
+          map['receivedUnitPriceCents'] ?? map['received_unit_price_cents']),
       taxRatePercent:
           parse.toInt(map['taxRatePercent'] ?? map['tax_rate_percent']),
     );
@@ -157,6 +197,7 @@ class PurchaseOrderItem {
       'quantityOrdered': quantityOrdered,
       'quantityReceived': quantityReceived,
       'unitPriceCents': unitPriceCents,
+      'receivedUnitPriceCents': receivedUnitPriceCents,
       'taxRatePercent': taxRatePercent,
     };
   }
@@ -170,6 +211,7 @@ class PurchaseOrderItem {
       'quantity_ordered': quantityOrdered,
       'quantity_received': quantityReceived,
       'unit_price_cents': unitPriceCents,
+      'received_unit_price_cents': receivedUnitPriceCents,
       'tax_rate_percent': taxRatePercent,
     };
   }
@@ -184,6 +226,8 @@ class PurchaseOrderItem {
     int? quantityReceived,
     int? unitPriceCents,
     bool clearUnitPrice = false,
+    int? receivedUnitPriceCents,
+    bool clearReceivedUnitPrice = false,
     int? taxRatePercent,
     bool clearTaxRate = false,
   }) {
@@ -198,6 +242,9 @@ class PurchaseOrderItem {
       quantityReceived: quantityReceived ?? this.quantityReceived,
       unitPriceCents:
           clearUnitPrice ? null : (unitPriceCents ?? this.unitPriceCents),
+      receivedUnitPriceCents: clearReceivedUnitPrice
+          ? null
+          : (receivedUnitPriceCents ?? this.receivedUnitPriceCents),
       taxRatePercent:
           clearTaxRate ? null : (taxRatePercent ?? this.taxRatePercent),
     );
@@ -225,6 +272,7 @@ class PurchaseOrder {
     this.status = PurchaseOrderStatus.draft,
     this.items = const [],
     this.notes,
+    this.deliveryNoteNumber,
     this.orderedAt,
     this.expectedAt,
     this.receivedAt,
@@ -247,6 +295,10 @@ class PurchaseOrder {
   final PurchaseOrderStatus status;
   final List<PurchaseOrderItem> items;
   final String? notes;
+
+  /// **WW-6:** Lieferschein-Nummer der zuletzt gebuchten Lieferung (optional,
+  /// vom geführten Wareneingang erfasst).
+  final String? deliveryNoteNumber;
   final DateTime? orderedAt;
   final DateTime? expectedAt;
   final DateTime? receivedAt;
@@ -269,12 +321,17 @@ class PurchaseOrder {
 
   /// Wert der tatsaechlich gelieferten Menge in Cent.
   ///
-  /// Wie [totalCents] verwendet der Getter den erfassten Einzelpreis direkt;
-  /// eine gegebenenfalls enthaltene USt wird hier nicht umgerechnet.
+  /// **WW-6:** Bevorzugt den beim Wareneingang erfassten Ist-EK
+  /// ([PurchaseOrderItem.receivedUnitPriceCents]), fällt sonst auf den
+  /// bestellten [PurchaseOrderItem.unitPriceCents] zurück. Wie [totalCents]
+  /// verwendet der Getter den Einzelpreis direkt; eine gegebenenfalls
+  /// enthaltene USt wird hier nicht umgerechnet.
   int get deliveredTotalCents => items.fold(
         0,
         (total, item) =>
-            total + (item.quantityReceived * (item.unitPriceCents ?? 0)),
+            total +
+            (item.quantityReceived *
+                (item.receivedUnitPriceCents ?? item.unitPriceCents ?? 0)),
       );
 
   /// Netto-Gesamtsumme in Cent. [priceIncludesVat] = Org-Schalter §3.4.
@@ -345,6 +402,7 @@ class PurchaseOrder {
       status: PurchaseOrderStatusX.fromValue(map['status']?.toString()),
       items: _itemsFromList(map['items']),
       notes: map['notes'] as String?,
+      deliveryNoteNumber: map['deliveryNoteNumber'] as String?,
       orderedAt: FirestoreDateParser.readDate(map['orderedAt']),
       expectedAt: FirestoreDateParser.readDate(map['expectedAt']),
       receivedAt: FirestoreDateParser.readDate(map['receivedAt']),
@@ -368,6 +426,7 @@ class PurchaseOrder {
       status: PurchaseOrderStatusX.fromValue(map['status']?.toString()),
       items: _itemsFromList(map['items']),
       notes: map['notes'] as String?,
+      deliveryNoteNumber: map['delivery_note_number'] as String?,
       orderedAt: FirestoreDateParser.readLocalDate(map['ordered_at']),
       expectedAt: FirestoreDateParser.readLocalDate(map['expected_at']),
       receivedAt: FirestoreDateParser.readLocalDate(map['received_at']),
@@ -391,6 +450,7 @@ class PurchaseOrder {
       'items': items.map((item) => item.toFirestoreMap()).toList(),
       'totalCents': totalCents,
       'notes': _trimmedOrNull(notes),
+      'deliveryNoteNumber': _trimmedOrNull(deliveryNoteNumber),
       'orderedAt': _timestampOrNull(orderedAt),
       'expectedAt': _timestampOrNull(expectedAt),
       'receivedAt': _timestampOrNull(receivedAt),
@@ -413,6 +473,7 @@ class PurchaseOrder {
       'status': status.value,
       'items': items.map((item) => item.toMap()).toList(),
       'notes': notes,
+      'delivery_note_number': deliveryNoteNumber,
       'ordered_at': orderedAt?.toIso8601String(),
       'expected_at': expectedAt?.toIso8601String(),
       'received_at': receivedAt?.toIso8601String(),
@@ -435,6 +496,8 @@ class PurchaseOrder {
     PurchaseOrderStatus? status,
     List<PurchaseOrderItem>? items,
     String? notes,
+    String? deliveryNoteNumber,
+    bool clearDeliveryNoteNumber = false,
     DateTime? orderedAt,
     DateTime? expectedAt,
     DateTime? receivedAt,
@@ -463,6 +526,9 @@ class PurchaseOrder {
       status: status ?? this.status,
       items: items ?? this.items,
       notes: clearNotes ? null : (notes ?? this.notes),
+      deliveryNoteNumber: clearDeliveryNoteNumber
+          ? null
+          : (deliveryNoteNumber ?? this.deliveryNoteNumber),
       orderedAt: clearOrderedAt ? null : (orderedAt ?? this.orderedAt),
       expectedAt: clearExpectedAt ? null : (expectedAt ?? this.expectedAt),
       receivedAt: clearReceivedAt ? null : (receivedAt ?? this.receivedAt),

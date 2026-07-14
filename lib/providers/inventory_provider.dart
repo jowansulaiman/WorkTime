@@ -48,6 +48,23 @@ import '../services/database_service.dart';
 import '../services/firestore_service.dart';
 import 'audit_sink.dart';
 
+/// **WW-6:** In-Memory-Merker für eine Warencharge, deren Anlage NACH einer
+/// erfolgreichen Bestandsbuchung (Wareneingang) fehlgeschlagen ist. Der Bestand
+/// ist dann bereits gebucht, nur die Charge fehlt. Das Bestell-Detail bietet
+/// „MHD/Charge nachtragen" an; der Retry ist dank deterministischer Batch-ID
+/// (`po-<orderId>-<itemIndex>`) idempotent und legt genau eine Charge an.
+class PendingReceiptBatch {
+  const PendingReceiptBatch({
+    required this.orderId,
+    required this.itemIndex,
+    required this.batch,
+  });
+
+  final String orderId;
+  final int itemIndex;
+  final ProductBatch batch;
+}
+
 /// Verwaltet die Warenwirtschaft: Lieferanten, Artikel, Bestellungen und
 /// Bestandsbewegungen einer Organisation.
 ///
@@ -101,6 +118,11 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   List<DeliveryAdvice> _advices = [];
   List<StockMovement> _movements = [];
   List<PriceHistoryEntry> _priceHistory = [];
+
+  /// **WW-6:** Chargen, deren Anlage nach einem Wareneingang fehlgeschlagen ist
+  /// (Bestand gebucht, Charge offen). In-Memory (überlebt die App-Sitzung), je
+  /// Bestell-Detail nachtragbar.
+  final List<PendingReceiptBatch> _pendingBatches = [];
   List<CustomerOrder> _customerOrders = [];
   List<SiteOrderList> _orderCarts = [];
   List<SiteOrderList> _weeklyLists = [];
@@ -1108,6 +1130,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _advices = [];
     _movements = [];
     _priceHistory = [];
+    _pendingBatches.clear();
     _customerOrders = [];
     _orderCarts = [];
     _weeklyLists = [];
@@ -3752,19 +3775,27 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     );
   }
 
-  /// Bucht den Wareneingang fuer eine Bestellung.
-  /// [receivedByItemIndex]: Positionsindex -> jetzt zusaetzlich gelieferte Menge.
+  /// Bucht den Wareneingang fuer eine Bestellung (**WW-6:** geführter Eingang).
+  ///
+  /// [receivedByItemIndex]: Positionsindex -> [PurchaseReceiptLine] (zusätzlich
+  /// gelieferte Menge + optional Ist-EK/MHD/Charge). [deliveryNoteNumber] wird
+  /// an die Bestellung geschrieben. Nach erfolgreicher Bestandsbuchung werden
+  /// im Nachlauf (a) bei [updatePurchasePrice] abweichende Ist-EK als
+  /// Artikel-Einkaufspreis übernommen (mit Preis-Historie) und (b) Chargen aus
+  /// erfassten MHD angelegt (deterministische ID, Teilfehler → Nachtrag-Merker).
   Future<void> receiveOrder({
     required String orderId,
-    required Map<int, int> receivedByItemIndex,
+    required Map<int, PurchaseReceiptLine> receivedByItemIndex,
+    String? deliveryNoteNumber,
+    bool updatePurchasePrice = false,
   }) async {
     final orgId = _orgId;
     if (orgId == null) {
       return;
     }
     final mutationId = _uuid.v4();
-    final receivedTotal =
-        receivedByItemIndex.values.fold<int>(0, (sum, qty) => sum + qty);
+    final receivedTotal = receivedByItemIndex.values
+        .fold<int>(0, (sum, line) => sum + line.quantity);
     final auditSummary = 'Wareneingang gebucht ($receivedTotal Einheiten)';
     // Wareneinsatz-Buchung (H-A2): vorab prüfen, ob dieser Wareneingang die
     // Bestellung vollständig macht (Übergang → geliefert). Aus dem Vor-Zustand
@@ -3794,6 +3825,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
             orgId: orgId,
             orderId: orderId,
             receivedByItemIndex: receivedByItemIndex,
+            deliveryNoteNumber: deliveryNoteNumber,
             createdByUid: _currentUser?.uid,
             clientMutationId: mutationId,
           ),
@@ -3804,10 +3836,12 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
         entityId: orderId,
         summary: auditSummary,
       );
+      await _applyReceiptSideEffects(
+        orderId, before, receivedByItemIndex, updatePurchasePrice);
       await maybeBook();
       return;
     }
-    _applyLocalReceipt(orderId, receivedByItemIndex);
+    _applyLocalReceipt(orderId, receivedByItemIndex, deliveryNoteNumber);
     await _persistOrders();
     await _persistProducts();
     await _persistMovements();
@@ -3818,7 +3852,113 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       summary: auditSummary,
     );
     _safeNotify();
+    await _applyReceiptSideEffects(
+        orderId, before, receivedByItemIndex, updatePurchasePrice);
     await maybeBook();
+  }
+
+  /// **WW-6:** Nachlauf einer erfolgreichen Bestandsbuchung — mode-unabhängig:
+  /// übernimmt (bei Opt-in) abweichende Ist-EK als Artikel-Einkaufspreis (mit
+  /// Preis-Historie über die bestehende Strecke) und legt Chargen aus erfassten
+  /// MHD an. Ein Fehlschlag der Chargen-Anlage wird als Nachtrag-Merker gehalten
+  /// (Bestand bleibt gebucht), der Retry ist über die deterministische Batch-ID
+  /// idempotent. [before] = Bestellzustand VOR dem Eingang (stabile Positions-
+  /// Indizes, offene Restmenge für den Mengen-Clamp).
+  Future<void> _applyReceiptSideEffects(
+    String orderId,
+    PurchaseOrder? before,
+    Map<int, PurchaseReceiptLine> lines,
+    bool updatePurchasePrice,
+  ) async {
+    if (before == null) return;
+    final orgId = _orgId;
+    if (orgId == null) return;
+    var pendingChanged = false;
+    for (final entry in lines.entries) {
+      final index = entry.key;
+      if (index < 0 || index >= before.items.length) continue;
+      final line = entry.value;
+      final item = before.items[index];
+      final effectiveQty = line.quantity.clamp(0, item.outstandingQuantity);
+      if (effectiveQty <= 0) continue;
+      final productId = item.productId;
+      if (productId == null || productId.isEmpty) continue;
+
+      // (a) Ist-EK → Artikel-Einkaufspreis (nur bei Opt-in + echter Abweichung).
+      if (updatePurchasePrice) {
+        final ek = line.receivedUnitPriceCents;
+        final product = productById(productId);
+        if (ek != null && product != null && product.purchasePriceCents != ek) {
+          try {
+            await updateProductPrices(product, newPurchaseCents: ek);
+          } catch (error) {
+            // Preis-Update ist unkritisch — der Bestand bleibt gebucht.
+            AppLogger.warning('Ist-EK-Übernahme fehlgeschlagen', error: error);
+          }
+        }
+      }
+
+      // (b) MHD/Charge → deterministische Charge (Teilfehler → Nachtrag-Merker).
+      if (line.expiryDate != null) {
+        final batch = ProductBatch(
+          id: 'po-$orderId-$index',
+          orgId: orgId,
+          siteId: before.siteId,
+          productId: productId,
+          productName: item.name,
+          expiryDate: ProductBatch.normalizeDay(line.expiryDate!),
+          quantity: effectiveQty,
+          note: line.batchNote,
+        );
+        final removed = _pendingBatches
+                .indexWhere((p) => p.orderId == orderId && p.itemIndex == index) >=
+            0;
+        _pendingBatches.removeWhere(
+          (p) => p.orderId == orderId && p.itemIndex == index,
+        );
+        pendingChanged = pendingChanged || removed;
+        try {
+          await saveBatch(batch);
+        } catch (error) {
+          AppLogger.warning('Chargen-Anlage nach Wareneingang fehlgeschlagen',
+              error: error);
+          _pendingBatches.add(PendingReceiptBatch(
+            orderId: orderId,
+            itemIndex: index,
+            batch: batch,
+          ));
+          pendingChanged = true;
+        }
+      }
+    }
+    if (pendingChanged) _safeNotify();
+  }
+
+  /// **WW-6:** Offene Chargen-Nachträge einer Bestellung (Bestand gebucht, MHD/
+  /// Charge fehlt noch). Speist das „MHD/Charge nachtragen"-Angebot im Detail.
+  List<PendingReceiptBatch> pendingReceiptBatchesForOrder(String orderId) =>
+      _pendingBatches
+          .where((p) => p.orderId == orderId)
+          .toList(growable: false);
+
+  /// **WW-6:** Wiederholt fehlgeschlagene Chargen-Anlagen einer Bestellung.
+  /// Dank deterministischer Batch-ID (`po-<orderId>-<index>`) legt der Retry
+  /// genau eine Charge je Position an; erfolgreiche Versuche verschwinden aus
+  /// der Nachtrag-Liste.
+  Future<void> retryPendingReceiptBatches(String orderId) async {
+    final pending =
+        _pendingBatches.where((p) => p.orderId == orderId).toList();
+    if (pending.isEmpty) return;
+    for (final p in pending) {
+      try {
+        await saveBatch(p.batch);
+        _pendingBatches.remove(p);
+      } catch (error) {
+        // Bleibt in der Nachtrag-Liste — spätere Wiederholung möglich.
+        AppLogger.warning('Chargen-Nachtrag fehlgeschlagen', error: error);
+      }
+    }
+    _safeNotify();
   }
 
   PurchaseOrder? _purchaseOrderForId(String? id) {
@@ -4585,7 +4725,11 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     ];
   }
 
-  void _applyLocalReceipt(String orderId, Map<int, int> receivedByItemIndex) {
+  void _applyLocalReceipt(
+    String orderId,
+    Map<int, PurchaseReceiptLine> receivedByItemIndex,
+    String? deliveryNoteNumber,
+  ) {
     final orderIndex = _orders.indexWhere((order) => order.id == orderId);
     if (orderIndex < 0) {
       return;
@@ -4600,13 +4744,19 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     final updatedItems = <PurchaseOrderItem>[];
     for (var i = 0; i < order.items.length; i++) {
       final item = order.items[i];
-      final qty = (receivedByItemIndex[i] ?? 0).clamp(
+      final line = receivedByItemIndex[i];
+      final qty = (line?.quantity ?? 0).clamp(
         0,
         item.outstandingQuantity,
       );
       if (qty > 0) {
         updatedItems.add(
-          item.copyWith(quantityReceived: item.quantityReceived + qty),
+          // Ist-EK (WW-6) nur setzen, wenn erfasst — sonst bleibt der bestellte
+          // Preis maßgeblich (Cloud-lokal-Parität mit dem Repo-Transaktionspfad).
+          item.copyWith(
+            quantityReceived: item.quantityReceived + qty,
+            receivedUnitPriceCents: line?.receivedUnitPriceCents,
+          ),
         );
         final productId = item.productId;
         if (productId != null && productId.isNotEmpty) {
@@ -4624,8 +4774,12 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     }
     final updatedOrder = order.copyWith(items: updatedItems);
     final newStatus = updatedOrder.deriveReceiptStatus();
+    final trimmedNote = deliveryNoteNumber?.trim();
     _orders[orderIndex] = updatedOrder.copyWith(
       status: newStatus,
+      // Leere Lieferschein-Nr. überschreibt eine bestehende nicht (null = behalten).
+      deliveryNoteNumber:
+          (trimmedNote != null && trimmedNote.isNotEmpty) ? trimmedNote : null,
       receivedAt:
           newStatus == PurchaseOrderStatus.received
           ? (order.receivedAt ?? DateTime.now())

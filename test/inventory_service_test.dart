@@ -163,7 +163,7 @@ void main() {
       await service.receivePurchaseOrder(
         orgId: orgId,
         orderId: orderId,
-        receivedByItemIndex: {0: 20},
+        receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 20)},
       );
 
       var product = await firestore
@@ -182,7 +182,7 @@ void main() {
       await service.receivePurchaseOrder(
         orgId: orgId,
         orderId: orderId,
-        receivedByItemIndex: {0: 30},
+        receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 30)},
       );
 
       product = await firestore
@@ -228,7 +228,7 @@ void main() {
       await service.receivePurchaseOrder(
         orgId: orgId,
         orderId: orderId,
-        receivedByItemIndex: {0: 999},
+        receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 999)},
       );
 
       final product = await firestore
@@ -265,7 +265,7 @@ void main() {
       await service.receivePurchaseOrder(
         orgId: orgId,
         orderId: orderId,
-        receivedByItemIndex: {0: 4},
+        receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 4)},
       );
 
       final closed = await service.closePurchaseOrderRemainder(
@@ -346,7 +346,7 @@ void main() {
       await service.receivePurchaseOrder(
         orgId: orgId,
         orderId: orderId,
-        receivedByItemIndex: {0: 4},
+        receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 4)},
       );
       await service.closePurchaseOrderRemainder(
         orgId: orgId,
@@ -358,7 +358,7 @@ void main() {
         service.receivePurchaseOrder(
           orgId: orgId,
           orderId: orderId,
-          receivedByItemIndex: {0: 6},
+          receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 6)},
         ),
         throwsA(
           isA<StateError>().having(

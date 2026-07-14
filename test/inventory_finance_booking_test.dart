@@ -132,7 +132,7 @@ void main() {
 
     await inventory.receiveOrder(
       orderId: id,
-      receivedByItemIndex: const {0: 40},
+      receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 40)},
     );
     expect(finance.journalEntries, isEmpty);
 
@@ -162,7 +162,7 @@ void main() {
 
     await inventory.receiveOrder(
       orderId: id,
-      receivedByItemIndex: const {0: 4},
+      receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 4)},
     );
     await inventory.closePurchaseOrderRemainder(
       orderId: id,

@@ -2776,7 +2776,8 @@ class FirestoreService {
   Future<void> receivePurchaseOrder({
     required String orgId,
     required String orderId,
-    required Map<int, int> receivedByItemIndex,
+    required Map<int, PurchaseReceiptLine> receivedByItemIndex,
+    String? deliveryNoteNumber,
     String? createdByUid,
     String? clientMutationId,
   }) =>
@@ -2784,6 +2785,7 @@ class FirestoreService {
         orgId: orgId,
         orderId: orderId,
         receivedByItemIndex: receivedByItemIndex,
+        deliveryNoteNumber: deliveryNoteNumber,
         createdByUid: createdByUid,
         clientMutationId: clientMutationId,
       );

@@ -262,10 +262,17 @@ abstract interface class InventoryRepository {
   });
 
   /// Bucht den Wareneingang fuer eine Bestellung atomar.
+  ///
+  /// **WW-6:** [receivedByItemIndex] trägt je Positionsindex eine
+  /// [PurchaseReceiptLine] (Menge + optional Ist-EK/MHD/Charge); die Menge wird
+  /// auf den offenen Rest geklemmt. Der Ist-EK landet an der Position, die
+  /// [deliveryNoteNumber] an der Bestellung. Chargen legt der Provider im
+  /// Nachlauf an (nicht Teil der atomaren Bestandstransaktion).
   Future<void> receivePurchaseOrder({
     required String orgId,
     required String orderId,
-    required Map<int, int> receivedByItemIndex,
+    required Map<int, PurchaseReceiptLine> receivedByItemIndex,
+    String? deliveryNoteNumber,
     String? createdByUid,
     String? clientMutationId,
   });

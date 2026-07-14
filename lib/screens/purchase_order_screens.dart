@@ -13,6 +13,7 @@ import '../services/export_service.dart';
 import '../theme/theme_extensions.dart';
 import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/purchase_receipt_sheet.dart';
 import 'inventory_screen.dart';
 
 final DateFormat _dateFormat = DateFormat('dd.MM.yyyy', 'de_DE');
@@ -703,6 +704,37 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ),
+                // WW-6: nach gebuchtem Bestand offener MHD/Charge-Nachtrag.
+                if (canManage &&
+                    order.id != null &&
+                    inventory
+                        .pendingReceiptBatchesForOrder(order.id!)
+                        .isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Card(
+                    margin: EdgeInsets.zero,
+                    color: Theme.of(context).appColors.warningContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          Icon(Icons.event_note_outlined,
+                              color: Theme.of(context).appColors.warning),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text('MHD/Charge einer Lieferung konnte '
+                                'nicht gespeichert werden.'),
+                          ),
+                          TextButton(
+                            onPressed: () =>
+                                _retryPendingBatches(context, inventory, order.id!),
+                            child: const Text('Nachtragen'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Text(
                   'Positionen',
@@ -839,25 +871,47 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
     InventoryProvider inventory,
     PurchaseOrder order,
   ) async {
-    final result = await showDialog<Map<int, int>>(
-      context: context,
-      builder: (_) => _ReceiveDialog(order: order),
-    );
-    if (result != null && result.isNotEmpty && order.id != null) {
-      try {
-        await inventory.receiveOrder(
-          orderId: order.id!,
-          receivedByItemIndex: result,
-        );
-        if (context.mounted) {
-          _toast(context, 'Wareneingang gebucht – Bestaende aktualisiert.');
-        }
-      } catch (error) {
-        if (context.mounted) {
-          _toast(context, 'Fehler: $error');
-        }
+    final result = await showPurchaseReceiptSheet(context, order: order);
+    if (result == null || result.lines.isEmpty || order.id == null) {
+      return;
+    }
+    try {
+      await inventory.receiveOrder(
+        orderId: order.id!,
+        receivedByItemIndex: result.lines,
+        deliveryNoteNumber: result.deliveryNoteNumber,
+        updatePurchasePrice: result.updatePurchasePrice,
+      );
+      if (!context.mounted) return;
+      final pending = inventory.pendingReceiptBatchesForOrder(order.id!);
+      _toast(
+        context,
+        pending.isEmpty
+            ? 'Wareneingang gebucht – Bestaende aktualisiert.'
+            : 'Bestand gebucht – MHD/Charge konnte nicht gespeichert werden '
+                '(nachtragbar).',
+      );
+    } catch (error) {
+      if (context.mounted) {
+        _toast(context, 'Fehler: $error');
       }
     }
+  }
+
+  Future<void> _retryPendingBatches(
+    BuildContext context,
+    InventoryProvider inventory,
+    String orderId,
+  ) async {
+    await inventory.retryPendingReceiptBatches(orderId);
+    if (!context.mounted) return;
+    final remaining = inventory.pendingReceiptBatchesForOrder(orderId);
+    _toast(
+      context,
+      remaining.isEmpty
+          ? 'MHD/Charge nachgetragen.'
+          : 'Nachtragen fehlgeschlagen – bitte später erneut versuchen.',
+    );
   }
 
   void _copyOrderText(

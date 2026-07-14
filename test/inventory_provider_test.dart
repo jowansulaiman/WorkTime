@@ -316,7 +316,8 @@ class _OfflineInventoryRepository implements InventoryRepository {
   Future<void> receivePurchaseOrder({
     required String orgId,
     required String orderId,
-    required Map<int, int> receivedByItemIndex,
+    required Map<int, PurchaseReceiptLine> receivedByItemIndex,
+    String? deliveryNoteNumber,
     String? createdByUid,
     String? clientMutationId,
   }) =>
@@ -324,6 +325,7 @@ class _OfflineInventoryRepository implements InventoryRepository {
         orgId: orgId,
         orderId: orderId,
         receivedByItemIndex: receivedByItemIndex,
+        deliveryNoteNumber: deliveryNoteNumber,
         createdByUid: createdByUid,
         clientMutationId: clientMutationId,
       );
@@ -724,7 +726,7 @@ void main() {
       // 999 angefragt, aber nur 5 offen -> auf 5 begrenzt.
       await provider.receiveOrder(
         orderId: orderId,
-        receivedByItemIndex: const {0: 999},
+        receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 999)},
       );
 
       final order = provider.purchaseOrders.single;
@@ -770,7 +772,7 @@ void main() {
 
         await provider.receiveOrder(
           orderId: orderId,
-          receivedByItemIndex: const {0: 4},
+          receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 4)},
         );
         await provider.closePurchaseOrderRemainder(
           orderId: orderId,
@@ -790,7 +792,7 @@ void main() {
         await expectLater(
           provider.receiveOrder(
             orderId: orderId,
-            receivedByItemIndex: const {0: 6},
+            receivedByItemIndex: const {0: PurchaseReceiptLine(quantity: 6)},
           ),
           throwsA(isA<StateError>()),
         );

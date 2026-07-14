@@ -999,7 +999,8 @@ class FirestoreInventoryRepository implements InventoryRepository {
   Future<void> receivePurchaseOrder({
     required String orgId,
     required String orderId,
-    required Map<int, int> receivedByItemIndex,
+    required Map<int, PurchaseReceiptLine> receivedByItemIndex,
+    String? deliveryNoteNumber,
     String? createdByUid,
     String? clientMutationId,
   }) async {
@@ -1027,7 +1028,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
           continue;
         }
         final item = order.items[index];
-        final qty = entry.value.clamp(0, item.outstandingQuantity);
+        final qty = entry.value.quantity.clamp(0, item.outstandingQuantity);
         if (qty <= 0) {
           continue;
         }
@@ -1107,24 +1108,31 @@ class FirestoreInventoryRepository implements InventoryRepository {
         );
       }
 
-      // Gelieferte Mengen in den Positionen fortschreiben.
+      // Gelieferte Mengen + Ist-EK (WW-6) in den Positionen fortschreiben.
       final updatedItems = <PurchaseOrderItem>[];
       for (var i = 0; i < order.items.length; i++) {
         final item = order.items[i];
         final add = effective[i] ?? 0;
-        updatedItems.add(
-          add > 0
-              ? item.copyWith(quantityReceived: item.quantityReceived + add)
-              : item,
-        );
+        if (add > 0) {
+          // Ist-EK nur setzen, wenn erfasst — sonst bleibt der bestellte Preis.
+          updatedItems.add(item.copyWith(
+            quantityReceived: item.quantityReceived + add,
+            receivedUnitPriceCents: receivedByItemIndex[i]?.receivedUnitPriceCents,
+          ));
+        } else {
+          updatedItems.add(item);
+        }
       }
 
       final updatedOrder = order.copyWith(items: updatedItems);
       final newStatus = updatedOrder.deriveReceiptStatus();
+      final trimmedNote = deliveryNoteNumber?.trim();
 
       transaction.set(orderRef, {
         'items': updatedItems.map((item) => item.toFirestoreMap()).toList(),
         'status': newStatus.value,
+        if (trimmedNote != null && trimmedNote.isNotEmpty)
+          'deliveryNoteNumber': trimmedNote,
         if (newStatus == PurchaseOrderStatus.received)
           'receivedAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
