@@ -444,3 +444,36 @@ class InventoryCountSession {
         .toList(growable: false);
   }
 }
+
+/// **WW-9 — Ergebnis eines Abschluss-Versuchs.** Der Abschluss ist nur dann
+/// [completed], wenn KEINE ungelösten Konflikte/Stale-Fälle und KEINE
+/// Buchungsfehler mehr offen sind; sonst bleibt die Session `open` und der
+/// Aufrufer erfährt, was zu klären ist.
+class InventoryCountCompletionResult {
+  const InventoryCountCompletionResult({
+    required this.completed,
+    this.bookedCount = 0,
+    this.unresolvedConflicts = const [],
+    this.staleProductIds = const [],
+    this.failedProductIds = const [],
+  });
+
+  final bool completed;
+  final int bookedCount;
+
+  /// Konflikt-Artikel (mehrere Nutzer, abweichende Menge) ohne Eintrag in
+  /// `resolvedCounts` — der Aufrufer muss die maßgebliche Zählung wählen.
+  final List<String> unresolvedConflicts;
+
+  /// Artikel, deren Bestand sich seit der Zählung verändert hat und für die
+  /// keine Verrechnungs-/Neuzählungs-Entscheidung vorliegt.
+  final List<String> staleProductIds;
+
+  /// Artikel, deren Buchung fehlschlug (Session bleibt offen, wiederholbar).
+  final List<String> failedProductIds;
+
+  bool get hasBlockers =>
+      unresolvedConflicts.isNotEmpty ||
+      staleProductIds.isNotEmpty ||
+      failedProductIds.isNotEmpty;
+}

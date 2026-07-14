@@ -3398,6 +3398,203 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     );
   }
 
+  /// Bestimmt je Artikel das maßgebliche Event: bei Konflikt die in
+  /// [resolvedCounts] gewählte lineId, sonst das neueste Event des Artikels.
+  Map<String, InventoryCountEvent> _authoritativeCounts(
+    String sessionId,
+    Map<String, String> resolvedCounts,
+  ) {
+    final lines = _countLinesBySession[sessionId] ?? const [];
+    final latest = latestCountByProduct(sessionId);
+    final result = <String, InventoryCountEvent>{};
+    for (final productId in latest.keys) {
+      final chosenLineId = resolvedCounts[productId];
+      if (chosenLineId != null) {
+        final chosen = lines.firstWhere(
+          (e) => e.id == chosenLineId,
+          orElse: () => latest[productId]!,
+        );
+        result[productId] = chosen;
+      } else {
+        result[productId] = latest[productId]!;
+      }
+    }
+    return result;
+  }
+
+  /// **WW-9 — Inventur-Abschluss.** Bucht je Artikel den ABSOLUTEN gezählten
+  /// Bestand (maßgebliche Zählung) über [recordStocktake] mit deterministischer
+  /// `clientMutationId='inv-<sessionId>-<productId>'` (nach Teilfehler
+  /// gefahrlos wiederholbar) + `externalRef='inventur:<sessionId>'`.
+  ///
+  /// Sicherheits-Gates VOR der Buchung:
+  /// - **ungelöste Konflikte** (mehrere Nutzer, abweichende Menge, kein
+  ///   [resolvedCounts]-Eintrag) → Abbruch, Session bleibt offen.
+  /// - **Stale** (Bestand hat sich seit `stockAtCount` verändert) ohne Eintrag
+  ///   in [recomputedTargets] → Abbruch (der Nutzer wählt Neuzählung oder
+  ///   „Bewegungen verrechnen" = absolutes Ziel in [recomputedTargets]).
+  ///
+  /// Teilfehler beim Buchen lassen die Session `open` (fehlende Artikel bleiben
+  /// ungebucht). Erst wenn ALLE gebucht sind, friert die `diffSummary` ein und
+  /// die Session wird `completed`.
+  Future<InventoryCountCompletionResult> completeCountSession({
+    required String sessionId,
+    Map<String, String> resolvedCounts = const {},
+    Map<String, int> recomputedTargets = const {},
+  }) async {
+    final session = countSessionById(sessionId);
+    final user = _currentUser;
+    if (session == null || user == null || !session.isOpen) {
+      return const InventoryCountCompletionResult(completed: false);
+    }
+
+    // 1) Konflikte prüfen: jeder Konflikt-Artikel MUSS in resolvedCounts stehen.
+    final conflicts = conflictsFor(sessionId);
+    final unresolved = conflicts.keys
+        .where((productId) => !resolvedCounts.containsKey(productId))
+        .toList();
+    if (unresolved.isNotEmpty) {
+      return InventoryCountCompletionResult(
+        completed: false,
+        unresolvedConflicts: unresolved,
+      );
+    }
+
+    final authoritative = _authoritativeCounts(sessionId, resolvedCounts);
+
+    // 2) Stale prüfen: Bestand seit der Zählung verändert, kein Verrechnungsziel.
+    final stale = <String>[];
+    for (final entry in authoritative.entries) {
+      final product = productById(entry.key);
+      if (product == null) continue;
+      if (product.currentStock != entry.value.stockAtCount &&
+          !recomputedTargets.containsKey(entry.key)) {
+        stale.add(entry.key);
+      }
+    }
+    if (stale.isNotEmpty) {
+      return InventoryCountCompletionResult(
+        completed: false,
+        staleProductIds: stale,
+      );
+    }
+
+    // 3) Sequenziell buchen (je Artikel eigener try/catch).
+    final externalRef = 'inventur:$sessionId';
+    final diffs = <InventoryCountDiff>[];
+    final failed = <String>[];
+    var booked = 0;
+    for (final entry in authoritative.entries) {
+      final productId = entry.key;
+      final event = entry.value;
+      final product = productById(productId);
+      if (product == null) continue;
+      final previousStock = product.currentStock;
+      final target = recomputedTargets[productId] ?? event.countedQuantity;
+      try {
+        await recordStocktake(
+          product: product,
+          countedStock: target,
+          clientMutationId: 'inv-$sessionId-$productId',
+          externalRef: externalRef,
+        );
+        // Maßgebliches Event als gebucht markieren (bookedAt).
+        await _markCountEventBooked(sessionId, event);
+        booked++;
+        if (target != previousStock) {
+          diffs.add(InventoryCountDiff(
+            productId: productId,
+            productName: event.productName,
+            countedQuantity: target,
+            previousStock: previousStock,
+            unitCostCents: product.purchasePriceCents,
+            decision: recomputedTargets.containsKey(productId)
+                ? 'verrechnet'
+                : null,
+          ));
+        }
+      } catch (_) {
+        failed.add(productId);
+      }
+    }
+
+    if (failed.isNotEmpty) {
+      // Teilfehler: Session bleibt offen, Wiederholung bucht dank
+      // deterministischer mutationId nur die Fehlenden.
+      return InventoryCountCompletionResult(
+        completed: false,
+        bookedCount: booked,
+        failedProductIds: failed,
+      );
+    }
+
+    // 4) Abschluss festschreiben.
+    await _saveCountSession(
+      session.copyWith(
+        status: InventoryCountStatus.completed,
+        completedAt: DateTime.now(),
+        completedByUid: user.uid,
+        resolvedCounts: resolvedCounts,
+        diffSummary: diffs,
+        countedProducts: authoritative.length,
+      ),
+      'Inventur „${session.title}" abgeschlossen ($booked Differenz(en) gebucht)',
+      AuditAction.updated,
+    );
+    return InventoryCountCompletionResult(completed: true, bookedCount: booked);
+  }
+
+  /// Markiert das maßgebliche Event als gebucht (`bookedAt`), damit ein
+  /// Wiederholungslauf es nicht erneut anfasst (WW-9 Teilfehler-Semantik).
+  Future<void> _markCountEventBooked(
+    String sessionId,
+    InventoryCountEvent event,
+  ) async {
+    final orgId = _orgId;
+    if (orgId == null || event.id == null || event.isBooked) return;
+    final booked = event.copyWith(bookedAt: DateTime.now());
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'markCountEventBooked',
+          () => _inventory.saveInventoryCountEvent(
+              orgId: orgId, sessionId: sessionId, event: booked),
+        )) {
+      _replaceCountEvent(sessionId, booked);
+      return;
+    }
+    _replaceCountEvent(sessionId, booked);
+    await _persistCountLines(sessionId);
+  }
+
+  void _replaceCountEvent(String sessionId, InventoryCountEvent event) {
+    final lines =
+        List<InventoryCountEvent>.from(_countLinesBySession[sessionId] ?? const []);
+    final index = lines.indexWhere((e) => e.id == event.id);
+    if (index >= 0) {
+      lines[index] = event;
+      _countLinesBySession[sessionId] = lines;
+      _safeNotify();
+    }
+  }
+
+  /// **WW-9 — Movement-Drilldown einer abgeschlossenen Inventur.** Nicht-
+  /// limitierte Range-Query um den Session-Zeitraum, clientseitig auf den
+  /// `externalRef`-Prefix `'inventur:<sessionId>'` gefiltert (index-frei, deckt
+  /// alte Sessions ab). Öffentliche, getestete Methode (statt private Streams).
+  Future<List<StockMovement>> loadInventurMovements(
+      InventoryCountSession session) async {
+    final sessionId = session.id;
+    if (sessionId == null) return const [];
+    final from = session.startedAt.subtract(const Duration(days: 1));
+    final to =
+        (session.completedAt ?? DateTime.now()).add(const Duration(days: 1));
+    final movements = await _fetchMovementsInRange(session.siteId, from, to);
+    final ref = 'inventur:$sessionId';
+    return movements
+        .where((m) => m.externalRef == ref)
+        .toList(growable: false);
+  }
+
   Future<void> adjustStock({
     required String productId,
     required int delta,
@@ -3465,6 +3662,8 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   Future<void> recordStocktake({
     required Product product,
     required int countedStock,
+    String? clientMutationId,
+    String? externalRef,
   }) async {
     final orgId = _orgId;
     final productId = product.id;
@@ -3474,7 +3673,9 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     final productName = productById(productId)?.name ?? product.name;
     final summary =
         'Inventur „$productName": Bestand auf $countedStock gesetzt';
-    final mutationId = _uuid.v4();
+    // WW-9: deterministische Mutation-ID (`inv-<sessionId>-<productId>`) macht
+    // die Abschluss-Buchung nach Teilfehler gefahrlos wiederholbar.
+    final mutationId = clientMutationId ?? _uuid.v4();
     if (_usesFirestore &&
         await _tryFirestore(
           'recordStocktake',
@@ -3485,6 +3686,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
             reason: 'Inventur',
             createdByUid: _currentUser?.uid,
             clientMutationId: mutationId,
+            externalRef: externalRef,
           ),
         )) {
       _audit?.call(
@@ -3505,6 +3707,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       delta: delta,
       type: StockMovementType.stocktake,
       reason: 'Inventur',
+      externalRef: externalRef,
     );
     await _persistProducts();
     await _persistMovements();
@@ -4975,6 +5178,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     required StockMovementType type,
     String? reason,
     String? relatedOrderId,
+    String? externalRef,
   }) {
     final index = _products.indexWhere((product) => product.id == productId);
     if (index < 0) {
@@ -4996,6 +5200,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
         balanceAfter: newStock,
         reason: reason,
         relatedOrderId: relatedOrderId,
+        externalRef: externalRef,
         createdByUid: _currentUser?.uid,
         createdAt: DateTime.now(),
       ),

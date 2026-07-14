@@ -191,6 +191,7 @@ abstract interface class InventoryRepository {
     String? reason,
     String? createdByUid,
     String? clientMutationId,
+    String? externalRef,
   });
 
   /// H10 (Umlagerung): bucht Abgang an der Quelle und Zugang am Ziel in EINER

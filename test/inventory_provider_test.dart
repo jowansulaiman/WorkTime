@@ -229,6 +229,7 @@ class _OfflineInventoryRepository implements InventoryRepository {
     String? reason,
     String? createdByUid,
     String? clientMutationId,
+    String? externalRef,
   }) =>
       _delegate.setProductStock(
         orgId: orgId,
@@ -238,6 +239,7 @@ class _OfflineInventoryRepository implements InventoryRepository {
         reason: reason,
         createdByUid: createdByUid,
         clientMutationId: clientMutationId,
+        externalRef: externalRef,
       );
 
   @override
@@ -1882,6 +1884,159 @@ void main() {
       expect(provider.resumeableSessions(), isEmpty);
       expect(provider.countSessionById(s.id!)!.status,
           InventoryCountStatus.cancelled);
+    });
+  });
+
+  group('Inventur-Abschluss (WW-9)', () {
+    const helfer = AppUserProfile(
+      uid: 'helfer-1',
+      orgId: 'org-1',
+      email: 'helfer@laden.test',
+      role: UserRole.employee,
+      isActive: true,
+      settings: UserSettings(name: 'Helfer'),
+    );
+
+    Future<(InventoryProvider, String)> setup({int stock = 10}) async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveProduct(Product(
+        orgId: 'org-1',
+        siteId: 'site-1',
+        name: 'Cola',
+        currentStock: stock,
+        purchasePriceCents: 80,
+      ));
+      final productId = provider.products.single.id!;
+      return (provider, productId);
+    }
+
+    test('bucht die gezählte Menge absolut + friert diffSummary ein', () async {
+      final (provider, productId) = await setup(stock: 10);
+      final s = (await provider.startCountSession(
+          siteId: 'site-1', title: 'Abschluss'))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: productId,
+        productName: 'Cola',
+        quantity: 7, // Differenz -3
+        stockAtCount: 10,
+      );
+
+      final result = await provider.completeCountSession(sessionId: s.id!);
+
+      expect(result.completed, isTrue);
+      expect(result.bookedCount, 1);
+      expect(provider.productById(productId)!.currentStock, 7);
+      final done = provider.countSessionById(s.id!)!;
+      expect(done.status, InventoryCountStatus.completed);
+      expect(done.diffSummary.single.delta, -3);
+      expect(done.diffSummary.single.valuationDeltaCents, -240); // -3 * 80
+    });
+
+    test('Konflikt blockiert Abschluss, resolvedCounts löst ihn', () async {
+      final (provider, productId) = await setup(stock: 10);
+      final s = (await provider.startCountSession(
+          siteId: 'site-1', title: 'Konflikt'))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: productId,
+        productName: 'Cola',
+        quantity: 8,
+        stockAtCount: 10,
+      );
+      await provider.updateSession(helfer);
+      await provider.loadCountLines(s.id!);
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: productId,
+        productName: 'Cola',
+        quantity: 9,
+        stockAtCount: 10,
+      );
+      await provider.updateSession(user);
+      await provider.loadCountLines(s.id!);
+
+      final blocked = await provider.completeCountSession(sessionId: s.id!);
+      expect(blocked.completed, isFalse);
+      expect(blocked.unresolvedConflicts, contains(productId));
+
+      // maßgebliche Zählung = das Event des Helfers (9) wählen.
+      final helferLine = provider.countLinesFor(s.id!).firstWhere(
+          (e) => e.countedByUid == 'helfer-1');
+      final resolved = await provider.completeCountSession(
+        sessionId: s.id!,
+        resolvedCounts: {productId: helferLine.id!},
+      );
+      expect(resolved.completed, isTrue);
+      expect(provider.productById(productId)!.currentStock, 9);
+    });
+
+    test('Stale blockiert; recomputedTargets bucht das Absolut-Ziel', () async {
+      final (provider, productId) = await setup(stock: 10);
+      final s = (await provider.startCountSession(
+          siteId: 'site-1', title: 'Stale'))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: productId,
+        productName: 'Cola',
+        quantity: 7,
+        stockAtCount: 10,
+      );
+      // Verkauf zwischen Zählung und Abschluss: Bestand 10 -> 8.
+      await provider.adjustStock(productId: productId, delta: -2);
+
+      final blocked = await provider.completeCountSession(sessionId: s.id!);
+      expect(blocked.completed, isFalse);
+      expect(blocked.staleProductIds, contains(productId));
+
+      // „Bewegungen verrechnen": gezählt 7 + Veränderung (-2) = Ziel 5.
+      final resolved = await provider.completeCountSession(
+        sessionId: s.id!,
+        recomputedTargets: {productId: 5},
+      );
+      expect(resolved.completed, isTrue);
+      expect(provider.productById(productId)!.currentStock, 5);
+      expect(provider.countSessionById(s.id!)!.diffSummary.single.decision,
+          'verrechnet');
+    });
+
+    test('loadInventurMovements liefert nur Session-Bewegungen', () async {
+      final (provider, productId) = await setup(stock: 10);
+      // Fremd-Bewegung (nicht Inventur).
+      await provider.adjustStock(productId: productId, delta: 3);
+      final s = (await provider.startCountSession(
+          siteId: 'site-1', title: 'Drilldown'))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: productId,
+        productName: 'Cola',
+        quantity: 20,
+        stockAtCount: 13,
+      );
+      await provider.completeCountSession(sessionId: s.id!);
+
+      final movements = await provider
+          .loadInventurMovements(provider.countSessionById(s.id!)!);
+      expect(movements, hasLength(1));
+      expect(movements.single.externalRef, 'inventur:${s.id}');
+    });
+
+    test('nach Abschluss ist das maßgebliche Event gebucht (bookedAt)',
+        () async {
+      final (provider, productId) = await setup(stock: 10);
+      final s = (await provider.startCountSession(
+          siteId: 'site-1', title: 'Booked'))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: productId,
+        productName: 'Cola',
+        quantity: 4,
+        stockAtCount: 10,
+      );
+      await provider.completeCountSession(sessionId: s.id!);
+
+      expect(provider.countLinesFor(s.id!).single.isBooked, isTrue);
     });
   });
 }

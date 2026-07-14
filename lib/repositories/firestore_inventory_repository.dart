@@ -555,6 +555,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String? reason,
     String? createdByUid,
     String? clientMutationId,
+    String? externalRef,
   }) async {
     final productRef = _productCollection(orgId).doc(productId);
     final movementRef = clientMutationId == null
@@ -601,6 +602,7 @@ class FirestoreInventoryRepository implements InventoryRepository {
           balanceAfter: newStock,
           reason: reason,
           createdByUid: createdByUid,
+          externalRef: externalRef,
         ).toFirestoreMap(),
       });
 
