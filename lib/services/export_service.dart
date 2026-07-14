@@ -18,6 +18,7 @@ import '../models/contact.dart';
 import '../models/contact_details.dart';
 import '../models/finance_models.dart';
 import '../models/customer_order.dart';
+import '../models/inventory_count_session.dart';
 import '../core/urlaub_calculator.dart';
 import '../models/employee_document.dart';
 import '../models/employee_profile.dart';
@@ -832,6 +833,77 @@ class ExportService {
   static String _weekdayShort(int weekday) {
     const weekdays = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
     return weekdays[(weekday - 1).clamp(0, 6)];
+  }
+
+  /// **WW-10 — Inventur-Protokoll als CSV** (UTF-8-BOM + `;`, deutsches Excel).
+  /// Zählliste (maßgebliche Zählung je Artikel + Zähler/Zeitstempel) und die
+  /// eingefrorene, bewertete Differenzliste. **Inhalt IMMER aus persistierten
+  /// Daten** ([session.diffSummary] + [lines]) — nie live neu bewertet, damit
+  /// Preisänderungen nach Abschluss das Archiv nicht verändern.
+  static String buildInventoryCountCsv({
+    required InventoryCountSession session,
+    required List<InventoryCountEvent> lines,
+    bool includeValuation = true,
+  }) {
+    final ts = DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+    final buffer = StringBuffer('﻿');
+    buffer.writeln('Inventur-Protokoll');
+    buffer.writeln('Titel;${_escapeCsv(session.title)}');
+    buffer.writeln('Status;${_escapeCsv(session.status.label)}');
+    buffer.writeln('Begonnen;${_escapeCsv(ts.format(session.startedAt))}'
+        '${session.startedByLabel != null ? ' (${session.startedByLabel})' : ''}');
+    if (session.completedAt != null) {
+      buffer.writeln('Abgeschlossen;${_escapeCsv(ts.format(session.completedAt!))}');
+    }
+
+    // Maßgebliche Zählung je Artikel (neuestes Event).
+    final latest = <String, InventoryCountEvent>{};
+    for (final e in lines) {
+      final prev = latest[e.productId];
+      if (prev == null || e.countedAt.isAfter(prev.countedAt)) {
+        latest[e.productId] = e;
+      }
+    }
+    final counts = latest.values.toList()
+      ..sort((a, b) =>
+          a.productName.toLowerCase().compareTo(b.productName.toLowerCase()));
+
+    buffer.writeln();
+    buffer.writeln('Zählliste');
+    buffer.writeln(['Artikel', 'Gezählt', 'Zähler', 'Zeitpunkt', 'Gebucht']
+        .map(_escapeCsv)
+        .join(';'));
+    for (final e in counts) {
+      buffer.writeln([
+        e.productName,
+        e.countedQuantity.toString(),
+        e.countedByLabel ?? '',
+        ts.format(e.countedAt),
+        e.isBooked ? 'ja' : 'nein',
+      ].map(_escapeCsv).join(';'));
+    }
+
+    buffer.writeln();
+    buffer.writeln('Differenzen');
+    final diffHeader = ['Artikel', 'Gezählt', 'Vorher', 'Delta'];
+    if (includeValuation) diffHeader.addAll(['EK (€)', 'Bewertung (€)']);
+    buffer.writeln(diffHeader.map(_escapeCsv).join(';'));
+    for (final d in session.diffSummary) {
+      final row = <String>[
+        d.productName,
+        d.countedQuantity.toString(),
+        d.previousStock.toString(),
+        (d.delta > 0 ? '+${d.delta}' : d.delta.toString()),
+      ];
+      if (includeValuation) {
+        row.add(d.unitCostCents == null
+            ? ''
+            : (d.unitCostCents! / 100).toStringAsFixed(2));
+        row.add((d.valuationDeltaCents / 100).toStringAsFixed(2));
+      }
+      buffer.writeln(row.map(_escapeCsv).join(';'));
+    }
+    return buffer.toString();
   }
 
   // --- Änderungsprotokoll (Audit) -----------------------------------------
