@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/receipt_deviation.dart';
+import '../models/delivery_advice.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/site_definition.dart';
@@ -14,7 +15,9 @@ import '../services/export_service.dart';
 import '../theme/theme_extensions.dart';
 import '../widgets/action_fab.dart';
 import '../widgets/breadcrumb_app_bar.dart';
+import '../widgets/delivery_advice_sheet.dart';
 import '../widgets/purchase_receipt_sheet.dart';
+import 'delivery_advice_screen.dart';
 import 'inventory_screen.dart';
 
 final DateFormat _dateFormat = DateFormat('dd.MM.yyyy', 'de_DE');
@@ -618,6 +621,14 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
                     child: Text('Stornieren'),
                   ),
                 const PopupMenuItem(
+                  value: 'advice',
+                  child: Text('Avis erfassen'),
+                ),
+                const PopupMenuItem(
+                  value: 'adviceList',
+                  child: Text('Lieferavise…'),
+                ),
+                const PopupMenuItem(
                   value: 'delete',
                   child: Text('Löschen'),
                 ),
@@ -865,6 +876,46 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
     return buffer.toString();
   }
 
+  /// **WW-4 — „Avis erfassen" aus der Bestellung.** Vorbefüllt die Positionen
+  /// aus den offenen Mengen (fallback: bestellte Mengen, falls schon alles
+  /// geliefert) und verknüpft `purchaseOrderId` → späterer Wareneingang gegen
+  /// dieses Avis nutzt den Bestellbezug (WW-7).
+  Future<void> _captureAdvice(
+    BuildContext context,
+    InventoryProvider inventory,
+    PurchaseOrder order,
+  ) async {
+    final prefill = [
+      for (final item in order.items)
+        DeliveryAdviceItem(
+          productId: item.productId,
+          name: item.name,
+          sku: item.sku,
+          unit: item.unit,
+          announcedQuantity: item.outstandingQuantity > 0
+              ? item.outstandingQuantity
+              : item.quantityOrdered,
+        ),
+    ];
+    final advice = await showDeliveryAdviceSheet(
+      context,
+      siteId: order.siteId,
+      siteName: order.siteName,
+      prefillItems: prefill,
+      supplierId: order.supplierId,
+      supplierName: order.supplierName,
+      purchaseOrderId: order.id,
+      suppliers: inventory.suppliers,
+    );
+    if (advice == null || !context.mounted) return;
+    try {
+      await inventory.saveDeliveryAdvice(advice);
+      if (context.mounted) _toast(context, 'Lieferavis gespeichert.');
+    } catch (error) {
+      if (context.mounted) _toast(context, 'Fehler: $error');
+    }
+  }
+
   Future<void> _onMenu(
     BuildContext context,
     InventoryProvider inventory,
@@ -908,6 +959,19 @@ class PurchaseOrderDetailScreen extends StatelessWidget {
         if (context.mounted) {
           _toast(context, 'Bestellung storniert.');
         }
+        break;
+      case 'advice':
+        await _captureAdvice(context, inventory, order);
+        break;
+      case 'adviceList':
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => DeliveryAdviceScreen(
+              siteId: order.siteId,
+              siteName: order.siteName,
+            ),
+          ),
+        );
         break;
       case 'delete':
         final confirmed = await showDialog<bool>(

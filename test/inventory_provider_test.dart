@@ -1626,4 +1626,81 @@ void main() {
       expect(alle, hasLength(3));
     });
   });
+
+  group('Lieferavis CRUD + Statuswechsel (WW-4/WW-7)', () {
+    DeliveryAdvice advice({DeliveryAdviceStatus? status}) => DeliveryAdvice(
+          orgId: 'org-1',
+          siteId: 'site-1',
+          siteName: 'Laden Nord',
+          expectedDate: DeliveryAdvice.normalizeDay(DateTime(2026, 7, 20)),
+          status: status ?? DeliveryAdviceStatus.announced,
+          items: const [
+            DeliveryAdviceItem(name: 'Cola', announcedQuantity: 12),
+          ],
+        );
+
+    test('speichert Avis lokal mit ID und listet es site-gescoped', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveDeliveryAdvice(advice());
+
+      final list = provider.advicesForSite('site-1');
+      expect(list, hasLength(1));
+      expect(list.single.id, isNotNull);
+      expect(list.single.status, DeliveryAdviceStatus.announced);
+      expect(provider.advicesForSite('site-2'), isEmpty);
+    });
+
+    test('markAdviceReceived setzt received + receivedAt', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveDeliveryAdvice(advice());
+      final id = provider.advicesForSite('site-1').single.id!;
+
+      await provider.markAdviceReceived(id);
+
+      final updated = provider.advicesForSite('site-1').single;
+      expect(updated.status, DeliveryAdviceStatus.received);
+      expect(updated.receivedAt, isNotNull);
+    });
+
+    test('markAdviceReceived ist idempotent (kein zweiter Statuswechsel)',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveDeliveryAdvice(advice());
+      final id = provider.advicesForSite('site-1').single.id!;
+      await provider.markAdviceReceived(id);
+      final firstReceivedAt =
+          provider.advicesForSite('site-1').single.receivedAt;
+
+      await provider.markAdviceReceived(id); // no-op
+
+      expect(provider.advicesForSite('site-1').single.receivedAt,
+          firstReceivedAt);
+    });
+
+    test('cancelAdvice setzt cancelled', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveDeliveryAdvice(advice());
+      final id = provider.advicesForSite('site-1').single.id!;
+
+      await provider.cancelAdvice(id);
+
+      expect(provider.advicesForSite('site-1').single.status,
+          DeliveryAdviceStatus.cancelled);
+    });
+
+    test('deleteDeliveryAdvice entfernt das Avis', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      await provider.saveDeliveryAdvice(advice());
+      final id = provider.advicesForSite('site-1').single.id!;
+
+      await provider.deleteDeliveryAdvice(id);
+
+      expect(provider.advicesForSite('site-1'), isEmpty);
+    });
+  });
 }

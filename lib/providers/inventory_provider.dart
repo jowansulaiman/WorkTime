@@ -3088,6 +3088,33 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     );
   }
 
+  /// **WW-7:** markiert ein Lieferavis als eingegangen (Status `received` +
+  /// [DeliveryAdvice.receivedAt]). Delegiert an [saveDeliveryAdvice] (erbt
+  /// Drei-Modi-Muster + Audit). No-op, wenn das Avis unbekannt oder bereits
+  /// eingegangen ist.
+  Future<void> markAdviceReceived(String adviceId) async {
+    final advice = _adviceById(adviceId);
+    if (advice == null ||
+        advice.status == DeliveryAdviceStatus.received) {
+      return;
+    }
+    await saveDeliveryAdvice(advice.copyWith(
+      status: DeliveryAdviceStatus.received,
+      receivedAt: DateTime.now(),
+    ));
+  }
+
+  /// Storniert ein Lieferavis (Status `cancelled`). No-op bei unbekanntem Avis.
+  Future<void> cancelAdvice(String adviceId) async {
+    final advice = _adviceById(adviceId);
+    if (advice == null ||
+        advice.status == DeliveryAdviceStatus.cancelled) {
+      return;
+    }
+    await saveDeliveryAdvice(
+        advice.copyWith(status: DeliveryAdviceStatus.cancelled));
+  }
+
   Future<void> adjustStock({
     required String productId,
     required int delta,

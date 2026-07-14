@@ -108,7 +108,7 @@ Deploy-frei, kleinster Schritt des gesamten Plans.
 - Provider-Getter `expectedDeliveries({day})` clientseitig aus den gestreamten Orders (kein Query, kein Index); Filter-Chip „Erwartet"; Hinweis-Karte „X Lieferungen heute erwartet" im Warenwirtschafts-Kopf.
 - **Dateien:** `purchase_order_screens.dart`, `inventory_screen.dart`, `inventory_provider.dart` · **Aufwand:** S
 
-### WW-4: Lieferavis als eigene Collection `deliveryAdvices` — Status: offen
+### WW-4: Lieferavis als eigene Collection `deliveryAdvices` — Status: ERLEDIGT (13.07.: Backend Model/Provider/Repo/Rules bereits Welle-3; UI 14.07.: Editor-Sheet `delivery_advice_sheet.dart` + Verwaltungs-Screen `delivery_advice_screen.dart` imperativ via Navigator.push, „Avis erfassen"/„Lieferavise…" im Bestell-Detail-Menü mit Vorbefüllung aus offenen Mengen + purchaseOrderId-Bezug; Statuswechsel markAdviceReceived/cancelAdvice + 5 Tests. Rules-Deploy offen.)
 Für Fälle, die `expectedAt` nicht abdeckt (Avis ohne/über mehrere Bestellungen, avisierte Mengen je Position).
 - Neues Model `lib/models/delivery_advice.dart`: `DeliveryAdvice` + eingebettete `DeliveryAdviceItem` + Enum `DeliveryAdviceStatus{announced, received, cancelled}` (`.value` snake_case, `fromValue`-Default, deutsche Labels). `expectedDate` auf 12:00 normalisiert + `expectedDay` 'YYYY-MM-DD' (ProductBatch-Muster). Voll dual serialisiert + `clearX`-Flags; kein Callable-Pfad.
 - Repo `watch/save/deleteDeliveryAdvice` (komplette Org-Collection streamen, Muster `watchPurchaseOrders`); `DatabaseService`-Key `delivery_advices` in `_orgScopedCollectionKeys` (Kopplung #5); Provider-CRUD im Drei-Modi-Muster, `_audit` auf Erfolgs-Pfaden; Getter `advicesExpectedToday` (speist die „heute erwartet"-Karte aus WW-3 mit).
@@ -131,7 +131,8 @@ Ersetzt den schlichten `_ReceiveDialog`; generalisiert das Scanner-MHD/Charge-Mu
 - Hybrid-Parität: `_applyLocalReceipt` schreibt dieselben Felder (Cloud-lokal-Parität testen). `deliveredTotalCents` (WW-2) bevorzugt ab jetzt `receivedUnitPriceCents`, Fallback `unitPriceCents` — Wareneinsatz-Kopplung explizit testen.
 - **Rules:** keine (Allowlists decken alles, verifiziert) · **Aufwand:** L · **Abhängig:** WW-2
 
-### WW-7: Wareneingang Pro II — Übermengen, Abweichungsprotokoll, Eingang gegen Avis — Status: offen
+### WW-7: Wareneingang Pro II — Übermengen, Abweichungsprotokoll, Eingang gegen Avis — Status: ERLEDIGT (14.07., f913285 + Folge-Commit)
+> **Abweichung vom Plan (bewusst):** „Aufnahme ins Bestell-PDF" NICHT umgesetzt — das einzige Bestell-PDF (`generatePurchaseOrderDocument`) ist lieferantenseitig und bewusst OHNE interne EK-/Eingangsdaten; das Abweichungsprotokoll dort würde interne Eingangsdaten an den Lieferanten leaken. Stattdessen In-App-Anzeige (warnfarbene Karte im Bestell-Detail, nur bei echtem Eingang + Abweichung). Ein interner Eingangs-PDF-Export existiert (noch) nicht als Surface.
 - Übermengen: `PurchaseReceiptLine.allowOverdelivery` (UI-Toggle „Mehrlieferung zulassen"); Clamp an BEIDEN Stellen über einen **gemeinsamen pure Helfer** `effectiveReceiptQuantity(...)` in `purchase_order.dart` lockern (beendet die Clamp-Divergenz-Gefahr strukturell). `isFullyReceived` nutzt bereits `>=` → Status/Wareneinsatz tragen Mehrmengen.
 - Abweichungsprotokoll: pure `lib/core/receipt_deviation.dart` — `computeReceiptDeviations(PurchaseOrder)` (bestellt/geliefert/Differenz/EK-Abweichung/closedReason), Anzeige im Bestell-Detail + Aufnahme ins Bestell-PDF (`pdf_service.dart`).
 - Eingang gegen Avis: Avis-Aktion „Wareneingang starten" — mit `purchaseOrderId` → `purchase_receipt_sheet` vorbefüllt; ohne Bezug → freier Eingang über `showGoodsReceiptSheet`; Erfolgspfad setzt Avis auf `received` + Audit. GS1-Vorbefüllung optional.
