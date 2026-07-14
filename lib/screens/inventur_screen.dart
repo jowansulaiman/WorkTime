@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../core/money.dart';
+import '../models/inventory_count_session.dart';
 import '../models/product.dart';
 import '../models/site_definition.dart';
 import '../providers/auth_provider.dart';
@@ -48,9 +52,25 @@ class _InventurScreenState extends State<InventurScreen> {
   /// (Feld geleert) sowie gezählte Artikel ohne Abweichung nach einer Buchung.
   final Set<String> _doneIds = {};
 
+  /// **WW-8:** aktive, persistente Zählsession (optional). `null` = flüchtiger
+  /// Schnell-Zähl-Modus (die Buchung läuft dann über die Differenz-Vorschau).
+  InventoryCountSession? _session;
+
+  /// Debounce-Timer je Artikel für die Session-Persistenz (kein Write pro
+  /// Tastendruck).
+  final Map<String, Timer> _persistTimers = {};
+
+  /// Unterdrückt die Persistenz während die Controller aus einer fortgesetzten
+  /// Session vorbelegt werden (sonst redundante Re-Writes des Ladewerts).
+  bool _suppressPersist = false;
+  bool _completing = false;
+
   @override
   void dispose() {
     _searchController.dispose();
+    for (final timer in _persistTimers.values) {
+      timer.cancel();
+    }
     for (final controller in _countControllers.values) {
       controller.dispose();
     }
@@ -63,12 +83,52 @@ class _InventurScreenState extends State<InventurScreen> {
       controller.addListener(() {
         // Jede neue Eingabe öffnet einen bereits erledigten Artikel wieder.
         _doneIds.remove(productId);
+        _schedulePersist(productId);
         if (mounted) {
           setState(() {});
         }
       });
       return controller;
     });
+  }
+
+  /// **WW-8:** persistiert die eigene Zählung debounced (~600 ms) in die aktive
+  /// Session. No-op im flüchtigen Modus oder während der Session-Vorbelegung.
+  void _schedulePersist(String productId) {
+    final session = _session;
+    if (session == null || _suppressPersist) return;
+    _persistTimers[productId]?.cancel();
+    _persistTimers[productId] =
+        Timer(const Duration(milliseconds: 600), () => _persistNow(productId));
+  }
+
+  Future<void> _persistNow(String productId) async {
+    final session = _session;
+    if (session == null || !mounted) return;
+    final value = _countedValue(productId);
+    if (value == null) return;
+    final inventory = context.read<InventoryProvider>();
+    final product = inventory.productById(productId);
+    if (product == null) return;
+    await inventory.recordCount(
+      sessionId: session.id!,
+      productId: productId,
+      productName: product.name,
+      quantity: value,
+      stockAtCount: product.currentStock,
+    );
+  }
+
+  /// Schreibt alle noch ausstehenden Debounce-Werte sofort (vor dem Abschluss).
+  Future<void> _flushPersists() async {
+    final pending = _persistTimers.keys.toList();
+    for (final timer in _persistTimers.values) {
+      timer.cancel();
+    }
+    _persistTimers.clear();
+    for (final productId in pending) {
+      await _persistNow(productId);
+    }
   }
 
   /// Gezählter Wert eines Artikels oder `null` = nicht gezählt (leeres Feld).
@@ -275,6 +335,252 @@ class _InventurScreenState extends State<InventurScreen> {
     Navigator.of(context).pop();
   }
 
+  // --- Session-Aktionen (WW-8/WW-9) -----------------------------------------
+
+  Future<void> _startSession(String siteId) async {
+    final inventory = context.read<InventoryProvider>();
+    final scopeCount = _scopeProducts(inventory, siteId, '').length;
+    final label = DateFormat('d. MMM y, HH:mm', 'de_DE').format(DateTime.now());
+    final session = await inventory.startCountSession(
+      siteId: siteId,
+      title: 'Inventur $label',
+      categoryFilter: _categoryFilter.isEmpty ? null : _categoryFilter,
+      totalProducts: scopeCount,
+    );
+    if (!mounted || session == null) return;
+    setState(() => _session = session);
+    _toast('Zählung gestartet — Fortschritt wird gespeichert.');
+  }
+
+  Future<void> _resumeSession(InventoryCountSession session) async {
+    final inventory = context.read<InventoryProvider>();
+    await inventory.loadCountLines(session.id!);
+    if (!mounted) return;
+    final latest = inventory.latestCountByProduct(session.id!);
+    _suppressPersist = true;
+    setState(() {
+      _session = session;
+      latest.forEach((productId, event) {
+        _controllerFor(productId).text = event.countedQuantity.toString();
+        _doneIds.remove(productId);
+      });
+    });
+    _suppressPersist = false;
+    _toast('Zählung fortgesetzt (${latest.length} bereits gezählt).');
+  }
+
+  Future<void> _completeSession() async {
+    final session = _session;
+    if (session == null || _completing) return;
+    setState(() => _completing = true);
+    final inventory = context.read<InventoryProvider>();
+    try {
+      await _flushPersists();
+      var resolved = <String, String>{};
+      var targets = <String, int>{};
+      while (true) {
+        final result = await inventory.completeCountSession(
+          sessionId: session.id!,
+          resolvedCounts: resolved,
+          recomputedTargets: targets,
+        );
+        if (result.completed) {
+          if (mounted) {
+            _toast('Inventur abgeschlossen — '
+                '${result.bookedCount} Differenz(en) gebucht.');
+            Navigator.of(context).maybePop();
+          }
+          return;
+        }
+        if (result.unresolvedConflicts.isNotEmpty) {
+          final picked = await _resolveConflicts(
+              inventory, session, result.unresolvedConflicts);
+          if (picked == null) return; // abgebrochen
+          resolved = {...resolved, ...picked};
+          continue;
+        }
+        if (result.staleProductIds.isNotEmpty) {
+          final decision =
+              await _resolveStale(inventory, session, result.staleProductIds);
+          if (decision == null) return;
+          if (decision.isEmpty) {
+            // Neuzählung gewählt → Controller aus (neu geladenen) Ständen frisch.
+            if (mounted) {
+              _toast('Bitte die markierten Artikel neu zählen.');
+            }
+            return;
+          }
+          targets = {...targets, ...decision};
+          continue;
+        }
+        if (result.failedProductIds.isNotEmpty) {
+          if (mounted) {
+            _toast('${result.failedProductIds.length} Buchung(en) '
+                'fehlgeschlagen — bitte erneut abschließen.');
+          }
+          return;
+        }
+        return;
+      }
+    } finally {
+      if (mounted) setState(() => _completing = false);
+    }
+  }
+
+  /// Lässt je Konflikt-Artikel die maßgebliche Zählung wählen. `null` = Abbruch.
+  Future<Map<String, String>?> _resolveConflicts(
+    InventoryProvider inventory,
+    InventoryCountSession session,
+    List<String> productIds,
+  ) async {
+    final conflicts = inventory.conflictsFor(session.id!);
+    final chosen = <String, String>{};
+    for (final productId in productIds) {
+      final events = conflicts[productId] ?? const [];
+      if (events.isEmpty) continue;
+      final lineId = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Zählkonflikt'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Artikel „${events.first.productName}" wurde abweichend '
+                  'gezählt. Maßgebliche Zählung wählen:'),
+              const SizedBox(height: 8),
+              for (final e in events)
+                ListTile(
+                  dense: true,
+                  title: Text('${e.countedQuantity} Stück'),
+                  subtitle: Text(e.countedByLabel ?? 'unbekannt'),
+                  onTap: () => Navigator.pop(ctx, e.id),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, null),
+                child: const Text('Abbrechen')),
+          ],
+        ),
+      );
+      if (lineId == null) return null;
+      chosen[productId] = lineId;
+    }
+    return chosen;
+  }
+
+  /// Fragt bei Stale-Artikeln eine Entscheidung ab. Rückgabe: leere Map =
+  /// „Neuzählung", gefüllte Map = Verrechnungs-Ziele je Artikel, `null` = Abbruch.
+  Future<Map<String, int>?> _resolveStale(
+    InventoryProvider inventory,
+    InventoryCountSession session,
+    List<String> productIds,
+  ) async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Bestand hat sich geändert'),
+        content: Text('${productIds.length} Artikel wurden nach der Zählung '
+            'bewegt (Verkauf/Wareneingang). Eine absolute Buchung der Zählung '
+            'würde diese Bewegungen überschreiben.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Abbrechen')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'recount'),
+              child: const Text('Neu zählen')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'reconcile'),
+              child: const Text('Bewegungen verrechnen')),
+        ],
+      ),
+    );
+    if (choice == null) return null;
+    if (choice == 'recount') return const {};
+    // Verrechnen: Ziel = gezählte Menge + (aktueller Bestand − Bestand bei Zählung).
+    final latest = inventory.latestCountByProduct(session.id!);
+    final targets = <String, int>{};
+    for (final productId in productIds) {
+      final event = latest[productId];
+      final product = inventory.productById(productId);
+      if (event == null || product == null) continue;
+      final delta = product.currentStock - event.stockAtCount;
+      targets[productId] = event.countedQuantity + delta;
+    }
+    return targets;
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// **WW-8:** Session-Leiste. Aktive Session → Info + Konflikt-Hinweis;
+  /// sonst fortsetzbare Sessions + „Neue Zählung". Der flüchtige Schnellmodus
+  /// bleibt möglich (einfach ohne Session weiterzählen).
+  Widget _buildSessionBar(InventoryProvider inventory, String? siteId) {
+    final theme = Theme.of(context);
+    final appColors = theme.appColors;
+    final active = _session;
+    if (active != null) {
+      final conflicts = inventory.conflictsFor(active.id!);
+      return Container(
+        width: double.infinity,
+        color: appColors.infoContainer,
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        child: Row(
+          children: [
+            Icon(Icons.playlist_add_check, size: 18, color: appColors.info),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Zählung läuft: ${active.title}',
+                      style: theme.textTheme.labelLarge),
+                  if (conflicts.isNotEmpty)
+                    Text('${conflicts.length} Zählkonflikt(e) — beim Abschluss '
+                        'maßgebliche Zählung wählen',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: appColors.warning)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    final resumeable =
+        siteId == null ? const [] : inventory.resumeableSessions(siteId: siteId);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: resumeable.isEmpty
+                ? const Text('Schnellzählung — oder als speicherbare Session '
+                    'starten (fortsetzbar, mehrgerätefähig).')
+                : Text('${resumeable.length} offene Zählung(en) fortsetzbar'),
+          ),
+          const SizedBox(width: 8),
+          if (resumeable.isNotEmpty)
+            TextButton(
+              onPressed: () => _resumeSession(resumeable.first),
+              child: const Text('Fortsetzen'),
+            ),
+          if (siteId != null)
+            FilledButton.tonal(
+              onPressed: () => _startSession(siteId),
+              child: const Text('Session'),
+            ),
+        ],
+      ),
+    );
+  }
+
   // --- Build ----------------------------------------------------------------
 
   @override
@@ -350,6 +656,7 @@ class _InventurScreenState extends State<InventurScreen> {
                       setState(() => _selectedSiteId = value),
                 ),
               if (!needsSiteChoice) ...[
+                _buildSessionBar(inventory, effectiveSiteId),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                   child: Column(
@@ -453,13 +760,43 @@ class _InventurScreenState extends State<InventurScreen> {
         bottomNavigationBar: SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: FilledButton.icon(
-              icon: const Icon(Icons.fact_check_outlined),
-              label: const Text('Differenzen prüfen'),
-              onPressed: anyCountedInput
-                  ? () => _openDiffPreview(scope, profile.canManageInventory)
-                  : null,
-            ),
+            child: _session != null
+                ? Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.fact_check_outlined),
+                          label: const Text('Vorschau'),
+                          onPressed: anyCountedInput
+                              ? () => _openDiffPreview(
+                                  scope, profile.canManageInventory)
+                              : null,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.icon(
+                          icon: _completing
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2))
+                              : const Icon(Icons.done_all),
+                          label: const Text('Abschließen'),
+                          onPressed: _completing ? null : _completeSession,
+                        ),
+                      ),
+                    ],
+                  )
+                : FilledButton.icon(
+                    icon: const Icon(Icons.fact_check_outlined),
+                    label: const Text('Differenzen prüfen'),
+                    onPressed: anyCountedInput
+                        ? () =>
+                            _openDiffPreview(scope, profile.canManageInventory)
+                        : null,
+                  ),
           ),
         ),
       ),

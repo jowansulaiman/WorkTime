@@ -5,6 +5,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worktime_app/models/app_user.dart';
+import 'package:worktime_app/models/inventory_count_session.dart';
 import 'package:worktime_app/models/product.dart';
 import 'package:worktime_app/models/site_definition.dart';
 import 'package:worktime_app/models/stock_movement.dart';
@@ -219,6 +220,37 @@ void main() {
         find.byKey(ValueKey('inventur-count-${bounty.id}')));
     expect(bountyField.controller?.text, isEmpty);
     expect(find.text('2 von 2 gezählt'), findsOneWidget);
+  });
+
+  testWidgets('Session-Modus: starten, zählen, abschließen bucht + completed',
+      (tester) async {
+    final (inventory, team) = await seedProviders();
+    await pumpInventur(tester, inventory: inventory, team: team);
+
+    // Session starten (WW-8).
+    await tester.tap(find.widgetWithText(FilledButton, 'Session'));
+    await tester.pumpAndSettle();
+    expect(inventory.resumeableSessions(), hasLength(1));
+    final sessionId = inventory.resumeableSessions().single.id!;
+
+    final bounty = inventory
+        .productsForSite('site-1')
+        .firstWhere((p) => p.name == 'Bounty');
+    await tester.enterText(
+        find.byKey(ValueKey('inventur-count-${bounty.id}')), '7');
+    await tester.pump();
+
+    // Abschließen (WW-9): bucht die Differenz absolut + Session completed.
+    await tester.tap(find.widgetWithText(FilledButton, 'Abschließen'));
+    await tester.pumpAndSettle();
+
+    final updated = inventory
+        .productsForSite('site-1')
+        .firstWhere((p) => p.name == 'Bounty');
+    expect(updated.currentStock, 7);
+    expect(inventory.countSessionById(sessionId)!.status,
+        InventoryCountStatus.completed);
+    expect(inventory.resumeableSessions(), isEmpty);
   });
 
   testWidgets('ohne canManageInventory kein Zugriff', (tester) async {
