@@ -18,6 +18,7 @@ import '../models/employee_document.dart';
 import '../models/employee_profile.dart';
 import '../models/employment_contract.dart';
 import '../models/payroll_record.dart';
+import '../models/inventory_count_session.dart';
 import '../models/product.dart';
 import '../models/purchase_order.dart';
 import '../models/shift.dart';
@@ -445,6 +446,211 @@ class PdfService {
               }),
             ],
           ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  /// **WW-10 — Inventur-Protokoll als PDF.** Zählliste (maßgebliche Zählung je
+  /// Artikel + Zähler/Zeitstempel) und die bewertete Differenzliste. Inhalt
+  /// IMMER aus persistierten Daten ([session.diffSummary] + [lines]) — nie live
+  /// neu bewertet. EK-Bewertung nur bei [includeValuation] (der Aufrufer gated
+  /// das über `canManageInventory`).
+  static Future<Uint8List> generateInventoryCountReport({
+    required InventoryCountSession session,
+    required List<InventoryCountEvent> lines,
+    bool includeValuation = true,
+    String? siteLabel,
+  }) async {
+    final fonts = await _loadFonts();
+    final pdf = pw.Document(theme: fonts);
+    final currencyFmt =
+        NumberFormat.currency(locale: 'de_DE', symbol: '€', decimalDigits: 2);
+    final ts = DateFormat('dd.MM.yyyy HH:mm', 'de_DE');
+
+    const primary = PdfColor.fromInt(0xFF13161B);
+    const accent = PdfColor.fromInt(0xFF9B7839);
+    const lightBg = PdfColor.fromInt(0xFFF5F7FA);
+    const headerStyle = pw.TextStyle(fontSize: 9, color: PdfColors.white);
+    const cellStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey800);
+    const labelStyle = pw.TextStyle(fontSize: 9, color: PdfColors.grey600);
+
+    // Maßgebliche Zählung je Artikel (neuestes Event), alphabetisch.
+    final latest = <String, InventoryCountEvent>{};
+    for (final e in lines) {
+      final prev = latest[e.productId];
+      if (prev == null || e.countedAt.isAfter(prev.countedAt)) {
+        latest[e.productId] = e;
+      }
+    }
+    final counts = latest.values.toList()
+      ..sort((a, b) =>
+          a.productName.toLowerCase().compareTo(b.productName.toLowerCase()));
+    final diffs = [...session.diffSummary]
+      ..sort((a, b) =>
+          a.productName.toLowerCase().compareTo(b.productName.toLowerCase()));
+    final valuationTotal =
+        diffs.fold<int>(0, (sum, d) => sum + d.valuationDeltaCents);
+
+    pw.Widget infoRow(String label, String value) => pw.Padding(
+          padding: const pw.EdgeInsets.symmetric(vertical: 2),
+          child: pw.Row(children: [
+            pw.SizedBox(width: 110, child: pw.Text(label, style: labelStyle)),
+            pw.Expanded(child: pw.Text(value, style: cellStyle)),
+          ]),
+        );
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(28),
+        header: (context) => _buildSimpleListHeader(
+          title: 'Inventur-Protokoll',
+          subtitle: session.title,
+          primary: primary,
+          accent: accent,
+        ),
+        footer: (context) =>
+            _buildFooter(context, primary, label: 'Inventur-Protokoll'),
+        build: (context) => [
+          pw.Container(
+            width: double.infinity,
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: lightBg,
+              borderRadius: pw.BorderRadius.circular(8),
+              border: pw.Border.all(color: accent, width: 0.8),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                if (siteLabel != null) infoRow('Standort', siteLabel),
+                infoRow('Status', session.status.label),
+                infoRow(
+                    'Begonnen',
+                    '${ts.format(session.startedAt)}'
+                        '${session.startedByLabel != null ? ' · ${session.startedByLabel}' : ''}'),
+                if (session.completedAt != null)
+                  infoRow('Abgeschlossen', ts.format(session.completedAt!)),
+                infoRow('Gezählte Artikel', '${counts.length}'),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 16),
+          pw.Text('Zählliste',
+              style: pw.TextStyle(
+                  fontSize: 11, fontWeight: pw.FontWeight.bold, color: primary)),
+          pw.SizedBox(height: 6),
+          pw.Table(
+            border: const pw.TableBorder(
+              horizontalInside:
+                  pw.BorderSide(color: PdfColors.grey200, width: 0.5),
+            ),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(2.2),
+              1: const pw.FixedColumnWidth(54),
+              2: const pw.FlexColumnWidth(1.2),
+              3: const pw.FixedColumnWidth(96),
+              4: const pw.FixedColumnWidth(50),
+            },
+            children: [
+              pw.TableRow(
+                decoration: const pw.BoxDecoration(color: primary),
+                children: ['Artikel', 'Gezählt', 'Zähler', 'Zeitpunkt', 'Geb.']
+                    .map((h) => pw.Padding(
+                          padding: const pw.EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 8),
+                          child: pw.Text(h, style: headerStyle),
+                        ))
+                    .toList(),
+              ),
+              ...counts.asMap().entries.map((entry) {
+                final i = entry.key;
+                final e = entry.value;
+                return pw.TableRow(
+                  decoration: pw.BoxDecoration(
+                      color: i.isEven ? PdfColors.white : lightBg),
+                  children: [
+                    _cell(e.productName, cellStyle),
+                    _cell('${e.countedQuantity}', cellStyle),
+                    _cell(e.countedByLabel ?? '–', cellStyle),
+                    _cell(ts.format(e.countedAt), cellStyle),
+                    _cell(e.isBooked ? 'ja' : '–', cellStyle),
+                  ],
+                );
+              }),
+            ],
+          ),
+          pw.SizedBox(height: 16),
+          pw.Text('Differenzen',
+              style: pw.TextStyle(
+                  fontSize: 11, fontWeight: pw.FontWeight.bold, color: primary)),
+          pw.SizedBox(height: 6),
+          if (diffs.isEmpty)
+            pw.Text('Keine Differenzen.', style: labelStyle)
+          else
+            pw.Table(
+              border: const pw.TableBorder(
+                horizontalInside:
+                    pw.BorderSide(color: PdfColors.grey200, width: 0.5),
+              ),
+              columnWidths: {
+                0: const pw.FlexColumnWidth(2.4),
+                1: const pw.FixedColumnWidth(54),
+                2: const pw.FixedColumnWidth(54),
+                3: const pw.FixedColumnWidth(48),
+                if (includeValuation) 4: const pw.FixedColumnWidth(74),
+              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: primary),
+                  children: [
+                    'Artikel',
+                    'Gezählt',
+                    'Vorher',
+                    'Delta',
+                    if (includeValuation) 'Bewertung',
+                  ]
+                      .map((h) => pw.Padding(
+                            padding: const pw.EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 8),
+                            child: pw.Text(h, style: headerStyle),
+                          ))
+                      .toList(),
+                ),
+                ...diffs.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final d = entry.value;
+                  return pw.TableRow(
+                    decoration: pw.BoxDecoration(
+                        color: i.isEven ? PdfColors.white : lightBg),
+                    children: [
+                      _cell(d.productName, cellStyle),
+                      _cell('${d.countedQuantity}', cellStyle),
+                      _cell('${d.previousStock}', cellStyle),
+                      _cell(d.delta > 0 ? '+${d.delta}' : '${d.delta}', cellStyle),
+                      if (includeValuation)
+                        _cell(currencyFmt.format(d.valuationDeltaCents / 100),
+                            cellStyle),
+                    ],
+                  );
+                }),
+              ],
+            ),
+          if (includeValuation && diffs.isNotEmpty) ...[
+            pw.SizedBox(height: 10),
+            pw.Align(
+              alignment: pw.Alignment.centerRight,
+              child: pw.Text(
+                'Bewertete Differenz gesamt: '
+                '${currencyFmt.format(valuationTotal / 100)}',
+                style: pw.TextStyle(
+                    fontSize: 10, fontWeight: pw.FontWeight.bold, color: primary),
+              ),
+            ),
+          ],
         ],
       ),
     );

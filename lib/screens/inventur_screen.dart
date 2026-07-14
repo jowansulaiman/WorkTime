@@ -12,6 +12,7 @@ import '../models/site_definition.dart';
 import '../providers/auth_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/team_provider.dart';
+import '../services/export_service.dart';
 import '../theme/theme_extensions.dart';
 import '../widgets/breadcrumb_app_bar.dart';
 import '../widgets/empty_state.dart';
@@ -518,6 +519,89 @@ class _InventurScreenState extends State<InventurScreen> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// **WW-10:** Abgeschlossene Inventuren dieses Standorts als read-only Liste
+  /// mit CSV-/PDF-Export (Protokoll aus persistierten Daten).
+  Future<void> _openCompletedSessions(
+    InventoryProvider inventory,
+    String? siteId,
+  ) async {
+    final completed = inventory.countSessions
+        .where((s) =>
+            s.status == InventoryCountStatus.completed &&
+            (siteId == null || s.siteId == siteId))
+        .toList();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.9,
+        builder: (_, controller) => ListView(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            Text('Abgeschlossene Inventuren',
+                style: Theme.of(sheetContext).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (completed.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('Noch keine abgeschlossenen Inventuren.'),
+              )
+            else
+              for (final session in completed)
+                Card(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: ListTile(
+                    title: Text(session.title),
+                    subtitle: Text('${session.diffSummary.length} Differenz(en)'
+                        '${session.completedAt != null ? ' · ${DateFormat('dd.MM.yyyy', 'de_DE').format(session.completedAt!)}' : ''}'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextButton(
+                          onPressed: () =>
+                              _exportSession(inventory, session, csv: true),
+                          child: const Text('CSV'),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              _exportSession(inventory, session, csv: false),
+                          child: const Text('PDF'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportSession(
+    InventoryProvider inventory,
+    InventoryCountSession session, {
+    required bool csv,
+  }) async {
+    try {
+      await inventory.loadCountLines(session.id!);
+      final lines = inventory.countLinesFor(session.id!);
+      if (csv) {
+        await ExportService.exportInventoryCountCsv(
+            session: session, lines: lines);
+      } else {
+        await ExportService.exportInventoryCountPdf(
+            session: session, lines: lines);
+      }
+    } catch (error) {
+      if (mounted) _toast('Export fehlgeschlagen: $error');
+    }
+  }
+
   /// **WW-8:** Session-Leiste. Aktive Session → Info + Konflikt-Hinweis;
   /// sonst fortsetzbare Sessions + „Neue Zählung". Der flüchtige Schnellmodus
   /// bleibt möglich (einfach ohne Session weiterzählen).
@@ -643,7 +727,17 @@ class _InventurScreenState extends State<InventurScreen> {
         }
       },
       child: Scaffold(
-        appBar: BreadcrumbAppBar(breadcrumbs: breadcrumbs),
+        appBar: BreadcrumbAppBar(
+          breadcrumbs: breadcrumbs,
+          actions: [
+            IconButton(
+              tooltip: 'Abgeschlossene Inventuren',
+              icon: const Icon(Icons.history),
+              onPressed: () =>
+                  _openCompletedSessions(inventory, effectiveSiteId),
+            ),
+          ],
+        ),
         body: SafeArea(
           top: false,
           child: Column(

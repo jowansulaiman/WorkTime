@@ -366,6 +366,44 @@ class ExportService {
     );
   }
 
+  /// **WW-10** — Inventur-Protokoll als PDF exportieren (Download/Share).
+  static Future<void> exportInventoryCountPdf({
+    required InventoryCountSession session,
+    required List<InventoryCountEvent> lines,
+    bool includeValuation = true,
+    String? siteLabel,
+  }) async {
+    final bytes = await PdfService.generateInventoryCountReport(
+      session: session,
+      lines: lines,
+      includeValuation: includeValuation,
+      siteLabel: siteLabel,
+    );
+    await downloadFileBytes(
+      bytes: bytes,
+      fileName: _inventoryFileName('inventur-${session.id ?? ''}', 'pdf'),
+      mimeType: 'application/pdf',
+    );
+  }
+
+  /// **WW-10** — Inventur-Protokoll als CSV exportieren (Download).
+  static Future<void> exportInventoryCountCsv({
+    required InventoryCountSession session,
+    required List<InventoryCountEvent> lines,
+    bool includeValuation = true,
+  }) async {
+    final csv = buildInventoryCountCsv(
+      session: session,
+      lines: lines,
+      includeValuation: includeValuation,
+    );
+    await downloadFileBytes(
+      bytes: Uint8List.fromList(utf8.encode(csv)),
+      fileName: _inventoryFileName('inventur-${session.id ?? ''}', 'csv'),
+      mimeType: 'text/csv;charset=utf-8',
+    );
+  }
+
   // --- Kassenbericht (Kassen-Modul M4) -------------------------------------
 
   static Future<void> exportKassenberichtCsv({

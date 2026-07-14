@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:worktime_app/core/finance_analytics.dart';
 import 'package:worktime_app/models/finance_models.dart';
+import 'package:worktime_app/models/inventory_count_session.dart';
 import 'package:worktime_app/models/purchase_order.dart';
 import 'package:worktime_app/models/shift.dart';
 import 'package:worktime_app/models/supplier.dart';
@@ -266,6 +267,50 @@ void main() {
       expect(csv, contains('06:00\u201314:00'));
       expect(csv, contains('Ben'));
       expect(csv, contains('13:00\u201319:00'));
+    });
+
+    test('generates an inventory count report (WW-10) without font downloads',
+        () async {
+      final session = InventoryCountSession(
+        id: 's-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        title: 'Jahresinventur',
+        status: InventoryCountStatus.completed,
+        startedAt: DateTime(2026, 7, 14, 8),
+        startedByUid: 'u-1',
+        startedByLabel: 'Chef',
+        completedAt: DateTime(2026, 7, 14, 20),
+        diffSummary: const [
+          InventoryCountDiff(
+            productId: 'p-1',
+            productName: 'Cola',
+            countedQuantity: 7,
+            previousStock: 10,
+            unitCostCents: 80,
+          ),
+        ],
+      );
+      final lines = [
+        InventoryCountEvent(
+          id: 'l-1',
+          productId: 'p-1',
+          productName: 'Cola',
+          countedQuantity: 7,
+          stockAtCount: 10,
+          countedAt: DateTime(2026, 7, 14, 9),
+          countedByUid: 'u-1',
+          countedByLabel: 'Peter',
+          bookedAt: DateTime(2026, 7, 14, 20),
+        ),
+      ];
+      final bytes = await PdfService.generateInventoryCountReport(
+        session: session,
+        lines: lines,
+        siteLabel: 'Strichm\u00e4nnchen',
+      );
+      expect(bytes.length, greaterThan(1000));
+      expect(bytes.sublist(0, 4), [0x25, 0x50, 0x44, 0x46]); // %PDF
     });
   });
 }
