@@ -3,6 +3,7 @@ import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/delivery_advice.dart';
 import '../models/fridge_refill.dart';
+import '../models/inventory_count_session.dart';
 import '../models/order_cart.dart';
 import '../models/pos_daily_stat.dart';
 import '../models/pos_receipt.dart';
@@ -248,6 +249,32 @@ abstract interface class InventoryRepository {
   Future<void> deleteDeliveryAdvice({
     required String orgId,
     required String adviceId,
+  });
+
+  // --- Inventur-Sessions (inventoryCountSessions + lines-Subcollection, WW-8) --
+  // Komplette Session-Collection streamen (Org-Volumen klein), Filter/Sortierung
+  // clientseitig → KEIN Composite-Index. Zähl-EVENTS liegen als append-only
+  // Docs in der lines-Subcollection je Session.
+
+  /// Alle Inventur-Sessions einer Organisation (nur Metadaten, ohne lines).
+  Stream<List<InventoryCountSession>> watchInventoryCountSessions(String orgId);
+
+  /// Speichert/aktualisiert eine Session (Anlage vergibt Doc-ID) und gibt die
+  /// Doc-ID zurück.
+  Future<String> saveInventoryCountSession(InventoryCountSession session);
+
+  /// Zähl-Events einer Session (append-only Subcollection `lines`).
+  Stream<List<InventoryCountEvent>> watchInventoryCountLines(
+    String orgId,
+    String sessionId,
+  );
+
+  /// Speichert/aktualisiert ein Zähl-Event einer Session; gibt die Line-ID
+  /// zurück (Anlage vergibt sie).
+  Future<String> saveInventoryCountEvent({
+    required String orgId,
+    required String sessionId,
+    required InventoryCountEvent event,
   });
 
   Stream<List<CustomerOrder>> watchCustomerOrders(String orgId);

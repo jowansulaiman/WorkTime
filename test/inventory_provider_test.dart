@@ -7,6 +7,7 @@ import 'package:worktime_app/models/cash_closing.dart';
 import 'package:worktime_app/models/cash_count.dart';
 import 'package:worktime_app/models/customer_order.dart';
 import 'package:worktime_app/models/delivery_advice.dart';
+import 'package:worktime_app/models/inventory_count_session.dart';
 import 'package:worktime_app/models/fridge_refill.dart';
 import 'package:worktime_app/models/order_cart.dart';
 import 'package:worktime_app/models/pos_daily_stat.dart';
@@ -173,6 +174,29 @@ class _OfflineInventoryRepository implements InventoryRepository {
     required String adviceId,
   }) =>
       _delegate.deleteDeliveryAdvice(orgId: orgId, adviceId: adviceId);
+
+  @override
+  Stream<List<InventoryCountSession>> watchInventoryCountSessions(
+          String orgId) =>
+      _delegate.watchInventoryCountSessions(orgId);
+
+  @override
+  Future<String> saveInventoryCountSession(InventoryCountSession session) =>
+      _delegate.saveInventoryCountSession(session);
+
+  @override
+  Stream<List<InventoryCountEvent>> watchInventoryCountLines(
+          String orgId, String sessionId) =>
+      _delegate.watchInventoryCountLines(orgId, sessionId);
+
+  @override
+  Future<String> saveInventoryCountEvent({
+    required String orgId,
+    required String sessionId,
+    required InventoryCountEvent event,
+  }) =>
+      _delegate.saveInventoryCountEvent(
+          orgId: orgId, sessionId: sessionId, event: event);
 
   @override
   Future<int> adjustProductStock({
@@ -1701,6 +1725,163 @@ void main() {
       await provider.deleteDeliveryAdvice(id);
 
       expect(provider.advicesForSite('site-1'), isEmpty);
+    });
+  });
+
+  group('Inventur-Sessions (WW-8)', () {
+    const helfer = AppUserProfile(
+      uid: 'helfer-1',
+      orgId: 'org-1',
+      email: 'helfer@laden.test',
+      role: UserRole.employee,
+      isActive: true,
+      settings: UserSettings(name: 'Helfer'),
+    );
+
+    test('startCountSession legt offene Session mit ID an', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+
+      final session = await provider.startCountSession(
+        siteId: 'site-1',
+        title: 'Testinventur',
+        totalProducts: 3,
+      );
+
+      expect(session, isNotNull);
+      expect(session!.id, isNotNull);
+      expect(session.isOpen, isTrue);
+      expect(provider.resumeableSessions(siteId: 'site-1'), hasLength(1));
+      expect(provider.resumeableSessions(siteId: 'site-2'), isEmpty);
+    });
+
+    test('recordCount aktualisiert das EIGENE Event (kein zweites Event)',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final s = (await provider.startCountSession(
+        siteId: 'site-1',
+        title: 'Zählen',
+      ))!;
+
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 10,
+        stockAtCount: 12,
+      );
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 13, // Korrektur
+        stockAtCount: 12,
+      );
+
+      final lines = provider.countLinesFor(s.id!);
+      expect(lines, hasLength(1)); // EIN Event, korrigiert
+      expect(lines.single.countedQuantity, 13);
+      expect(provider.countedProductCount(s.id!), 1);
+    });
+
+    test('Fortsetzen nach App-Neustart liefert Zählstände (local)', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final s = (await provider.startCountSession(
+        siteId: 'site-1',
+        title: 'Persistenz',
+      ))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 7,
+        stockAtCount: 5,
+      );
+
+      // Neue Provider-Instanz = App-Neustart.
+      final restored = newLocalProvider();
+      await restored.updateSession(user);
+      expect(restored.resumeableSessions(), hasLength(1));
+      await restored.loadCountLines(s.id!);
+      expect(restored.countLinesFor(s.id!).single.countedQuantity, 7);
+    });
+
+    test('Mehrbenutzer-Konflikt: abweichende Mengen werden erkannt', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final s = (await provider.startCountSession(
+        siteId: 'site-1',
+        title: 'Konflikt',
+      ))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 12,
+        stockAtCount: 12,
+      );
+
+      // Zweiter Nutzer zählt denselben Artikel abweichend.
+      await provider.updateSession(helfer);
+      await provider.loadCountLines(s.id!);
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 14,
+        stockAtCount: 12,
+      );
+
+      expect(provider.countLinesFor(s.id!), hasLength(2)); // append-only
+      final conflicts = provider.conflictsFor(s.id!);
+      expect(conflicts.keys, contains('p-1'));
+      expect(conflicts['p-1']!.map((e) => e.countedQuantity).toSet(),
+          {12, 14});
+    });
+
+    test('gleiche Menge zweier Nutzer ist KEIN Konflikt', () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final s = (await provider.startCountSession(
+        siteId: 'site-1',
+        title: 'Einig',
+      ))!;
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 12,
+        stockAtCount: 12,
+      );
+      await provider.updateSession(helfer);
+      await provider.loadCountLines(s.id!);
+      await provider.recordCount(
+        sessionId: s.id!,
+        productId: 'p-1',
+        productName: 'Cola',
+        quantity: 12,
+        stockAtCount: 12,
+      );
+
+      expect(provider.conflictsFor(s.id!), isEmpty);
+    });
+
+    test('cancelCountSession setzt cancelled (nicht mehr fortsetzbar)',
+        () async {
+      final provider = newLocalProvider();
+      await provider.updateSession(user);
+      final s = (await provider.startCountSession(
+        siteId: 'site-1',
+        title: 'Abbruch',
+      ))!;
+
+      await provider.cancelCountSession(s.id!);
+
+      expect(provider.resumeableSessions(), isEmpty);
+      expect(provider.countSessionById(s.id!)!.status,
+          InventoryCountStatus.cancelled);
     });
   });
 }

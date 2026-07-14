@@ -32,6 +32,7 @@ import '../models/cash_closing.dart';
 import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/delivery_advice.dart';
+import '../models/inventory_count_session.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/pos_daily_stat.dart';
@@ -104,6 +105,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   StreamSubscription<List<ProductBatch>>? _batchesSubscription;
   StreamSubscription<List<PurchaseOrder>>? _ordersSubscription;
   StreamSubscription<List<DeliveryAdvice>>? _advicesSubscription;
+  StreamSubscription<List<InventoryCountSession>>? _countSessionsSubscription;
   StreamSubscription<List<StockMovement>>? _movementsSubscription;
   StreamSubscription<List<CustomerOrder>>? _customerOrdersSubscription;
   StreamSubscription<List<SiteOrderList>>? _orderCartsSubscription;
@@ -118,6 +120,13 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
   List<DeliveryAdvice> _advices = [];
   List<StockMovement> _movements = [];
   List<PriceHistoryEntry> _priceHistory = [];
+
+  /// **WW-8:** Inventur-Session-Metadaten (ohne Zähl-Events).
+  List<InventoryCountSession> _countSessions = [];
+
+  /// **WW-8:** geladene Zähl-Events je Session (Subcollection `lines`). Nur die
+  /// aktiv geöffnete Session wird geladen (nicht alle Sessions gleichzeitig).
+  final Map<String, List<InventoryCountEvent>> _countLinesBySession = {};
 
   /// **WW-6:** Chargen, deren Anlage nach einem Wareneingang fehlgeschlagen ist
   /// (Bestand gebucht, Charge offen). In-Memory (überlebt die App-Sitzung), je
@@ -914,6 +923,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _batches = await DatabaseService.loadLocalProductBatches(scope: scope);
     _orders = await DatabaseService.loadLocalPurchaseOrders(scope: scope);
     _advices = await DatabaseService.loadLocalDeliveryAdvices(scope: scope);
+    _countSessions = await DatabaseService.loadLocalCountSessions(scope: scope);
     _movements = await DatabaseService.loadLocalStockMovements(scope: scope);
     _priceHistory = await DatabaseService.loadLocalPriceHistory(scope: scope);
     _customerOrders =
@@ -937,6 +947,12 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       DatabaseService.saveLocalPurchaseOrders(_orders, scope: _localScope);
   Future<void> _persistDeliveryAdvices() =>
       DatabaseService.saveLocalDeliveryAdvices(_advices, scope: _localScope);
+  Future<void> _persistCountSessions() =>
+      DatabaseService.saveLocalCountSessions(_countSessions, scope: _localScope);
+  Future<void> _persistCountLines(String sessionId) =>
+      DatabaseService.saveLocalCountLines(
+          sessionId, _countLinesBySession[sessionId] ?? const [],
+          scope: _localScope);
   Future<void> _persistMovements() =>
       DatabaseService.saveLocalStockMovements(_movements, scope: _localScope);
   Future<void> _persistPriceHistory() =>
@@ -1177,6 +1193,17 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
       _safeNotify();
     }, onError: _setError);
 
+    // WW-8: Inventur-Session-Metadaten. Wie stockMovements NICHT im Kiosk-Build
+    // (Rules: read `sameOrg && !isKiosk`) — ein permission-denied hier würde
+    // sonst den ganzen Provider (Board) in den Fehlerzustand reißen.
+    if (!AppConfig.kioskModeEnabled) {
+      _countSessionsSubscription =
+          _inventory.watchInventoryCountSessions(orgId).listen((items) {
+        _countSessions = items;
+        _safeNotify();
+      }, onError: _setError);
+    }
+
     // PA-4.4g: Im Kiosk-Build NICHT abonnieren — die stockMovements-Rules
     // verweigern dem role:kiosk-Geraetekonto den Read (PA-0.1); ein
     // permission-denied hier wuerde via _setError den GESAMTEN Provider (und
@@ -1234,6 +1261,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     await _batchesSubscription?.cancel();
     await _ordersSubscription?.cancel();
     await _advicesSubscription?.cancel();
+    await _countSessionsSubscription?.cancel();
     await _movementsSubscription?.cancel();
     await _customerOrdersSubscription?.cancel();
     await _orderCartsSubscription?.cancel();
@@ -1244,6 +1272,7 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     _batchesSubscription = null;
     _ordersSubscription = null;
     _advicesSubscription = null;
+    _countSessionsSubscription = null;
     _movementsSubscription = null;
     _customerOrdersSubscription = null;
     _orderCartsSubscription = null;
@@ -3113,6 +3142,260 @@ class InventoryProvider extends ChangeNotifier with HybridWriteFallback {
     }
     await saveDeliveryAdvice(
         advice.copyWith(status: DeliveryAdviceStatus.cancelled));
+  }
+
+  // === Inventur-Sessions (WW-8) ==========================================
+
+  List<InventoryCountSession> get countSessions =>
+      List.unmodifiable(_countSessions);
+
+  /// Offene (fortsetzbare) Sessions, optional site-gescoped.
+  List<InventoryCountSession> resumeableSessions({String? siteId}) =>
+      _countSessions
+          .where((s) => s.isOpen && (siteId == null || s.siteId == siteId))
+          .toList(growable: false);
+
+  InventoryCountSession? countSessionById(String? id) {
+    if (id == null) return null;
+    for (final s in _countSessions) {
+      if (s.id == id) return s;
+    }
+    return null;
+  }
+
+  /// Geladene Zähl-Events einer Session (leer, wenn noch nicht via
+  /// [loadCountLines] geladen).
+  List<InventoryCountEvent> countLinesFor(String sessionId) =>
+      List.unmodifiable(_countLinesBySession[sessionId] ?? const []);
+
+  /// Maßgebliche Zählung je Artikel (neuestes Event) aus den geladenen Lines —
+  /// Vorbelegung der Controller beim Fortsetzen.
+  Map<String, InventoryCountEvent> latestCountByProduct(String sessionId) {
+    final result = <String, InventoryCountEvent>{};
+    for (final e in _countLinesBySession[sessionId] ?? const []) {
+      final prev = result[e.productId];
+      if (prev == null || e.countedAt.isAfter(prev.countedAt)) {
+        result[e.productId] = e;
+      }
+    }
+    return result;
+  }
+
+  /// Anzahl (mind. einmal) gezählter Artikel — live aus den geladenen Lines.
+  int countedProductCount(String sessionId) =>
+      latestCountByProduct(sessionId).length;
+
+  /// **WW-8 Konflikt:** Artikel, die von ≥2 verschiedenen Nutzern mit
+  /// ABWEICHENDER Menge gezählt wurden (blockieren den WW-9-Abschluss bis zur
+  /// Auswahl). productId → konkurrierende Events (neuestes je Nutzer).
+  Map<String, List<InventoryCountEvent>> conflictsFor(String sessionId) {
+    final byProduct = <String, List<InventoryCountEvent>>{};
+    for (final e in _countLinesBySession[sessionId] ?? const []) {
+      (byProduct[e.productId] ??= []).add(e);
+    }
+    final conflicts = <String, List<InventoryCountEvent>>{};
+    byProduct.forEach((productId, events) {
+      final latestByUser = <String, InventoryCountEvent>{};
+      for (final e in events) {
+        final prev = latestByUser[e.countedByUid];
+        if (prev == null || e.countedAt.isAfter(prev.countedAt)) {
+          latestByUser[e.countedByUid] = e;
+        }
+      }
+      final distinctQuantities =
+          latestByUser.values.map((e) => e.countedQuantity).toSet();
+      if (latestByUser.length >= 2 && distinctQuantities.length >= 2) {
+        conflicts[productId] = latestByUser.values.toList(growable: false);
+      }
+    });
+    return conflicts;
+  }
+
+  /// Lädt die Zähl-Events einer Session in den Provider-State (beim
+  /// Öffnen/Fortsetzen). Cloud/Hybrid: einmaliger Snapshot; Local: aus dem
+  /// per-Session-Key.
+  Future<void> loadCountLines(String sessionId) async {
+    final orgId = _orgId;
+    if (orgId == null) return;
+    if (usesLocalStorage) {
+      _countLinesBySession[sessionId] =
+          await DatabaseService.loadLocalCountLines(sessionId,
+              scope: _localScope);
+    } else {
+      _countLinesBySession[sessionId] =
+          await _inventory.watchInventoryCountLines(orgId, sessionId).first;
+    }
+    _safeNotify();
+  }
+
+  /// Startet eine neue Inventur-Session (Status `open`). Gibt die gespeicherte
+  /// Session (inkl. ID) zurück oder `null` bei fehlender Org.
+  Future<InventoryCountSession?> startCountSession({
+    required String siteId,
+    required String title,
+    String? categoryFilter,
+    int totalProducts = 0,
+  }) async {
+    final orgId = _orgId;
+    final user = _currentUser;
+    if (orgId == null || user == null) {
+      throw StateError('Keine Organisation aktiv.');
+    }
+    final trimmed = title.trim();
+    final session = InventoryCountSession(
+      orgId: orgId,
+      siteId: siteId,
+      title: trimmed.isEmpty ? 'Inventur' : trimmed,
+      categoryFilter: categoryFilter,
+      startedAt: DateTime.now(),
+      startedByUid: user.uid,
+      startedByLabel: user.displayName,
+      totalProducts: totalProducts,
+    );
+    final summary = 'Inventur „${session.title}" gestartet';
+    if (_usesFirestore) {
+      String? newId;
+      final ok = await _tryFirestore('startCountSession', () async {
+        newId = await _inventory.saveInventoryCountSession(session);
+      });
+      if (ok) {
+        final stored = session.copyWith(id: newId);
+        _countLinesBySession[stored.id!] = [];
+        _audit?.call(
+          action: AuditAction.created,
+          entityType: 'Inventur',
+          entityId: stored.id,
+          summary: summary,
+        );
+        return stored;
+      }
+    }
+    final stored = session.copyWith(id: _nextLocalId('count-session'));
+    _countSessions = _upsertLocal(_countSessions, stored, (s) => s.id);
+    _countSessions.sort((a, b) => b.startedAt.compareTo(a.startedAt));
+    _countLinesBySession[stored.id!] = [];
+    await _persistCountSessions();
+    _safeNotify();
+    _audit?.call(
+      action: AuditAction.created,
+      entityType: 'Inventur',
+      entityId: stored.id,
+      summary: summary,
+    );
+    return stored;
+  }
+
+  /// Erfasst/aktualisiert die EIGENE Zählung eines Artikels in einer offenen
+  /// Session (Update des eigenen Events statt Event-Spam). Fremde Zählungen
+  /// bleiben als eigene Events erhalten (append-only → Konflikte sichtbar).
+  /// Bucht KEINEN Bestand (das macht erst der WW-9-Abschluss). Kein Audit
+  /// (Rauschen-Regel).
+  Future<void> recordCount({
+    required String sessionId,
+    required String productId,
+    required String productName,
+    required int quantity,
+    required int stockAtCount,
+  }) async {
+    final session = countSessionById(sessionId);
+    final user = _currentUser;
+    final orgId = _orgId;
+    if (session == null || user == null || orgId == null || !session.isOpen) {
+      return;
+    }
+    final lines =
+        List<InventoryCountEvent>.from(_countLinesBySession[sessionId] ?? const []);
+    final ownIndex = lines.indexWhere((e) =>
+        e.productId == productId &&
+        e.countedByUid == user.uid &&
+        e.bookedAt == null);
+    var event = ownIndex >= 0
+        ? lines[ownIndex]
+            .copyWith(countedQuantity: quantity, countedAt: DateTime.now())
+        : InventoryCountEvent(
+            productId: productId,
+            productName: productName,
+            countedQuantity: quantity,
+            stockAtCount: stockAtCount,
+            countedAt: DateTime.now(),
+            countedByUid: user.uid,
+            countedByLabel: user.displayName,
+          );
+    if (_usesFirestore) {
+      String? lineId;
+      final ok = await _tryFirestore('recordCount', () async {
+        lineId = await _inventory.saveInventoryCountEvent(
+            orgId: orgId, sessionId: sessionId, event: event);
+      });
+      if (ok) {
+        event = event.copyWith(id: lineId ?? event.id);
+        _applyLocalCountEvent(sessionId, ownIndex, event, lines);
+        return;
+      }
+    }
+    if (event.id == null) {
+      event = event.copyWith(id: _nextLocalId('count-line'));
+    }
+    _applyLocalCountEvent(sessionId, ownIndex, event, lines);
+    await _persistCountLines(sessionId);
+  }
+
+  void _applyLocalCountEvent(
+    String sessionId,
+    int ownIndex,
+    InventoryCountEvent event,
+    List<InventoryCountEvent> lines,
+  ) {
+    if (ownIndex >= 0) {
+      lines[ownIndex] = event;
+    } else {
+      lines.add(event);
+    }
+    _countLinesBySession[sessionId] = lines;
+    _safeNotify();
+  }
+
+  /// Bricht eine offene Session ab (`open→cancelled`).
+  Future<void> cancelCountSession(String sessionId) async {
+    final session = countSessionById(sessionId);
+    if (session == null || !session.isOpen) return;
+    await _saveCountSession(
+      session.copyWith(status: InventoryCountStatus.cancelled),
+      'Inventur „${session.title}" abgebrochen',
+      AuditAction.updated,
+    );
+  }
+
+  Future<void> _saveCountSession(
+    InventoryCountSession session,
+    String summary,
+    AuditAction action,
+  ) async {
+    final orgId = _orgId;
+    if (orgId == null) return;
+    if (_usesFirestore &&
+        await _tryFirestore(
+          'saveCountSession',
+          () => _inventory.saveInventoryCountSession(session),
+        )) {
+      _audit?.call(
+        action: action,
+        entityType: 'Inventur',
+        entityId: session.id,
+        summary: summary,
+      );
+      return;
+    }
+    _countSessions = _upsertLocal(_countSessions, session, (s) => s.id);
+    _countSessions.sort((a, b) => b.startedAt.compareTo(a.startedAt));
+    await _persistCountSessions();
+    _safeNotify();
+    _audit?.call(
+      action: action,
+      entityType: 'Inventur',
+      entityId: session.id,
+      summary: summary,
+    );
   }
 
   Future<void> adjustStock({

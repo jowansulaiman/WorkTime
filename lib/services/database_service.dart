@@ -13,6 +13,7 @@ import '../models/contact.dart';
 import '../models/contact_organization.dart';
 import '../models/customer_order.dart';
 import '../models/delivery_advice.dart';
+import '../models/inventory_count_session.dart';
 import '../models/fridge_refill.dart';
 import '../models/paketshop_settings.dart';
 import '../models/parcel_customer.dart';
@@ -118,6 +119,11 @@ class DatabaseService {
   // Lieferavise (WW-4): org-skopiert, bewegliche Nutzdaten (im Hybrid-Modus
   // lokal gespiegelt), neue Collection ohne Altbestand.
   static const _deliveryAdvicesKey = 'delivery_advices';
+  // Inventur-Sessions (WW-8): org-skopiert. Metadaten in EINER Collection;
+  // die Zähl-Events je Session unter einem EIGENEN, chunkbaren Key
+  // `inventory_count_lines/<sessionId>` (Review-Befund: kein Monolith).
+  static const _countSessionsKey = 'inventory_count_sessions';
+  static const _countLinesKeyPrefix = 'inventory_count_lines/';
   static const _stockMovementsKey = 'stock_movements';
   static const _priceHistoryKey = 'price_history';
   // Scan-Telemetrie (Scan-Statistik/Fehleranalyse): org-skopiert, lokal auf
@@ -209,6 +215,8 @@ class DatabaseService {
     // Lieferavise: org-skopiert (bewegliche Nutzdaten, im Hybrid-Modus lokal
     // gespiegelt).
     _deliveryAdvicesKey,
+    // Inventur-Session-Metadaten: org-skopiert (bewegliche Nutzdaten).
+    _countSessionsKey,
     _stockMovementsKey,
     _priceHistoryKey,
     // Scan-Telemetrie: org-skopiert, neue Collection ohne Altbestand.
@@ -1434,6 +1442,55 @@ class DatabaseService {
     );
   }
 
+  // --- Inventur-Sessions (WW-8) --------------------------------------------
+  static Future<List<InventoryCountSession>> loadLocalCountSessions({
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: _countSessionsKey,
+      scope: scope,
+      fromMap: InventoryCountSession.fromMap,
+      compare: (a, b) => b.startedAt.compareTo(a.startedAt),
+    );
+  }
+
+  static Future<void> saveLocalCountSessions(
+    List<InventoryCountSession> sessions, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: _countSessionsKey,
+      scope: scope,
+      items: sessions,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
+  /// Zähl-Events EINER Session unter einem eigenen, chunkbaren Key.
+  static Future<List<InventoryCountEvent>> loadLocalCountLines(
+    String sessionId, {
+    LocalStorageScope? scope,
+  }) {
+    return _loadCollection(
+      key: '$_countLinesKeyPrefix$sessionId',
+      scope: scope,
+      fromMap: InventoryCountEvent.fromMap,
+    );
+  }
+
+  static Future<void> saveLocalCountLines(
+    String sessionId,
+    List<InventoryCountEvent> lines, {
+    LocalStorageScope? scope,
+  }) {
+    return _saveCollection(
+      key: '$_countLinesKeyPrefix$sessionId',
+      scope: scope,
+      items: lines,
+      toMap: (item) => item.toMap(),
+    );
+  }
+
   static Future<List<CustomerOrder>> loadLocalCustomerOrders({
     LocalStorageScope? scope,
   }) {
@@ -2359,9 +2416,12 @@ class DatabaseService {
     if (scope == null) {
       return key;
     }
-    final prefix = _orgScopedCollectionKeys.contains(key)
-        ? _orgScopePrefix(scope)
-        : _userScopePrefix(scope);
+    // Inventur-Zähl-Events (WW-8) nutzen einen dynamischen Key je Session
+    // (`inventory_count_lines/<sessionId>`) und sind org-skopiert.
+    final isOrgScoped = _orgScopedCollectionKeys.contains(key) ||
+        key.startsWith(_countLinesKeyPrefix);
+    final prefix =
+        isOrgScoped ? _orgScopePrefix(scope) : _userScopePrefix(scope);
     return '$prefix$key';
   }
 

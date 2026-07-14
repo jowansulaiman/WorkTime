@@ -1576,6 +1576,72 @@ service cloud.firestore {
         allow delete: if sameOrg(orgId) && canManageInventory();
       }
 
+      // Inventur-Zählsessions (WW-8): persistente, mehrgerätefähige Bestands-
+      // zählung. Metadaten am Session-Doc, append-only Zähl-EVENTS in der
+      // lines-Subcollection. Read nur Verwaltung (ohne Kiosk). Explizite
+      // Transition-Matrix statt „update solange open":
+      //   create: Status 'open' + Akteur-Pin auf startedByUid.
+      //   update: NUR aus 'open' heraus (completed/cancelled sind terminal →
+      //           GoBD: nach Abschluss unveränderlich); orgId + startedByUid
+      //           immutabel; Feld-Allowlist gegen Mass Assignment.
+      //   delete: nie.
+      // GRENZE (Review-Befund hoch): die VOLLSTÄNDIGKEIT der Konflikt-Auflösung
+      // (resolvedCounts deckt alle Konflikt-Artikel) kann eine Rule NICHT prüfen
+      // — Rules aggregieren nicht über die lines-Subcollection. Das ist eine
+      // Client-Invariante (WW-9-Abschluss-Flow + Provider-Tests). Wer server-
+      // seitige Härte will: Folge-Meilenstein „Abschluss als Callable".
+      match /inventoryCountSessions/{sessionId} {
+        allow read: if sameOrg(orgId) && !isKiosk();
+        allow create: if sameOrg(orgId) && canManageInventory()
+            && request.resource.data.orgId == orgId
+            && request.resource.data.startedByUid == request.auth.uid
+            && request.resource.data.status == 'open'
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'title', 'status', 'categoryFilter',
+                 'startedAt', 'startedByUid', 'startedByLabel', 'completedAt',
+                 'completedByUid', 'totalProducts', 'countedProducts',
+                 'resolvedCounts', 'diffSummary', 'createdAt'
+               ]);
+        allow update: if sameOrg(orgId) && canManageInventory()
+            && resource.data.status == 'open'
+            && request.resource.data.status in ['open', 'completed', 'cancelled']
+            && request.resource.data.orgId == orgId
+            && request.resource.data.startedByUid == resource.data.startedByUid
+            && request.resource.data.keys().hasOnly([
+                 'orgId', 'siteId', 'title', 'status', 'categoryFilter',
+                 'startedAt', 'startedByUid', 'startedByLabel', 'completedAt',
+                 'completedByUid', 'totalProducts', 'countedProducts',
+                 'resolvedCounts', 'diffSummary', 'createdAt'
+               ]);
+        allow delete: if false;
+
+        // Append-only Zähl-Events. create pinnt countedByUid an den Aufrufer.
+        // update NUR (a) eigene Zählwert-Korrektur (Pin auf das eigene Event)
+        // ODER (b) reine bookedAt-Markierung durch den Abschließenden (alle
+        // übrigen Felder unverändert). Nie löschen.
+        match /lines/{lineId} {
+          allow read: if sameOrg(orgId) && !isKiosk();
+          allow create: if sameOrg(orgId) && canManageInventory()
+              && request.resource.data.countedByUid == request.auth.uid
+              && request.resource.data.keys().hasOnly([
+                   'productId', 'productName', 'countedQuantity', 'stockAtCount',
+                   'countedAt', 'countedByUid', 'countedByLabel', 'bookedAt'
+                 ]);
+          allow update: if sameOrg(orgId) && canManageInventory()
+              && request.resource.data.countedByUid == resource.data.countedByUid
+              && request.resource.data.keys().hasOnly([
+                   'productId', 'productName', 'countedQuantity', 'stockAtCount',
+                   'countedAt', 'countedByUid', 'countedByLabel', 'bookedAt'
+                 ])
+              && (
+                   resource.data.countedByUid == request.auth.uid
+                   || request.resource.data.diff(resource.data)
+                        .affectedKeys().hasOnly(['bookedAt'])
+                 );
+          allow delete: if false;
+        }
+      }
+
       // MHD-/Ablauf-Chargen (Warencharge mit Mindesthaltbarkeitsdatum). Operative
       // Nutzdaten: JEDES aktive Mitglied darf erfassen/aufloesen — sowohl der
       // Scanner-Wareneingang als auch das Kiosk-Geraete-Konto (das kein

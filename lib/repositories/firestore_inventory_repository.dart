@@ -8,6 +8,7 @@ import '../models/cash_closing.dart';
 import '../models/cash_count.dart';
 import '../models/customer_order.dart';
 import '../models/delivery_advice.dart';
+import '../models/inventory_count_session.dart';
 import '../models/fridge_refill.dart';
 import '../models/order_cart.dart';
 import '../models/pos_daily_stat.dart';
@@ -73,6 +74,17 @@ class FirestoreInventoryRepository implements InventoryRepository {
     String orgId,
   ) =>
       _organizationDoc(orgId).collection('deliveryAdvices');
+
+  CollectionReference<Map<String, dynamic>> _countSessionCollection(
+    String orgId,
+  ) =>
+      _organizationDoc(orgId).collection('inventoryCountSessions');
+
+  CollectionReference<Map<String, dynamic>> _countLineCollection(
+    String orgId,
+    String sessionId,
+  ) =>
+      _countSessionCollection(orgId).doc(sessionId).collection('lines');
 
   CollectionReference<Map<String, dynamic>> _customerOrderCollection(
     String orgId,
@@ -853,6 +865,63 @@ class FirestoreInventoryRepository implements InventoryRepository {
     required String adviceId,
   }) {
     return _deliveryAdviceCollection(orgId).doc(adviceId).delete();
+  }
+
+  // --- Inventur-Sessions (inventoryCountSessions + lines, WW-8) -------------
+  @override
+  Stream<List<InventoryCountSession>> watchInventoryCountSessions(
+      String orgId) {
+    return _countSessionCollection(orgId)
+        .orderBy('startedAt', descending: true)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) =>
+                  InventoryCountSession.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<String> saveInventoryCountSession(
+      InventoryCountSession session) async {
+    final collection = _countSessionCollection(session.orgId);
+    final docRef =
+        session.id == null ? collection.doc() : collection.doc(session.id);
+    await docRef.set({
+      ...session.copyWith(id: docRef.id).toFirestoreMap(),
+      if (session.id == null) 'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    return docRef.id;
+  }
+
+  @override
+  Stream<List<InventoryCountEvent>> watchInventoryCountLines(
+    String orgId,
+    String sessionId,
+  ) {
+    return _countLineCollection(orgId, sessionId).snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) =>
+                  InventoryCountEvent.fromFirestore(doc.id, doc.data()))
+              .toList(growable: false),
+        );
+  }
+
+  @override
+  Future<String> saveInventoryCountEvent({
+    required String orgId,
+    required String sessionId,
+    required InventoryCountEvent event,
+  }) async {
+    final collection = _countLineCollection(orgId, sessionId);
+    final docRef =
+        event.id == null ? collection.doc() : collection.doc(event.id);
+    await docRef.set(
+      event.copyWith(id: docRef.id).toFirestoreMap(),
+      SetOptions(merge: true),
+    );
+    return docRef.id;
   }
 
   // Kundenbestellungen werden – wie Lieferantenbestellungen – nach createdAt
